@@ -20,6 +20,8 @@ pub enum Action {
     Refresh,
     ToggleHidden,
     SwapPanels,
+    /// Open the MC-style User Menu (F2)
+    ShowUserMenu,
     FocusMenu,
     ShowHelp,
     // Navigation

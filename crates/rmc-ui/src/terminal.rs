@@ -467,6 +467,54 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::UserMenu {
+                title: _,
+                entries,
+                selected_index,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Up => {
+                        if *selected_index > 0 {
+                            *selected_index -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected_index + 1 < entries.len() {
+                            *selected_index += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(ent) = entries.get(*selected_index) {
+                            let cmd = rmc_core::user_menu::expand_macros(app, &ent.command);
+                            let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+                            app.ui_mode = UiMode::Normal;
+                            app.reload_panels()?;
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        // Hotkey invoke
+                        let lc = c.to_ascii_lowercase();
+                        if let Some((idx, _)) = entries
+                            .iter()
+                            .enumerate()
+                            .find(|(_, e)| e.hotkey.map(|k| k.to_ascii_lowercase()) == Some(lc))
+                        {
+                            *selected_index = idx;
+                            if let Some(ent) = entries.get(idx) {
+                                let cmd = rmc_core::user_menu::expand_macros(app, &ent.command);
+                                let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+                                app.ui_mode = UiMode::Normal;
+                                app.reload_panels()?;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::DeleteDialog {
                 name: _,
                 path,
@@ -1341,6 +1389,24 @@ impl TerminalApp {
                     return Ok(());
                 }
             }
+        }
+        // Dedicated handling for F2 User Menu action
+        if let Some(Action::ShowUserMenu) = app.keymap.resolve(&key) {
+            // Load menu and open dialog
+            let cwd = app.active_panel().cwd.clone();
+            match rmc_core::user_menu::load_menu(&cwd) {
+                Ok(menu) => {
+                    app.ui_mode = UiMode::UserMenu {
+                        title: menu.title,
+                        entries: menu.entries,
+                        selected_index: 0,
+                    };
+                }
+                Err(_) => {
+                    // No menu found — ignore
+                }
+            }
+            return Ok(());
         }
         Ok(())
     }
