@@ -31,6 +31,52 @@ use once_cell::sync::Lazy;
 use std::sync::Mutex;
 pub(crate) static VIEWER_STATE: Lazy<Mutex<Option<ViewerState>>> = Lazy::new(|| Mutex::new(None));
 
+// Persistent PTY-backed subshell session for C-o console.
+// Lives in the UI crate to avoid widening App's trait bounds or Debug/Clone surface.
+pub(crate) static SUBSHELL_PTY: Lazy<Mutex<Option<rmc_core::subshell::PtySession>>> =
+    Lazy::new(|| Mutex::new(None));
+
+// Encode key events into bytes suitable for a typical xterm-compatible PTY.
+fn encode_key_for_pty(key: &KeyEvent) -> Option<Vec<u8>> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match key.code {
+        KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::Tab => Some(vec![b'\t']),
+        KeyCode::Esc => Some(vec![0x1b]),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Home => Some(b"\x1b[H".to_vec()),
+        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::Insert => Some(b"\x1b[2~".to_vec()),
+        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Char(c) => {
+            // Control-modified ASCII letters: map to ^A..^Z
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                let uc = c.to_ascii_uppercase() as u8;
+                if (b'@'..=b'_').contains(&uc) || uc.is_ascii_uppercase() {
+                    // Common terminals map Ctrl-@..Ctrl-_ to 0x00..0x1f
+                    let b = uc & 0x1f;
+                    return Some(vec![b]);
+                }
+            }
+            // Alt-modified: send ESC prefix + char
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                let mut v = vec![0x1b];
+                v.extend(c.to_string().as_bytes());
+                return Some(v);
+            }
+            // Plain Unicode char => UTF-8 bytes
+            Some(c.to_string().into_bytes())
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn viewer_clear_state() {
     if let Ok(mut g) = VIEWER_STATE.lock() {
         *g = None;
@@ -129,6 +175,34 @@ impl TerminalApp {
                 let right = &mut app.right;
                 right.ensure_visible(right_capacity);
             }
+            // While subshell full-screen is shown and PTY is alive, drain and append output.
+            if app.subshell.show_output_screen {
+                if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+                    if let Some(sess) = guard.as_mut() {
+                        if sess.is_alive() {
+                            let bytes = sess.drain_output();
+                            if !bytes.is_empty() {
+                                // Convert to text, strip simple CRs, and split into lines.
+                                let text = String::from_utf8_lossy(&bytes).replace('\r', "");
+                                for line in text.split_inclusive('\n') {
+                                    let ln = if let Some(stripped) = line.strip_suffix('\n') {
+                                        stripped.to_string()
+                                    } else {
+                                        line.to_string()
+                                    };
+                                    app.subshell.output_lines.push(ln);
+                                }
+                                // Cap buffer to a reasonable size (match Subshell::new default).
+                                const CAP: usize = 10_000;
+                                if app.subshell.output_lines.len() > CAP {
+                                    let overflow = app.subshell.output_lines.len() - CAP;
+                                    app.subshell.output_lines.drain(0..overflow);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Draw at least at 30 FPS-equivalent idle to react to resize
             // Also check for background find results to update UI even without keypresses
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
@@ -170,8 +244,13 @@ impl TerminalApp {
                         };
                         Self::handle_key(app, key, active_capacity)?;
                     }
-                    Event::Resize(_, _) => {
-                        // redraw next loop
+                    Event::Resize(c, r) => {
+                        // Resize PTY if alive; redraw next loop
+                        if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+                            if let Some(sess) = guard.as_mut() {
+                                let _ = sess.resize(r, c);
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -182,6 +261,13 @@ impl TerminalApp {
             }
         }
 
+        // Best-effort: kill PTY session on quit.
+        if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+            if let Some(sess) = guard.as_mut() {
+                let _ = sess.kill();
+            }
+            *guard = None;
+        }
         disable_raw_mode()?;
         execute!(out, LeaveAlternateScreen, DisableMouseCapture)?;
         Ok(())
@@ -209,7 +295,18 @@ impl TerminalApp {
                 }
                 KeyCode::Up => app.subshell.scroll_page_up(1),
                 KeyCode::Down => app.subshell.scroll_page_down(1),
-                _ => {}
+                _ => {
+                    // Forward other keys to the live PTY session, if any.
+                    if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+                        if let Some(sess) = guard.as_mut() {
+                            if sess.is_alive() {
+                                if let Some(bytes) = encode_key_for_pty(&key) {
+                                    let _ = sess.write(&bytes);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             return Ok(());
         }
@@ -667,7 +764,16 @@ impl TerminalApp {
                             app.ui_mode = UiMode::Normal;
                             app.handle_action(Action::Enter)?;
                         } else {
-                            let _outcome = app.subshell.execute_current(&active_cwd)?;
+                            // Prefer executing inside a live PTY session when available.
+                            let outcome = {
+                                if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+                                    let pty_opt = guard.as_mut();
+                                    app.subshell.execute_in_pty(&active_cwd, pty_opt)?
+                                } else {
+                                    app.subshell.execute_current(&active_cwd)?
+                                }
+                            };
+                            let _ = outcome;
                             // Always rescan panels after a command (local VFS only here).
                             app.reload_panels()?;
                             app.subshell.clear_cmdline();
@@ -3243,6 +3349,25 @@ impl TerminalApp {
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::ToggleSubshell => {
                     app.handle_action(Action::ToggleSubshell)?;
+                    // If toggled ON, ensure PTY session exists and is alive; spawn otherwise.
+                    if app.subshell.show_output_screen {
+                        let (c, r) = crossterm::terminal::size()?;
+                        if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+                            let need_spawn = match guard.as_mut() {
+                                Some(sess) => !sess.is_alive(),
+                                None => true,
+                            };
+                            if need_spawn {
+                                if let Ok(sess) =
+                                    rmc_core::subshell::PtySession::spawn(&active_cwd, r, c)
+                                {
+                                    *guard = Some(sess);
+                                } else {
+                                    // Spawn failed: keep captured-output fallback; do nothing.
+                                }
+                            }
+                        }
+                    }
                 }
                 Action::OpenHotlist => {
                     let st =
