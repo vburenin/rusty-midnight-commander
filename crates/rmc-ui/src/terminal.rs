@@ -2370,6 +2370,7 @@ impl TerminalApp {
                         "Find file",
                         "Directory hotlist",
                         "Compare dirs",
+                        "External panelize",
                     ],
                     &["Layout", "Panels", "Confirmations"],
                     &[
@@ -2648,6 +2649,68 @@ impl TerminalApp {
                             "Find file" => {
                                 let start = app.active_panel().cwd.clone();
                                 app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
+                            }
+                            "External panelize" => {
+                                let cwd = active_cwd.clone();
+                                app.ui_mode = UiMode::InputDialog {
+                                    title: "External panelize".into(),
+                                    prompt: "Enter command:".into(),
+                                    value: String::new(),
+                                    focus_ok: false,
+                                    on_submit: Box::new(move |app, input| {
+                                        let cmd = input.trim().to_string();
+                                        if cmd.is_empty() {
+                                            return Ok(());
+                                        }
+                                        // Run the command in the active panel cwd and capture stdout
+                                        let output = std::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(&cmd)
+                                            .current_dir(&cwd)
+                                            .output();
+                                        match output {
+                                            Ok(out) => {
+                                                let mut paths: Vec<std::path::PathBuf> = Vec::new();
+                                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                                for line in stdout.lines() {
+                                                    let t = line.trim();
+                                                    if t.is_empty() {
+                                                        continue;
+                                                    }
+                                                    let mut p = std::path::PathBuf::from(t);
+                                                    if !p.is_absolute() {
+                                                        p = cwd.join(t);
+                                                    }
+                                                    if app.vfs.stat(&p).is_ok() {
+                                                        paths.push(p);
+                                                    }
+                                                }
+                                                if paths.is_empty() {
+                                                    app.ui_mode = UiMode::DialogConfirm {
+                                                        title: "Error".into(),
+                                                        message:
+                                                            "Command failed or produced no files"
+                                                                .into(),
+                                                        on_ok: Box::new(|_| Ok(())),
+                                                    };
+                                                    return Ok(());
+                                                }
+                                                app.panelize_paths(&paths, Some(&cwd))?;
+                                                app.ui_mode = UiMode::Normal;
+                                                Ok(())
+                                            }
+                                            Err(_e) => {
+                                                app.ui_mode = UiMode::DialogConfirm {
+                                                    title: "Error".into(),
+                                                    message: "Command failed or produced no files"
+                                                        .into(),
+                                                    on_ok: Box::new(|_| Ok(())),
+                                                };
+                                                Ok(())
+                                            }
+                                        }
+                                    }),
+                                };
                             }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;
@@ -3349,7 +3412,66 @@ impl TerminalApp {
         // Key chord handling for C-x prefix (emulate MC prefixes)
         if app.pending_ctrl_x {
             app.pending_ctrl_x = false;
-            if key.modifiers.is_empty() {
+            // Special case: handle '!' even when SHIFT is pressed (C-x !)
+            if matches!(key.code, KeyCode::Char('!')) {
+                let cwd = active_cwd.clone();
+                app.ui_mode = UiMode::InputDialog {
+                    title: "External panelize".into(),
+                    prompt: "Enter command:".into(),
+                    value: String::new(),
+                    focus_ok: false,
+                    on_submit: Box::new(move |app, input| {
+                        let cmd = input.trim().to_string();
+                        if cmd.is_empty() {
+                            return Ok(());
+                        }
+                        let output = std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .current_dir(&cwd)
+                            .output();
+                        match output {
+                            Ok(out) => {
+                                let mut paths: Vec<std::path::PathBuf> = Vec::new();
+                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                for line in stdout.lines() {
+                                    let t = line.trim();
+                                    if t.is_empty() {
+                                        continue;
+                                    }
+                                    let mut p = std::path::PathBuf::from(t);
+                                    if !p.is_absolute() {
+                                        p = cwd.join(t);
+                                    }
+                                    if app.vfs.stat(&p).is_ok() {
+                                        paths.push(p);
+                                    }
+                                }
+                                if paths.is_empty() {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: "Command failed or produced no files".into(),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                    return Ok(());
+                                }
+                                app.panelize_paths(&paths, Some(&cwd))?;
+                                app.ui_mode = UiMode::Normal;
+                                Ok(())
+                            }
+                            Err(_e) => {
+                                app.ui_mode = UiMode::DialogConfirm {
+                                    title: "Error".into(),
+                                    message: "Command failed or produced no files".into(),
+                                    on_ok: Box::new(|_| Ok(())),
+                                };
+                                Ok(())
+                            }
+                        }
+                    }),
+                };
+                return Ok(());
+            } else if key.modifiers.is_empty() {
                 if let KeyCode::Char('h') = key.code {
                     // Add current dir to hotlist with label prompt
                     let cwd = active_cwd.clone();
