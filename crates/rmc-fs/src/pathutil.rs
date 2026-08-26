@@ -45,7 +45,11 @@ pub fn parse_archive_path(path: &Path) -> Option<ArchivePath> {
     }
     // Determine archive kind by extension
     let kind = detect_archive_kind(&archive)?;
-    Some(ArchivePath { archive, inner, kind })
+    Some(ArchivePath {
+        archive,
+        inner,
+        kind,
+    })
 }
 
 pub fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
@@ -67,4 +71,3 @@ pub fn append_anchor(path: &Path) -> PathBuf {
     s.push('#');
     PathBuf::from(s)
 }
-

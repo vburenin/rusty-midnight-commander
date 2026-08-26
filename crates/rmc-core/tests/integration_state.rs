@@ -1,7 +1,7 @@
 use anyhow::Result;
+use rmc_core::actions::Action;
 use rmc_core::app::App;
 use rmc_core::config::KeyMap;
-use rmc_core::actions::Action;
 use rmc_fs::local::LocalFs;
 
 #[test]

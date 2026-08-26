@@ -1,5 +1,5 @@
-pub mod terminal;
 mod mc_colors;
-mod skin;
 mod render;
+mod skin;
+pub mod terminal;
 mod widgets;

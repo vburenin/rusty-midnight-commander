@@ -79,7 +79,7 @@ impl McPalette {
             statusbar_fg: Color::Black,
             statusbar_bg: Color::Cyan,
             dir_color: Color::White,
-            exec_color: Color::Green, // brightgreen approximation
+            exec_color: Color::Green,      // brightgreen approximation
             archive_color: Color::Magenta, // brightmagenta approximation
             source_color: Color::Cyan,
             symlink_color: Color::Grey,

@@ -69,6 +69,13 @@ pub fn keyevent_to_function_key(ev: &KeyEvent) -> Option<u8> {
 
 #[derive(Debug, Clone)]
 pub enum MouseAction {
-    Click { kind: MouseEventKind, x: u16, y: u16, button: Option<MouseButton> },
-    Scroll { up: bool },
+    Click {
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+        button: Option<MouseButton>,
+    },
+    Scroll {
+        up: bool,
+    },
 }

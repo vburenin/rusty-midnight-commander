@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use rmc_core::config::KeyMap;
 use rmc_core::actions::Action;
+use rmc_core::config::KeyMap;
 
 #[test]
 fn resolves_mc_defaults() {

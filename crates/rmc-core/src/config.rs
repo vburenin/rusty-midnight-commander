@@ -1,7 +1,7 @@
 use crate::actions::{Action, SortBy};
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -71,7 +71,11 @@ impl KeyMap {
             if let Some((key, action)) = parse_key_then_action().or_else(parse_action_then_key) {
                 km.set_binding(key, action);
             } else {
-                eprintln!("Warning: could not parse keymap at line {}: {}", lineno + 1, raw);
+                eprintln!(
+                    "Warning: could not parse keymap at line {}: {}",
+                    lineno + 1,
+                    raw
+                );
             }
         }
         Ok(km)
@@ -79,7 +83,9 @@ impl KeyMap {
 
     pub fn mc_defaults() -> Self {
         use Action::*;
-        let mut m = Self { bindings: Vec::new() };
+        let mut m = Self {
+            bindings: Vec::new(),
+        };
         m.bind(new_event(KeyCode::Up), MoveUp);
         m.bind(new_event(KeyCode::Down), MoveDown);
         m.bind(new_event(KeyCode::PageUp), PageUp);
@@ -88,14 +94,30 @@ impl KeyMap {
         m.bind(new_event(KeyCode::End), End);
         m.bind(new_event(KeyCode::Tab), SwitchPanel);
         m.bind(new_event(KeyCode::Enter), Enter);
-        m.bind(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), ParentDir);
-        m.bind(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL), ParentDir);
-        m.bind(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL), ToggleHidden);
-        m.bind(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), SwapPanels);
-        m.bind(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), Refresh);
+        m.bind(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            ParentDir,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL),
+            ParentDir,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            ToggleHidden,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            SwapPanels,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            Refresh,
+        );
         // Function keys
         m.bind(new_event(KeyCode::F(1)), ShowHelp);
         m.bind(new_event(KeyCode::F(3)), ViewFile);
+        m.bind(new_event(KeyCode::F(4)), Action::FunctionKey(4));
         m.bind(new_event(KeyCode::F(5)), Copy);
         m.bind(new_event(KeyCode::F(6)), Move);
         m.bind(new_event(KeyCode::F(7)), Mkdir);
@@ -103,12 +125,27 @@ impl KeyMap {
         m.bind(new_event(KeyCode::F(9)), FocusMenu);
         m.bind(new_event(KeyCode::F(10)), Quit);
         // Sorting shortcuts (stub: Shift+N/S/T)
-        m.bind(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT), Sort(SortBy::Name));
-        m.bind(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT), Sort(SortBy::Size));
-        m.bind(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT), Sort(SortBy::Time));
+        m.bind(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
+            Sort(SortBy::Name),
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+            Sort(SortBy::Size),
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+            Sort(SortBy::Time),
+        );
         // Selection toggles
-        m.bind(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE), ToggleSelect);
-        m.bind(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE), ToggleSelect);
+        m.bind(
+            KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE),
+            ToggleSelect,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            ToggleSelect,
+        );
         m
     }
 
@@ -224,13 +261,27 @@ mod tests {
 
     #[test]
     fn resolve_some_default_keymap() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../data/mc.keymap");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
         let km = KeyMap::load_from_file(&path).expect("load keymap");
-        assert!(matches!(km.resolve(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)), Some(Action::MoveUp)));
-        assert!(matches!(km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)), Some(Action::Copy)));
-        assert!(matches!(km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)), Some(Action::Refresh)));
-        assert!(matches!(km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)), Some(Action::Sort(SortBy::Name))));
-        assert!(matches!(km.resolve(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)), Some(Action::ParentDir)));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Action::MoveUp)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+            Some(Action::Copy)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Some(Action::Refresh)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),
+            Some(Action::Sort(SortBy::Name))
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+            Some(Action::ParentDir)
+        ));
     }
 }

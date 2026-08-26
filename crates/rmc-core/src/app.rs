@@ -2,6 +2,7 @@ use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::panel::{FileEntry, PanelState, SortBy};
 use anyhow::Result;
+use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,19 @@ type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 
 pub enum UiMode {
     Normal,
-    Viewer { path: PathBuf, hex: bool },
+    Viewer {
+        path: PathBuf,
+        hex: bool,
+    },
+    Editor {
+        buf: EditorBuffer,
+        show_menu: bool,
+        status_msg: Option<String>,
+        search_input: Option<String>,
+        save_as_input: Option<String>,
+        pending_quit: bool,
+        confirm_exit: Option<YncDialog>,
+    },
     Menu {
         top_index: usize,
         selected_index: usize,
@@ -51,6 +64,19 @@ pub enum UiMode {
     Help,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum YncFocus {
+    Yes,
+    No,
+    Cancel,
+}
+
+#[derive(Clone)]
+pub struct YncDialog {
+    pub title: String,
+    pub message: String,
+    pub focus: YncFocus,
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CopyDialogFocus {
     Mask,
@@ -156,7 +182,12 @@ impl App {
                     PaneSide::Right => PaneSide::Left,
                 };
             }
-            FocusMenu => self.ui_mode = UiMode::Menu { top_index: 0, selected_index: 0 },
+            FocusMenu => {
+                self.ui_mode = UiMode::Menu {
+                    top_index: 0,
+                    selected_index: 0,
+                }
+            }
             ShowHelp => self.ui_mode = UiMode::Help,
             MoveUp => self.active_panel_mut().move_up(),
             MoveDown => self.active_panel_mut().move_down(),
@@ -214,7 +245,10 @@ impl App {
             ViewFile => {
                 if let Some(ent) = self.active_panel().current_entry() {
                     if !ent.is_dir {
-                        self.ui_mode = UiMode::Viewer { path: ent.path.clone(), hex: false };
+                        self.ui_mode = UiMode::Viewer {
+                            path: ent.path.clone(),
+                            hex: false,
+                        };
                     }
                 }
             }

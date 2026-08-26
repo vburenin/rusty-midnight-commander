@@ -1,13 +1,12 @@
 use rmc_fs::composite::CompositeFs;
 use rmc_fs::Vfs;
 use std::fs::{self, File};
-use std::io::{Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn make_sample_tree(root: &Path) {
-    fs::create_dir_all(root.join("dir1/sub")).
-        expect("create dirs");
+    fs::create_dir_all(root.join("dir1/sub")).expect("create dirs");
     fs::write(root.join("root.txt"), b"root").unwrap();
     fs::write(root.join("dir1/file1.txt"), b"hello").unwrap();
     fs::write(root.join("dir1/sub/inner.txt"), b"inner").unwrap();
@@ -197,4 +196,3 @@ fn zip_parent_navigation_dots() {
     let p3 = find_parent_path(&vfs, &p2);
     assert_eq!(p3, zip_path.parent().unwrap().to_path_buf());
 }
-
