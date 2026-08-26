@@ -1651,6 +1651,7 @@ impl TerminalApp {
                         "SFTP link",
                         "Sort order...",
                         "Tree",
+                        "Filter",
                     ],
                     &[
                         "View",
@@ -1682,6 +1683,7 @@ impl TerminalApp {
                         "SFTP link",
                         "Sort order...",
                         "Tree",
+                        "Filter",
                     ],
                 ];
                 match key.code {
@@ -1714,6 +1716,30 @@ impl TerminalApp {
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
+                            "Filter" => {
+                                // Open simple input dialog to set filename filter for the chosen side.
+                                let set_left = *top_index == 0;
+                                app.ui_mode = UiMode::InputDialog {
+                                    title: "Filter".into(),
+                                    prompt: "Enter glob (e.g. *.c):".into(),
+                                    value: "*".into(),
+                                    focus_ok: false,
+                                    on_submit: Box::new(move |app, input| {
+                                        let pat = input.trim().to_string();
+                                        let panel = if set_left {
+                                            &mut app.left
+                                        } else {
+                                            &mut app.right
+                                        };
+                                        if pat.is_empty() || pat == "*" {
+                                            panel.filter_glob = None;
+                                        } else {
+                                            panel.filter_glob = Some(pat);
+                                        }
+                                        Ok(())
+                                    }),
+                                };
+                            }
                             "FTP link" | "SFTP link" => {
                                 let scheme = if item == "FTP link" { "ftp" } else { "sftp" };
                                 // Prompt user for host or URL; accept "user@host" or full URL.

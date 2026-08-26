@@ -689,7 +689,7 @@ fn draw_editor(
         p.goto(cur_x, cur_y);
         // Get glyph under cursor from rendered view
         let vr = (cur_y - content_top) as usize; // row index within content
-        // Reconstruct the displayed row text from spans for cursor sampling
+                                                 // Reconstruct the displayed row text from spans for cursor sampling
         let row_text: String = view_spans
             .get(vr)
             .map(|v| v.iter().map(|s| s.text.as_str()).collect::<String>())
@@ -2851,6 +2851,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "SFTP link",
             "Sort order...",
             "Tree",
+            "Filter",
         ],
         &[
             "View",
@@ -2882,6 +2883,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "SFTP link",
             "Sort order...",
             "Tree",
+            "Filter",
         ],
     ];
     let titles = [" Left ", " File ", " Command ", " Options ", " Right "];
