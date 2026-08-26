@@ -9,9 +9,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::cmp::min;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 pub mod syntax;
 pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
@@ -792,6 +794,23 @@ fn find_bytes(hay: &[u8], needle: &[u8], start: usize) -> Option<usize> {
         .find_map(|(i, w)| if w == needle { Some(i) } else { None })
 }
 
+fn split_bytes_to_lines(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+    let mut cur = Vec::new();
+    for &b in bytes {
+        if b == b'\n' {
+            lines.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(b);
+        }
+    }
+    lines.push(cur);
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
 fn find_bytes_ascii_ci(hay: &[u8], needle: &[u8], start: usize) -> Option<usize> {
     if needle.is_empty() || start >= hay.len() {
         return None;
@@ -851,6 +870,66 @@ fn point_in_range(p: (usize, usize), r: ((usize, usize), (usize, usize))) -> boo
         return p.1 < ec;
     }
     true
+}
+
+impl EditorBuffer {
+    /// Pipe current selection (or whole buffer if no selection) through an external command.
+    /// The command is executed via `sh -c <cmd>`. Selection/buffer bytes are written to stdin,
+    /// stdout is captured, and the selection/buffer is replaced with stdout bytes.
+    /// This is binary-safe and does not interpret bytes as UTF-8.
+    pub fn pipe_selection(&mut self, cmd: &str) -> Result<()> {
+        // Gather input
+        let (use_selection, input_bytes) = if let Some(sel) = self.selection_bounds() {
+            // Extract selection as lines and join with '\n' for piping
+            let parts = self.extract_selection_lines(sel);
+            let mut buf = Vec::new();
+            for (i, part) in parts.iter().enumerate() {
+                buf.extend_from_slice(part);
+                if i + 1 != parts.len() {
+                    buf.push(b'\n');
+                }
+            }
+            (true, buf)
+        } else {
+            (false, self.to_bytes())
+        };
+
+        // Run command
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(&input_bytes)?;
+        }
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            let code = output.status.code().unwrap_or(-1);
+            let err = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(anyhow!("command failed (code {code}): {err}"));
+        }
+
+        // Replace content
+        if use_selection {
+            // Delete selection then insert stdout split to lines at cursor
+            // delete_selection moves cursor to selection start
+            let _ = self.delete_selection();
+            let block = split_bytes_to_lines(&output.stdout);
+            self.insert_block(&block);
+        } else {
+            // Replace whole buffer
+            self.push_undo();
+            self.lines = split_bytes_to_lines(&output.stdout);
+            self.row = 0;
+            self.col = 0;
+            self.dirty = true;
+            self.ensure_cursor_visible();
+        }
+        Ok(())
+    }
 }
 
 /// Lightweight trait to describe an editor host integration.
@@ -998,5 +1077,37 @@ mod tests {
         b.mark_end();
         assert!(b.delete_selection());
         assert_eq!(b.to_bytes(), b"ello\nworhld\nello\n!");
+    }
+
+    #[test]
+    fn pipe_whole_buffer_cat() {
+        let mut b = EditorBuffer::from_bytes(b"abc\ndef", None);
+        // No selection -> whole buffer
+        b.pipe_selection("cat").expect("cat should succeed");
+        assert_eq!(b.to_bytes(), b"abc\ndef");
+    }
+
+    #[test]
+    fn pipe_whole_buffer_tr_uppercase() {
+        let mut b = EditorBuffer::from_bytes(b"hello world\nRust y", None);
+        b.pipe_selection("tr a-z A-Z").expect("tr should succeed");
+        assert_eq!(b.to_bytes(), b"HELLO WORLD\nRUST Y");
+    }
+
+    #[test]
+    fn pipe_selection_tr_uppercase_partial() {
+        let mut b = EditorBuffer::from_bytes(b"hello world", None);
+        // Select "hello"
+        b.row = 0;
+        b.col = 0;
+        b.mark_start();
+        b.row = 0;
+        b.col = 5;
+        b.mark_end();
+        b.pipe_selection("tr a-z A-Z").expect("tr should succeed");
+        assert_eq!(b.to_bytes(), b"HELLO world");
+        // Ensure cursor moved to end of replaced region (start + output len)
+        assert_eq!(b.row, 0);
+        assert_eq!(b.col, 5);
     }
 }
