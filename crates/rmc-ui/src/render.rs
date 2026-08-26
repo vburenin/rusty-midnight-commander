@@ -371,6 +371,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         } => {
             draw_jobs_dialog(p, cols, rows, pal, app, *selected_index, *focus);
         }
+        rmc_core::app::UiMode::CompareDirsDialog { mode, focus } => {
+            draw_compare_dirs_dialog(p, cols, rows, pal, *mode, *focus);
+        }
         _ => {}
     }
     Ok(())
@@ -499,6 +502,113 @@ fn draw_overwrite_dialog(
     };
     draw_row(p, pal, x, y + h - 3, w, &row1, focus);
     draw_row(p, pal, x, y + h - 2, w, &row2, focus);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+fn draw_compare_dirs_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    mode: rmc_core::app::CompareDirsMode,
+    focus: rmc_core::app::CompareDirsFocus,
+) {
+    let title = "Compare directories";
+    let w = 50u16.min(cols.saturating_sub(2));
+    let h = 9u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Radios
+    let radios = [
+        (
+            "Quick (size OR mtime differ)",
+            rmc_core::app::CompareDirsMode::Quick,
+        ),
+        (
+            "Size only (size differ)",
+            rmc_core::app::CompareDirsMode::SizeOnly,
+        ),
+        (
+            "Thorough (byte contents)",
+            rmc_core::app::CompareDirsMode::Thorough,
+        ),
+    ];
+    for (i, (label, kind)) in radios.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        let sel = if *kind == mode { 'x' } else { ' ' };
+        let f = match i {
+            0 => rmc_core::app::CompareDirsFocus::RadioQuick,
+            1 => rmc_core::app::CompareDirsFocus::RadioSizeOnly,
+            _ => rmc_core::app::CompareDirsFocus::RadioThorough,
+        };
+        if focus == f {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("({sel}) {label}"));
+    }
+    // Buttons
+    let ok_txt = if matches!(focus, rmc_core::app::CompareDirsFocus::Ok) {
+        "< OK >"
+    } else {
+        "  OK  "
+    };
+    let cancel_txt = if matches!(focus, rmc_core::app::CompareDirsFocus::Cancel) {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
     p.hline(

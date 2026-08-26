@@ -14,6 +14,22 @@ type UiOkCb = Box<dyn FnOnce(&mut App) -> Result<()> + Send>;
 type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CompareDirsMode {
+    Quick,
+    SizeOnly,
+    Thorough,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CompareDirsFocus {
+    RadioQuick,
+    RadioSizeOnly,
+    RadioThorough,
+    Ok,
+    Cancel,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum JobsDialogFocus {
     /// The list of jobs has focus; Up/Down change selection.
     List,
@@ -215,6 +231,11 @@ pub enum UiMode {
         selected_index: usize,
         /// Which part of the dialog is focused (list or which button).
         focus: JobsDialogFocus,
+    },
+    /// GNU mc-style Compare directories dialog
+    CompareDirsDialog {
+        mode: CompareDirsMode,
+        focus: CompareDirsFocus,
     },
 }
 
@@ -623,6 +644,7 @@ impl App {
             UiMode::ShellInput => "Panels".to_string(),
             UiMode::HotlistDialog(_) => "Panels".to_string(),
             UiMode::JobsDialog { .. } => "Panels".to_string(),
+            UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
