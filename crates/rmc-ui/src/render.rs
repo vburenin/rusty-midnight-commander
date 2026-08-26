@@ -1367,7 +1367,27 @@ fn draw_panel(
     let status_y = y + h - 2;
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(x + 1, status_y);
-    if let Some(cur) = panel.current_entry() {
+    // If quick search is active and this is the active panel, draw mini prompt instead
+    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
+        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+    if is_active_panel {
+        if let Some(qs) = &app.quick_search {
+            let mut prompt = String::from(" Search: ");
+            prompt.push_str(&qs.pattern);
+            let s = truncate(&prompt, (w - 2) as usize);
+            p.text(&s);
+            if s.len() < (w - 2) as usize {
+                p.text(&" ".repeat((w - 2) as usize - s.len()));
+            }
+        } else if let Some(cur) = panel.current_entry() {
+            let s = format_mini_status(cur);
+            let s = truncate(&s, (w - 2) as usize);
+            p.text(&s);
+        } else {
+            let s = " ".repeat((w - 2) as usize);
+            p.text(&s);
+        }
+    } else if let Some(cur) = panel.current_entry() {
         let s = format_mini_status(cur);
         let s = truncate(&s, (w - 2) as usize);
         p.text(&s);
