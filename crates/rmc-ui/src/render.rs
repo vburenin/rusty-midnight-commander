@@ -1202,8 +1202,8 @@ fn draw_copy_move_dialog(
         ("Stable symlinks", stable_symlinks),
     ];
     for (i, (label, on)) in checks.iter().enumerate() {
-        let cy = y + 7 + i as u16;
-        p.goto(x + 4, cy);
+        let row_y = y + 7 + i as u16;
+        p.goto(x + 4, row_y);
         let focused = matches!(
             (i, focus),
             (0, F::Checkbox1)

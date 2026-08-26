@@ -121,6 +121,7 @@ impl TerminalApp {
                     KeyCode::Char(c) if key.modifiers.is_empty() => {
                         value.push(c);
                     }
+                    KeyCode::Char(_) => {}
                     _ => {}
                 }
                 return Ok(());
@@ -245,7 +246,6 @@ impl TerminalApp {
                         if key.modifiers.is_empty() {
                             match state.focus {
                                 FF::StartDir => {
-                                    // Append if printable
                                     if !c.is_control() {
                                         state.start_dir_edit.push(c);
                                     }
@@ -256,17 +256,16 @@ impl TerminalApp {
                                     }
                                 },
                                 FF::Content => {
-                                    if c == '\n' { /* ignore */
+                                    if c == '\n' {
+                                        // ignore
                                     } else if let Some(ref mut s) = state.params.content_substring {
                                         s.push(c);
                                     } else {
                                         state.params.content_substring = Some(c.to_string());
                                     }
                                 }
-                                FF::CaseSensitive => {
-                                    if c == ' ' {
-                                        state.params.case_sensitive = !state.params.case_sensitive;
-                                    }
+                                FF::CaseSensitive if c == ' ' => {
+                                    state.params.case_sensitive = !state.params.case_sensitive;
                                 }
                                 _ => {}
                             }
@@ -375,6 +374,7 @@ impl TerminalApp {
                     KeyCode::Char(c) if !*focus_ok && key.modifiers.is_empty() => {
                         value.push(c);
                     }
+                    KeyCode::Char(_) => {}
                     _ => {}
                 }
                 return Ok(());
