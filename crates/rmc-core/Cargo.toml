@@ -20,6 +20,7 @@ crossterm.workspace = true
 rmc-edit = { path = "../rmc-edit" }
 rmc-diff = { path = "../rmc-diff" }
 walkdir.workspace = true
+portable-pty = "0.8"
 
 [dev-dependencies]
 tempfile = "3.10"
