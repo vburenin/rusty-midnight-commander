@@ -1651,6 +1651,7 @@ impl TerminalApp {
                         "SFTP link",
                         "Sort order...",
                         "Tree",
+                        "Filter",
                     ],
                     &[
                         "View",
