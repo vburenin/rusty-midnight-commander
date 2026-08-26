@@ -373,6 +373,32 @@ impl TerminalApp {
                     KeyCode::F(7) => {
                         *search_input = Some(String::new());
                     }
+                    // GNU mcedit: Ctrl-R start/stop macro recording (toggle)
+                    KeyCode::Char('r')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        if buf.start_macro_record() {
+                            *status_msg = Some("Macro recording".into());
+                        } else {
+                            let n = buf.stop_macro_record();
+                            *status_msg = Some(match n {
+                                Some(cnt) => format!("Macro recorded ({cnt} events)"),
+                                None => "Macro recording stopped".into(),
+                            });
+                        }
+                    }
+                    // GNU mcedit: Ctrl-A execute last macro
+                    KeyCode::Char('a')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        if !buf.replay_macro() {
+                            *status_msg = Some("No macro available".into());
+                        }
+                    }
                     // Shift-F7 (F19) or 'n': next match with wrap
                     KeyCode::F(19) | KeyCode::Char('n') => {
                         let _ = buf.search_next_opts(true);
