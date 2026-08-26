@@ -1,0 +1,10 @@
+[package]
+name = "rmc-edit"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+description = "Stub for future in-process editor API"
+
+[dependencies]
+anyhow.workspace = true

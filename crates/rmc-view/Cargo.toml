@@ -1,0 +1,14 @@
+[package]
+name = "rmc-view"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+description = "In-app viewer/pager for RMC (F3)"
+
+[dependencies]
+anyhow.workspace = true
+rmc-core = { path = "../rmc-core" }
+rmc-fs = { path = "../rmc-fs" }
+unicode-width.workspace = true
+time.workspace = true
