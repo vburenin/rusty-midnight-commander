@@ -16,6 +16,8 @@ pub struct Subshell {
     pub output_lines: Vec<String>,
     /// Whether the subshell/output full-screen view is currently shown (C-o toggle).
     pub show_output_screen: bool,
+    /// Scroll offset for output screen: 0 = show newest (bottom). Increases to scroll up.
+    pub output_scroll: usize,
     /// Maximum number of lines to retain in `output_lines`.
     max_output_lines: usize,
 }
@@ -34,6 +36,7 @@ impl Subshell {
             history_index: None,
             output_lines: Vec::new(),
             show_output_screen: false,
+            output_scroll: 0,
             max_output_lines: 10_000,
         }
     }
@@ -160,6 +163,10 @@ impl Subshell {
     /// Toggle the output full-screen flag.
     pub fn toggle_output_screen(&mut self) {
         self.show_output_screen = !self.show_output_screen;
+        if self.show_output_screen {
+            // Reset scroll to bottom when opening.
+            self.output_scroll = 0;
+        }
     }
 
     /// Set whether the output full-screen is shown.
@@ -172,6 +179,33 @@ impl Subshell {
         let len = self.output_lines.len();
         let start = len.saturating_sub(max_rows);
         self.output_lines[start..].iter()
+    }
+
+    /// Returns a window of lines honoring `output_scroll`, sized to `max_rows`.
+    pub fn window(&self, max_rows: usize) -> &[String] {
+        let len = self.output_lines.len();
+        if len == 0 || max_rows == 0 {
+            return &[];
+        }
+        // Compute bottom-aligned window, then apply scroll up by output_scroll lines.
+        let base_start = len.saturating_sub(max_rows);
+        // Maximum scroll we can apply before window goes past top
+        let max_scroll = base_start;
+        let applied = self.output_scroll.min(max_scroll);
+        let start = base_start.saturating_sub(applied);
+        let end = len;
+        let slice = &self.output_lines[start..end];
+        // If slice longer than max_rows (can happen when start is 0 and len > max_rows), take last max_rows.
+        let take_start = slice.len().saturating_sub(max_rows);
+        &slice[take_start..]
+    }
+
+    pub fn scroll_page_up(&mut self, rows: usize) {
+        self.output_scroll = self.output_scroll.saturating_add(rows);
+    }
+
+    pub fn scroll_page_down(&mut self, rows: usize) {
+        self.output_scroll = self.output_scroll.saturating_sub(rows);
     }
 }
 
