@@ -10,6 +10,9 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::Action;
 use rmc_core::app::{App, UiMode};
+use rmc_core::find::{
+    search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
+};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -40,6 +43,31 @@ impl TerminalApp {
                 right.ensure_visible(content_rows);
             }
             // Draw at least at 30 FPS-equivalent idle to react to resize
+            // Also check for background find results to update UI even without keypresses
+            if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                if state.running {
+                    if let Some(rx) = &state.results_rx {
+                        loop {
+                            match rx.try_recv() {
+                                Ok(p) => {
+                                    state.results.paths.push(p);
+                                    if state.selected_index >= state.results.paths.len() {
+                                        state.selected_index =
+                                            state.results.paths.len().saturating_sub(1);
+                                    }
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    state.running = false;
+                                    state.cancel = None;
+                                    state.results_rx = None;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if last_draw.elapsed() > Duration::from_millis(33) {
                 renderer.draw(app)?;
                 last_draw = Instant::now();
@@ -93,6 +121,7 @@ impl TerminalApp {
                     KeyCode::Char(c) if key.modifiers.is_empty() => {
                         value.push(c);
                     }
+                    KeyCode::Char(_) => {}
                     _ => {}
                 }
                 return Ok(());
@@ -109,6 +138,215 @@ impl TerminalApp {
                         app.ui_mode = UiMode::Normal;
                         cb(app)?;
                         app.reload_panels()?;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::FindDialog(state) => {
+                // Update from background search if completed
+                if state.running {
+                    if let Some(rx) = &state.results_rx {
+                        loop {
+                            match rx.try_recv() {
+                                Ok(p) => state.results.paths.push(p),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    state.running = false;
+                                    state.cancel = None;
+                                    state.results_rx = None;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                match key.code {
+                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Tab => {
+                        state.focus = match state.focus {
+                            FF::StartDir => FF::NamePattern,
+                            FF::NamePattern => FF::Content,
+                            FF::Content => FF::CaseSensitive,
+                            FF::CaseSensitive => FF::ButtonStart,
+                            FF::ButtonStart => FF::ButtonStop,
+                            FF::ButtonStop => FF::ButtonChdir,
+                            FF::ButtonChdir => FF::ButtonAgain,
+                            FF::ButtonAgain => FF::ButtonPanelize,
+                            FF::ButtonPanelize => FF::ButtonQuit,
+                            FF::ButtonQuit => FF::StartDir,
+                        };
+                    }
+                    KeyCode::Up => {
+                        if state.selected_index > 0 {
+                            state.selected_index -= 1;
+                        }
+                        // ensure visible
+                        let (_c, r) = crossterm::terminal::size()?;
+                        let h = r.saturating_sub(4).clamp(16, 22);
+                        let list_rows = (h - 12) as usize;
+                        if state.selected_index < state.scroll_top {
+                            state.scroll_top = state.selected_index;
+                        } else if state.selected_index >= state.scroll_top + list_rows {
+                            state.scroll_top = state
+                                .selected_index
+                                .saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Down => {
+                        if state.selected_index + 1 < state.results.paths.len() {
+                            state.selected_index += 1;
+                        }
+                        let (_c, r) = crossterm::terminal::size()?;
+                        let h = r.saturating_sub(4).clamp(16, 22);
+                        let list_rows = (h - 12) as usize;
+                        if state.selected_index < state.scroll_top {
+                            state.scroll_top = state.selected_index;
+                        } else if state.selected_index >= state.scroll_top + list_rows {
+                            state.scroll_top = state
+                                .selected_index
+                                .saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Home => {
+                        state.selected_index = 0;
+                        state.scroll_top = 0;
+                    }
+                    KeyCode::End => {
+                        if !state.results.paths.is_empty() {
+                            state.selected_index = state.results.paths.len() - 1;
+                            let (_c, r) = crossterm::terminal::size()?;
+                            let h = r.saturating_sub(4).clamp(16, 22);
+                            let list_rows = (h - 12) as usize;
+                            state.scroll_top = state
+                                .selected_index
+                                .saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Backspace => match state.focus {
+                        FF::StartDir => {
+                            state.start_dir_edit.pop();
+                        }
+                        FF::NamePattern => match &mut state.params.name_pattern {
+                            rmc_core::find::NamePattern::Glob(s) => {
+                                s.pop();
+                            }
+                        },
+                        FF::Content => {
+                            if let Some(s) = &mut state.params.content_substring {
+                                s.pop();
+                                if s.is_empty() {
+                                    state.params.content_substring = None;
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(c) => {
+                        if key.modifiers.is_empty() {
+                            match state.focus {
+                                FF::StartDir => {
+                                    if !c.is_control() {
+                                        state.start_dir_edit.push(c);
+                                    }
+                                }
+                                FF::NamePattern => match &mut state.params.name_pattern {
+                                    rmc_core::find::NamePattern::Glob(s) => {
+                                        s.push(c);
+                                    }
+                                },
+                                FF::Content => {
+                                    if c == '\n' {
+                                        // ignore
+                                    } else if let Some(ref mut s) = state.params.content_substring {
+                                        s.push(c);
+                                    } else {
+                                        state.params.content_substring = Some(c.to_string());
+                                    }
+                                }
+                                FF::CaseSensitive if c == ' ' => {
+                                    state.params.case_sensitive = !state.params.case_sensitive;
+                                }
+                                _ => {}
+                            }
+                        } else if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                            && c == 'c'
+                        {
+                            // Allow Ctrl-C to stop search when focused anywhere
+                            if let Some(ch) = &state.cancel {
+                                ch.cancel();
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        match state.focus {
+                            FF::ButtonStart | FF::ButtonAgain => {
+                                if !state.running {
+                                    // Prepare params (apply Start at edit)
+                                    let start_str = state.start_dir_edit.trim().to_string();
+                                    let start_dir = if start_str.is_empty() {
+                                        active_cwd.clone()
+                                    } else {
+                                        std::path::PathBuf::from(start_str)
+                                    };
+                                    state.params.start_dir = start_dir;
+                                    // Reset results and selection
+                                    state.results.paths.clear();
+                                    state.selected_index = 0;
+                                    state.scroll_top = 0;
+                                    // Kick off background search (streaming)
+                                    let params = state.params.clone();
+                                    let cancel = CancelHandle::new();
+                                    let flag = cancel.flag();
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    state.cancel = Some(cancel);
+                                    state.results_rx = Some(rx);
+                                    state.running = true;
+                                    std::thread::spawn(move || {
+                                        search_files_streaming(&params, &flag, |p| {
+                                            let _ = tx.send(p);
+                                        });
+                                        // dropping tx signals completion
+                                    });
+                                }
+                            }
+                            FF::ButtonStop => {
+                                if let Some(ch) = &state.cancel {
+                                    ch.cancel();
+                                }
+                            }
+                            FF::ButtonChdir => {
+                                if let Some(p) =
+                                    state.results.paths.get(state.selected_index).cloned()
+                                {
+                                    if let Ok(md) = app.vfs.stat(&p) {
+                                        let dest = if md.is_dir {
+                                            p
+                                        } else {
+                                            p.parent()
+                                                .map(|x| x.to_path_buf())
+                                                .unwrap_or(active_cwd.clone())
+                                        };
+                                        let _ = app.change_dir(&dest);
+                                        app.ui_mode = UiMode::Normal;
+                                    }
+                                }
+                            }
+                            FF::ButtonPanelize => {
+                                if !state.running && !state.results.paths.is_empty() {
+                                    let paths = state.results.paths.clone();
+                                    let base = state.params.start_dir.clone();
+                                    app.panelize_paths(&paths, Some(&base))?;
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                            }
+                            FF::ButtonQuit => {
+                                app.ui_mode = UiMode::Normal;
+                            }
+                            _ => {}
+                        }
                     }
                     _ => {}
                 }
@@ -136,6 +374,7 @@ impl TerminalApp {
                     KeyCode::Char(c) if !*focus_ok && key.modifiers.is_empty() => {
                         value.push(c);
                     }
+                    KeyCode::Char(_) => {}
                     _ => {}
                 }
                 return Ok(());
@@ -314,6 +553,10 @@ impl TerminalApp {
                                     KeyEvent::new(KeyCode::F(8), key.modifiers),
                                     page_rows,
                                 );
+                            }
+                            "Find file" => {
+                                let start = app.active_panel().cwd.clone();
+                                app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
                             }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;

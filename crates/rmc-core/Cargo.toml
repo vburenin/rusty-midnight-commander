@@ -18,7 +18,7 @@ time.workspace = true
 rmc-fs = { path = "../rmc-fs" }
 crossterm.workspace = true
 rmc-edit = { path = "../rmc-edit" }
+walkdir.workspace = true
 
 [dev-dependencies]
 tempfile = "3.10"
-walkdir.workspace = true

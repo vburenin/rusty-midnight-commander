@@ -1,3 +1,4 @@
+use crate::find::draw_find_dialog;
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use anyhow::Result;
@@ -151,27 +152,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
-        rmc_core::app::UiMode::Editor {
-            buf,
-            show_menu,
-            status_msg,
-            search_input,
-            save_as_input,
-            confirm_exit,
-            ..
-        } => {
-            draw_editor(
-                p,
-                cols,
-                rows,
-                pal,
-                buf,
-                *show_menu,
-                status_msg.as_deref(),
-                search_input.as_deref(),
-                save_as_input.as_deref(),
-                confirm_exit.as_ref(),
-            );
+        rmc_core::app::UiMode::FindDialog(state) => {
+            draw_find_dialog(p, cols, rows, pal, state);
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
@@ -1220,8 +1202,8 @@ fn draw_copy_move_dialog(
         ("Stable symlinks", stable_symlinks),
     ];
     for (i, (label, on)) in checks.iter().enumerate() {
-        let cy = y + 7 + i as u16;
-        p.goto(x + 4, cy);
+        let row_y = y + 7 + i as u16;
+        p.goto(x + 4, row_y);
         let focused = matches!(
             (i, focus),
             (0, F::Checkbox1)

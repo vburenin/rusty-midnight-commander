@@ -42,6 +42,16 @@ pub struct PanelState {
     pub sort_by: SortBy,
     pub sort_dir: SortDir,
     pub selection: Selection,
+    // When panelized, entries show a virtual list; pressing `..` or leaving mode restores saved state.
+    pub panelized: Option<PanelizeSaved>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PanelizeSaved {
+    pub cwd: PathBuf,
+    pub entries: Vec<FileEntry>,
+    pub cursor: usize,
+    pub scroll_top: usize,
 }
 
 impl PanelState {
@@ -55,6 +65,7 @@ impl PanelState {
             sort_by: SortBy::Name,
             sort_dir: SortDir::Asc,
             selection: Selection::default(),
+            panelized: None,
         }
     }
 
@@ -133,6 +144,34 @@ impl PanelState {
             self.scroll_top = self.cursor;
         } else if self.cursor >= self.scroll_top + content_rows {
             self.scroll_top = self.cursor.saturating_sub(content_rows.saturating_sub(1));
+        }
+    }
+
+    pub fn is_panelized(&self) -> bool {
+        self.panelized.is_some()
+    }
+
+    pub fn set_panelized_entries(&mut self, cwd_for_caption: PathBuf, entries: Vec<FileEntry>) {
+        // Save current state
+        self.panelized = Some(PanelizeSaved {
+            cwd: self.cwd.clone(),
+            entries: std::mem::take(&mut self.entries),
+            cursor: self.cursor,
+            scroll_top: self.scroll_top,
+        });
+        // In panelized mode, keep the original cwd for caption to hint origin
+        self.cwd = cwd_for_caption;
+        self.cursor = 0;
+        self.scroll_top = 0;
+        self.set_entries(entries);
+    }
+
+    pub fn unpanelize(&mut self) {
+        if let Some(saved) = self.panelized.take() {
+            self.cwd = saved.cwd;
+            self.entries = saved.entries;
+            self.cursor = saved.cursor;
+            self.scroll_top = saved.scroll_top;
         }
     }
 }
