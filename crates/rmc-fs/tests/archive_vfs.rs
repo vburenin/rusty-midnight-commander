@@ -28,7 +28,7 @@ fn build_targz(path: &Path, src_root: &Path) {
     builder.finish().unwrap();
 }
 
-fn build_zip(path: &Path, src_root: &Path) {
+fn build_zip(path: &Path, _src_root: &Path) {
     let f = File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(f);
     let options = zip::write::FileOptions::default();

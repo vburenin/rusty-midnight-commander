@@ -28,9 +28,7 @@ pub fn parse_archive_path(path: &Path) -> Option<ArchivePath> {
             break;
         }
     }
-    let Some(idx) = anchor_index else {
-        return None;
-    };
+    let idx = anchor_index?;
     // Build the archive filesystem path (strip trailing '#')
     let mut archive = PathBuf::new();
     for c in &comps[..=idx] {

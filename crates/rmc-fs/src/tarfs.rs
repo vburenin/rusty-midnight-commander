@@ -35,8 +35,8 @@ pub fn list_dir(archive_path: &Path, kind: ArchiveKind, inner: &Path, vfs_root: 
     let mut items: HashMap<String, DirEntry> = HashMap::new();
     for entry in ar.entries()? {
         let entry = entry?;
-        let path = entry.path()?.to_path_buf();
-        let path = norm(&path);
+        let path = entry.path()?;
+        let path = norm(path);
         // Filter by inner prefix
         if !path.starts_with(&inner_norm) {
             continue;
@@ -137,7 +137,7 @@ pub fn read_file(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> F
     let in_norm = norm(inner_full);
     for entry in ar.entries()? {
         let mut entry = entry?;
-        let path = norm(&entry.path()?.to_path_buf());
+        let path = norm(entry.path()?);
         if path == in_norm {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
@@ -170,7 +170,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
     let mut is_dir_marker = false;
     for entry in ar.entries()? {
         let entry = entry?;
-        let path = norm(&entry.path()?.to_path_buf());
+        let path = norm(entry.path()?);
         if path == in_norm {
             let h = entry.header();
             let is_dir = h.entry_type() == EntryType::Directory;
@@ -222,7 +222,7 @@ pub fn copy_out(archive_path: &Path, kind: ArchiveKind, src_inner: &Path, dst: &
     let mut extracted_any = false;
     for entry in ar.entries()? {
         let mut entry = entry?;
-        let p = norm(&entry.path()?.to_path_buf());
+        let p = norm(entry.path()?);
         if p == src_norm {
             copied_exact = true;
             // exact file
