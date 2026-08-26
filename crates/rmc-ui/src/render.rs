@@ -762,7 +762,8 @@ fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette) {
     // Simple stub dropdown under "File"
     let x = 0u16;
     let y = 1u16;
-    let items = ["Save", "Save as", "Quit"];
+    // Include a placeholder for Command->Pipe to reflect available action
+    let items = ["Pipe", "Save", "Save as", "Quit"];
     let w = (items.iter().map(|s| s.len()).max().unwrap_or(4) + 4) as u16;
     let h = items.len() as u16 + 2;
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
