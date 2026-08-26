@@ -488,6 +488,7 @@ impl App {
             UiMode::Viewer { .. } => "Viewer".to_string(),
             UiMode::Diff(_) => "Diff".to_string(),
             UiMode::UserMenu { .. } => "User Menu".to_string(),
+            UiMode::SortDialog { .. } => "Panels".to_string(),
             UiMode::Editor { .. } => "Editor".to_string(),
             UiMode::FindDialog(_) => "Find File".to_string(),
             UiMode::CopyDialog { title, .. } => {
@@ -504,6 +505,7 @@ impl App {
             UiMode::MenuFocused => "Menus".to_string(),
             UiMode::Help { state, .. } => state.topic.clone(),
             UiMode::ShellInput => "Panels".to_string(),
+            UiMode::HotlistDialog(_) => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {

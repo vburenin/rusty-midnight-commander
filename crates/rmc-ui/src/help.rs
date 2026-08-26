@@ -1,3 +1,4 @@
+// Help index loader and simple hypertext node model (Apache-2.0 original content).
 use anyhow::{anyhow, Result};
 use rmc_core::app::HelpState;
 use std::collections::HashMap;
