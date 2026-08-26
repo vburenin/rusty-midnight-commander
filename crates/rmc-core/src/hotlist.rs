@@ -173,8 +173,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let file = dir.path().join("hotlist");
         let mut h = Hotlist::default();
-        h.add_or_replace("Home".into(), PathBuf::from("/home/test")).unwrap();
-        h.add_or_replace("Etc".into(), PathBuf::from("/etc")).unwrap();
+        h.add_or_replace("Home".into(), PathBuf::from("/home/test"))
+            .unwrap();
+        h.add_or_replace("Etc".into(), PathBuf::from("/etc"))
+            .unwrap();
         h.save_to_file(&file).unwrap();
         let loaded = Hotlist::load_from_file(&file).unwrap();
         assert_eq!(loaded.entries.len(), 2);
@@ -184,4 +186,3 @@ mod tests {
         assert_eq!(loaded.entries[1].path, PathBuf::from("/etc"));
     }
 }
-

@@ -253,8 +253,9 @@ impl TerminalApp {
                                         app.hotlist.save_to_default_path()?;
                                     }
                                     // Reopen dialog with updated entries
-                                    let st =
-                                        rmc_core::hotlist::HotlistDialogState::new(app.hotlist.entries.clone());
+                                    let st = rmc_core::hotlist::HotlistDialogState::new(
+                                        app.hotlist.entries.clone(),
+                                    );
                                     app.ui_mode = UiMode::HotlistDialog(st);
                                     Ok(())
                                 }),
@@ -1444,8 +1445,7 @@ impl TerminalApp {
                             .to_string(),
                         on_submit: Box::new(move |app, label| {
                             if !label.trim().is_empty() {
-                                app.hotlist
-                                    .add_or_replace(label.trim().to_string(), cwd)?;
+                                app.hotlist.add_or_replace(label.trim().to_string(), cwd)?;
                                 app.hotlist.save_to_default_path()?;
                             }
                             Ok(())
