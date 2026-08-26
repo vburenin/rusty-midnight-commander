@@ -87,6 +87,14 @@ impl ViewData {
     pub fn from_path(path: PathBuf) -> Self {
         Self { path, _tmp: None }
     }
+    /// Open a view for `path`, auto-applying a known external filter for supported
+    /// filename extensions (e.g. .gz, .bz2, .xz, .zst). Falls back to the raw file.
+    pub fn open_view(path: &Path) -> Result<Self> {
+        if let Some(filter) = guess_filter_for_path(path) {
+            return ViewData::from_filter(path, &filter);
+        }
+        Ok(ViewData::from_path(path.to_path_buf()))
+    }
     /// Apply an external filter once and keep its stdout in a temporary file.
     /// The returned handle owns the temp file while in scope.
     pub fn from_filter(src: &Path, filter: &ExternalFilter) -> Result<Self> {
@@ -140,6 +148,42 @@ pub fn apply_external_filter_to_temp(
         bail!("filter {:?} exited with {}", filter.program, status);
     }
     Ok(tmp)
+}
+
+/// Best-effort guess of an external filter based on filename extension.
+/// Conservative by design — only maps to standard decoder names:
+/// - .gz  -> gzip -dc
+/// - .bz2 -> bzip2 -dc
+/// - .xz  -> xz -dc
+/// - .zst -> zstd -dc
+pub fn guess_filter_for_path(path: &Path) -> Option<ExternalFilter> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())?;
+    match ext.as_str() {
+        "gz" => Some(
+            ExternalFilter::new("gzip")
+                .with_args(["-dc"])
+                .with_input(FilterInput::ArgPath),
+        ),
+        "bz2" => Some(
+            ExternalFilter::new("bzip2")
+                .with_args(["-dc"])
+                .with_input(FilterInput::ArgPath),
+        ),
+        "xz" => Some(
+            ExternalFilter::new("xz")
+                .with_args(["-dc"])
+                .with_input(FilterInput::ArgPath),
+        ),
+        "zst" => Some(
+            ExternalFilter::new("zstd")
+                .with_args(["-dc"])
+                .with_input(FilterInput::ArgPath),
+        ),
+        _ => None,
+    }
 }
 
 pub fn file_len(path: &Path) -> Result<u64> {
@@ -657,6 +701,7 @@ fn rfind_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::process::{Command, Stdio};
     use tempfile::NamedTempFile;
 
     #[test]
@@ -781,5 +826,63 @@ mod tests {
         .unwrap();
         let joined = r.lines.join("\n");
         assert!(joined.contains("ABC DEF"));
+    }
+
+    #[test]
+    fn auto_filter_gzip_by_extension() {
+        // Skip test when gzip is not available on PATH
+        let gzip_ok = Command::new("gzip")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if gzip_ok.is_err() {
+            eprintln!("skipping: gzip not installed");
+            return;
+        }
+
+        // Create original text file
+        let mut src = NamedTempFile::new().unwrap();
+        writeln!(src, "hello").unwrap();
+        writeln!(src, "world").unwrap();
+        let src_path = src.path().to_path_buf();
+
+        // Compress to a .gz file using `gzip -c`
+        let gz = tempfile::Builder::new()
+            .prefix("rmc-view-test-")
+            .suffix(".gz")
+            .tempfile()
+            .unwrap();
+        let gz_path = gz.path().to_path_buf();
+        let out = gz.reopen().unwrap();
+        let status = Command::new("gzip")
+            .arg("-c")
+            .arg(&src_path)
+            .stdout(Stdio::from(out))
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        if !status.success() {
+            eprintln!("skipping: gzip -c failed");
+            return;
+        }
+
+        // Open view — should auto-apply gzip -dc based on .gz extension
+        let view = ViewData::open_view(&gz_path).unwrap();
+        let r = render_window(
+            view.path(),
+            ViewOptions {
+                hex: false,
+                wrap: false,
+                show_cr: false,
+            },
+            0,
+            80,
+            10,
+        )
+        .unwrap();
+        let joined = r.lines.join("\n");
+        assert!(joined.contains("hello"));
+        assert!(joined.contains("world"));
     }
 }
