@@ -580,7 +580,7 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["Find file", "Compare dirs"],
+                    &["Find file", "Compare files", "Compare dirs"],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete"],
                 ];
@@ -646,6 +646,90 @@ impl TerminalApp {
                                 let start = app.active_panel().cwd.clone();
                                 app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
                             }
+                            "Compare files" => {
+                                // Implement Compare files (mcdiff-like)
+                                if let Some(a_ent) = app.active_panel().current_entry().cloned() {
+                                    if a_ent.is_dir {
+                                        app.ui_mode = UiMode::DialogConfirm {
+                                            title: "Compare files".into(),
+                                            message: "Select a file (not a directory) to compare."
+                                                .into(),
+                                            on_ok: Box::new(|_| Ok(())),
+                                        };
+                                    } else {
+                                        let other_entries =
+                                            app.inactive_panel_mut().entries.clone();
+                                        let mut b_path = None;
+                                        for e in other_entries.iter() {
+                                            if e.name == a_ent.name && !e.is_dir {
+                                                b_path = Some(e.path.clone());
+                                                break;
+                                            }
+                                        }
+                                        if b_path.is_none() {
+                                            if let Some(b_ent) =
+                                                app.inactive_panel_mut().current_entry().cloned()
+                                            {
+                                                if !b_ent.is_dir {
+                                                    b_path = Some(b_ent.path);
+                                                }
+                                            }
+                                        }
+                                        if let Some(b) = b_path {
+                                            // Load file contents
+                                            let mut ltxt = String::new();
+                                            let mut rtxt = String::new();
+                                            {
+                                                let mut r = app
+                                                    .vfs
+                                                    .read_file(&a_ent.path)
+                                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                use std::io::Read;
+                                                let _ = r.read_to_string(&mut ltxt);
+                                            }
+                                            {
+                                                let mut r = app
+                                                    .vfs
+                                                    .read_file(&b)
+                                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                use std::io::Read;
+                                                let _ = r.read_to_string(&mut rtxt);
+                                            }
+                                            let left_lines = rmc_diff::split_lines(&ltxt);
+                                            let right_lines = rmc_diff::split_lines(&rtxt);
+                                            let dr = rmc_diff::compute_diff(&ltxt, &rtxt);
+                                            let state = rmc_core::app::DiffState {
+                                                left_path: a_ent.path.clone(),
+                                                right_path: b.clone(),
+                                                left_lines,
+                                                right_lines,
+                                                hunks: dr.hunks,
+                                                current_hunk: 0,
+                                                left_modified: false,
+                                                right_modified: false,
+                                                show_line_numbers: false,
+                                                show_hunk_status: true,
+                                                search: None,
+                                                search_prompt: None,
+                                                left_scroll: 0,
+                                                right_scroll: 0,
+                                                panel_ratio: 0.5,
+                                                tab_width: 4,
+                                                merge_target_right: true,
+                                            };
+                                            app.ui_mode = UiMode::Diff(state);
+                                        } else {
+                                            app.ui_mode = UiMode::DialogConfirm {
+                                                title: "Compare files".into(),
+                                                message:
+                                                    "Could not determine the other file to compare."
+                                                        .into(),
+                                                on_ok: Box::new(|_| Ok(())),
+                                            };
+                                        }
+                                    }
+                                }
+                            }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;
                             }
@@ -655,6 +739,219 @@ impl TerminalApp {
                         }
                     }
                     _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::Diff(state) => {
+                // Handle inline search prompt
+                if let Some(prompt) = &mut state.search_prompt {
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.search_prompt = None;
+                        }
+                        KeyCode::Enter => {
+                            let q = prompt.clone();
+                            state.search = if q.is_empty() { None } else { Some(q) };
+                            state.search_prompt = None;
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            prompt.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Enter | KeyCode::Char('n') | KeyCode::Char(' ') => {
+                        if !state.hunks.is_empty() {
+                            state.current_hunk =
+                                (state.current_hunk + 1).min(state.hunks.len().saturating_sub(1));
+                            Self::ensure_hunk_visible(state);
+                        }
+                    }
+                    KeyCode::Backspace | KeyCode::Char('p') => {
+                        if !state.hunks.is_empty() {
+                            state.current_hunk = state.current_hunk.saturating_sub(1);
+                            Self::ensure_hunk_visible(state);
+                        }
+                    }
+                    KeyCode::Char('g') => {
+                        let on_submit = Box::new(|app: &mut App, val: String| -> anyhow::Result<()> {
+                            if let UiMode::Diff(s) = &mut app.ui_mode {
+                                if let Ok(n) = val.trim().parse::<usize>() {
+                                    let line = n.saturating_sub(1);
+                                    s.left_scroll = line;
+                                    s.right_scroll = line;
+                                }
+                            }
+                            Ok(())
+                        });
+                        app.ui_mode = UiMode::PromptInput {
+                            title: "Goto line".into(),
+                            value: String::new(),
+                            on_submit,
+                        };
+                    }
+                    KeyCode::Char('f') => state.panel_ratio = 0.8,
+                    KeyCode::Char('=') => state.panel_ratio = 0.5,
+                    KeyCode::Char('>') => state.panel_ratio = (state.panel_ratio + 0.05).min(0.8),
+                    KeyCode::Char('<') => state.panel_ratio = (state.panel_ratio - 0.05).max(0.2),
+                    KeyCode::Char('l') => state.show_line_numbers = !state.show_line_numbers,
+                    KeyCode::Char('s') => state.show_hunk_status = !state.show_hunk_status,
+                    KeyCode::Char('2') => state.tab_width = 2,
+                    KeyCode::Char('3') => state.tab_width = 3,
+                    KeyCode::Char('4') => state.tab_width = 4,
+                    KeyCode::Char('8') => state.tab_width = 8,
+                    KeyCode::Char('/') | KeyCode::F(7) => state.search_prompt = Some(String::new()),
+                    KeyCode::F(2) => {
+                        // Save modified files
+                        if state.left_modified {
+                            let mut w = app
+                                .vfs
+                                .write_file(&state.left_path)
+                                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                            use std::io::Write;
+                            let s = rmc_diff::join_lines(&state.left_lines);
+                            let _ = w.write_all(s.as_bytes());
+                            state.left_modified = false;
+                        }
+                        if state.right_modified {
+                            let mut w = app
+                                .vfs
+                                .write_file(&state.right_path)
+                                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                            use std::io::Write;
+                            let s = rmc_diff::join_lines(&state.right_lines);
+                            let _ = w.write_all(s.as_bytes());
+                            state.right_modified = false;
+                        }
+                        // Recompute diff
+                        let la = rmc_diff::join_lines(&state.left_lines);
+                        let ra = rmc_diff::join_lines(&state.right_lines);
+                        state.hunks = rmc_diff::compute_diff(&la, &ra).hunks;
+                        state.current_hunk =
+                            state.current_hunk.min(state.hunks.len().saturating_sub(1));
+                        Self::ensure_hunk_visible(state);
+                    }
+                    KeyCode::F(4) => {
+                        // Open left file in internal editor
+                        if let Ok(mut r) = app.vfs.read_file(&state.left_path) {
+                            let mut buf = Vec::new();
+                            use std::io::Read;
+                            let _ = r.read_to_end(&mut buf);
+                            let eb = rmc_edit::EditorBuffer::from_bytes(
+                                &buf,
+                                Some(state.left_path.clone()),
+                            );
+                            app.ui_mode = UiMode::Editor {
+                                buf: eb,
+                                show_menu: false,
+                                status_msg: None,
+                                search_input: None,
+                                save_as_input: None,
+                                pending_quit: false,
+                                confirm_exit: None,
+                            };
+                        }
+                    }
+                    KeyCode::F(5) => {
+                        if !state.hunks.is_empty() {
+                            let idx = state.current_hunk.min(state.hunks.len() - 1);
+                            if state.merge_target_right {
+                                let _ = rmc_diff::apply_hunk_merge(
+                                    &mut state.left_lines,
+                                    &mut state.right_lines,
+                                    &state.hunks,
+                                    idx,
+                                    rmc_diff::MergeTarget::Right,
+                                );
+                                state.right_modified = true;
+                            } else {
+                                let _ = rmc_diff::apply_hunk_merge(
+                                    &mut state.left_lines,
+                                    &mut state.right_lines,
+                                    &state.hunks,
+                                    idx,
+                                    rmc_diff::MergeTarget::Left,
+                                );
+                                state.left_modified = true;
+                            }
+                            // Re-diff
+                            let la = rmc_diff::join_lines(&state.left_lines);
+                            let ra = rmc_diff::join_lines(&state.right_lines);
+                            state.hunks = rmc_diff::compute_diff(&la, &ra).hunks;
+                            state.current_hunk =
+                                state.current_hunk.min(state.hunks.len().saturating_sub(1));
+                            Self::ensure_hunk_visible(state);
+                        }
+                    }
+                    KeyCode::Up => {
+                        state.left_scroll = state.left_scroll.saturating_sub(1);
+                        state.right_scroll = state.right_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        state.left_scroll = state.left_scroll.saturating_add(1);
+                        state.right_scroll = state.right_scroll.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        let step = page_rows.max(1);
+                        state.left_scroll = state.left_scroll.saturating_sub(step);
+                        state.right_scroll = state.right_scroll.saturating_sub(step);
+                    }
+                    KeyCode::PageDown => {
+                        let step = page_rows.max(1);
+                        state.left_scroll = state.left_scroll.saturating_add(step);
+                        state.right_scroll = state.right_scroll.saturating_add(step);
+                    }
+                    _ => {
+                        // Ctrl-U: swap sides; Ctrl-R: refresh
+                        if let KeyCode::Char('u') = key.code {
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                std::mem::swap(&mut state.left_path, &mut state.right_path);
+                                std::mem::swap(&mut state.left_lines, &mut state.right_lines);
+                                state.merge_target_right = !state.merge_target_right;
+                                let la = rmc_diff::join_lines(&state.left_lines);
+                                let ra = rmc_diff::join_lines(&state.right_lines);
+                                state.hunks = rmc_diff::compute_diff(&la, &ra).hunks;
+                                state.current_hunk = 0;
+                                state.left_scroll = 0;
+                                state.right_scroll = 0;
+                            }
+                        } else if let KeyCode::Char('r') = key.code {
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                let mut ltxt = String::new();
+                                let mut rtxt = String::new();
+                                if let Ok(mut r) = app.vfs.read_file(&state.left_path) {
+                                    use std::io::Read;
+                                    let _ = r.read_to_string(&mut ltxt);
+                                }
+                                if let Ok(mut r) = app.vfs.read_file(&state.right_path) {
+                                    use std::io::Read;
+                                    let _ = r.read_to_string(&mut rtxt);
+                                }
+                                state.left_lines = rmc_diff::split_lines(&ltxt);
+                                state.right_lines = rmc_diff::split_lines(&rtxt);
+                                state.hunks = rmc_diff::compute_diff(&ltxt, &rtxt).hunks;
+                                state.current_hunk = 0;
+                                state.left_modified = false;
+                                state.right_modified = false;
+                                state.left_scroll = 0;
+                                state.right_scroll = 0;
+                            }
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -947,5 +1244,18 @@ impl TerminalApp {
             }
         }
         Ok(())
+    }
+}
+
+impl TerminalApp {
+    fn ensure_hunk_visible(state: &mut rmc_core::app::DiffState) {
+        if state.hunks.is_empty() {
+            return;
+        }
+        let cur = state.current_hunk.min(state.hunks.len().saturating_sub(1));
+        if let Some(h) = state.hunks.get(cur) {
+            state.left_scroll = h.left_start.saturating_sub(1);
+            state.right_scroll = h.right_start.saturating_sub(1);
+        }
     }
 }
