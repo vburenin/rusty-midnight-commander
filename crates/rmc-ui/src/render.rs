@@ -589,10 +589,41 @@ fn draw_editor(
         p.text(&" ".repeat(cols as usize));
     }
     let view = buf.render_window(cols as usize, content_h as usize);
+    // Compute selection spans in viewport coordinates
+    let spans = buf.selection_spans_for_view(
+        buf.view_row,
+        buf.view_col,
+        content_h as usize,
+        cols as usize,
+    );
     for (i, line) in view.iter().enumerate() {
         p.goto(0, content_top + i as u16);
         let t = truncate(line, cols as usize);
-        p.text(&t);
+        if let Some((sa, sb)) = spans.get(i).and_then(|x| *x) {
+            // Draw left normal [0..sa)
+            if sa > 0 {
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                let left: String = t.chars().take(sa).collect();
+                p.text(&left);
+            }
+            // Draw selection [sa..sb)
+            if sb > sa {
+                p.set_fg_bg(pal.marked_fg, pal.marked_bg);
+                let sel: String = t.chars().skip(sa).take(sb - sa).collect();
+                p.text(&sel);
+            }
+            // Draw right [sb..width)
+            if sb < t.chars().count() {
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                let right: String = t.chars().skip(sb).collect();
+                p.text(&right);
+            }
+            // Restore default
+            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+        } else {
+            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            p.text(&t);
+        }
     }
     // Cursor indicator (soft, we don't move real terminal cursor here)
     // Draw a small inverse cell where the logical cursor is on screen
