@@ -1009,15 +1009,7 @@ fn draw_viewer(
     }
     // Goto prompt overlay (MC-style input dialog)
     if let Some(current) = goto_prompt {
-        draw_dialog_box(
-            p,
-            cols,
-            rows,
-            pal,
-            "Goto (:@offset, :line)",
-            current,
-            &["< OK >", "Cancel"],
-        );
+        draw_dialog_box(p, cols, rows, pal, "Goto", current, &["< OK >", "Cancel"]);
     }
     Ok(())
 }

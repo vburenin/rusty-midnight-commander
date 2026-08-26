@@ -141,8 +141,15 @@ fn render_text(
         let slice = &buf[i..line_end];
         // Lossy decode to avoid panics on binary
         let mut line = String::from_utf8_lossy(slice).to_string();
-        // If requested, show CR as ^M at EOL when present
-        if show_cr && line_end < buf.len() && buf[line_end] == b'\r' {
+        // If requested, show CR as ^M at EOL when present.
+        // Detect robustly around CRLF or lone CR:
+        // - If current newline marker is '\r' (line_end points at CR) -> show ^M
+        // - Or if current newline is '\n' but the last byte before it is '\r' -> show ^M
+        let cr_at_newline = (line_end < buf.len() && buf[line_end] == b'\r')
+            || (line_end > 0
+                && line_end <= buf.len()
+                && buf[line_end.saturating_sub(1)] == b'\r');
+        if show_cr && cr_at_newline {
             line.push('^');
             line.push('M');
         }
