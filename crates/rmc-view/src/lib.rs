@@ -7,7 +7,8 @@ use anyhow::{bail, Result};
 use std::cmp::min;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use unicode_width::UnicodeWidthChar;
 
 /// Maximum bytes to read per window. Large enough for wrapping but bounded.
@@ -31,6 +32,114 @@ pub struct RenderResult {
     /// Byte offset of the first visible byte of the last rendered line's next line
     /// (i.e., where to continue when paging down by screenful).
     pub next_screen_offset: u64,
+}
+
+/// How to feed the source file into an external filter command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterInput {
+    /// Provide file contents on filter's stdin
+    Stdin,
+    /// Append the file path as the last argument
+    ArgPath,
+}
+
+/// External filter specification: program, args, and how to pass input.
+#[derive(Debug, Clone)]
+pub struct ExternalFilter {
+    pub program: String,
+    pub args: Vec<String>,
+    pub input: FilterInput,
+}
+
+impl ExternalFilter {
+    pub fn new<P: Into<String>>(program: P) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+            input: FilterInput::Stdin,
+        }
+    }
+    pub fn with_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+    pub fn with_input(mut self, input: FilterInput) -> Self {
+        self.input = input;
+        self
+    }
+}
+
+/// A view target that may reference the original path or a filtered temporary file.
+/// Keep this struct alive while rendering/navigating filtered content.
+#[derive(Debug)]
+pub struct ViewData {
+    path: PathBuf,
+    /// When Some, holds the temporary file so it is removed on drop.
+    _tmp: Option<tempfile::NamedTempFile>,
+}
+
+impl ViewData {
+    /// Use a real file path directly (no filtering).
+    pub fn from_path(path: PathBuf) -> Self {
+        Self { path, _tmp: None }
+    }
+    /// Apply an external filter once and keep its stdout in a temporary file.
+    /// The returned handle owns the temp file while in scope.
+    pub fn from_filter(src: &Path, filter: &ExternalFilter) -> Result<Self> {
+        let tmp = apply_external_filter_to_temp(src, filter)?;
+        let path = tmp.path().to_path_buf();
+        Ok(Self {
+            path,
+            _tmp: Some(tmp),
+        })
+    }
+    /// Path to render/search against.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Run the external filter command against `src` and capture its stdout into a temporary file.
+/// Returns an owned temporary file that will be cleaned up on drop.
+pub fn apply_external_filter_to_temp(
+    src: &Path,
+    filter: &ExternalFilter,
+) -> Result<tempfile::NamedTempFile> {
+    // Prepare the temporary destination first
+    let tmp = tempfile::Builder::new()
+        .prefix("rmc-view-filter-")
+        .suffix(".txt")
+        .tempfile()?;
+    // Build command
+    let mut cmd = Command::new(&filter.program);
+    for a in &filter.args {
+        cmd.arg(a);
+    }
+    // Choose how to feed input
+    match filter.input {
+        FilterInput::Stdin => {
+            let infile = File::open(src)?;
+            cmd.stdin(Stdio::from(infile));
+        }
+        FilterInput::ArgPath => {
+            cmd.arg(src);
+            cmd.stdin(Stdio::null());
+        }
+    }
+    // Direct stdout to the temp file
+    let out_file = tmp.reopen()?; // separate handle for the child
+    cmd.stdout(Stdio::from(out_file));
+    // Silence stderr to avoid polluting test output/terminal
+    cmd.stderr(Stdio::null());
+    let status = cmd.status()?;
+    if !status.success() {
+        bail!("filter {:?} exited with {}", filter.program, status);
+    }
+    Ok(tmp)
 }
 
 pub fn file_len(path: &Path) -> Result<u64> {
@@ -618,5 +727,59 @@ mod tests {
         assert!(second > first);
         let back = search_backward(&path, second, "abc").unwrap().unwrap();
         assert_eq!(back, first);
+    }
+
+    #[test]
+    fn external_filter_cat_argpath() {
+        // Prepare a simple file
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "hello").unwrap();
+        writeln!(f, "world").unwrap();
+        let src_path = f.path().to_path_buf();
+        // Build filter: cat <path>
+        let filter = ExternalFilter::new("cat").with_input(FilterInput::ArgPath);
+        let view = ViewData::from_filter(&src_path, &filter).unwrap();
+        // Render first page of the filtered output (should equal source)
+        let r = render_window(
+            view.path(),
+            ViewOptions {
+                hex: false,
+                wrap: false,
+                show_cr: false,
+            },
+            0,
+            80,
+            5,
+        )
+        .unwrap();
+        assert!(r.lines.iter().any(|l| l.contains("hello")));
+        assert!(r.lines.iter().any(|l| l.contains("world")));
+    }
+
+    #[test]
+    fn external_filter_tr_stdin() {
+        // Prepare a simple file with lowercase letters
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "abc def").unwrap();
+        let src_path = f.path().to_path_buf();
+        // tr a-z A-Z < src
+        let filter = ExternalFilter::new("tr")
+            .with_args(["a-z", "A-Z"])
+            .with_input(FilterInput::Stdin);
+        let view = ViewData::from_filter(&src_path, &filter).unwrap();
+        let r = render_window(
+            view.path(),
+            ViewOptions {
+                hex: false,
+                wrap: false,
+                show_cr: false,
+            },
+            0,
+            80,
+            5,
+        )
+        .unwrap();
+        let joined = r.lines.join("\n");
+        assert!(joined.contains("ABC DEF"));
     }
 }
