@@ -1784,7 +1784,9 @@ impl TerminalApp {
                         "Mkdir",
                         "Delete",
                         "FTP link",
+                        "Shell link",
                         "SFTP link",
+                        "SMB link",
                         "Sort order...",
                         "Tree",
                         "Filter",
@@ -1816,7 +1818,9 @@ impl TerminalApp {
                         "Mkdir",
                         "Delete",
                         "FTP link",
+                        "Shell link",
                         "SFTP link",
+                        "SMB link",
                         "Sort order...",
                         "Tree",
                         "Filter",
@@ -1876,15 +1880,33 @@ impl TerminalApp {
                                     }),
                                 };
                             }
-                            "FTP link" | "SFTP link" => {
-                                let scheme = if item == "FTP link" { "ftp" } else { "sftp" };
-                                // Prompt user for host or URL; accept "user@host" or full URL.
-                                app.ui_mode = UiMode::InputDialog {
-                                    title: format!("{} link", scheme.to_uppercase()),
-                                    prompt: format!(
-                                        "Enter {} host/user or URL:",
-                                        scheme.to_uppercase()
+                            "FTP link" | "SFTP link" | "Shell link" | "SMB link" => {
+                                let (scheme, title, prompt) = match item {
+                                    "FTP link" => (
+                                        "ftp",
+                                        "FTP link".to_string(),
+                                        "Enter FTP host/user or URL:".to_string(),
                                     ),
+                                    "SFTP link" => (
+                                        "sftp",
+                                        "SFTP link".to_string(),
+                                        "Enter SFTP host/user or URL:".to_string(),
+                                    ),
+                                    "Shell link" => (
+                                        "fish",
+                                        "Shell link to machine".to_string(),
+                                        "Enter fish URL (e.g. fish://user@host/path):".to_string(),
+                                    ),
+                                    "SMB link" => (
+                                        "smb",
+                                        "SMB link to machine".to_string(),
+                                        "Enter smb URL (e.g. smb://host/share/path):".to_string(),
+                                    ),
+                                    _ => unreachable!(),
+                                };
+                                app.ui_mode = UiMode::InputDialog {
+                                    title,
+                                    prompt,
                                     value: String::new(),
                                     focus_ok: false,
                                     on_submit: Box::new(move |app, input| {
@@ -1894,10 +1916,11 @@ impl TerminalApp {
                                         }
                                         let url_str = if trimmed.starts_with("ftp://")
                                             || trimmed.starts_with("sftp://")
+                                            || trimmed.starts_with("fish://")
+                                            || trimmed.starts_with("smb://")
                                         {
                                             trimmed.to_string()
                                         } else {
-                                            // Build scheme://<input> (ensure one leading slash for empty path)
                                             format!("{scheme}://{trimmed}")
                                         };
                                         let path = std::path::PathBuf::from(url_str);
