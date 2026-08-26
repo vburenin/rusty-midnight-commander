@@ -146,9 +146,7 @@ fn render_text(
         // - If current newline marker is '\r' (line_end points at CR) -> show ^M
         // - Or if current newline is '\n' but the last byte before it is '\r' -> show ^M
         let cr_at_newline = (line_end < buf.len() && buf[line_end] == b'\r')
-            || (line_end > 0
-                && line_end <= buf.len()
-                && buf[line_end.saturating_sub(1)] == b'\r');
+            || (line_end > 0 && line_end <= buf.len() && buf[line_end.saturating_sub(1)] == b'\r');
         if show_cr && cr_at_newline {
             line.push('^');
             line.push('M');
