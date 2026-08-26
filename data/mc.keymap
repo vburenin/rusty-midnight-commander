@@ -58,3 +58,10 @@ Space  = ToggleSelect
 \\  = UnselectGroup
 *  = InvertSelection
 
+# Control-X chords (handled by UI prefix state)
+C-x c = Chmod
+C-x o = Chown
+C-x l = LinkHard
+C-x s = SymlinkAbs
+C-x v = SymlinkRel
+
