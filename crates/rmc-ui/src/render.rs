@@ -25,6 +25,8 @@ impl Renderer {
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
+        // Clear screen
+        painter.out.queue(Clear(ClearType::All))?;
         // Full-screen modes: short-circuit to avoid drawing panels underneath.
         if let rmc_core::app::UiMode::Editor {
             buf,
@@ -36,8 +38,6 @@ impl Renderer {
             ..
         } = &app.ui_mode
         {
-            // Clear and draw the editor only
-            painter.out.queue(Clear(ClearType::All))?;
             draw_editor(
                 &mut painter,
                 cols,
@@ -53,14 +53,14 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
-        // Clear to panel background (blue)
-        painter.out.queue(Clear(ClearType::All))?;
-        painter.fill_line(
-            0,
-            cols,
-            self.palette.core_default_bg,
-            self.palette.core_default_fg,
-        );
+        // Full-screen viewer mode short-circuit: draw only viewer chrome/content/status/fbar
+        if let rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, .. } = &app.ui_mode {
+            draw_viewer(&mut painter, cols, rows, self.palette, path, *hex, *wrap, *offset)?;
+            painter.out.flush()?;
+            return Ok(());
+        }
+        // Otherwise draw the normal dual-pane UI
+        painter.fill_line(0, cols, self.palette.core_default_bg, self.palette.core_default_fg);
         // Menu bar
         draw_menu_bar(&mut painter, cols, self.palette);
         // Panels area layout:
@@ -100,7 +100,7 @@ impl Renderer {
         draw_hint(&mut painter, hint_row, cols, self.palette);
         draw_cmdline(&mut painter, cmd_row, cols, self.palette, app);
         draw_fbar(&mut painter, fbar_row, cols, self.palette);
-        // Overlays (dialogs/viewer)
+        // Overlays (dialogs)
         draw_overlays(&mut painter, app, cols, rows, self.palette)?;
         painter.out.flush()?;
         Ok(())
@@ -198,13 +198,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *focus,
             );
         }
-        rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, .. } => {
-            draw_viewer(p, cols, rows, pal, path, *hex, *wrap, *offset)?;
-        }
-        rmc_core::app::UiMode::Menu {
-            top_index,
-            selected_index,
-        } => {
+        rmc_core::app::UiMode::Menu { top_index, selected_index } => {
             draw_menu_dropdown(p, pal, *top_index, *selected_index);
         }
         _ => {}
@@ -629,7 +623,8 @@ fn draw_viewer(
     p.goto(tx, 0);
     p.text(&title);
     // Render content window using rmc-view (windowed)
-    let content_rows = rows.saturating_sub(2);
+    // Layout: full frame; content rows = rows - 3 (status + fbar)
+    let content_rows = rows.saturating_sub(3);
     let rr = rmc_view::render_window(
         path,
         rmc_view::ViewOptions { hex, wrap },
@@ -641,13 +636,13 @@ fn draw_viewer(
         p.goto(1, 1 + i as u16);
         let t = truncate(&line, (cols.saturating_sub(2)) as usize);
         p.text(&t);
-        if (1 + i as u16) >= rows.saturating_sub(1) {
+        if (1 + i as u16) >= rows.saturating_sub(2) {
             break;
         }
     }
-    // Footer/status
+    // Status line (MC-style: percent / offset / mode)
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-    p.goto(0, rows - 1);
+    p.goto(0, rows.saturating_sub(2));
     let mode = if hex {
         "[HEX]"
     } else if wrap {
@@ -655,9 +650,13 @@ fn draw_viewer(
     } else {
         "[TEXT]"
     };
-    let foot = format!(" {}  {}  / F7: search, n/N: next/prev, w: wrap, q: quit ", path.display(), mode);
-    let t = truncate(&foot, cols as usize);
-    p.text(&t);
+    let total = rmc_view::file_len(path).unwrap_or(0);
+    let pct = if total > 0 { ((rr.offset.saturating_mul(100)) / total) as u64 } else { 100 };
+    let status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
+    let st = truncate(&status, cols as usize);
+    p.text(&st);
+    // Viewer F-bar (white-on-black numbers, black-on-cyan labels)
+    draw_viewer_fbar(p, rows.saturating_sub(1), cols, pal);
     Ok(())
 }
 
@@ -864,6 +863,38 @@ fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.text(num);
         x += num.len() as u16;
         p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        p.text(lab);
+        x += lab.len() as u16;
+        if x < cols {
+            p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+            p.goto(x, y);
+            p.text(" ");
+            x += 1;
+        }
+        if x >= cols {
+            break;
+        }
+    }
+    if x < cols {
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
+}
+
+fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    let labels = [
+        "Help", "Save", "Quit", "Hex", "Goto", "Search", "Wrap", "Raw", "Menu", "Quit",
+    ];
+    let mut x = 0u16;
+    for (i, lab) in labels.iter().enumerate() {
+        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg); // white on black
+        p.goto(x, y);
+        p.text(num);
+        x += num.len() as u16;
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg); // black on cyan
         p.goto(x, y);
         p.text(lab);
         x += lab.len() as u16;

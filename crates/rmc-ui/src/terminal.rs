@@ -266,9 +266,17 @@ impl TerminalApp {
             }
             UiMode::Viewer { .. } => {
                 match key.code {
-                    KeyCode::Char('q') => app.handle_action(Action::ViewerQuit)?,
+                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => app.handle_action(Action::ViewerQuit)?,
                     KeyCode::Char('h') | KeyCode::Char('x') => app.handle_action(Action::ViewerToggleHex)?,
+                    KeyCode::F(4) => app.handle_action(Action::ViewerToggleHex)?,
                     KeyCode::Char('w') => {
+                        if let UiMode::Viewer { hex, wrap, .. } = &mut app.ui_mode {
+                            if !*hex {
+                                *wrap = !*wrap;
+                            }
+                        }
+                    }
+                    KeyCode::F(7) => {
                         if let UiMode::Viewer { hex, wrap, .. } = &mut app.ui_mode {
                             if !*hex {
                                 *wrap = !*wrap;
@@ -296,8 +304,8 @@ impl TerminalApp {
                     KeyCode::PageDown => {
                         if let UiMode::Viewer { path, hex, wrap, offset, .. } = &mut app.ui_mode {
                             let (cols, rows) = crossterm::terminal::size()?;
-                            // content area inside frame is rows-2, cols-2
-                            let content_rows = rows.saturating_sub(2);
+                            // content area inside frame is rows-3, cols-2
+                            let content_rows = rows.saturating_sub(3);
                             if *hex {
                                 let step = 16u64 * (content_rows as u64);
                                 *offset = offset.saturating_add(step);
@@ -309,7 +317,7 @@ impl TerminalApp {
                     KeyCode::PageUp => {
                         if let UiMode::Viewer { path, hex, wrap, offset, .. } = &mut app.ui_mode {
                             let (cols, rows) = crossterm::terminal::size()?;
-                            let content_rows = rows.saturating_sub(2);
+                            let content_rows = rows.saturating_sub(3);
                             if *hex {
                                 let step = 16u64 * (content_rows as u64);
                                 *offset = offset.saturating_sub(step);
@@ -326,7 +334,7 @@ impl TerminalApp {
                     KeyCode::End => {
                         if let UiMode::Viewer { path, hex, wrap, offset, .. } = &mut app.ui_mode {
                             let (cols, rows) = crossterm::terminal::size()?;
-                            let content_rows = rows.saturating_sub(2);
+                            let content_rows = rows.saturating_sub(3);
                             if *hex {
                                 let len = rmc_view::file_len(path)?;
                                 let page = 16u64 * (content_rows as u64);
@@ -336,7 +344,7 @@ impl TerminalApp {
                             }
                         }
                     }
-                    KeyCode::Char('/') | KeyCode::F(7) => {
+                    KeyCode::Char('/') | KeyCode::F(6) => {
                         // Prompt for search term
                         app.ui_mode = UiMode::PromptInput {
                             title: "Search".into(),
