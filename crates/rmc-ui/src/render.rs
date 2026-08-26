@@ -1,4 +1,5 @@
 use crate::find::draw_find_dialog;
+use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use anyhow::Result;
@@ -13,6 +14,7 @@ use time::OffsetDateTime;
 pub struct Renderer {
     palette: McPalette,
     out: Stdout,
+    help_index: Option<HelpIndex>,
 }
 
 impl Renderer {
@@ -20,6 +22,7 @@ impl Renderer {
         Self {
             palette,
             out: stdout(),
+            help_index: None,
         }
     }
 
@@ -163,6 +166,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
     match &app.ui_mode {
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
+        }
+        rmc_core::app::UiMode::Help { .. } => {
+            // full-screen; nothing overlays
         }
         rmc_core::app::UiMode::UserMenu {
             title,
@@ -1248,6 +1254,164 @@ fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
     }
 }
 
+fn draw_help(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    state: &rmc_core::app::HelpState,
+    index_opt: Option<&HelpIndex>,
+) {
+    // Background (dialogs palette: black on lightgray)
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for y in 0..rows {
+        p.goto(0, y);
+        p.text(&" ".repeat(cols as usize));
+    }
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(0, 0);
+    p.text("┌");
+    p.hline(
+        1,
+        0,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(cols - 1, 0);
+    p.text("┐");
+    p.vline(
+        0,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        cols - 1,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(0, rows - 1);
+    p.text("└");
+    p.hline(
+        1,
+        rows - 1,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(cols - 1, rows - 1);
+    p.text("┘");
+    // Title
+    let (title, items) = if let Some(index) = index_opt {
+        let topic = initial_topic_or_contents(index, state);
+        if let Some(node) = index.get(&topic) {
+            (format!(" Help: {} ", node.title), node.items.clone())
+        } else {
+            (format!(" Help: {} ", topic), Vec::new())
+        }
+    } else {
+        (" Help ".to_string(), Vec::new())
+    };
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let tx = (cols.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, 0);
+    p.text(&title);
+    // Content area layout (inside frame)
+    let content_top = 1u16;
+    let content_h = rows.saturating_sub(2);
+    // Build rendered lines from items, keeping link indices
+    let mut rendered: Vec<(String, Option<usize>)> = Vec::new();
+    let mut link_idx: usize = 0;
+    for it in items {
+        match it {
+            HelpItem::Text(t) => {
+                rendered.push((t, None));
+            }
+            HelpItem::Link { label, .. } => {
+                let line = format!("  • {}", label);
+                rendered.push((line, Some(link_idx)));
+                link_idx += 1;
+            }
+        }
+    }
+    // Clip by scroll and height
+    let start = state.scroll_top.min(rendered.len());
+    let end = (start + content_h as usize).min(rendered.len());
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for (i, (line, link_opt)) in rendered[start..end].iter().enumerate() {
+        p.goto(1, content_top + i as u16);
+        let t = truncate(line, cols.saturating_sub(2) as usize);
+        // Highlight selected link
+        if let Some(li) = link_opt {
+            if *li == state.cursor {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+                // Draw with focus colors
+                p.text(&t);
+                // Restore default for rest of rows
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+                continue;
+            }
+        }
+        p.text(&t);
+        // clear remainder of row
+        if t.len() < cols.saturating_sub(2) as usize {
+            let pad = " ".repeat(cols.saturating_sub(2) as usize - t.len());
+            p.text(&pad);
+        }
+    }
+    // Bottom F-bar (MC-style)
+    draw_help_fbar(p, rows.saturating_sub(1), cols, pal);
+}
+
+fn draw_help_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    let labels = [
+        "Help",  // F1
+        "Index", // F2
+        "Prev",  // F3
+        "Next",  // F4
+        "",      // F5
+        "",      // F6
+        "",      // F7
+        "",      // F8
+        "",      // F9
+        "Quit",  // F10
+    ];
+    let mut x = 0u16;
+    for (i, lab) in labels.iter().enumerate() {
+        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+        // number: white on black
+        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg);
+        p.goto(x, y);
+        p.text(num);
+        x += num.len() as u16;
+        // label: black on cyan; keep spacing even when empty
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        let text = if lab.is_empty() { "     " } else { *lab };
+        p.text(text);
+        x += text.len() as u16;
+        if x < cols {
+            p.goto(x, y);
+            p.text(" ");
+            x += 1;
+        } else {
+            break;
+        }
+    }
+    if x < cols {
+        p.goto(x, y);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
+}
 fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
     // MC-like order: Help, Save, Quit, Hex, Goto, (Raw), Search, Wrap, Menu, Quit
     let labels = [

@@ -1,0 +1,14 @@
+# Apache-2.0 original help text
+= Copy
+
+Copy (F5) opens a dialog with source mask and destination path.
+
+Controls:
+  - Type a destination path or accept the default (other panel)
+  - Space toggles options when a checkbox is focused
+  - Enter on OK begins the copy; Cancel aborts
+
+Links:
+* Dialogs -> Dialogs
+* Contents -> Contents
+

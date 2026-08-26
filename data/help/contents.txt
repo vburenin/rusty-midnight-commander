@@ -1,0 +1,30 @@
+# Apache-2.0 original help text for Rusty Midnight Commander
+# Format:
+#   = Title [| NodeName]
+#   normal lines are text
+#   * Label -> TargetNodeName  (link)
+#   Lines starting with # are comments
+#
+= Contents
+
+Welcome to the built‑in help. This viewer is keyboard driven.
+
+Navigation:
+  - Esc or F10: close help
+  - Enter or Right: follow the selected link
+  - Tab / Up / Down / Left: move between links
+  - Backspace or l: go back
+
+Topics:
+* Panels -> Panels
+* Viewer -> Viewer
+* Editor -> Editor
+* Diff Viewer -> Diff
+* User Menu -> User Menu
+* File operations and dialogs -> Dialogs
+* Copy -> Copy
+* Move -> Move
+* Mkdir -> Mkdir
+* Delete -> Delete
+* Find File -> Find File
+

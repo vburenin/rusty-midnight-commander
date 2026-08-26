@@ -1,0 +1,13 @@
+# Apache-2.0 original help text
+= Mkdir
+
+Mkdir (F7) creates a new directory in the active panel’s directory.
+
+Controls:
+  - Type a name; Tab moves focus to OK; Enter accepts
+  - Esc cancels
+
+Links:
+* Dialogs -> Dialogs
+* Contents -> Contents
+
