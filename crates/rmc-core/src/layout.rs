@@ -49,7 +49,10 @@ pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions
     // content_bottom is the row just above the nearest bottom chrome (gauge/hint/cmd/fbar).
     let content_bottom = {
         let mut first_bottom: Option<u16> = None;
-        for y in [gauge_row, hint_row, cmd_row, fbar_row].into_iter().flatten() {
+        for y in [gauge_row, hint_row, cmd_row, fbar_row]
+            .into_iter()
+            .flatten()
+        {
             first_bottom = Some(match first_bottom {
                 Some(cur) => cur.min(y),
                 None => y,

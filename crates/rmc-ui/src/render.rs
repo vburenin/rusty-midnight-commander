@@ -125,11 +125,11 @@ impl Renderer {
             self.palette.core_default_bg,
             self.palette.core_default_fg,
         );
-        // XTerm window title (OSC 0) from active CWD when enabled
+        // XTerm window title (OSC 0) from active CWD when enabled (write raw; do not move cursor)
         if app.layout.xterm_title {
             let title = format!("{}", app.active_panel().cwd.display());
             let osc = format!("\x1b]0;{title}\x07");
-            painter.text(&osc);
+            let _ = std::io::Write::write_all(&mut painter.out, osc.as_bytes());
         }
         // Menu bar
         if app.layout.menubar_visible {

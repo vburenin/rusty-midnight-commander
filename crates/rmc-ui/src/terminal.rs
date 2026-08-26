@@ -1879,6 +1879,82 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::LayoutDialog { draft, focus } => {
+                use LayoutFocus as F;
+                // Focus order: checkboxes then buttons
+                let order = [
+                    F::MenuBar,
+                    F::CommandPrompt,
+                    F::KeyBar,
+                    F::HintBar,
+                    F::XtermTitle,
+                    F::ShowFreeSpace,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        // Only toggle between buttons when the focus is on a button
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Char(' ') => match *focus {
+                        F::MenuBar => draft.menubar_visible = !draft.menubar_visible,
+                        F::CommandPrompt => draft.command_prompt = !draft.command_prompt,
+                        F::KeyBar => draft.keybar_visible = !draft.keybar_visible,
+                        F::HintBar => draft.hintbar_visible = !draft.hintbar_visible,
+                        F::XtermTitle => draft.xterm_title = !draft.xterm_title,
+                        F::ShowFreeSpace => draft.show_free_space = !draft.show_free_space,
+                        _ => {}
+                    },
+                    KeyCode::Enter => match *focus {
+                        F::MenuBar => draft.menubar_visible = !draft.menubar_visible,
+                        F::CommandPrompt => draft.command_prompt = !draft.command_prompt,
+                        F::KeyBar => draft.keybar_visible = !draft.keybar_visible,
+                        F::HintBar => draft.hintbar_visible = !draft.hintbar_visible,
+                        F::XtermTitle => draft.xterm_title = !draft.xterm_title,
+                        F::ShowFreeSpace => draft.show_free_space = !draft.show_free_space,
+                        F::Ok => {
+                            app.layout = *draft;
+                            app.ui_mode = UiMode::Normal;
+                        }
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    },
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::MkdirDialog { value, focus_ok } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
