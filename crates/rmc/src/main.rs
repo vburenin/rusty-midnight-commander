@@ -50,6 +50,8 @@ fn main() -> Result<()> {
             show_hunk_status: true,
             search: None,
             search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
             left_scroll: 0,
             right_scroll: 0,
             panel_ratio: 0.5,

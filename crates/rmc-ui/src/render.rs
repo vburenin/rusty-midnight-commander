@@ -962,6 +962,22 @@ fn draw_subshell_fullscreen(
         p.text(&t);
         y = y.saturating_add(1);
     }
+    // Goto prompt overlay if any
+    if let Some(current) = &state.goto_prompt {
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Goto line",
+            current,
+            &["< OK >", "Cancel"],
+        );
+    }
+    // Confirm-exit overlay if any
+    if let Some(c) = &state.confirm_exit {
+        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus);
+    }
     Ok(())
 }
 

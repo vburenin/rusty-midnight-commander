@@ -711,6 +711,8 @@ impl TerminalApp {
                                                 show_hunk_status: true,
                                                 search: None,
                                                 search_prompt: None,
+                                                goto_prompt: None,
+                                                confirm_exit: None,
                                                 left_scroll: 0,
                                                 right_scroll: 0,
                                                 panel_ratio: 0.5,
@@ -743,6 +745,65 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::Diff(state) => {
+                // Confirm-exit overlay
+                if let Some(confirm) = &mut state.confirm_exit {
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.confirm_exit = None;
+                        }
+                        KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                            use rmc_core::app::YncFocus as F;
+                            confirm.focus = match (key.code, confirm.focus) {
+                                (KeyCode::Left, F::No) => F::Yes,
+                                (KeyCode::Left, F::Cancel) => F::No,
+                                (KeyCode::Right, F::Yes) => F::No,
+                                (KeyCode::Right, F::No) => F::Cancel,
+                                (KeyCode::Right, F::Cancel) => F::Cancel,
+                                (_, f) => match f {
+                                    F::Yes => F::No,
+                                    F::No => F::Cancel,
+                                    F::Cancel => F::Yes,
+                                },
+                            };
+                        }
+                        KeyCode::Enter => {
+                            use rmc_core::app::YncFocus as F;
+                            match confirm.focus {
+                                F::Yes => {
+                                    // Save modified then exit
+                                    if state.left_modified {
+                                        let mut w = app
+                                            .vfs
+                                            .write_file(&state.left_path)
+                                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                        use std::io::Write;
+                                        let s = rmc_diff::join_lines(&state.left_lines);
+                                        let _ = w.write_all(s.as_bytes());
+                                    }
+                                    if state.right_modified {
+                                        let mut w = app
+                                            .vfs
+                                            .write_file(&state.right_path)
+                                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                        use std::io::Write;
+                                        let s = rmc_diff::join_lines(&state.right_lines);
+                                        let _ = w.write_all(s.as_bytes());
+                                    }
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                                F::No => {
+                                    // Discard changes and exit
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                                F::Cancel => {
+                                    state.confirm_exit = None;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 // Handle inline search prompt
                 if let Some(prompt) = &mut state.search_prompt {
                     match key.code {
@@ -753,6 +814,19 @@ impl TerminalApp {
                             let q = prompt.clone();
                             state.search = if q.is_empty() { None } else { Some(q) };
                             state.search_prompt = None;
+                            // Jump to first matching hunk from current
+                            if let Some(ref qq) = state.search {
+                                if let Some(idx) = Self::search_next_hunk_with(
+                                    &state.hunks,
+                                    &state.left_lines,
+                                    &state.right_lines,
+                                    state.current_hunk,
+                                    qq,
+                                ) {
+                                    state.current_hunk = idx;
+                                    Self::ensure_hunk_visible(state);
+                                }
+                            }
                         }
                         KeyCode::Backspace => {
                             prompt.pop();
@@ -764,40 +838,61 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // Handle goto prompt
+                if let Some(prompt) = &mut state.goto_prompt {
+                    match key.code {
+                        KeyCode::Esc => state.goto_prompt = None,
+                        KeyCode::Enter => {
+                            let val = prompt.clone();
+                            if let Ok(n) = val.trim().parse::<usize>() {
+                                let line = n.saturating_sub(1);
+                                state.left_scroll = line;
+                                state.right_scroll = line;
+                            }
+                            state.goto_prompt = None;
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => prompt.push(c),
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(10) => {
-                        app.ui_mode = UiMode::Normal;
+                        if state.left_modified || state.right_modified {
+                            state.confirm_exit = Some(rmc_core::app::YncDialog {
+                                title: "Save modified files?".into(),
+                                message: "You have unsaved merges. Save before quitting?".into(),
+                                focus: rmc_core::app::YncFocus::Yes,
+                            });
+                        } else {
+                            app.ui_mode = UiMode::Normal;
+                        }
                     }
-                    KeyCode::Enter | KeyCode::Char('n') | KeyCode::Char(' ') => {
+                    KeyCode::Enter | KeyCode::Char(' ') => {
                         if !state.hunks.is_empty() {
-                            state.current_hunk =
-                                (state.current_hunk + 1).min(state.hunks.len().saturating_sub(1));
+                            if let Some(next) =
+                                Self::next_diff_hunk_index(&state.hunks, state.current_hunk)
+                            {
+                                state.current_hunk = next;
+                            }
                             Self::ensure_hunk_visible(state);
                         }
                     }
                     KeyCode::Backspace | KeyCode::Char('p') => {
                         if !state.hunks.is_empty() {
-                            state.current_hunk = state.current_hunk.saturating_sub(1);
+                            if let Some(prev) =
+                                Self::prev_diff_hunk_index(&state.hunks, state.current_hunk)
+                            {
+                                state.current_hunk = prev;
+                            }
                             Self::ensure_hunk_visible(state);
                         }
                     }
                     KeyCode::Char('g') => {
-                        let on_submit =
-                            Box::new(|app: &mut App, val: String| -> anyhow::Result<()> {
-                                if let UiMode::Diff(s) = &mut app.ui_mode {
-                                    if let Ok(n) = val.trim().parse::<usize>() {
-                                        let line = n.saturating_sub(1);
-                                        s.left_scroll = line;
-                                        s.right_scroll = line;
-                                    }
-                                }
-                                Ok(())
-                            });
-                        app.ui_mode = UiMode::PromptInput {
-                            title: "Goto line".into(),
-                            value: String::new(),
-                            on_submit,
-                        };
+                        state.goto_prompt = Some(String::new());
                     }
                     KeyCode::Char('f') => state.panel_ratio = 0.8,
                     KeyCode::Char('=') => state.panel_ratio = 0.5,
@@ -810,6 +905,27 @@ impl TerminalApp {
                     KeyCode::Char('4') => state.tab_width = 4,
                     KeyCode::Char('8') => state.tab_width = 8,
                     KeyCode::Char('/') | KeyCode::F(7) => state.search_prompt = Some(String::new()),
+                    KeyCode::Char('n') | KeyCode::F(17) => {
+                        if let Some(ref qq) = state.search {
+                            if let Some(idx) = Self::search_next_hunk_with(
+                                &state.hunks,
+                                &state.left_lines,
+                                &state.right_lines,
+                                state.current_hunk,
+                                qq,
+                            ) {
+                                state.current_hunk = idx;
+                                Self::ensure_hunk_visible(state);
+                            }
+                        } else if !state.hunks.is_empty() {
+                            if let Some(next) =
+                                Self::next_diff_hunk_index(&state.hunks, state.current_hunk)
+                            {
+                                state.current_hunk = next;
+                                Self::ensure_hunk_visible(state);
+                            }
+                        }
+                    }
                     KeyCode::F(2) => {
                         // Save modified files
                         if state.left_modified {
@@ -841,25 +957,7 @@ impl TerminalApp {
                         Self::ensure_hunk_visible(state);
                     }
                     KeyCode::F(4) => {
-                        // Open left file in internal editor
-                        if let Ok(mut r) = app.vfs.read_file(&state.left_path) {
-                            let mut buf = Vec::new();
-                            use std::io::Read;
-                            let _ = r.read_to_end(&mut buf);
-                            let eb = rmc_edit::EditorBuffer::from_bytes(
-                                &buf,
-                                Some(state.left_path.clone()),
-                            );
-                            app.ui_mode = UiMode::Editor {
-                                buf: eb,
-                                show_menu: false,
-                                status_msg: None,
-                                search_input: None,
-                                save_as_input: None,
-                                pending_quit: false,
-                                confirm_exit: None,
-                            };
-                        }
+                        // Disabled for now to avoid losing diff session; leave PARITY unchecked
                     }
                     KeyCode::F(5) => {
                         if !state.hunks.is_empty() {
@@ -1258,5 +1356,81 @@ impl TerminalApp {
             state.left_scroll = h.left_start.saturating_sub(1);
             state.right_scroll = h.right_start.saturating_sub(1);
         }
+    }
+}
+
+impl TerminalApp {
+    fn is_non_equal(h: &rmc_diff::Hunk) -> bool {
+        !matches!(h.kind, rmc_diff::HunkKind::Equal)
+    }
+    fn next_diff_hunk_index(hunks: &[rmc_diff::Hunk], current: usize) -> Option<usize> {
+        let mut i = current.saturating_add(1);
+        while i < hunks.len() {
+            if Self::is_non_equal(&hunks[i]) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    }
+    fn prev_diff_hunk_index(hunks: &[rmc_diff::Hunk], current: usize) -> Option<usize> {
+        if current == 0 {
+            return None;
+        }
+        let mut i = current.saturating_sub(1);
+        loop {
+            if Self::is_non_equal(&hunks[i]) {
+                return Some(i);
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+        None
+    }
+    fn hunk_contains_query(h: &rmc_diff::Hunk, left: &[String], right: &[String], q: &str) -> bool {
+        let ql = q;
+        for li in h.left_start..h.left_start.saturating_add(h.left_len) {
+            if let Some(s) = left.get(li) {
+                if s.contains(ql) {
+                    return true;
+                }
+            }
+        }
+        for ri in h.right_start..h.right_start.saturating_add(h.right_len) {
+            if let Some(s) = right.get(ri) {
+                if s.contains(ql) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn search_next_hunk_with(
+        hunks: &[rmc_diff::Hunk],
+        left: &[String],
+        right: &[String],
+        current: usize,
+        q: &str,
+    ) -> Option<usize> {
+        let mut i = current.saturating_add(1);
+        while i < hunks.len() {
+            let h = &hunks[i];
+            if Self::is_non_equal(h) && Self::hunk_contains_query(h, left, right, q) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        // Wrap around
+        i = 0;
+        while i <= current && i < hunks.len() {
+            let h = &hunks[i];
+            if Self::is_non_equal(h) && Self::hunk_contains_query(h, left, right, q) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
     }
 }
