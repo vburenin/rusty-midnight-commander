@@ -288,12 +288,22 @@ fn draw_panel(
     // sides
     p.vline(x, y + 1, h.saturating_sub(2), '│', frame_fg, frame_bg);
     p.vline(x + w - 1, y + 1, h.saturating_sub(2), '│', frame_fg, frame_bg);
-    // caption path in top frame
+    // caption path in top frame (hide internal '#' anchor for archives)
     let path = if is_left { &app.left.cwd } else { &app.right.cwd };
-    let path_str = format!(" {} ", path.display());
-    let cap_x = x + ((w.saturating_sub(path_str.len() as u16)) / 2);
+    let path_str_display = {
+        if let Some(ap) = rmc_fs::pathutil::parse_archive_path(path) {
+            if ap.inner.as_os_str().is_empty() {
+                format!(" {}{} ", ap.archive.display(), "/")
+            } else {
+                format!(" {}/{} ", ap.archive.display(), ap.inner.display())
+            }
+        } else {
+            format!(" {} ", path.display())
+        }
+    };
+    let cap_x = x + ((w.saturating_sub(path_str_display.len() as u16)) / 2);
     p.goto(cap_x.max(x + 1), y);
-    p.text(&path_str);
+    p.text(&path_str_display);
 
     // Headers
     let header_fg = pal.header_fg;

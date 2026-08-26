@@ -144,11 +144,13 @@ From mcedit(1):
 ## 7) Virtual File System (VFS) — Status: Later
 
 From README and mc(1):
-- [ ] Local filesystem
-- [ ] Archives: tar, gz/zip variants, cpio, ar, rpm, lha, rar, zoo, deb (via extfs), etc.
+- [x] Local filesystem
+- [x] Archives (initial): tar, tar.gz/tgz, zip — browse; copy/extract out
+- [ ] Archives (others): cpio, ar, rpm, lha, rar, zoo, deb (via extfs), etc.
 - [ ] Remote: ftpfs (FTP), sftpfs (SFTP), fish (SSH-based)
 - [ ] extfs framework: helpers to add virtual filesystems; examples: deb, rpm, uzip/urar/ulha/uzoo, mailfs, patchfs, apt, etc.
-- [ ] Transparent enter-to-open and panel operations on VFS as if local (within VFS limits)
+- [x] Transparent enter-to-open for supported archives; “..” leaves the archive
+- [ ] Panel operations on other VFS backends as if local (within VFS limits)
 - [ ] Read-only vs read-write semantics per backend
 
 ---
