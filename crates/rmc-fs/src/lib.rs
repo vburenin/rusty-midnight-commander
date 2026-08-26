@@ -95,8 +95,14 @@ pub mod pathutil;
 pub mod rarfs;
 pub mod remote;
 pub mod sevenzfs;
+pub mod arfs;
+pub mod debfs;
+pub mod rpmfs;
 pub mod tarfs;
 pub mod zipfs;
+
+#[cfg(test)]
+mod tests_archives;
 
 pub mod local {
     use super::*;

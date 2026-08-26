@@ -37,6 +37,222 @@ fn norm<P: AsRef<Path>>(p: P) -> PathBuf {
     out
 }
 
+/// Helpers that operate on in-memory cpio bytes. Used by rpmfs to reuse cpio logic.
+pub fn list_dir_from_bytes(
+    data: &[u8],
+    inner: &Path,
+    vfs_root: &Path,
+    show_hidden: bool,
+) -> FsResult<Vec<DirEntry>> {
+    let inner_norm = norm(inner);
+    let mut seen_dirs: HashSet<String> = HashSet::new();
+    let mut items: HashMap<String, DirEntry> = HashMap::new();
+    for entry in cpio_reader::iter_files(data) {
+        let name = entry.name();
+        if name.is_empty() || name == "TRAILER!!!" {
+            continue;
+        }
+        let path = norm(Path::new(name));
+        if !path.starts_with(&inner_norm) {
+            continue;
+        }
+        let rel = path.strip_prefix(&inner_norm).unwrap_or(&path);
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let mut comps = rel.components();
+        if let Some(first) = comps.next() {
+            let first_name = first.as_os_str().to_string_lossy().to_string();
+            if !show_hidden && first_name.starts_with('.') {
+                continue;
+            }
+            let is_dir = comps.next().is_some();
+            if is_dir {
+                if seen_dirs.insert(first_name.clone()) {
+                    let p = vfs_root.join(&first_name);
+                    items.insert(
+                        first_name.clone(),
+                        DirEntry {
+                            name: first_name,
+                            path: p,
+                            meta: Metadata {
+                                is_dir: true,
+                                is_symlink: false,
+                                is_executable: false,
+                                size: 0,
+                                modified: UNIX_EPOCH,
+                                permissions: 0o755,
+                                owner: None,
+                                group: None,
+                            },
+                        },
+                    );
+                }
+            } else if !items.contains_key(&first_name) {
+                let p = vfs_root.join(&first_name);
+                let size = entry.file().len() as u64;
+                items.insert(
+                    first_name.clone(),
+                    DirEntry {
+                        name: first_name,
+                        path: p,
+                        meta: Metadata {
+                            is_dir: false,
+                            is_symlink: false,
+                            is_executable: false,
+                            size,
+                            modified: UNIX_EPOCH,
+                            permissions: 0o644,
+                            owner: None,
+                            group: None,
+                        },
+                    },
+                );
+            }
+        }
+    }
+    let mut out: Vec<DirEntry> = Vec::new();
+    if let Some(p) = vfs_root.parent() {
+        out.push(DirEntry {
+            name: "..".to_string(),
+            path: p.to_path_buf(),
+            meta: Metadata {
+                is_dir: true,
+                is_symlink: false,
+                is_executable: false,
+                size: 0,
+                modified: UNIX_EPOCH,
+                permissions: 0,
+                owner: None,
+                group: None,
+            },
+        });
+    }
+    let mut vals: Vec<DirEntry> = items.into_values().collect();
+    vals.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    out.extend(vals);
+    Ok(out)
+}
+
+pub fn read_file_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Box<dyn Read + Send>> {
+    let in_norm = norm(inner_full);
+    for entry in cpio_reader::iter_files(data) {
+        let name = entry.name();
+        if name.is_empty() || name == "TRAILER!!!" {
+            continue;
+        }
+        if norm(Path::new(name)) == in_norm {
+            return Ok(Box::new(Cursor::new(entry.file().to_vec())));
+        }
+    }
+    Err(FsError::Message(format!(
+        "File not found in archive: {}",
+        inner_full.display()
+    )))
+}
+
+pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
+    if inner_full.as_os_str().is_empty() {
+        return Ok(Metadata {
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 0,
+            modified: UNIX_EPOCH,
+            permissions: 0o755,
+            owner: None,
+            group: None,
+        });
+    }
+    let in_norm = norm(inner_full);
+    let mut dir_marker = false;
+    for entry in cpio_reader::iter_files(data) {
+        let name = entry.name();
+        if name.is_empty() || name == "TRAILER!!!" {
+            continue;
+        }
+        let p = norm(Path::new(name));
+        if p == in_norm {
+            return Ok(Metadata {
+                is_dir: false,
+                is_symlink: false,
+                is_executable: false,
+                size: entry.file().len() as u64,
+                modified: UNIX_EPOCH,
+                permissions: 0o644,
+                owner: None,
+                group: None,
+            });
+        }
+        if p.starts_with(&in_norm) {
+            dir_marker = true;
+        }
+    }
+    if dir_marker {
+        Ok(Metadata {
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 0,
+            modified: UNIX_EPOCH,
+            permissions: 0o755,
+            owner: None,
+            group: None,
+        })
+    } else {
+        Err(FsError::Message(format!(
+            "Path not found in archive: {}",
+            inner_full.display()
+        )))
+    }
+}
+
+pub fn copy_out_from_bytes(data: &[u8], src_inner: &Path, dst: &Path) -> FsResult<()> {
+    let src_norm = norm(src_inner);
+    let mut copied_exact = false;
+    let mut extracted_any = false;
+    for entry in cpio_reader::iter_files(data) {
+        let name = entry.name();
+        if name.is_empty() || name == "TRAILER!!!" {
+            continue;
+        }
+        let p = norm(Path::new(name));
+        if p == src_norm {
+            copied_exact = true;
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out = std::fs::File::create(dst)?;
+            std::io::copy(&mut Cursor::new(entry.file()), &mut out)?;
+        } else if p.starts_with(&src_norm) {
+            extracted_any = true;
+            let rel = p.strip_prefix(&src_norm).unwrap();
+            let target = dst.join(rel);
+            if target.as_os_str().is_empty() || rel.as_os_str().is_empty() {
+                std::fs::create_dir_all(&target)?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut out = std::fs::File::create(&target)?;
+                std::io::copy(&mut Cursor::new(entry.file()), &mut out)?;
+            }
+        }
+    }
+    if copied_exact || extracted_any {
+        Ok(())
+    } else {
+        Err(FsError::Message(format!(
+            "Source not found in archive: {}",
+            src_inner.display()
+        )))
+    }
+}
+
 pub fn list_dir(
     archive_path: &Path,
     kind: ArchiveKind,

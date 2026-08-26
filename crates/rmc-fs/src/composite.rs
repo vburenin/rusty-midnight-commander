@@ -83,6 +83,15 @@ impl Vfs for CompositeFs {
                 ArchiveKind::Cpio | ArchiveKind::CpioGz => {
                     crate::cpiofs::list_dir(&ap.archive, ap.kind, &ap.inner, vfs_root, show_hidden)
                 }
+                ArchiveKind::Ar => {
+                    crate::arfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Deb => {
+                    crate::debfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Rpm => {
+                    crate::rpmfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
                 ArchiveKind::SevenZ => {
                     crate::sevenzfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
                 }
@@ -167,6 +176,9 @@ impl Vfs for CompositeFs {
                 ArchiveKind::Cpio | ArchiveKind::CpioGz => {
                     crate::cpiofs::copy_out(&ap.archive, ap.kind, &ap.inner, d)
                 }
+                ArchiveKind::Ar => crate::arfs::copy_out(&ap.archive, &ap.inner, d),
+                ArchiveKind::Deb => crate::debfs::copy_out(&ap.archive, &ap.inner, d),
+                ArchiveKind::Rpm => crate::rpmfs::copy_out(&ap.archive, &ap.inner, d),
                 ArchiveKind::SevenZ => crate::sevenzfs::copy_out(&ap.archive, &ap.inner, d),
                 ArchiveKind::Iso => crate::isofs::copy_out(&ap.archive, &ap.inner, d),
                 ArchiveKind::Rar => crate::rarfs::copy_out(&ap.archive, &ap.inner, d),
@@ -220,6 +232,9 @@ impl Vfs for CompositeFs {
                 ArchiveKind::Cpio | ArchiveKind::CpioGz => {
                     crate::cpiofs::read_file(&ap.archive, ap.kind, &ap.inner)
                 }
+                ArchiveKind::Ar => crate::arfs::read_file(&ap.archive, &ap.inner),
+                ArchiveKind::Deb => crate::debfs::read_file(&ap.archive, &ap.inner),
+                ArchiveKind::Rpm => crate::rpmfs::read_file(&ap.archive, &ap.inner),
                 ArchiveKind::SevenZ => crate::sevenzfs::read_file(&ap.archive, &ap.inner),
                 ArchiveKind::Iso => crate::isofs::read_file(&ap.archive, &ap.inner),
                 ArchiveKind::Rar => crate::rarfs::read_file(&ap.archive, &ap.inner),
@@ -261,6 +276,9 @@ impl Vfs for CompositeFs {
                 ArchiveKind::Cpio | ArchiveKind::CpioGz => {
                     crate::cpiofs::stat(&ap.archive, ap.kind, &ap.inner)
                 }
+                ArchiveKind::Ar => crate::arfs::stat(&ap.archive, &ap.inner),
+                ArchiveKind::Deb => crate::debfs::stat(&ap.archive, &ap.inner),
+                ArchiveKind::Rpm => crate::rpmfs::stat(&ap.archive, &ap.inner),
                 ArchiveKind::SevenZ => crate::sevenzfs::stat(&ap.archive, &ap.inner),
                 ArchiveKind::Iso => crate::isofs::stat(&ap.archive, &ap.inner),
                 ArchiveKind::Rar => crate::rarfs::stat(&ap.archive, &ap.inner),

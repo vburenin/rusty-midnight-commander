@@ -10,6 +10,9 @@ pub enum ArchiveKind {
     SevenZ,
     Iso,
     Rar,
+    Ar,
+    Deb,
+    Rpm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +118,12 @@ pub fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
         Some(ArchiveKind::Iso)
     } else if name.ends_with(".rar") {
         Some(ArchiveKind::Rar)
+    } else if name.ends_with(".ar") {
+        Some(ArchiveKind::Ar)
+    } else if name.ends_with(".deb") {
+        Some(ArchiveKind::Deb)
+    } else if name.ends_with(".rpm") {
+        Some(ArchiveKind::Rpm)
     } else {
         None
     }
