@@ -119,6 +119,118 @@ pub(crate) fn viewer_apply_filter_to_current(cmd: &str) -> anyhow::Result<()> {
     }
 }
 
+pub(crate) fn open_compare_dirs_dialog(app: &mut App) {
+    app.ui_mode = UiMode::CompareDirsDialog {
+        mode: rmc_core::app::CompareDirsMode::Quick,
+        focus: rmc_core::app::CompareDirsFocus::RadioQuick,
+    };
+}
+
+fn files_differ_contents(
+    app: &App,
+    p1: &std::path::Path,
+    p2: &std::path::Path,
+) -> anyhow::Result<bool> {
+    use std::io::Read;
+    let mut r1 = match app.vfs.read_file(p1) {
+        Ok(r) => r,
+        Err(_) => return Ok(true), // unreadable -> treat as different
+    };
+    let mut r2 = match app.vfs.read_file(p2) {
+        Ok(r) => r,
+        Err(_) => return Ok(true),
+    };
+    let mut b1 = [0u8; 64 * 1024];
+    let mut b2 = [0u8; 64 * 1024];
+    loop {
+        let n1 = r1.read(&mut b1).unwrap_or(0);
+        let n2 = r2.read(&mut b2).unwrap_or(0);
+        if n1 != n2 {
+            return Ok(true);
+        }
+        if n1 == 0 {
+            break;
+        }
+        if b1[..n1] != b2[..n1] {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn run_compare_dirs(app: &mut App, mode: rmc_core::app::CompareDirsMode) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    // Clear selections on both panels first
+    app.left.selection.clear();
+    app.right.selection.clear();
+    // Build name -> index maps (skip parent marker)
+    let mut left_map: HashMap<String, usize> = HashMap::new();
+    for (idx, ent) in app.left.entries.iter().enumerate() {
+        if ent.is_parent_marker() {
+            continue;
+        }
+        left_map.insert(ent.name.clone(), idx);
+    }
+    let mut right_map: HashMap<String, usize> = HashMap::new();
+    for (idx, ent) in app.right.entries.iter().enumerate() {
+        if ent.is_parent_marker() {
+            continue;
+        }
+        right_map.insert(ent.name.clone(), idx);
+    }
+    // Union of names
+    let mut names: Vec<String> = left_map.keys().chain(right_map.keys()).cloned().collect();
+    names.sort();
+    names.dedup();
+    for name in names {
+        let li = left_map.get(&name).copied();
+        let ri = right_map.get(&name).copied();
+        match (li, ri) {
+            (Some(l), None) => {
+                app.left.selection.select(l);
+            }
+            (None, Some(r)) => {
+                app.right.selection.select(r);
+            }
+            (Some(l), Some(r)) => {
+                // Both present
+                let le = &app.left.entries[l];
+                let re = &app.right.entries[r];
+                // If one is dir and the other file -> mark both
+                if le.is_dir != re.is_dir {
+                    app.left.selection.select(l);
+                    app.right.selection.select(r);
+                    continue;
+                }
+                // When both directories: presence only; do not mark
+                if le.is_dir && re.is_dir {
+                    continue;
+                }
+                // Both files: compare per mode
+                let differ = match mode {
+                    rmc_core::app::CompareDirsMode::Quick => {
+                        le.size != re.size || le.modified != re.modified
+                    }
+                    rmc_core::app::CompareDirsMode::SizeOnly => le.size != re.size,
+                    rmc_core::app::CompareDirsMode::Thorough => {
+                        if le.size != re.size {
+                            true
+                        } else {
+                            files_differ_contents(app, &le.path, &re.path)?
+                        }
+                    }
+                };
+                if differ {
+                    app.left.selection.select(l);
+                    app.right.selection.select(r);
+                }
+            }
+            (None, None) => { /* unreachable */ }
+        }
+    }
+    Ok(())
+}
+
 // Hit-test helpers mirroring render.rs packing logic
 fn menu_top_index_from_x(x: u16) -> Option<usize> {
     // Labels: " Left ", " File ", " Command ", " Options ", " Right "
@@ -1688,6 +1800,82 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::CompareDirsDialog { mode, focus } => {
+                use rmc_core::app::{CompareDirsFocus as F, CompareDirsMode as M};
+                let order = [
+                    F::RadioQuick,
+                    F::RadioSizeOnly,
+                    F::RadioThorough,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                let mut apply = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                        return Ok(());
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        // Only toggle between buttons when on a button
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Char(' ') => match *focus {
+                        F::RadioQuick => *mode = M::Quick,
+                        F::RadioSizeOnly => *mode = M::SizeOnly,
+                        F::RadioThorough => *mode = M::Thorough,
+                        F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                    },
+                    KeyCode::Enter => match *focus {
+                        F::RadioQuick => *mode = M::Quick,
+                        F::RadioSizeOnly => *mode = M::SizeOnly,
+                        F::RadioThorough => *mode = M::Thorough,
+                        F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                    },
+                    _ => {}
+                }
+                if apply {
+                    let m = *mode;
+                    // Close dialog first, then apply to avoid borrow issues
+                    app.ui_mode = UiMode::Normal;
+                    let _ = run_compare_dirs(app, m);
+                }
+                return Ok(());
+            }
             UiMode::MkdirDialog { value, focus_ok } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
@@ -2650,6 +2838,9 @@ impl TerminalApp {
                                 let start = app.active_panel().cwd.clone();
                                 app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
                             }
+                            "Compare dirs" => {
+                                open_compare_dirs_dialog(app);
+                            }
                             "External panelize" => {
                                 let cwd = active_cwd.clone();
                                 app.ui_mode = UiMode::InputDialog {
@@ -3493,6 +3684,10 @@ impl TerminalApp {
                     return Ok(());
                 } else if let KeyCode::Char(c) = key.code {
                     match c {
+                        'd' => {
+                            open_compare_dirs_dialog(app);
+                            return Ok(());
+                        }
                         'j' => {
                             // Open Background jobs dialog
                             app.ui_mode = UiMode::JobsDialog {
