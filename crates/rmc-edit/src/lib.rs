@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use std::cmp::min;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub mod syntax;
 pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
@@ -346,7 +346,8 @@ impl EditorBuffer {
         for i in 0..height {
             let li = self.view_row + i;
             if let Some(line) = self.lines.get(li) {
-                let spans = tokenize_for_render(line, lang, self.view_col, width);
+                let spans =
+                    tokenize_for_render(line, lang, self.view_col, width);
                 out.push(spans);
             } else {
                 out.push(vec![Span {

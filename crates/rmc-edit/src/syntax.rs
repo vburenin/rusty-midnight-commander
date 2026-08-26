@@ -58,11 +58,7 @@ pub fn guess_language(path: Option<&Path>) -> Language {
     let Some(p) = path else {
         return Language::PlainText;
     };
-    if let Some(ext) = p
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_ascii_lowercase())
-    {
+    if let Some(ext) = p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()) {
         match ext.as_str() {
             "rs" => Language::Rust,
             "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" => Language::C,
@@ -108,12 +104,7 @@ fn tokenize_visible_line(text: &str, lang: Language) -> Vec<SpanUnit> {
 }
 
 /// Clip SpanUnits to [start_col, start_col+max_cols) and convert to output Spans with actual text.
-fn clip_to_window(
-    text: &str,
-    spans: Vec<SpanUnit>,
-    start_col: usize,
-    max_cols: usize,
-) -> Vec<Span> {
+fn clip_to_window(text: &str, spans: Vec<SpanUnit>, start_col: usize, max_cols: usize) -> Vec<Span> {
     let text_len = text.chars().count();
     let window_end = start_col.saturating_add(max_cols).min(text_len);
     // Build char indices to byte indices map for slicing
@@ -223,8 +214,8 @@ fn c_keywords() -> &'static [&'static str] {
     &[
         "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
         "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-        "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
-        "union", "unsigned", "void", "volatile", "while",
+        "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch",
+        "typedef", "union", "unsigned", "void", "volatile", "while",
     ]
 }
 fn python_keywords() -> &'static [&'static str] {
@@ -236,14 +227,13 @@ fn python_keywords() -> &'static [&'static str] {
     ]
 }
 fn shell_keywords() -> &'static [&'static str] {
-    // Keep this list sorted for binary_search to work correctly.
     &[
-        "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
-        "select", "then", "until", "while",
+        "if", "then", "else", "elif", "fi", "for", "do", "done", "case", "esac", "function", "in",
+        "while", "until", "select",
     ]
 }
 
-fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
+fn tokenize_rust_like(text: &str, is_rust: bool) -> Vec<SpanUnit> {
     // Handles Rust; C-like done separately to catch preproc
     let mut out: Vec<SpanUnit> = Vec::new();
     let mut i = 0usize;
@@ -298,10 +288,7 @@ fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
             let start = i;
             i += 1;
             // 0x... hex or 0b... bin or 0o... oct or digits/underscores
-            if start + 1 < n
-                && chars[start] == '0'
-                && (chars[start + 1] == 'x' || chars[start + 1] == 'X')
-            {
+            if start + 1 < n && chars[start] == '0' && (chars[start + 1] == 'x' || chars[start + 1] == 'X') {
                 i = start + 2;
                 while i < n && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
                     i += 1;
@@ -337,11 +324,7 @@ fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
             } else {
                 TokenKind::Identifier
             };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
+            out.push(SpanUnit { start, end: i, kind });
             continue;
         }
         // Whitespace
@@ -439,9 +422,7 @@ fn tokenize_c_like(text: &str) -> Vec<SpanUnit> {
         if c.is_ascii_digit() {
             let start = i;
             i += 1;
-            if start + 1 < n
-                && chars[start] == '0'
-                && (chars[start + 1] == 'x' || chars[start + 1] == 'X')
+            if start + 1 < n && chars[start] == '0' && (chars[start + 1] == 'x' || chars[start + 1] == 'X')
             {
                 i = start + 2;
                 while i < n && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
@@ -478,11 +459,7 @@ fn tokenize_c_like(text: &str) -> Vec<SpanUnit> {
             } else {
                 TokenKind::Identifier
             };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
+            out.push(SpanUnit { start, end: i, kind });
             continue;
         }
         // Whitespace
@@ -605,11 +582,7 @@ fn tokenize_python(text: &str) -> Vec<SpanUnit> {
             } else {
                 TokenKind::Identifier
             };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
+            out.push(SpanUnit { start, end: i, kind });
             continue;
         }
         // Whitespace
@@ -710,11 +683,7 @@ fn tokenize_shell(text: &str) -> Vec<SpanUnit> {
             } else {
                 TokenKind::Identifier
             };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
+            out.push(SpanUnit { start, end: i, kind });
             continue;
         }
         // Whitespace
@@ -754,10 +723,7 @@ fn tokenize_ini(text: &str) -> Vec<SpanUnit> {
     if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
         // Section heading
         let start = text.find('[').unwrap_or(0);
-        let end = text
-            .rfind(']')
-            .map(|i| i + 1)
-            .unwrap_or_else(|| text.chars().count());
+        let end = text.rfind(']').map(|i| i + 1).unwrap_or_else(|| text.chars().count());
         out.push(SpanUnit {
             start,
             end,
@@ -766,7 +732,7 @@ fn tokenize_ini(text: &str) -> Vec<SpanUnit> {
         return out;
     }
     // Comment: ';' or '#'
-    if let Some(pos) = text.find([';', '#']) {
+    if let Some(pos) = text.find(|c| c == ';' || c == '#') {
         // Everything after marker is comment
         // Left side may still be tokenized roughly as key=value
         let (left, _) = text.split_at(pos);
@@ -1001,14 +967,7 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
         pos += 1;
         while pos < n {
             let d = chars[pos];
-            if d == '`'
-                || d == '['
-                || d == ']'
-                || d == '('
-                || d == ')'
-                || d == '*'
-                || d == '_'
-                || is_whitespace(d)
+            if d == '`' || d == '[' || d == ']' || d == '(' || d == ')' || d == '*' || d == '_' || is_whitespace(d)
             {
                 break;
             }
@@ -1098,3 +1057,4 @@ mod tests {
         assert!(emp.contains(&TokenKind::Emphasis));
     }
 }
+
