@@ -4,6 +4,7 @@ use crate::panel::{FileEntry, PanelState, SortBy};
 use anyhow::Result;
 use rmc_fs::{DirEntry, Vfs};
 use std::path::{Path, PathBuf};
+use rmc_edit::EditorBuffer;
 
 type UiOkCb = Box<dyn FnOnce(&mut App) -> Result<()> + Send>;
 type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
@@ -11,6 +12,14 @@ type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 pub enum UiMode {
     Normal,
     Viewer { path: PathBuf, hex: bool },
+    Editor {
+        buf: EditorBuffer,
+        show_menu: bool,
+        status_msg: Option<String>,
+        search_input: Option<String>,
+        save_as_input: Option<String>,
+        pending_quit: bool,
+    },
     Menu {
         top_index: usize,
         selected_index: usize,

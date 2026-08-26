@@ -92,6 +92,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
+        rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input } => {
+            draw_editor(p, cols, rows, pal, buf, *show_menu, status_msg.as_deref(), search_input.as_deref(), save_as_input.as_deref());
+        }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
             draw_dialog_box(p, cols, rows, pal, title, &msg, &["< OK >", "Cancel"]);
@@ -133,6 +136,101 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
     Ok(())
 }
 
+fn draw_editor(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    buf: &rmc_edit::EditorBuffer,
+    show_menu: bool,
+    status_msg: Option<&str>,
+    search_input: Option<&str>,
+    save_as_input: Option<&str>,
+) {
+    // Background (editor core colors)
+    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    for y in 0..rows {
+        p.goto(0, y);
+        p.text(&" ".repeat(cols as usize));
+    }
+    // Top bar (menu bar)
+    draw_menu_bar(p, cols, pal);
+    // Status line (bottom-2) and F-bar (bottom-1)
+    let status_row = rows.saturating_sub(2);
+    let fbar_row = rows.saturating_sub(1);
+    // Editor content box between menu and status
+    let content_top = 1u16;
+    let content_h = status_row.saturating_sub(content_top);
+    // Render buffer window
+    // We can't mutate buf here; assume viewport was adjusted by the event loop.
+    // Draw content lines
+    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    for i in 0..content_h {
+        p.goto(0, content_top + i);
+        p.text(&" ".repeat(cols as usize));
+    }
+    let view = buf.render_window(cols as usize, content_h as usize);
+    for (i, line) in view.iter().enumerate() {
+        p.goto(0, content_top + i as u16);
+        let t = truncate(line, cols as usize);
+        p.text(&t);
+    }
+    // Cursor indicator (soft, we don't move real terminal cursor here)
+    // Draw a small inverse cell where the logical cursor is on screen
+    let cur_y = buf.row.saturating_sub(buf.view_row) as u16 + content_top;
+    let cur_x = buf.col.saturating_sub(buf.view_col) as u16;
+    if cur_y >= content_top && cur_y < content_top + content_h && cur_x < cols {
+        p.goto(cur_x, cur_y);
+        p.set_fg_bg(pal.core_default_bg, pal.core_default_fg);
+        p.text(" ");
+    }
+    // Status line
+    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
+    p.goto(0, status_row);
+    let mut status = buf.status_text();
+    if let Some(msg) = status_msg {
+        status.push_str("  ");
+        status.push_str(msg);
+    }
+    let t = truncate(&status, cols as usize);
+    p.text(&t);
+    if t.len() < cols as usize {
+        p.text(&" ".repeat(cols as usize - t.len()));
+    }
+    // Bottom F-key bar for editor: Save, Search, Menu, Quit
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    p.goto(0, fbar_row);
+    let fbar = "1 Help  2 Save  7 Find  9 Menu  10 Quit";
+    let fb = truncate(fbar, cols as usize);
+    p.text(&fb);
+    if fb.len() < cols as usize {
+        p.text(&" ".repeat(cols as usize - fb.len()));
+    }
+    // If show_menu, draw a small stub dropdown
+    if show_menu {
+        draw_menu_dropdown(p, pal, 1, 1);
+    }
+    // Inline prompts
+    if let Some(q) = search_input {
+        draw_inline_prompt(p, pal, rows, cols, "Find:", q);
+    }
+    if let Some(q) = save_as_input {
+        draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
+    }
+}
+
+fn draw_inline_prompt(p: &mut Painter, pal: McPalette, rows: u16, cols: u16, title: &str, val: &str) {
+    // Use dialog style bar on last row
+    let y = rows.saturating_sub(1);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(0, y);
+    let mut txt = format!(" {title} {val}");
+    if txt.len() < cols as usize {
+        txt.push_str(&" ".repeat(cols as usize - txt.len()));
+    }
+    let t = truncate(&txt, cols as usize);
+    p.text(&t);
+}
 fn draw_dialog_box(
     p: &mut Painter,
     cols: u16,

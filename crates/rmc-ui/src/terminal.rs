@@ -24,7 +24,7 @@ impl TerminalApp {
 
         loop {
             // Compute content rows for page/scroll visibility
-            let (_cols, rows) = crossterm::terminal::size()?;
+            let (cols, rows) = crossterm::terminal::size()?;
             let panel_top = 1u16;
             let gauge_row = rows.saturating_sub(4);
             let content_bottom = gauge_row.saturating_sub(1);
@@ -32,10 +32,20 @@ impl TerminalApp {
             let content_rows = panel_h.saturating_sub(4) as usize;
             // Ensure cursor visibility based on last-known height
             {
-                let left = &mut app.left;
-                left.ensure_visible(content_rows);
-                let right = &mut app.right;
-                right.ensure_visible(content_rows);
+                match &mut app.ui_mode {
+                    UiMode::Editor { buf, .. } => {
+                        // Editor viewport: full width, rows between menu and status
+                        let view_h = rows.saturating_sub(3) as usize; // rows - (menu + status + fbar)
+                        let view_w = cols as usize;
+                        buf.adjust_viewport(view_w, view_h);
+                    }
+                    _ => {
+                        let left = &mut app.left;
+                        left.ensure_visible(content_rows);
+                        let right = &mut app.right;
+                        right.ensure_visible(content_rows);
+                    }
+                }
             }
             // Draw at least at 30 FPS-equivalent idle to react to resize
             if last_draw.elapsed() > Duration::from_millis(33) {
@@ -272,6 +282,116 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, pending_quit } => {
+                use std::io::Write;
+                match key.code {
+                    KeyCode::F(9) => {
+                        *show_menu = !*show_menu;
+                    }
+                    KeyCode::F(2) => {
+                        // Save
+                        if let Some(path) = &buf.path {
+                            let mut w = app.vfs.write_file(path)?;
+                            let data = buf.to_bytes();
+                            w.write_all(&data)?;
+                            w.flush()?;
+                            *status_msg = Some("Saved".into());
+                            buf.dirty = false;
+                        } else {
+                            *save_as_input = Some(String::new());
+                            *status_msg = Some("Enter filename and press Enter".into());
+                        }
+                    }
+                    KeyCode::F(10) => {
+                        if buf.dirty && !*pending_quit {
+                            *status_msg = Some("Unsaved changes: press F10 or Esc again to discard".into());
+                            *pending_quit = true;
+                        } else {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if *save_as_input == Some(String::new()) || search_input.is_some() {
+                            // Close inline prompts
+                            *save_as_input = None;
+                            *search_input = None;
+                        } else if *pending_quit || !buf.dirty {
+                            app.ui_mode = UiMode::Normal;
+                        } else {
+                            *status_msg = Some("Press Esc again to quit without saving".into());
+                            *pending_quit = true;
+                        }
+                    }
+                    KeyCode::F(7) => {
+                        *search_input = Some(String::new());
+                        *status_msg = Some("Find: type text and press Enter".into());
+                    }
+                    KeyCode::Enter => {
+                        if let Some(q) = search_input.take() {
+                            if let Some((_r, _c)) = buf.search_forward(q.as_bytes()) {
+                                *status_msg = Some("Found".into());
+                            } else {
+                                *status_msg = Some("Not found".into());
+                            }
+                        } else if let Some(name) = save_as_input.take() {
+                            let mut path = app.active_panel().cwd.join(name);
+                            // Normalize dir path if ended with slash
+                            if path.is_dir() {
+                                path = path.join("untitled.txt");
+                            }
+                            let mut w = app.vfs.write_file(&path)?;
+                            let data = buf.to_bytes();
+                            w.write_all(&data)?;
+                            w.flush()?;
+                            buf.path = Some(path);
+                            buf.dirty = false;
+                            *status_msg = Some("Saved".into());
+                        } else {
+                            buf.insert_newline();
+                            *pending_quit = false;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(s) = search_input {
+                            s.pop();
+                        } else if let Some(s) = save_as_input {
+                            s.pop();
+                        } else {
+                            buf.backspace();
+                            *pending_quit = false;
+                        }
+                    }
+                    KeyCode::Delete => {
+                        buf.delete();
+                        *pending_quit = false;
+                    }
+                    KeyCode::Insert => {
+                        buf.toggle_overwrite();
+                    }
+                    KeyCode::Left => { buf.move_left(); *pending_quit = false; }
+                    KeyCode::Right => { buf.move_right(); *pending_quit = false; }
+                    KeyCode::Up => { buf.move_up(); *pending_quit = false; }
+                    KeyCode::Down => { buf.move_down(); *pending_quit = false; }
+                    KeyCode::Char('z') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        let _ = buf.undo();
+                        *pending_quit = false;
+                    }
+                    KeyCode::Char(c) => {
+                        if key.modifiers.is_empty() {
+                            if let Some(s) = search_input {
+                                s.push(c);
+                            } else if let Some(s) = save_as_input {
+                                s.push(c);
+                            } else {
+                                buf.insert_char(c);
+                                *pending_quit = false;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             _ => {}
         }
 
@@ -325,6 +445,31 @@ impl TerminalApp {
                             focus: rmc_core::app::CopyDialogFocus::To,
                         };
                     }
+                }
+                Action::FunctionKey(4) => {
+                    // Open editor on current file (or new empty)
+                    let buf = if let Some(ent) = app.active_panel().current_entry().cloned() {
+                        if !ent.is_dir && ent.name != ".." {
+                            // Read file bytes
+                            let mut reader = app.vfs.read_file(&ent.path)?;
+                            let mut bytes = Vec::new();
+                            use std::io::Read;
+                            reader.read_to_end(&mut bytes)?;
+                            rmc_edit::EditorBuffer::from_bytes(&bytes, Some(ent.path))
+                        } else {
+                            rmc_edit::EditorBuffer::new_empty()
+                        }
+                    } else {
+                        rmc_edit::EditorBuffer::new_empty()
+                    };
+                    app.ui_mode = UiMode::Editor {
+                        buf,
+                        show_menu: false,
+                        status_msg: None,
+                        search_input: None,
+                        save_as_input: None,
+                        pending_quit: false,
+                    };
                 }
                 _ => app.handle_action(action)?,
             }

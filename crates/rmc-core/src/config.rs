@@ -96,6 +96,7 @@ impl KeyMap {
         // Function keys
         m.bind(new_event(KeyCode::F(1)), ShowHelp);
         m.bind(new_event(KeyCode::F(3)), ViewFile);
+        m.bind(new_event(KeyCode::F(4)), Action::FunctionKey(4));
         m.bind(new_event(KeyCode::F(5)), Copy);
         m.bind(new_event(KeyCode::F(6)), Move);
         m.bind(new_event(KeyCode::F(7)), Mkdir);
