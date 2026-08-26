@@ -44,6 +44,10 @@ pub enum Action {
     // Viewer specific
     ViewerQuit,
     ViewerToggleHex,
+    // Group selection operations
+    SelectGroup,
+    UnselectGroup,
+    InvertSelection,
     /// Toggle full-screen subshell/output view (C-o).
     ToggleSubshell,
     // Mouse interactions (coordinates handled by UI)

@@ -129,6 +129,10 @@ impl KeyMap {
         m.bind(new_event(KeyCode::F(8)), Delete);
         m.bind(new_event(KeyCode::F(9)), FocusMenu);
         m.bind(new_event(KeyCode::F(10)), Quit);
+        // Selection group keys
+        m.bind(new_event(KeyCode::Char('+')), Action::SelectGroup);
+        m.bind(new_event(KeyCode::Char('\\')), Action::UnselectGroup);
+        m.bind(new_event(KeyCode::Char('*')), Action::InvertSelection);
         // Sorting shortcuts (stub: Shift+N/S/T)
         m.bind(
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
@@ -251,6 +255,9 @@ fn parse_action(s: &str) -> Option<Action> {
         "Move" => Some(Move),
         "Mkdir" => Some(Mkdir),
         "Delete" => Some(Delete),
+        "SelectGroup" => Some(Action::SelectGroup),
+        "UnselectGroup" => Some(Action::UnselectGroup),
+        "InvertSelection" => Some(Action::InvertSelection),
         "ViewerQuit" => Some(ViewerQuit),
         "ViewerToggleHex" => Some(ViewerToggleHex),
         "SortName" => Some(Sort(SortBy::Name)),

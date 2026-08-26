@@ -47,4 +47,8 @@ Alt-t = SortTime
 # Selection
 Insert = ToggleSelect
 Space  = ToggleSelect
+# Group selection (panel)
++  = SelectGroup
+\\  = UnselectGroup
+*  = InvertSelection
 
