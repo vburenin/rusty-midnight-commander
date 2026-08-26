@@ -77,6 +77,8 @@ pub struct EditorBuffer {
     macro_current: Vec<EditorAction>,
     /// Last completed macro (replayed by `replay_macro`).
     macro_last: Vec<EditorAction>,
+    /// Whether a macro has ever been recorded in this buffer (even if empty).
+    macro_available: bool,
 }
 
 impl EditorBuffer {
@@ -101,6 +103,7 @@ impl EditorBuffer {
             macro_replaying: false,
             macro_current: Vec::new(),
             macro_last: Vec::new(),
+            macro_available: false,
         }
     }
 
@@ -136,6 +139,7 @@ impl EditorBuffer {
             macro_replaying: false,
             macro_current: Vec::new(),
             macro_last: Vec::new(),
+            macro_available: false,
         }
     }
 
@@ -1005,15 +1009,15 @@ impl EditorBuffer {
         }
         self.macro_recording = false;
         self.macro_last = self.macro_current.clone();
+        self.macro_available = true;
         Some(self.macro_last.len())
     }
 
     /// Replay the last recorded macro from the current cursor/state.
     /// Returns true if a macro existed (even if empty); false when no macro is available.
     pub fn replay_macro(&mut self) -> bool {
-        if self.macro_last.is_empty() && !self.macro_recording {
-            // No previous macro recorded at all -> false
-            // If currently recording and empty, treat as no macro too.
+        if !self.macro_available {
+            // No previous macro recorded in this buffer
             return false;
         }
         let events = self.macro_last.clone();
