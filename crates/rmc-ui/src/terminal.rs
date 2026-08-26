@@ -148,7 +148,7 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
-            UiMode::CopyDialog { title, src_name: _, src_path, mask: _, to, using_shell_patterns: _, follow_links: _, preserve_attrs: _, dive_into_subdir: _, stable_symlinks: _, focus } => {
+            UiMode::CopyDialog { title, src_name: _, src_path, mask, to, using_shell_patterns, follow_links, preserve_attrs, dive_into_subdir, stable_symlinks, focus } => {
                 use rmc_core::app::CopyDialogFocus as F;
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
@@ -159,40 +159,104 @@ impl TerminalApp {
                             F::Checkbox1 => F::Checkbox2,
                             F::Checkbox2 => F::Checkbox3,
                             F::Checkbox3 => F::Checkbox4,
-                            F::Checkbox4 => F::Ok,
+                            F::Checkbox4 => F::Checkbox5,
+                            F::Checkbox5 => F::Ok,
                             F::Ok => F::Background,
                             F::Background => F::Cancel,
                             F::Cancel => F::Mask,
                         };
                     }
                     KeyCode::Backspace => {
-                        if matches!(*focus, F::Mask | F::To) {
-                            to.pop();
+                        match *focus {
+                            F::Mask => { mask.pop(); }
+                            F::To => { to.pop(); }
+                            _ => {}
                         }
                     }
                     KeyCode::Char(c) => {
-                        if key.modifiers.is_empty() && matches!(*focus, F::Mask | F::To) {
-                            to.push(c);
+                        if key.modifiers.is_empty() {
+                            if c == ' ' {
+                                match *focus {
+                                    F::Checkbox1 => *using_shell_patterns = !*using_shell_patterns,
+                                    F::Checkbox2 => *follow_links = !*follow_links,
+                                    F::Checkbox3 => *preserve_attrs = !*preserve_attrs,
+                                    F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
+                                    F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
+                                    _ => {}
+                                }
+                            } else {
+                                match *focus {
+                                    F::Mask => mask.push(c),
+                                    F::To => to.push(c),
+                                    _ => {}
+                                }
+                            }
                         }
                     }
                     KeyCode::Enter => {
+                        use std::path::Path;
                         match *focus {
+                            F::Checkbox1 => *using_shell_patterns = !*using_shell_patterns,
+                            F::Checkbox2 => *follow_links = !*follow_links,
+                            F::Checkbox3 => *preserve_attrs = !*preserve_attrs,
+                            F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
+                            F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
                             F::Ok => {
                                 if title == "Copy" {
-                                    app.vfs.copy(src_path, std::path::Path::new(&to))?;
+                                    app.vfs.copy(src_path, Path::new(&*to))?;
                                 } else {
-                                    app.vfs.move_path(src_path, std::path::Path::new(&to))?;
+                                    app.vfs.move_path(src_path, Path::new(&*to))?;
                                 }
                                 app.ui_mode = UiMode::Normal;
                                 app.reload_panels()?;
                             }
-                            F::Background => {
-                                app.ui_mode = UiMode::Normal;
-                            }
-                            F::Cancel => {
+                            F::Background | F::Cancel => {
                                 app.ui_mode = UiMode::Normal;
                             }
                             _ => {}
+                        }
+                    }
+                    
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::Menu { top_index, selected_index } => {
+                let menus: [&[&str]; 5] = [
+                    &["Copy", "Move", "Mkdir", "Delete"],
+                    &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
+                    &["Find file", "Compare dirs"],
+                    &["Layout", "Panels", "Confirmations"],
+                    &["Copy", "Move", "Mkdir", "Delete"],
+                ];
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Left => {
+                        if *top_index > 0 { *top_index -= 1; }
+                        *selected_index = 0;
+                    }
+                    KeyCode::Right => {
+                        if *top_index < 4 { *top_index += 1; }
+                        *selected_index = 0;
+                    }
+                    KeyCode::Up => {
+                        if *selected_index > 0 { *selected_index -= 1; }
+                    }
+                    KeyCode::Down => {
+                        let max = menus[*top_index].len().saturating_sub(1);
+                        if *selected_index < max { *selected_index += 1; }
+                    }
+                    KeyCode::Enter => {
+                        let item = menus[*top_index][*selected_index];
+                        match item {
+                            "Copy" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(5), key.modifiers), page_rows); }
+                            "Move" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(6), key.modifiers), page_rows); }
+                            "Mkdir" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(7), key.modifiers), page_rows); }
+                            "Delete" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(8), key.modifiers), page_rows); }
+                            "Quit" => { app.handle_action(Action::Quit)?; }
+                            _ => { app.ui_mode = UiMode::Normal; }
                         }
                     }
                     _ => {}
@@ -215,7 +279,7 @@ impl TerminalApp {
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::Mkdir => {
-                    app.ui_mode = UiMode::MkdirDialog { value: String::new(), focus_ok: true };
+                    app.ui_mode = UiMode::MkdirDialog { value: String::new(), focus_ok: false };
                 }
                 Action::Delete => {
                     if let Some(ent) = app.active_panel().current_entry().cloned() {

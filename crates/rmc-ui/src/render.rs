@@ -100,7 +100,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok);
         }
         rmc_core::app::UiMode::DeleteDialog { name, .. } => {
-            draw_dialog_box(p, cols, rows, pal, "Delete", &format!("Delete {name}?"), &["< OK >", "Cancel"]);
+            draw_dialog_box(p, cols, rows, pal, "Delete", &format!("Delete \"{name}\"?"), &["< Yes >", "No"]);
         }
         rmc_core::app::UiMode::CopyDialog {
             title, src_name, mask, to, using_shell_patterns, follow_links, preserve_attrs, dive_into_subdir, stable_symlinks, focus, ..
@@ -125,8 +125,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::Viewer { path, hex } => {
             draw_viewer(p, app, cols, rows, pal, path, *hex)?;
         }
-        rmc_core::app::UiMode::MenuFocused => {
-            draw_menu_dropdown(p, pal);
+        rmc_core::app::UiMode::Menu { top_index, selected_index } => {
+            draw_menu_dropdown(p, pal, *top_index, *selected_index);
         }
         _ => {}
     }
@@ -229,9 +229,9 @@ fn draw_viewer(
         let s = String::from_utf8_lossy(&buf);
         s.lines().map(|l| l.to_string()).collect::<Vec<_>>()
     };
-    let max_lines = rows.saturating_sub(1) as usize;
+    let max_lines = rows.saturating_sub(2) as usize;
     for (i, line) in lines.into_iter().take(max_lines).enumerate() {
-        p.goto(0, i as u16);
+        p.goto(1, 1 + i as u16);
         let t = truncate(&line, cols as usize);
         p.text(&t);
     }
@@ -580,8 +580,8 @@ fn draw_copy_move_dialog(
     focus: rmc_core::app::CopyDialogFocus,
 ) {
     use rmc_core::app::CopyDialogFocus as F;
-    let w = (cols as usize).min(70) as u16;
-    let h = 12u16;
+    let w = (cols as usize).min(74) as u16;
+    let h = 15u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
@@ -608,8 +608,9 @@ fn draw_copy_move_dialog(
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 2);
     p.text(&truncate(&format!("{title} file \"{src_name}\" with source mask:"), (w - 4) as usize));
-    // mask field (cyan)
-    p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    // mask field
+    let mask_focus = matches!(focus, F::Mask);
+    p.set_fg_bg(if mask_focus { pal.dfocus_fg } else { pal.dialog_default_fg }, if mask_focus { pal.dfocus_bg } else { pal.dialog_default_bg });
     p.goto(x + 2, y + 3);
     let m = truncate(mask, (w - 4) as usize);
     p.text(&format!("{m}{}", " ".repeat((w - 4) as usize - m.len())));
@@ -617,7 +618,8 @@ fn draw_copy_move_dialog(
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 5);
     p.text("to:");
-    p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    let to_focus = matches!(focus, F::To);
+    p.set_fg_bg(if to_focus { pal.dfocus_fg } else { pal.dialog_default_fg }, if to_focus { pal.dfocus_bg } else { pal.dialog_default_bg });
     p.goto(x + 6, y + 5);
     let t = truncate(to, (w - 8) as usize);
     p.text(&format!("{t}{}", " ".repeat((w - 8) as usize - t.len())));
@@ -631,8 +633,14 @@ fn draw_copy_move_dialog(
         ("Stable symlinks", stable_symlinks),
     ];
     let mut cy = y + 7;
-    for (label, on) in checks.iter() {
+    for (i, (label, on)) in checks.iter().enumerate() {
         p.goto(x + 4, cy);
+        let focused = matches!((i, focus), (0, F::Checkbox1) | (1, F::Checkbox2) | (2, F::Checkbox3) | (3, F::Checkbox4) | (4, F::Checkbox5));
+        if focused {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
         p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
         cy += 1;
     }
@@ -649,12 +657,24 @@ fn draw_copy_move_dialog(
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
-fn draw_menu_dropdown(p: &mut Painter, pal: McPalette) {
-    // Minimal pulldown placeholder under 'Left'
-    let items = ["Copy", "Move", "Mkdir", "Delete", "Quit"];
-    let x = 1u16;
+fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selected: usize) {
+    // Real top menus and stub items
+    let menus: [&[&str]; 5] = [
+        &["Copy", "Move", "Mkdir", "Delete"],
+        &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
+        &["Find file", "Compare dirs"],
+        &["Layout", "Panels", "Confirmations"],
+        &["Copy", "Move", "Mkdir", "Delete"],
+    ];
+    let titles = [" Left ", " File ", " Command ", " Options ", " Right "];
+    // Compute x position under the selected top title
+    let mut x = 0u16;
+    for title in titles.iter().take(top_index) {
+        x += title.len() as u16;
+    }
+    let items = menus[top_index];
     let y = 1u16;
-    let w = 14u16;
+    let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
     let h = items.len() as u16 + 2;
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     // Frame
@@ -672,7 +692,19 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette) {
     p.text("┘");
     // Items
     for (i, it) in items.iter().enumerate() {
-        p.goto(x + 2, y + 1 + i as u16);
-        p.text(it);
+        let row = y + 1 + i as u16;
+        if i == selected {
+            p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
+        } else {
+            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        }
+        p.goto(x + 1, row);
+        let mut line = String::new();
+        line.push(' ');
+        line.push_str(it);
+        while line.len() < (w - 2) as usize {
+            line.push(' ');
+        }
+        p.text(&line);
     }
 }

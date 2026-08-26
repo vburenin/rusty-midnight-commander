@@ -11,6 +11,10 @@ type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 pub enum UiMode {
     Normal,
     Viewer { path: PathBuf, hex: bool },
+    Menu {
+        top_index: usize,
+        selected_index: usize,
+    },
     CopyDialog {
         title: String, // "Copy" or "Move"
         src_name: String,
@@ -26,7 +30,7 @@ pub enum UiMode {
     },
     MkdirDialog {
         value: String,
-        focus_ok: bool,
+        focus_ok: bool, // true focuses OK button; false focuses input
     },
     DeleteDialog {
         name: String,
@@ -55,6 +59,7 @@ pub enum CopyDialogFocus {
     Checkbox2,
     Checkbox3,
     Checkbox4,
+    Checkbox5,
     Ok,
     Background,
     Cancel,
@@ -151,7 +156,7 @@ impl App {
                     PaneSide::Right => PaneSide::Left,
                 };
             }
-            FocusMenu => self.ui_mode = UiMode::MenuFocused,
+            FocusMenu => self.ui_mode = UiMode::Menu { top_index: 0, selected_index: 0 },
             ShowHelp => self.ui_mode = UiMode::Help,
             MoveUp => self.active_panel_mut().move_up(),
             MoveDown => self.active_panel_mut().move_down(),
