@@ -307,12 +307,6 @@ fn draw_user_menu_dialog(
         p.goto(x + 1, row);
         p.text(&line);
     }
-    // Footer hint
-    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    let hint = "<Enter> Run   <Esc/F10> Close";
-    let hx = x + (w.saturating_sub(hint.len() as u16)) / 2;
-    p.goto(hx, y + h - 2);
-    p.text(hint);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -835,6 +829,12 @@ fn draw_panel(
                 format!(" {}{} ", ap.archive.display(), "/")
             } else {
                 format!(" {}/{} ", ap.archive.display(), ap.inner.display())
+            }
+        } else if let Some(ax) = rmc_fs::pathutil::parse_anchor_any(path) {
+            if ax.inner.as_os_str().is_empty() {
+                format!(" {}{} ", ax.base.display(), "/")
+            } else {
+                format!(" {}/{} ", ax.base.display(), ax.inner.display())
             }
         } else {
             format!(" {} ", path.display())
@@ -1615,7 +1615,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
     let menus: [&[&str]; 5] = [
         &["Copy", "Move", "Mkdir", "Delete"],
         &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-        &["Find file", "Compare dirs"],
+        &["User menu", "Find file", "Compare dirs"],
         &["Layout", "Panels", "Confirmations"],
         &["Copy", "Move", "Mkdir", "Delete"],
     ];

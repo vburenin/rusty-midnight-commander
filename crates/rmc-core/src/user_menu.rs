@@ -145,7 +145,10 @@ pub fn expand_macros(app: &crate::app::App, command: &str) -> String {
         .map(|e| e.path.clone())
         .collect();
     let list_for_st = if tagged.is_empty() {
-        cur_file.as_ref().map(|p| vec![p.clone()]).unwrap_or_default()
+        cur_file
+            .as_ref()
+            .map(|p| vec![p.clone()])
+            .unwrap_or_default()
     } else {
         tagged
     };

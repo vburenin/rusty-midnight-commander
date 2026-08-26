@@ -631,7 +631,7 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["Find file", "Compare files", "Compare dirs"],
+                    &["User menu", "Find file", "Compare files", "Compare dirs"],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete"],
                 ];
@@ -690,6 +690,14 @@ impl TerminalApp {
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(8), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "User menu" => {
+                                // route like F2
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::F(2), key.modifiers),
                                     page_rows,
                                 );
                             }
