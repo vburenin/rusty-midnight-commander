@@ -36,19 +36,40 @@ impl KeyMap {
     /// Load keymap from a given file path.
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let f = File::open(path)?;
-        let mut km = Self { bindings: Vec::new() };
+        // Start from defaults and overlay file bindings (file wins)
+        let mut km = Self::mc_defaults();
+        let mut in_section_main = true; // top-level allowed
         for (lineno, line) in BufReader::new(f).lines().enumerate() {
             let raw = line?;
             let s = raw.trim();
             if s.is_empty() || s.starts_with('#') || s.starts_with(';') {
                 continue;
             }
-            let (key_str, action_str) = match s.split_once('=') {
-                Some((k, v)) => (k.trim(), v.trim()),
+            if s.starts_with('[') && s.ends_with(']') {
+                let sec = &s[1..s.len() - 1];
+                in_section_main = sec.eq_ignore_ascii_case("main");
+                continue;
+            }
+            if !in_section_main {
+                continue;
+            }
+            let (lhs, rhs) = match s.split_once('=') {
+                Some((a, b)) => (a.trim(), b.trim()),
                 None => continue, // ignore invalid
             };
-            if let (Some(key), Some(action)) = (parse_key(key_str), parse_action(action_str)) {
-                km.bind(key, action);
+            // Accept either "Key = Action" (current) or "Action = key" (MC-like)
+            let parse_key_then_action = || -> Option<(KeyEvent, Action)> {
+                let key = parse_key(lhs)?;
+                let act = parse_action(rhs)?;
+                Some((key, act))
+            };
+            let parse_action_then_key = || -> Option<(KeyEvent, Action)> {
+                let act = parse_action(lhs)?;
+                let key = parse_key(rhs)?;
+                Some((key, act))
+            };
+            if let Some((key, action)) = parse_key_then_action().or_else(parse_action_then_key) {
+                km.set_binding(key, action);
             } else {
                 eprintln!("Warning: could not parse keymap at line {}: {}", lineno + 1, raw);
             }
@@ -95,6 +116,12 @@ impl KeyMap {
         self.bindings.push((key, action));
     }
 
+    /// Overwrite any existing binding for this key event, then set it.
+    pub fn set_binding(&mut self, key: KeyEvent, action: Action) {
+        self.bindings.retain(|(k, _)| *k != key);
+        self.bind(key, action);
+    }
+
     pub fn resolve(&self, ev: &KeyEvent) -> Option<Action> {
         // Simple resolution by exact match
         for (k, a) in &self.bindings {
@@ -115,31 +142,32 @@ fn parse_key(s: &str) -> Option<KeyEvent> {
     let mut mods = KeyModifiers::NONE;
     let mut rem = s.trim();
     // Support "C-PageUp" and similar with '-' in name
-    if let Some(rest) = rem.strip_prefix("C-") {
+    if rem.to_ascii_lowercase().starts_with("c-") {
+        rem = &rem[2..];
         mods |= KeyModifiers::CONTROL;
-        rem = rest;
     }
-    if let Some(rest) = rem.strip_prefix("Alt-") {
+    if rem.to_ascii_lowercase().starts_with("alt-") || rem.to_ascii_lowercase().starts_with("m-") {
+        rem = &rem[4..];
         mods |= KeyModifiers::ALT;
-        rem = rest;
     }
     // Names
-    let code = match rem {
-        "Up" => KeyCode::Up,
-        "Down" => KeyCode::Down,
-        "Left" => KeyCode::Left,
-        "Right" => KeyCode::Right,
-        "Home" => KeyCode::Home,
-        "End" => KeyCode::End,
-        "PageUp" => KeyCode::PageUp,
-        "PageDown" => KeyCode::PageDown,
-        "Tab" => KeyCode::Tab,
-        "Enter" => KeyCode::Enter,
-        "Backspace" => KeyCode::Backspace,
-        "Insert" => KeyCode::Insert,
-        "Space" => KeyCode::Char(' '),
+    let lc = rem.to_ascii_lowercase();
+    let code = match lc.as_str() {
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" | "page-up" => KeyCode::PageUp,
+        "pagedown" | "page-down" => KeyCode::PageDown,
+        "tab" => KeyCode::Tab,
+        "enter" => KeyCode::Enter,
+        "backspace" => KeyCode::Backspace,
+        "insert" => KeyCode::Insert,
+        "space" => KeyCode::Char(' '),
         // Function keys
-        s if s.starts_with('F') => {
+        s if s.starts_with('f') => {
             if let Ok(n) = s[1..].parse::<u8>() {
                 KeyCode::F(n)
             } else {
@@ -148,12 +176,9 @@ fn parse_key(s: &str) -> Option<KeyEvent> {
         }
         // Single character (e.g., "h" after modifiers)
         s if s.len() == 1 => {
-            let ch = s.chars().next().unwrap();
+            let ch = lc.chars().next().unwrap();
             KeyCode::Char(ch)
         }
-        // Special combined names
-        "Page-Up" => KeyCode::PageUp,
-        "Page-Down" => KeyCode::PageDown,
         _ => return None,
     };
     Some(KeyEvent::new(code, mods))

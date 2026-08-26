@@ -37,14 +37,19 @@ pub fn load_from_file(path: &Path) -> Result<McPalette> {
     parse_skin(&text)
 }
 
-/// Parse a minimal INI with two sections:
-/// [pairs] keys with "fg;bg"
-/// [filehighlight] keys with single color for file types
+/// Parse an MC-like skin INI format:
+/// Sections: [core], [dialog], [menu], [buttonbar], [statusbar], [filehighlight]
+/// Keys in UI sections are color pairs "fg;bg" (extra attributes after a third ';' are ignored).
+/// [filehighlight] values are single colors.
 pub fn parse_skin(text: &str) -> Result<McPalette> {
     #[derive(Clone, Copy)]
     enum Section {
         None,
-        Pairs,
+        Core,
+        Dialog,
+        Menu,
+        ButtonBar,
+        StatusBar,
         FileHighlight,
     }
     let mut section = Section::None;
@@ -55,9 +60,17 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            section = match &line[1..line.len() - 1] {
-                "pairs" | "Pairs" => Section::Pairs,
-                "filehighlight" | "FileHighlight" => Section::FileHighlight,
+            let sec = &line[1..line.len() - 1];
+            let low = sec.to_ascii_lowercase();
+            section = match low.as_str() {
+                "core" => Section::Core,
+                "dialog" => Section::Dialog,
+                "menu" => Section::Menu,
+                "buttonbar" => Section::ButtonBar,
+                "statusbar" => Section::StatusBar,
+                "filehighlight" => Section::FileHighlight,
+                // Back-compat with early RMC prototype
+                "pairs" => Section::Core,
                 _ => Section::None,
             };
             continue;
@@ -67,46 +80,20 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
             .map(|(k, v)| (k.trim(), v.trim()))
             .ok_or_else(|| anyhow!("Invalid line {}: {raw}", lineno + 1))?;
         match section {
-            Section::Pairs => {
-                let (fgs, bgs) = v
-                    .split_once(';')
-                    .map(|(a, b)| (a.trim(), b.trim()))
-                    .ok_or_else(|| anyhow!("Invalid pair at {}: expected fg;bg", lineno + 1))?;
-                let fg = parse_color_name(fgs)
-                    .ok_or_else(|| anyhow!("Unknown color '{}' on line {}", fgs, lineno + 1))?;
-                let bg = parse_color_name(bgs)
-                    .ok_or_else(|| anyhow!("Unknown color '{}' on line {}", bgs, lineno + 1))?;
-                match k {
-                    "core_default" => { pal.core_default_fg = fg; pal.core_default_bg = bg; }
-                    "selected" => { pal.selected_fg = fg; pal.selected_bg = bg; }
-                    "marked" => { pal.marked_fg = fg; pal.marked_bg = bg; }
-                    "markselect" => { pal.markselect_fg = fg; pal.markselect_bg = bg; }
-                    "header" => { pal.header_fg = fg; pal.header_bg = bg; }
-                    "frame" => { pal.frame_fg = fg; pal.frame_bg = bg; }
-                    "shadow" => { pal.shadow_fg = fg; pal.shadow_bg = bg; }
-                    "dialog_default" => { pal.dialog_default_fg = fg; pal.dialog_default_bg = bg; }
-                    "dfocus" => { pal.dfocus_fg = fg; pal.dfocus_bg = bg; }
-                    "dtitle" => { pal.dtitle_fg = fg; pal.dtitle_bg = bg; }
-                    "menu" => { pal.menu_fg = fg; pal.menu_bg = bg; }
-                    "menusel" => { pal.menusel_fg = fg; pal.menusel_bg = bg; }
-                    "menuhot" => { pal.menuhot_fg = fg; pal.menuhot_bg = bg; }
-                    "buttonbar_hotkey" => { pal.buttonbar_hotkey_fg = fg; pal.buttonbar_hotkey_bg = bg; }
-                    "buttonbar_button" => { pal.buttonbar_button_fg = fg; pal.buttonbar_button_bg = bg; }
-                    "statusbar" => { pal.statusbar_fg = fg; pal.statusbar_bg = bg; }
-                    _ => {
-                        // Ignore unknown key
-                    }
-                }
-            }
+            Section::Core => assign_pair(&mut pal, "core", k, v, lineno + 1)?,
+            Section::Dialog => assign_pair(&mut pal, "dialog", k, v, lineno + 1)?,
+            Section::Menu => assign_pair(&mut pal, "menu", k, v, lineno + 1)?,
+            Section::ButtonBar => assign_pair(&mut pal, "buttonbar", k, v, lineno + 1)?,
+            Section::StatusBar => assign_pair(&mut pal, "statusbar", k, v, lineno + 1)?,
             Section::FileHighlight => {
                 let col = parse_color_name(v)
                     .ok_or_else(|| anyhow!("Unknown color '{}' on line {}", v, lineno + 1))?;
-                match k {
-                    "dir" => pal.dir_color = col,
-                    "exec" => pal.exec_color = col,
+                match &k.to_ascii_lowercase()[..] {
+                    "dir" | "directory" => pal.dir_color = col,
+                    "exec" | "executable" => pal.exec_color = col,
                     "archive" => pal.archive_color = col,
                     "source" => pal.source_color = col,
-                    "symlink" => pal.symlink_color = col,
+                    "symlink" | "link" => pal.symlink_color = col,
                     _ => {}
                 }
             }
@@ -116,6 +103,56 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
         }
     }
     Ok(pal)
+}
+
+fn assign_pair(pal: &mut McPalette, section: &str, key: &str, val: &str, lineno: usize) -> Result<()> {
+    // Accept "fg;bg" and ignore a third ";..." suffix if present
+    let mut parts = val.split(';').map(|s| s.trim());
+    let fgs = parts.next().ok_or_else(|| anyhow!("Invalid pair at {lineno}: expected fg;bg"))?;
+    let bgs = parts.next().ok_or_else(|| anyhow!("Invalid pair at {lineno}: expected fg;bg"))?;
+    let fg = parse_color_name(fgs)
+        .ok_or_else(|| anyhow!("Unknown color '{fgs}'"))?;
+    let bg = parse_color_name(bgs)
+        .ok_or_else(|| anyhow!("Unknown color '{bgs}'"))?;
+    let k = key.to_ascii_lowercase();
+    match section {
+        "core" => match k.as_str() {
+            "_default_" => { pal.core_default_fg = fg; pal.core_default_bg = bg; }
+            "selected" => { pal.selected_fg = fg; pal.selected_bg = bg; }
+            "marked" => { pal.marked_fg = fg; pal.marked_bg = bg; }
+            "markselect" => { pal.markselect_fg = fg; pal.markselect_bg = bg; }
+            "header" => { pal.header_fg = fg; pal.header_bg = bg; }
+            "frame" => { pal.frame_fg = fg; pal.frame_bg = bg; }
+            "shadow" => { pal.shadow_fg = fg; pal.shadow_bg = bg; }
+            _ => {}
+        },
+        "dialog" => match k.as_str() {
+            "_default_" => { pal.dialog_default_fg = fg; pal.dialog_default_bg = bg; }
+            "dfocus" => { pal.dfocus_fg = fg; pal.dfocus_bg = bg; }
+            "dtitle" => { pal.dtitle_fg = fg; pal.dtitle_bg = bg; }
+            _ => {}
+        },
+        "menu" => match k.as_str() {
+            "_default_" => { pal.menu_fg = fg; pal.menu_bg = bg; }
+            "menusel" => { pal.menusel_fg = fg; pal.menusel_bg = bg; }
+            "menuhot" => { pal.menuhot_fg = fg; pal.menuhot_bg = bg; }
+            // "menuhotsel" exists in MC but unused here
+            _ => {}
+        },
+        "buttonbar" => match k.as_str() {
+            "hotkey" => { pal.buttonbar_hotkey_fg = fg; pal.buttonbar_hotkey_bg = bg; }
+            "button" => { pal.buttonbar_button_fg = fg; pal.buttonbar_button_bg = bg; }
+            _ => {}
+        },
+        "statusbar" => {
+            if k.as_str() == "_default_" {
+                pal.statusbar_fg = fg;
+                pal.statusbar_bg = bg;
+            }
+        },
+        _ => {}
+    }
+    Ok(())
 }
 
 fn parse_color_name(name: &str) -> Option<Color> {
