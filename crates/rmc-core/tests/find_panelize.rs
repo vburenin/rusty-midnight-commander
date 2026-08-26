@@ -1,8 +1,8 @@
 use anyhow::Result;
+use rmc_core::actions::Action;
 use rmc_core::app::App;
 use rmc_core::config::KeyMap;
-use rmc_core::actions::Action;
-use rmc_core::find::{FindParams, NamePattern, search_files};
+use rmc_core::find::{search_files, FindParams, NamePattern};
 use rmc_fs::local::LocalFs;
 use tempfile::tempdir;
 
@@ -35,14 +35,24 @@ fn find_and_panelize_results_restore_on_parent() -> Result<()> {
 
     // Panelize and verify entries include parent and found file
     app.panelize_paths(&hits, Some(&root))?;
-    let names: Vec<String> = app.active_panel().entries.iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = app
+        .active_panel()
+        .entries
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert!(names.iter().any(|n| n == ".."));
     assert!(names.iter().any(|n| n == "note.txt"));
 
     // Cursor at 0 should be ".."; Enter should restore normal listing
     app.handle_action(Action::Enter)?;
     // After restore, panel entries should correspond to directory listing (should include "data.log")
-    let names_after: Vec<String> = app.active_panel().entries.iter().map(|e| e.name.clone()).collect();
+    let names_after: Vec<String> = app
+        .active_panel()
+        .entries
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert!(names_after.iter().any(|n| n == "data.log"));
     Ok(())
 }
@@ -63,9 +73,13 @@ fn panelize_uses_relative_names_for_disambiguation() -> Result<()> {
     let vfs = LocalFs::new();
     let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
     app.panelize_paths(&[f1.clone(), f2.clone()], Some(&root))?;
-    let names: Vec<String> = app.active_panel().entries.iter().map(|e| e.name.clone()).collect();
+    let names: Vec<String> = app
+        .active_panel()
+        .entries
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
     assert!(names.iter().any(|n| n == "sub1/dup.txt"));
     assert!(names.iter().any(|n| n == "sub2/dup.txt"));
     Ok(())
 }
-

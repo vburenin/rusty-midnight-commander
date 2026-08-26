@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::sync::mpsc::Receiver;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,7 +47,9 @@ pub struct CancelHandle {
 impl CancelHandle {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self { inner: Arc::new(AtomicBool::new(false)) }
+        Self {
+            inner: Arc::new(AtomicBool::new(false)),
+        }
     }
     pub fn flag(&self) -> Arc<AtomicBool> {
         self.inner.clone()
@@ -106,7 +108,11 @@ pub fn search_files(params: &FindParams, cancel: &Arc<AtomicBool>) -> Vec<PathBu
     out
 }
 
-pub fn search_files_streaming<F: FnMut(PathBuf)>(params: &FindParams, cancel: &Arc<AtomicBool>, mut on_hit: F) {
+pub fn search_files_streaming<F: FnMut(PathBuf)>(
+    params: &FindParams,
+    cancel: &Arc<AtomicBool>,
+    mut on_hit: F,
+) {
     // Prepare name matcher (basic glob with * and ?)
     let matcher = GlobMatcher::new(match &params.name_pattern {
         NamePattern::Glob(s) => s,
@@ -178,7 +184,9 @@ struct GlobMatcher {
 
 impl GlobMatcher {
     fn new(pat: &str) -> Self {
-        Self { pat: pat.to_string() }
+        Self {
+            pat: pat.to_string(),
+        }
     }
     fn is_match(&self, name: &str) -> bool {
         glob_match_simple(&self.pat, name)
@@ -264,4 +272,3 @@ mod tests {
         assert!(!hits.iter().any(|p| p == &root));
     }
 }
-

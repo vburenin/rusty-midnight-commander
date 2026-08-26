@@ -1,3 +1,4 @@
+use crate::find::draw_find_dialog;
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use anyhow::Result;
@@ -8,7 +9,6 @@ use rmc_core::app::App;
 use rmc_core::panel::FileEntry;
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
-use crate::find::draw_find_dialog;
 
 pub struct Renderer {
     palette: McPalette,

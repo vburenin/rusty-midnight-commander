@@ -1,8 +1,14 @@
-use crate::widgets::Painter;
 use crate::mc_colors::McPalette;
+use crate::widgets::Painter;
 use rmc_core::find::{FindDialogFocus as F, FindDialogState};
 
-pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, st: &FindDialogState) {
+pub fn draw_find_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    st: &FindDialogState,
+) {
     let w = (cols as usize).min(76) as u16;
     // Flexible height to fit a results list
     let h = rows.saturating_sub(4).clamp(16, 22);
@@ -16,10 +22,24 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
     p.goto(x + w - 1, y);
     p.text("┐");
     p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // Title
@@ -39,29 +59,86 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
     p.goto(x + 2, y + 8);
     p.text("[ ] Case sensitive");
     // Fields
-    let draw_field = |p: &mut Painter, xx: u16, yy: u16, w: u16, text: &str, focus: bool, pal: McPalette| {
-        p.set_fg_bg(if focus { pal.dfocus_fg } else { pal.dialog_default_fg }, if focus { pal.dfocus_bg } else { pal.dialog_default_bg });
-        p.goto(xx, yy);
-        let t = truncate(text, (w - 2) as usize);
-        p.text(&format!("{t}{}", " ".repeat((w - 2) as usize - t.len())));
-    };
+    let draw_field =
+        |p: &mut Painter, xx: u16, yy: u16, w: u16, text: &str, focus: bool, pal: McPalette| {
+            p.set_fg_bg(
+                if focus {
+                    pal.dfocus_fg
+                } else {
+                    pal.dialog_default_fg
+                },
+                if focus {
+                    pal.dfocus_bg
+                } else {
+                    pal.dialog_default_bg
+                },
+            );
+            p.goto(xx, yy);
+            let t = truncate(text, (w - 2) as usize);
+            p.text(&format!("{t}{}", " ".repeat((w - 2) as usize - t.len())));
+        };
     let field_w = w - 4;
-    draw_field(p, x + 12, y + 2, field_w - 12, &st.start_dir_edit, matches!(st.focus, F::StartDir), pal);
+    draw_field(
+        p,
+        x + 12,
+        y + 2,
+        field_w - 12,
+        &st.start_dir_edit,
+        matches!(st.focus, F::StartDir),
+        pal,
+    );
     // Name pattern
-    let pat = match &st.params.name_pattern { rmc_core::find::NamePattern::Glob(s) => s.as_str() };
-    draw_field(p, x + 12, y + 4, field_w - 12, pat, matches!(st.focus, F::NamePattern), pal);
+    let pat = match &st.params.name_pattern {
+        rmc_core::find::NamePattern::Glob(s) => s.as_str(),
+    };
+    draw_field(
+        p,
+        x + 12,
+        y + 4,
+        field_w - 12,
+        pat,
+        matches!(st.focus, F::NamePattern),
+        pal,
+    );
     // Content
     let content = st.params.content_substring.as_deref().unwrap_or("");
-    draw_field(p, x + 20, y + 6, field_w - 20, content, matches!(st.focus, F::Content), pal);
+    draw_field(
+        p,
+        x + 20,
+        y + 6,
+        field_w - 20,
+        content,
+        matches!(st.focus, F::Content),
+        pal,
+    );
     // Case checkbox
-    p.set_fg_bg(if matches!(st.focus, F::CaseSensitive) { pal.dfocus_fg } else { pal.dialog_default_fg }, if matches!(st.focus, F::CaseSensitive) { pal.dfocus_bg } else { pal.dialog_default_bg });
+    p.set_fg_bg(
+        if matches!(st.focus, F::CaseSensitive) {
+            pal.dfocus_fg
+        } else {
+            pal.dialog_default_fg
+        },
+        if matches!(st.focus, F::CaseSensitive) {
+            pal.dfocus_bg
+        } else {
+            pal.dialog_default_bg
+        },
+    );
     p.goto(x + 3, y + 8);
-    p.text(if st.params.case_sensitive { "[x] Case sensitive" } else { "[ ] Case sensitive" });
+    p.text(if st.params.case_sensitive {
+        "[x] Case sensitive"
+    } else {
+        "[ ] Case sensitive"
+    });
     // Status line
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 9);
     let n = st.results.paths.len();
-    let status = if st.running { format!("Searching... {n} matches") } else { format!("{n} matches") };
+    let status = if st.running {
+        format!("Searching... {n} matches")
+    } else {
+        format!("{n} matches")
+    };
     let t = truncate(&status, (w - 4) as usize);
     p.text(&t);
     // Results list area
@@ -96,7 +173,11 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
     }
     // Buttons
     let sel = |f: F, txt: &str| -> String {
-        if st.focus == f { format!("< {txt} >") } else { format!("[ {txt} ]") }
+        if st.focus == f {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
     };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let btns = format!(
@@ -113,7 +194,14 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
     p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(x + 1, y + h, w.saturating_sub(1), ' ', pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
@@ -121,7 +209,9 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        s.chars().take(max.saturating_sub(1)).chain("…".chars()).collect()
+        s.chars()
+            .take(max.saturating_sub(1))
+            .chain("…".chars())
+            .collect()
     }
 }
-

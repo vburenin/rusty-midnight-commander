@@ -1,7 +1,7 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
+use crate::find::FindDialogState;
 use crate::panel::{FileEntry, PanelState, SortBy};
-use crate::find::{FindDialogState};
 use anyhow::Result;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
@@ -345,7 +345,8 @@ impl App {
             });
         }
         let caption = self.active_panel().cwd.clone();
-        self.active_panel_mut().set_panelized_entries(caption, entries);
+        self.active_panel_mut()
+            .set_panelized_entries(caption, entries);
         Ok(())
     }
 }
