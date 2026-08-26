@@ -7,7 +7,7 @@ use rmc_ui::terminal::TerminalApp;
 fn main() -> Result<()> {
     // Initialize core app with two local filesystem panels starting from current dir.
     let vfs = LocalFs::new();
-    let keymap = KeyMap::mc_defaults();
+    let keymap = KeyMap::load_default();
     let mut app = App::new(Box::new(vfs), keymap)?;
     TerminalApp::run(&mut app)
 }
