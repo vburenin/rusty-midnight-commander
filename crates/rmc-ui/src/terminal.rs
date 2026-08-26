@@ -2411,55 +2411,6 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
-                // Filter command overlay
-                if let UiMode::Viewer {
-                    path: _,
-                    offset,
-                    filter_prompt: Some(prompt),
-                    ..
-                } = &mut app.ui_mode
-                {
-                    match key.code {
-                        KeyCode::Esc | KeyCode::F(10) => {
-                            *prompt = String::new();
-                            if let UiMode::Viewer { filter_prompt, .. } = &mut app.ui_mode {
-                                *filter_prompt = None;
-                            }
-                        }
-                        KeyCode::Enter => {
-                            let cmd = prompt.trim().to_string();
-                            if !cmd.is_empty() {
-                                // Apply external command to current viewed bytes using sh -c
-                                if let Err(e) =
-                                    crate::terminal::viewer_apply_filter_to_current(&cmd)
-                                {
-                                    app.ui_mode = UiMode::DialogConfirm {
-                                        title: "Error".into(),
-                                        message: format!("{e}"),
-                                        on_ok: Box::new(|_| Ok(())),
-                                    };
-                                } else {
-                                    // Replace current view and reset offset/search
-                                    *offset = 0;
-                                    if let UiMode::Viewer { search, .. } = &mut app.ui_mode {
-                                        *search = None;
-                                    }
-                                }
-                            }
-                            if let UiMode::Viewer { filter_prompt, .. } = &mut app.ui_mode {
-                                *filter_prompt = None;
-                            }
-                        }
-                        KeyCode::Backspace => {
-                            prompt.pop();
-                        }
-                        KeyCode::Char(c) if key.modifiers.is_empty() => {
-                            prompt.push(c);
-                        }
-                        _ => {}
-                    }
-                    return Ok(());
-                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => {
                         app.handle_action(Action::ViewerQuit)?
@@ -2474,9 +2425,33 @@ impl TerminalApp {
                     }
                     // MC viewer: open "Filter command" dialog
                     KeyCode::Char('|') => {
-                        if let UiMode::Viewer { filter_prompt, .. } = &mut app.ui_mode {
-                            *filter_prompt = Some(String::new());
-                        }
+                        // Use existing generic InputDialog; on submit apply filter to current viewed bytes.
+                        app.ui_mode = UiMode::InputDialog {
+                            title: "Filter command".into(),
+                            prompt: "Apply command to viewed bytes:".into(),
+                            value: String::new(),
+                            focus_ok: false,
+                            on_submit: Box::new(|app, input| {
+                                let cmd = input.trim();
+                                if cmd.is_empty() {
+                                    return Ok(());
+                                }
+                                if let Err(e) = crate::terminal::viewer_apply_filter_to_current(cmd)
+                                {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: format!("{e}"),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                } else if let UiMode::Viewer { offset, search, .. } =
+                                    &mut app.ui_mode
+                                {
+                                    *offset = 0;
+                                    *search = None;
+                                }
+                                Ok(())
+                            }),
+                        };
                     }
                     KeyCode::F(2) => {
                         // Save — no-op stub for now

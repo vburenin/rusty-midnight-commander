@@ -73,7 +73,6 @@ impl Renderer {
             show_cr,
             search_prompt,
             goto_prompt,
-            filter_prompt,
             ..
         } = &app.ui_mode
         {
@@ -90,7 +89,6 @@ impl Renderer {
                 *show_cr,
                 search_prompt,
                 goto_prompt,
-                filter_prompt,
             )?;
             painter.out.flush()?;
             return Ok(());
@@ -1121,7 +1119,6 @@ fn draw_viewer(
     show_cr: bool,
     search_prompt: &Option<String>,
     goto_prompt: &Option<String>,
-    filter_prompt: &Option<String>,
 ) -> Result<()> {
     // MC-style viewer: blue background with frame and title
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -1250,18 +1247,6 @@ fn draw_viewer(
     // Goto prompt overlay (MC-style input dialog)
     if let Some(current) = goto_prompt {
         draw_dialog_box(p, cols, rows, pal, "Goto", current, &["< OK >", "Cancel"]);
-    }
-    // Filter command overlay (MC viewer wording)
-    if let Some(current) = filter_prompt {
-        draw_dialog_box(
-            p,
-            cols,
-            rows,
-            pal,
-            "Filter command",
-            current,
-            &["< OK >", "Cancel"],
-        );
     }
     Ok(())
 }
