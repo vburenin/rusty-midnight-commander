@@ -1,49 +1,37 @@
-use crate::pathutil::ArchiveKind;
 use crate::{DirEntry, FsError, FsResult, Metadata};
-use flate2::read::GzDecoder;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tar::{Archive, EntryType};
+use std::time::UNIX_EPOCH;
 
-fn open_tar_reader(archive_path: &Path, kind: ArchiveKind) -> FsResult<Box<dyn Read>> {
-    let f = File::open(archive_path)?;
-    match kind {
-        ArchiveKind::Tar => Ok(Box::new(f)),
-        ArchiveKind::TarGz => Ok(Box::new(GzDecoder::new(f))),
-        _ => Err(FsError::Message("non-tar kind passed to tarfs".into())),
+fn norm<P: AsRef<Path>>(p: P) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.as_ref().components() {
+        match c {
+            std::path::Component::CurDir => {}
+            _ => out.push(c.as_os_str()),
+        }
     }
+    out
 }
 
-fn header_mtime(h: &tar::Header) -> SystemTime {
-    h.mtime()
-        .map(|s| UNIX_EPOCH + Duration::from_secs(s))
-        .unwrap_or(UNIX_EPOCH)
-}
-
-fn header_mode(h: &tar::Header, is_dir: bool) -> u32 {
-    h.mode().unwrap_or(if is_dir { 0o755 } else { 0o644 })
+fn empty_password() -> sevenz_rust2::Password {
+    sevenz_rust2::Password::from("")
 }
 
 pub fn list_dir(
     archive_path: &Path,
-    kind: ArchiveKind,
-    inner: &Path,
     vfs_root: &Path,
+    inner: &Path,
     show_hidden: bool,
 ) -> FsResult<Vec<DirEntry>> {
-    let reader = open_tar_reader(archive_path, kind)?;
-    let mut ar = Archive::new(reader);
+    let archive = sevenz_rust2::Archive::open(archive_path)
+        .map_err(|e| FsError::Message(format!("7z open: {e}")))?;
     let inner_norm = norm(inner);
     let mut seen_dirs: HashSet<String> = HashSet::new();
     let mut items: HashMap<String, DirEntry> = HashMap::new();
-    for entry in ar.entries()? {
-        let entry = entry?;
-        let path = entry.path()?;
-        let path = norm(path);
-        // Filter by inner prefix
+    for entry in &archive.files {
+        let path = norm(Path::new(entry.name()));
         if !path.starts_with(&inner_norm) {
             continue;
         }
@@ -57,8 +45,7 @@ pub fn list_dir(
             if !show_hidden && name.starts_with('.') {
                 continue;
             }
-            let is_dir =
-                comps.next().is_some() || entry.header().entry_type() == EntryType::Directory;
+            let is_dir = comps.next().is_some() || entry.is_directory();
             if is_dir {
                 if seen_dirs.insert(name.clone()) {
                     let p = vfs_root.join(&name);
@@ -81,10 +68,8 @@ pub fn list_dir(
                     );
                 }
             } else if !items.contains_key(&name) {
-                // File at this level
-                let size = entry.header().size().unwrap_or(0);
-                let modified = header_mtime(entry.header());
                 let p = vfs_root.join(&name);
+                let size = entry.size();
                 items.insert(
                     name.clone(),
                     DirEntry {
@@ -93,10 +78,10 @@ pub fn list_dir(
                         meta: Metadata {
                             is_dir: false,
                             is_symlink: false,
-                            is_executable: (header_mode(entry.header(), false) & 0o111) != 0,
+                            is_executable: false,
                             size,
-                            modified,
-                            permissions: header_mode(entry.header(), false),
+                            modified: UNIX_EPOCH,
+                            permissions: 0o644,
                             owner: None,
                             group: None,
                         },
@@ -106,10 +91,7 @@ pub fn list_dir(
         }
     }
     let mut out: Vec<DirEntry> = Vec::new();
-    // Add parent marker when not at host FS root of archive
-    // For archive root path like "...tar#", parent should be outside path (handled by CompositeFs)
-    let parent = vfs_root.parent();
-    if let Some(p) = parent {
+    if let Some(p) = vfs_root.parent() {
         out.push(DirEntry {
             name: "..".to_string(),
             path: p.to_path_buf(),
@@ -126,7 +108,6 @@ pub fn list_dir(
         });
     }
     let mut vals: Vec<DirEntry> = items.into_values().collect();
-    // Directories first, then files by name (case-insensitive)
     vals.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
@@ -136,32 +117,18 @@ pub fn list_dir(
     Ok(out)
 }
 
-pub fn read_file(
-    archive_path: &Path,
-    kind: ArchiveKind,
-    inner_full: &Path,
-) -> FsResult<Box<dyn Read + Send>> {
-    let reader = open_tar_reader(archive_path, kind)?;
-    let mut ar = Archive::new(reader);
-    let in_norm = norm(inner_full);
-    for entry in ar.entries()? {
-        let mut entry = entry?;
-        let path = norm(entry.path()?);
-        if path == in_norm {
-            let mut buf = Vec::new();
-            entry.read_to_end(&mut buf)?;
-            return Ok(Box::new(Cursor::new(buf)));
-        }
-    }
-    Err(FsError::Message(format!(
-        "File not found in archive: {}",
-        inner_full.display()
-    )))
+pub fn read_file(archive_path: &Path, inner_full: &Path) -> FsResult<Box<dyn Read + Send>> {
+    let mut reader = sevenz_rust2::ArchiveReader::open(archive_path, empty_password())
+        .map_err(|e| FsError::Message(format!("7z reader open: {e}")))?;
+    let name_str = inner_full.to_string_lossy().replace('\\', "/");
+    let data = reader
+        .read_file(&name_str)
+        .map_err(|e| FsError::Message(format!("7z read: {e}")))?;
+    Ok(Box::new(Cursor::new(data)))
 }
 
-pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResult<Metadata> {
+pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
     if inner_full.as_os_str().is_empty() {
-        // Root of the archive
         return Ok(Metadata {
             is_dir: true,
             is_symlink: false,
@@ -173,36 +140,29 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             group: None,
         });
     }
-    let reader = open_tar_reader(archive_path, kind)?;
-    let mut ar = Archive::new(reader);
+    let archive = sevenz_rust2::Archive::open(archive_path)
+        .map_err(|e| FsError::Message(format!("7z open: {e}")))?;
     let in_norm = norm(inner_full);
-    let mut is_dir_marker = false;
-    for entry in ar.entries()? {
-        let entry = entry?;
-        let path = norm(entry.path()?);
-        if path == in_norm {
-            let h = entry.header();
-            let is_dir = h.entry_type() == EntryType::Directory;
-            let size = h.size().unwrap_or(0);
-            let modified = header_mtime(h);
-            let mode = header_mode(h, is_dir);
+    let mut dir_marker = false;
+    for entry in &archive.files {
+        let p = norm(Path::new(entry.name()));
+        if p == in_norm {
             return Ok(Metadata {
-                is_dir,
+                is_dir: entry.is_directory(),
                 is_symlink: false,
-                is_executable: (!is_dir) && (mode & 0o111 != 0),
-                size,
-                modified,
-                permissions: mode,
+                is_executable: false,
+                size: entry.size(),
+                modified: UNIX_EPOCH,
+                permissions: if entry.is_directory() { 0o755 } else { 0o644 },
                 owner: None,
                 group: None,
             });
         }
-        if path.starts_with(&in_norm) {
-            // Any descendant implies it's a dir
-            is_dir_marker = true;
+        if p.starts_with(&in_norm) {
+            dir_marker = true;
         }
     }
-    if is_dir_marker {
+    if dir_marker {
         Ok(Metadata {
             is_dir: true,
             is_symlink: false,
@@ -221,45 +181,41 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
     }
 }
 
-pub fn copy_out(
-    archive_path: &Path,
-    kind: ArchiveKind,
-    src_inner: &Path,
-    dst: &Path,
-) -> FsResult<()> {
-    // Copy one file or a directory tree out to dst.
-    // If src_inner is a file, dst is the file path. If a directory, dst is the target dir.
-    let reader = open_tar_reader(archive_path, kind)?;
-    let mut ar = Archive::new(reader);
+pub fn copy_out(archive_path: &Path, src_inner: &Path, dst: &Path) -> FsResult<()> {
+    let meta = sevenz_rust2::Archive::open(archive_path)
+        .map_err(|e| FsError::Message(format!("7z open: {e}")))?;
+    let mut reader = sevenz_rust2::ArchiveReader::open(archive_path, empty_password())
+        .map_err(|e| FsError::Message(format!("7z reader open: {e}")))?;
     let src_norm = norm(src_inner);
     let mut copied_exact = false;
     let mut extracted_any = false;
-    for entry in ar.entries()? {
-        let mut entry = entry?;
-        let p = norm(entry.path()?);
-        if p == src_norm {
+    for f in meta.files.iter() {
+        let p = norm(Path::new(f.name()));
+        if p == src_norm && !f.is_directory() {
             copied_exact = true;
-            // exact file
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)?;
             }
+            let data = reader
+                .read_file(f.name())
+                .map_err(|e| FsError::Message(format!("7z read: {e}")))?;
             let mut out = std::fs::File::create(dst)?;
-            std::io::copy(&mut entry, &mut out)?;
-            // continue, do not early-return to avoid unused assignment warning
+            std::io::copy(&mut Cursor::new(data), &mut out)?;
         } else if p.starts_with(&src_norm) {
             extracted_any = true;
-            // Dir extraction
             let rel = p.strip_prefix(&src_norm).unwrap();
             let target = dst.join(rel);
-            if entry.header().entry_type() == EntryType::Directory || target.as_os_str().is_empty()
-            {
+            if f.is_directory() || target.as_os_str().is_empty() {
                 std::fs::create_dir_all(&target)?;
             } else {
                 if let Some(parent) = target.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
+                let data = reader
+                    .read_file(f.name())
+                    .map_err(|e| FsError::Message(format!("7z read: {e}")))?;
                 let mut out = std::fs::File::create(&target)?;
-                std::io::copy(&mut entry, &mut out)?;
+                std::io::copy(&mut Cursor::new(data), &mut out)?;
             }
         }
     }
@@ -271,16 +227,4 @@ pub fn copy_out(
             src_inner.display()
         )))
     }
-}
-
-fn norm<P: AsRef<Path>>(p: P) -> PathBuf {
-    // Normalize by removing redundant '.' and leading './'
-    let mut out = PathBuf::new();
-    for c in p.as_ref().components() {
-        match c {
-            std::path::Component::CurDir => {}
-            _ => out.push(c.as_os_str()),
-        }
-    }
-    out
 }
