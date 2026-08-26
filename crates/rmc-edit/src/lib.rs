@@ -1,5 +1,5 @@
-use anyhow::{bail, Result};
-use std::cmp::{max, min};
+use anyhow::Result;
+use std::cmp::min;
 use std::path::PathBuf;
 
 /// Basic mcedit-like buffer that is binary-safe (stores raw bytes).
@@ -156,12 +156,9 @@ impl EditorBuffer {
 
     /// Insert a UTF-8 character at the cursor. Multi-byte chars are inserted as bytes.
     pub fn insert_char(&mut self, ch: char) {
-        let mut buf = [0u8; 4];
-        let n = ch.encode_utf8(&mut [0u8; 4]).len();
-        // Extract the utf8 bytes
-        let mut b = [0u8; 4];
-        let _ = ch.encode_utf8(std::str::from_utf8_mut(&mut b[..n]).unwrap());
-        self.insert_bytes(&b[..n]);
+        let mut tmp = [0u8; 4];
+        let s = ch.encode_utf8(&mut tmp);
+        self.insert_bytes(s.as_bytes());
     }
 
     /// Insert raw bytes at cursor (binary safe).
@@ -274,8 +271,8 @@ impl EditorBuffer {
     fn ensure_cursor_visible(&mut self) {
         // Keep a soft margin by default when possible
         let margin = 4usize;
-        self.view_row = if self.row >= margin { self.row - margin } else { 0 };
-        self.view_col = if self.col >= margin { self.col - margin } else { 0 };
+        self.view_row = self.row.saturating_sub(margin);
+        self.view_col = self.col.saturating_sub(margin);
     }
 
     /// Render a window of lines for display. Non-printable bytes are shown as '.'.

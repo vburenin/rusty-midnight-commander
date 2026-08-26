@@ -92,7 +92,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
-        rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input } => {
+        rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, .. } => {
             draw_editor(p, cols, rows, pal, buf, *show_menu, status_msg.as_deref(), search_input.as_deref(), save_as_input.as_deref());
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
@@ -136,6 +136,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_editor(
     p: &mut Painter,
     cols: u16,

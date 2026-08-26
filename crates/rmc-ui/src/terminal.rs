@@ -334,7 +334,7 @@ impl TerminalApp {
                                 *status_msg = Some("Not found".into());
                             }
                         } else if let Some(name) = save_as_input.take() {
-                            let mut path = app.active_panel().cwd.join(name);
+                            let mut path = active_cwd.join(name);
                             // Normalize dir path if ended with slash
                             if path.is_dir() {
                                 path = path.join("untitled.txt");

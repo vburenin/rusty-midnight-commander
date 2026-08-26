@@ -137,7 +137,7 @@ From mcedit(1):
 - [ ] Syntax highlighting for common types
 - [ ] Macros; external filters (pipe regions to commands)
 - [ ] Search/replace with regex
-- [ ] Menu via F9; F2 save; F10 quit (and Esc Esc)
+- [x] Menu via F9; F2 save; F10 quit (and Esc Esc)
 
 ---
 
