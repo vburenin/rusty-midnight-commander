@@ -1618,7 +1618,12 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
     let menus: [&[&str]; 5] = [
         &["Copy", "Move", "Mkdir", "Delete"],
         &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-        &["User menu", "Find file", "Compare dirs"],
+        &[
+            "User menu",
+            "Find file",
+            "Directory hotlist",
+            "Compare dirs",
+        ],
         &["Layout", "Panels", "Confirmations"],
         &["Copy", "Move", "Mkdir", "Delete"],
     ];

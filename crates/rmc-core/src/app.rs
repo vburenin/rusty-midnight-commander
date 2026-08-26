@@ -106,8 +106,6 @@ pub enum UiMode {
     ShellInput,
     // Directory Hotlist
     HotlistDialog(HotlistDialogState),
-    // Directory Hotlist
-    HotlistDialog(HotlistDialogState),
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -183,8 +181,6 @@ pub struct App {
     pub subshell: Subshell,
     pub hotlist: Hotlist,
     pub pending_ctrl_x: bool,
-    pub hotlist: Hotlist,
-    pub pending_ctrl_x: bool,
 }
 
 impl App {
@@ -201,8 +197,6 @@ impl App {
             quit: false,
             ui_mode: UiMode::Normal,
             subshell: Subshell::new(),
-            hotlist: Hotlist::load_from_default_path(),
-            pending_ctrl_x: false,
             hotlist: Hotlist::load_from_default_path(),
             pending_ctrl_x: false,
         };

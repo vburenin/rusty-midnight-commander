@@ -184,6 +184,10 @@ impl TerminalApp {
                         app.subshell.cmdline.push(c);
                         app.subshell.clear_history_nav();
                     }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::HotlistDialog(state) => {
                 // Estimate list rows based on current terminal size
                 let (_cols, rows) = crossterm::terminal::size()?;
@@ -726,7 +730,12 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["User menu", "Find file", "Directory hotlist", "Compare dirs"],
+                    &[
+                        "User menu",
+                        "Find file",
+                        "Directory hotlist",
+                        "Compare dirs",
+                    ],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete"],
                 ];
@@ -1417,7 +1426,6 @@ impl TerminalApp {
             _ => {}
         }
 
-<<<<<<< HEAD
         // Global Alt-Enter: append filename to command line and enter ShellInput if necessary
         if matches!(key.code, KeyCode::Enter)
             && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
