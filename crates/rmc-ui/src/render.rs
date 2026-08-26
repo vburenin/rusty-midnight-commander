@@ -93,6 +93,22 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
+        // Full-screen Help short-circuit (after subshell/editor/viewer/diff)
+        if let rmc_core::app::UiMode::Help { state, .. } = &app.ui_mode {
+            if self.help_index.is_none() {
+                self.help_index = HelpIndex::load_default().ok();
+            }
+            draw_help(
+                &mut painter,
+                cols,
+                rows,
+                self.palette,
+                state,
+                self.help_index.as_ref(),
+            );
+            painter.out.flush()?;
+            return Ok(());
+        }
         // Otherwise draw the normal dual-pane UI
         painter.fill_line(
             0,
