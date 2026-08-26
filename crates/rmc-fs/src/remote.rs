@@ -713,25 +713,96 @@ impl RemoteClient for SmbClient {
             Ok::<(), FsError>(())
         })
     }
-    fn upload(&mut self, _local_path: &Path, _remote_path: &str) -> FsResult<()> {
-        Err(FsError::Message(
-            "SMB upload is not supported by this VFS backend".into(),
-        ))
+    fn upload(&mut self, local_path: &Path, remote_path: &str) -> FsResult<()> {
+        let (share, inner) = self.split_share_and_inner(remote_path)?;
+        let config = self.build_config();
+        let data = std::fs::read(local_path)?;
+        // Create a fresh runtime
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| FsError::Message(format!("tokio runtime: {e}")))?;
+        rt.block_on(async move {
+            let mut client = smb2::client::SmbClient::connect(config)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect: {e}")))?;
+            let mut tree = client
+                .connect_share(&share)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect_share({share}): {e}")))?;
+            // Use pipelined write for performance and auto-flush semantics
+            let _written = client
+                .write_file_pipelined(&mut tree, &inner, &data)
+                .await
+                .map_err(|e| FsError::Message(format!("smb write_file_pipelined: {e}")))?;
+            Ok::<(), FsError>(())
+        })
     }
-    fn remove_file(&mut self, _remote_path: &str) -> FsResult<()> {
-        Err(FsError::Message(
-            "SMB remove_file is not supported in this minimal implementation".into(),
-        ))
+    fn remove_file(&mut self, remote_path: &str) -> FsResult<()> {
+        let (share, inner) = self.split_share_and_inner(remote_path)?;
+        let config = self.build_config();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| FsError::Message(format!("tokio runtime: {e}")))?;
+        rt.block_on(async move {
+            let mut client = smb2::client::SmbClient::connect(config)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect: {e}")))?;
+            let mut tree = client
+                .connect_share(&share)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect_share({share}): {e}")))?;
+            client
+                .delete_file(&mut tree, &inner)
+                .await
+                .map_err(|e| FsError::Message(format!("smb delete_file: {e}")))?;
+            Ok::<(), FsError>(())
+        })
     }
-    fn remove_dir(&mut self, _remote_path: &str) -> FsResult<()> {
-        Err(FsError::Message(
-            "SMB remove_dir is not supported in this minimal implementation".into(),
-        ))
+    fn remove_dir(&mut self, remote_path: &str) -> FsResult<()> {
+        let (share, inner) = self.split_share_and_inner(remote_path)?;
+        let config = self.build_config();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| FsError::Message(format!("tokio runtime: {e}")))?;
+        rt.block_on(async move {
+            let mut client = smb2::client::SmbClient::connect(config)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect: {e}")))?;
+            let mut tree = client
+                .connect_share(&share)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect_share({share}): {e}")))?;
+            client
+                .delete_directory(&mut tree, &inner)
+                .await
+                .map_err(|e| FsError::Message(format!("smb delete_directory: {e}")))?;
+            Ok::<(), FsError>(())
+        })
     }
-    fn mkdir(&mut self, _remote_path: &str) -> FsResult<()> {
-        Err(FsError::Message(
-            "SMB mkdir is not supported in this minimal implementation".into(),
-        ))
+    fn mkdir(&mut self, remote_path: &str) -> FsResult<()> {
+        let (share, inner) = self.split_share_and_inner(remote_path)?;
+        let config = self.build_config();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| FsError::Message(format!("tokio runtime: {e}")))?;
+        rt.block_on(async move {
+            let mut client = smb2::client::SmbClient::connect(config)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect: {e}")))?;
+            let mut tree = client
+                .connect_share(&share)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect_share({share}): {e}")))?;
+            client
+                .create_directory(&mut tree, &inner)
+                .await
+                .map_err(|e| FsError::Message(format!("smb create_directory: {e}")))?;
+            Ok::<(), FsError>(())
+        })
     }
 }
 
