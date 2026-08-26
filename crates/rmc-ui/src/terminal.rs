@@ -100,10 +100,8 @@ impl TerminalApp {
                     KeyCode::Backspace => {
                         value.pop();
                     }
-                    KeyCode::Char(c) => {
-                        if key.modifiers.is_empty() {
-                            value.push(c);
-                        }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        value.push(c);
                     }
                     _ => {}
                 }
@@ -145,10 +143,8 @@ impl TerminalApp {
                             value.pop();
                         }
                     }
-                    KeyCode::Char(c) => {
-                        if !*focus_ok && key.modifiers.is_empty() {
-                            value.push(c);
-                        }
+                    KeyCode::Char(c) if !*focus_ok && key.modifiers.is_empty() => {
+                        value.push(c);
                     }
                     _ => {}
                 }
@@ -537,16 +533,14 @@ impl TerminalApp {
                         let _ = buf.undo();
                         *pending_quit = false;
                     }
-                    KeyCode::Char(c) => {
-                        if key.modifiers.is_empty() {
-                            if let Some(s) = search_input {
-                                s.push(c);
-                            } else if let Some(s) = save_as_input {
-                                s.push(c);
-                            } else {
-                                buf.insert_char(c);
-                                *pending_quit = false;
-                            }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        if let Some(s) = search_input {
+                            s.push(c);
+                        } else if let Some(s) = save_as_input {
+                            s.push(c);
+                        } else {
+                            buf.insert_char(c);
+                            *pending_quit = false;
                         }
                     }
                     _ => {}

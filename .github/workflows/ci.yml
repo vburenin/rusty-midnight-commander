@@ -11,10 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust
+      - name: Install Rust 1.98.0 with components
         uses: dtolnay/rust-toolchain@stable
-      - name: Install rustfmt and clippy for pinned toolchain
-        run: rustup component add --toolchain 1.88.0-x86_64-unknown-linux-gnu rustfmt clippy
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Format

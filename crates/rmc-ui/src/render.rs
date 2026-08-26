@@ -1166,8 +1166,8 @@ fn draw_copy_move_dialog(
         ("Dive into subdir if exists", dive_into_subdir),
         ("Stable symlinks", stable_symlinks),
     ];
-    let mut cy = y + 7;
     for (i, (label, on)) in checks.iter().enumerate() {
+        let cy = y + 7 + i as u16;
         p.goto(x + 4, cy);
         let focused = matches!(
             (i, focus),
@@ -1183,7 +1183,6 @@ fn draw_copy_move_dialog(
             p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
         }
         p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
-        cy += 1;
     }
     // Buttons
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
