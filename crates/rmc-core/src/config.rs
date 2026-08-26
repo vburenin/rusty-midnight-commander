@@ -114,6 +114,11 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
             Refresh,
         );
+        // Subshell toggle (C-o)
+        m.bind(
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            Action::ToggleSubshell,
+        );
         // Function keys
         m.bind(new_event(KeyCode::F(1)), ShowHelp);
         m.bind(new_event(KeyCode::F(3)), ViewFile);
@@ -226,6 +231,7 @@ fn parse_action(s: &str) -> Option<Action> {
     match s {
         "Quit" => Some(Quit),
         "Refresh" => Some(Refresh),
+        "ToggleSubshell" => Some(Action::ToggleSubshell),
         "ToggleHidden" => Some(ToggleHidden),
         "SwapPanels" => Some(SwapPanels),
         "FocusMenu" => Some(FocusMenu),

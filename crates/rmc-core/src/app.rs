@@ -2,6 +2,7 @@ use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::find::FindDialogState;
 use crate::panel::{FileEntry, PanelState, SortBy};
+use crate::subshell::Subshell;
 use anyhow::Result;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
@@ -69,6 +70,8 @@ pub enum UiMode {
     },
     MenuFocused,
     Help,
+    /// Command line at bottom has focus for editing/executing.
+    ShellInput,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +109,8 @@ pub struct App {
     pub show_hidden: bool,
     pub quit: bool,
     pub ui_mode: UiMode,
+    /// Subshell / command line state and last output.
+    pub subshell: Subshell,
 }
 
 impl App {
@@ -121,6 +126,7 @@ impl App {
             show_hidden: false,
             quit: false,
             ui_mode: UiMode::Normal,
+            subshell: Subshell::new(),
         };
         app.reload_panels()?;
         Ok(app)
@@ -177,6 +183,12 @@ impl App {
             Quit => self.quit = true,
             Refresh => {
                 self.reload_panels()?;
+            }
+            ToggleSubshell => {
+                // Toggle full-screen subshell/output view.
+                self.subshell.toggle_output_screen();
+                // Ensure we leave any transient prompt/dialog modes.
+                self.ui_mode = UiMode::Normal;
             }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
