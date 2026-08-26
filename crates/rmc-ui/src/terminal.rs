@@ -4,12 +4,13 @@ use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use rmc_core::actions::Action;
+use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{App, UiMode};
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
@@ -118,6 +119,56 @@ pub(crate) fn viewer_apply_filter_to_current(cmd: &str) -> anyhow::Result<()> {
     }
 }
 
+// Hit-test helpers mirroring render.rs packing logic
+fn menu_top_index_from_x(x: u16) -> Option<usize> {
+    // Labels: " Left ", " File ", " Command ", " Options ", " Right "
+    // Placed sequentially starting at x=0
+    let items = [" Left ", " File ", " Command ", " Options ", " Right "];
+    let mut cur = 0u16;
+    for (i, it) in items.iter().enumerate() {
+        let start = cur;
+        let end = cur + it.len() as u16; // exclusive
+        if x >= start && x < end {
+            return Some(i);
+        }
+        cur = end;
+    }
+    None
+}
+
+fn fbar_function_from_xy(x: u16, y: u16, cols: u16, rows: u16) -> Option<u8> {
+    // Bottom row only
+    if y != rows.saturating_sub(1) {
+        return None;
+    }
+    // Packing from render::draw_fbar: number, label, space
+    let labels = [
+        "Help", "Menu", "View", "Edit", "Copy", "RenMov", "Mkdir", "Delete", "PullDn", "Quit",
+    ];
+    let mut cur_x = 0u16;
+    for (i, lab) in labels.iter().enumerate() {
+        let num_str = if i == 9 { "10" } else { &(i + 1).to_string() };
+        let num_len = num_str.len() as u16;
+        let lab_len = lab.len() as u16;
+        let seg_start = cur_x;
+        let seg_end = {
+            let mut e = cur_x + num_len + lab_len;
+            if e < cols {
+                e += 1; // trailing space if fits
+            }
+            e.min(cols)
+        };
+        if x >= seg_start && x < seg_end {
+            return Some(if i == 9 { 10 } else { (i + 1) as u8 });
+        }
+        cur_x = seg_end;
+        if cur_x >= cols {
+            break;
+        }
+    }
+    None
+}
+
 impl TerminalApp {
     fn apply_sort_dialog(
         app: &mut App,
@@ -149,6 +200,9 @@ impl TerminalApp {
         let mut renderer = Renderer::new(palette);
         let mut last_draw = Instant::now();
         // pending_ctrl_x lives on App; no local flag here
+        // Double-click detection for listing rows
+        let mut last_click_time: Option<Instant> = None;
+        let mut last_click_target: Option<(PaneSide, usize)> = None;
 
         loop {
             // Compute content rows for page/scroll visibility
@@ -243,6 +297,207 @@ impl TerminalApp {
                             rmc_core::actions::PaneSide::Right => right_capacity,
                         };
                         Self::handle_key(app, key, active_capacity)?;
+                    }
+                    Event::Mouse(mev) => {
+                        // Ignore mouse outside Normal panels mode and while subshell full-screen
+                        if app.subshell.show_output_screen {
+                            continue;
+                        }
+                        if !matches!(app.ui_mode, UiMode::Normal) {
+                            continue;
+                        }
+                        // Coordinates
+                        let mx = mev.column;
+                        let my = mev.row;
+                        // Top menu bar click: open the corresponding top menu
+                        if my == 0 {
+                            if let Some(top_idx) = menu_top_index_from_x(mx) {
+                                if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                                    app.ui_mode = UiMode::Menu {
+                                        top_index: top_idx,
+                                        selected_index: 0,
+                                    };
+                                }
+                            }
+                            continue;
+                        }
+                        // Bottom function bar: dispatch F1..F10
+                        if let Some(n) = fbar_function_from_xy(mx, my, cols, rows) {
+                            if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                                let key = KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE);
+                                // Page size based on active panel for any actions that need it
+                                let active_capacity = match app.active {
+                                    PaneSide::Left => left_capacity,
+                                    PaneSide::Right => right_capacity,
+                                };
+                                let _ = Self::handle_key(app, key, active_capacity);
+                            }
+                            continue;
+                        }
+                        // Panel rectangles
+                        let mid = cols / 2;
+                        let left_rect = (0u16, panel_top, left_w, (content_bottom - panel_top));
+                        let right_rect = (mid, panel_top, right_w, (content_bottom - panel_top));
+                        let in_rect =
+                            |x: u16, y: u16, rx: u16, ry: u16, rw: u16, rh: u16| -> bool {
+                                x >= rx
+                                    && x < rx.saturating_add(rw)
+                                    && y >= ry
+                                    && y < ry.saturating_add(rh)
+                            };
+                        let mut target_side: Option<PaneSide> = None;
+                        if in_rect(mx, my, left_rect.0, left_rect.1, left_rect.2, left_rect.3) {
+                            target_side = Some(PaneSide::Left);
+                        } else if in_rect(
+                            mx,
+                            my,
+                            right_rect.0,
+                            right_rect.1,
+                            right_rect.2,
+                            right_rect.3,
+                        ) {
+                            target_side = Some(PaneSide::Right);
+                        }
+                        // Scroll wheel over a panel: move cursor and activate that panel
+                        if matches!(
+                            mev.kind,
+                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                        ) {
+                            if let Some(side) = target_side {
+                                app.active = side;
+                                let up = matches!(mev.kind, MouseEventKind::ScrollUp);
+                                if up {
+                                    app.handle_action(Action::MoveUp)?;
+                                } else {
+                                    app.handle_action(Action::MoveDown)?;
+                                }
+                                // Best-effort ensure visible now (renderer will also fix up)
+                                if matches!(side, PaneSide::Left) {
+                                    app.left.ensure_visible(left_capacity);
+                                } else {
+                                    app.right.ensure_visible(right_capacity);
+                                }
+                            }
+                            continue;
+                        }
+                        // Left/right click inside listing content: hit test row/column
+                        if let Some(side) = target_side {
+                            // Activate the clicked panel
+                            app.active = side;
+                            // Panel geometry
+                            let (px, _py, pw, ph) = if matches!(side, PaneSide::Left) {
+                                left_rect
+                            } else {
+                                right_rect
+                            };
+                            // Listing content area
+                            let content_top = _py + 2;
+                            let content_h = ph.saturating_sub(4);
+                            // Only rows within listing body move the cursor / toggle / enter
+                            if my >= content_top && my < content_top.saturating_add(content_h) {
+                                let row_i = (my - content_top) as usize;
+                                // Decide column for Brief two-column format
+                                let (two_cols, per_col_width) = {
+                                    let w = pw;
+                                    if w >= 30
+                                        && matches!(
+                                            if matches!(side, PaneSide::Left) {
+                                                app.left.listing
+                                            } else {
+                                                app.right.listing
+                                            },
+                                            rmc_core::panel::ListingFormat::Brief
+                                        )
+                                    {
+                                        (true, (w - 3) / 2)
+                                    } else {
+                                        (false, w - 2)
+                                    }
+                                };
+                                // Compute target index
+                                let (scroll_top, entries_len) = if matches!(side, PaneSide::Left) {
+                                    (app.left.scroll_top, app.left.entries.len())
+                                } else {
+                                    (app.right.scroll_top, app.right.entries.len())
+                                };
+                                let mut idx: Option<usize> = None;
+                                if two_cols {
+                                    let inner_x = mx.saturating_sub(px);
+                                    let right_col_start = 2 + per_col_width;
+                                    let use_right = inner_x >= right_col_start; // >= x+2+per_col_width
+                                    let base = if use_right {
+                                        scroll_top + row_i + content_h as usize
+                                    } else {
+                                        scroll_top + row_i
+                                    };
+                                    if base < entries_len {
+                                        idx = Some(base);
+                                    }
+                                } else {
+                                    let base = scroll_top + row_i;
+                                    if base < entries_len {
+                                        idx = Some(base);
+                                    }
+                                }
+                                // Apply left/right button semantics
+                                if let Some(sel_idx) = idx {
+                                    // Move cursor to clicked row
+                                    if matches!(side, PaneSide::Left) {
+                                        app.left.cursor = sel_idx;
+                                        app.left.ensure_visible(left_capacity);
+                                    } else {
+                                        app.right.cursor = sel_idx;
+                                        app.right.ensure_visible(right_capacity);
+                                    }
+                                    match mev.kind {
+                                        MouseEventKind::Down(MouseButton::Left) => {
+                                            let now = Instant::now();
+                                            let is_double = if let (Some(t0), Some((s0, i0))) =
+                                                (last_click_time, last_click_target)
+                                            {
+                                                now.duration_since(t0) <= Duration::from_millis(400)
+                                                    && s0 == side
+                                                    && i0 == sel_idx
+                                            } else {
+                                                false
+                                            };
+                                            last_click_time = Some(now);
+                                            last_click_target = Some((side, sel_idx));
+                                            if is_double {
+                                                let key = KeyEvent::new(
+                                                    KeyCode::Enter,
+                                                    KeyModifiers::NONE,
+                                                );
+                                                let page = if matches!(side, PaneSide::Left) {
+                                                    left_capacity
+                                                } else {
+                                                    right_capacity
+                                                };
+                                                let _ = Self::handle_key(app, key, page);
+                                            }
+                                        }
+                                        MouseEventKind::Down(MouseButton::Right) => {
+                                            // Toggle mark (Insert) without entering
+                                            let key =
+                                                KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE);
+                                            let page = if matches!(side, PaneSide::Left) {
+                                                left_capacity
+                                            } else {
+                                                right_capacity
+                                            };
+                                            let _ = Self::handle_key(app, key, page);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                continue;
+                            } else {
+                                // Click within panel but outside listing body: just activate
+                                continue;
+                            }
+                        }
+                        // Otherwise ignore
+                        // nothing
                     }
                     Event::Resize(c, r) => {
                         // Resize PTY if alive; redraw next loop
