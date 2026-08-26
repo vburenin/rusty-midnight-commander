@@ -196,11 +196,12 @@ fn assign_pair(
             }
             _ => {}
         },
-        "statusbar" if k.as_str() == "_default_" => {
-            pal.statusbar_fg = fg;
-            pal.statusbar_bg = bg;
+        "statusbar" => {
+            if k.as_str() == "_default_" {
+                pal.statusbar_fg = fg;
+                pal.statusbar_bg = bg;
+            }
         }
-        "statusbar" => {}
         _ => {}
     }
     Ok(())
