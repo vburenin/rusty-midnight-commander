@@ -1,9 +1,9 @@
-//! Remote VFS backends (FTP/SFTP) and helpers.
+//! Remote VFS backends (FTP/SFTP/FISH/SMB) and helpers.
 //!
 //! Clean-room implementation to support MC-like `ftp://` and `sftp://` URLs.
 //! Networking is performed synchronously. Unit tests avoid live networking by
 //! exercising parsers and calling the `*_with_client` helpers with mock clients.
-use crate::{DirEntry, FsError, FsResult, Metadata};
+use crate::{pathutil, DirEntry, FsError, FsResult, Metadata};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
@@ -15,6 +15,8 @@ use std::time::SystemTime;
 pub enum RemoteScheme {
     Ftp,
     Sftp,
+    Fish,
+    Smb,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,8 +30,7 @@ pub struct RemoteUrl {
 }
 
 pub fn is_remote_url(path: &Path) -> bool {
-    let s = path.as_os_str().to_string_lossy();
-    s.starts_with("ftp://") || s.starts_with("sftp://")
+    pathutil::extract_remote_canonical_url(path).is_some()
 }
 
 pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
@@ -37,6 +38,10 @@ pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
         (RemoteScheme::Ftp, t)
     } else if let Some(t) = s.strip_prefix("sftp://") {
         (RemoteScheme::Sftp, t)
+    } else if let Some(t) = s.strip_prefix("fish://") {
+        (RemoteScheme::Fish, t)
+    } else if let Some(t) = s.strip_prefix("smb://") {
+        (RemoteScheme::Smb, t)
     } else {
         return Err(FsError::Message("unsupported remote scheme".into()));
     };
@@ -83,8 +88,12 @@ pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
 }
 
 pub fn parse_remote_url(path: &Path) -> Result<RemoteUrl, FsError> {
-    let s = path.as_os_str().to_string_lossy();
-    parse_remote_url_str(&s)
+    if let Some(canon) = pathutil::extract_remote_canonical_url(path) {
+        parse_remote_url_str(&canon)
+    } else {
+        let s = path.as_os_str().to_string_lossy();
+        parse_remote_url_str(&s)
+    }
 }
 
 fn parent_marker(vfs_root: PathBuf) -> DirEntry {
@@ -108,6 +117,8 @@ fn remote_parent_path(url: &RemoteUrl) -> PathBuf {
     let mut parent = PathBuf::from(match url.scheme {
         RemoteScheme::Ftp => format!("ftp://{}", url.authority()),
         RemoteScheme::Sftp => format!("sftp://{}", url.authority()),
+        RemoteScheme::Fish => format!("fish://{}", url.authority()),
+        RemoteScheme::Smb => format!("smb://{}", url.authority()),
     });
     // normalize parent of current path
     let cur = Path::new(&url.path);
@@ -153,6 +164,8 @@ impl RemoteUrl {
         match self.scheme {
             RemoteScheme::Ftp => format!("ftp://{}", self.authority()),
             RemoteScheme::Sftp => format!("sftp://{}", self.authority()),
+            RemoteScheme::Fish => format!("fish://{}", self.authority()),
+            RemoteScheme::Smb => format!("smb://{}", self.authority()),
         }
     }
     pub fn to_string_path(&self) -> String {
@@ -480,6 +493,248 @@ impl RemoteClient for SftpClient {
     }
 }
 
+// -------- FISH implementation (via system `ssh` binary executing shell commands) --------
+struct FishClient {
+    user_at_host: String,
+    port: Option<u16>,
+}
+
+impl FishClient {
+    fn connect(url: &RemoteUrl) -> FsResult<Self> {
+        let user = url.user.clone().unwrap_or_else(whoami::username);
+        let id = format!("{user}@{}", url.host);
+        Ok(Self {
+            user_at_host: id,
+            port: url.port,
+        })
+    }
+    fn ssh_cmd(&self) -> Command {
+        let mut cmd = Command::new("ssh");
+        cmd.arg("-T"); // disable tty allocation, no interactive
+        if let Some(p) = self.port {
+            cmd.arg("-p").arg(p.to_string());
+        }
+        cmd.arg(&self.user_at_host);
+        cmd
+    }
+    fn run_simple(&self, remote_sh: &str) -> FsResult<std::process::Output> {
+        // Run a single remote shell command via `sh -lc "<remote_sh>"`
+        let mut cmd = self.ssh_cmd();
+        cmd.arg("sh").arg("-lc").arg(remote_sh);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = cmd
+            .output()
+            .map_err(|e| FsError::Message(format!("ssh exec: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(FsError::Message(format!("ssh error: {err}")));
+        }
+        Ok(out)
+    }
+}
+
+impl RemoteClient for FishClient {
+    fn list(&mut self, path: &str) -> FsResult<Vec<RemoteEntry>> {
+        // Use POSIX ls -la format; filter '.' and '..'
+        let escaped = shell_escape(path);
+        let sh =
+            format!("LC_ALL=C ls -l {escaped} 2>/dev/null || /bin/ls -l {escaped} 2>/dev/null");
+        let out = self.run_simple(&sh)?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut entries = Vec::new();
+        for line in stdout.lines() {
+            if let Some(ent) = parse_unix_list_line(line) {
+                entries.push(ent);
+            }
+        }
+        Ok(entries)
+    }
+    fn download(&mut self, remote_path: &str, local_path: &Path) -> FsResult<()> {
+        // ssh ... "cat <remote_path>" > local
+        let mut cmd = self.ssh_cmd();
+        let sh = format!("exec cat {}", shell_escape(remote_path));
+        cmd.arg("sh").arg("-lc").arg(sh);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = cmd
+            .output()
+            .map_err(|e| FsError::Message(format!("ssh download: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(FsError::Message(format!("ssh cat failed: {err}")));
+        }
+        std::fs::write(local_path, &out.stdout)?;
+        Ok(())
+    }
+    fn upload(&mut self, local_path: &Path, remote_path: &str) -> FsResult<()> {
+        // Pipe file to remote `cat > path`
+        let data = std::fs::read(local_path)?;
+        let mut cmd = self.ssh_cmd();
+        let sh = format!("exec sh -c 'cat > {}'", shell_escape(remote_path));
+        cmd.arg("sh").arg("-lc").arg(sh);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("ssh upload spawn: {e}")))?;
+        {
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("ssh stdin".into()))?;
+            stdin
+                .write_all(&data)
+                .map_err(|e| FsError::Message(format!("ssh upload write: {e}")))?;
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("ssh upload wait: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(FsError::Message(format!("ssh upload failed: {err}")));
+        }
+        Ok(())
+    }
+    fn remove_file(&mut self, remote_path: &str) -> FsResult<()> {
+        let sh = format!("exec rm -f {}", shell_escape(remote_path));
+        let _ = self.run_simple(&sh)?;
+        Ok(())
+    }
+    fn remove_dir(&mut self, remote_path: &str) -> FsResult<()> {
+        let sh = format!("exec rmdir {}", shell_escape(remote_path));
+        let _ = self.run_simple(&sh)?;
+        Ok(())
+    }
+    fn mkdir(&mut self, remote_path: &str) -> FsResult<()> {
+        let sh = format!("exec mkdir -p {}", shell_escape(remote_path));
+        let _ = self.run_simple(&sh)?;
+        Ok(())
+    }
+}
+
+// -------- SMB implementation (via smb2 crate; async runtime per-call) --------
+struct SmbClient {
+    url: RemoteUrl,
+}
+
+impl SmbClient {
+    fn new(url: &RemoteUrl) -> Self {
+        Self { url: url.clone() }
+    }
+    fn split_share_and_inner(&self, full_path: &str) -> FsResult<(String, String)> {
+        let mut segments = full_path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty());
+        let share = segments
+            .next()
+            .ok_or_else(|| FsError::Message("smb path must include a share".into()))?;
+        let rem: String = segments.collect::<Vec<_>>().join("/");
+        let inner = if rem.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", rem)
+        };
+        Ok((share.to_string(), inner))
+    }
+    fn build_config(&self) -> smb2::client::ClientConfig {
+        smb2::client::ClientConfig {
+            addr: format!("{}:{}", self.url.host, self.url.port.unwrap_or(445)),
+            timeout: std::time::Duration::from_secs(10),
+            username: self.url.user.clone().unwrap_or_default(),
+            password: self.url.pass.clone().unwrap_or_default(),
+            domain: String::new(),
+            auto_reconnect: false,
+            compression: false,
+            dfs_enabled: true,
+            dfs_target_overrides: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl RemoteClient for SmbClient {
+    fn list(&mut self, path: &str) -> FsResult<Vec<RemoteEntry>> {
+        let (share, inner) = self.split_share_and_inner(path)?;
+        let config = self.build_config();
+        // Create a fresh runtime to run the async API
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| FsError::Message(format!("tokio runtime: {e}")))?;
+        rt.block_on(async move {
+            let mut client = smb2::client::SmbClient::connect(config)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect: {e}")))?;
+            let mut tree = client
+                .connect_share(&share)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect_share({share}): {e}")))?;
+            let list = client
+                .list_directory(&mut tree, &inner)
+                .await
+                .map_err(|e| FsError::Message(format!("smb list_directory: {e}")))?;
+            let mut out = Vec::with_capacity(list.len());
+            for e in list {
+                out.push(RemoteEntry {
+                    name: e.name.clone(),
+                    is_dir: e.is_directory,
+                    size: e.size,
+                });
+            }
+            Ok::<Vec<RemoteEntry>, FsError>(out)
+        })
+    }
+    fn download(&mut self, remote_path: &str, local_path: &Path) -> FsResult<()> {
+        let (share, inner) = self.split_share_and_inner(remote_path)?;
+        let config = self.build_config();
+        let parent = local_path.parent().map(PathBuf::from);
+        let dst = local_path.to_path_buf();
+        // Create a fresh runtime
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| FsError::Message(format!("tokio runtime: {e}")))?;
+        rt.block_on(async move {
+            let mut client = smb2::client::SmbClient::connect(config)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect: {e}")))?;
+            let mut tree = client
+                .connect_share(&share)
+                .await
+                .map_err(|e| FsError::Message(format!("smb connect_share({share}): {e}")))?;
+            let data = client
+                .read_file(&mut tree, &inner)
+                .await
+                .map_err(|e| FsError::Message(format!("smb read_file: {e}")))?;
+            if let Some(p) = parent {
+                let _ = std::fs::create_dir_all(p);
+            }
+            std::fs::write(&dst, &data)?;
+            Ok::<(), FsError>(())
+        })
+    }
+    fn upload(&mut self, _local_path: &Path, _remote_path: &str) -> FsResult<()> {
+        Err(FsError::Message(
+            "SMB upload is not supported by this VFS backend".into(),
+        ))
+    }
+    fn remove_file(&mut self, _remote_path: &str) -> FsResult<()> {
+        Err(FsError::Message(
+            "SMB remove_file is not supported in this minimal implementation".into(),
+        ))
+    }
+    fn remove_dir(&mut self, _remote_path: &str) -> FsResult<()> {
+        Err(FsError::Message(
+            "SMB remove_dir is not supported in this minimal implementation".into(),
+        ))
+    }
+    fn mkdir(&mut self, _remote_path: &str) -> FsResult<()> {
+        Err(FsError::Message(
+            "SMB mkdir is not supported in this minimal implementation".into(),
+        ))
+    }
+}
+
 fn shell_escape(s: &str) -> String {
     // Wrap in single quotes and escape existing single quotes by closing/opening
     if s.is_empty() {
@@ -513,6 +768,14 @@ fn with_client<T>(
         }
         RemoteScheme::Sftp => {
             let mut c = SftpClient::connect(url)?;
+            f(&mut c)
+        }
+        RemoteScheme::Fish => {
+            let mut c = FishClient::connect(url)?;
+            f(&mut c)
+        }
+        RemoteScheme::Smb => {
+            let mut c = SmbClient::new(url);
             f(&mut c)
         }
     }

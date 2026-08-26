@@ -1,5 +1,31 @@
 use std::path::{Component, Path, PathBuf};
 
+/// Return a canonical remote URL if `path` encodes a remote location.
+/// Supports:
+/// - URI schemes: ftp://, sftp://, fish://, smb://
+/// - Anchor-style: .../#fish:<rest>, .../#smb:<rest>
+///   The returned string is a normalized URI (e.g. fish://<rest>).
+pub fn extract_remote_canonical_url(path: &Path) -> Option<String> {
+    let s = path.as_os_str().to_string_lossy();
+    for scheme in ["ftp://", "sftp://", "fish://", "smb://"] {
+        if s.starts_with(scheme) {
+            return Some(s.to_string());
+        }
+    }
+    // Look for an anchor component ending with '#', and check if it is "#fish:" or "#smb:"
+    // Accept both absolute and relative paths; scan raw string for the markers for simplicity.
+    if let Some(idx) = s.find("#fish:") {
+        // Everything after "#fish:" is the authority+path
+        let rest = &s[idx + "#fish:".len()..];
+        return Some(format!("fish://{rest}"));
+    }
+    if let Some(idx) = s.find("#smb:") {
+        let rest = &s[idx + "#smb:".len()..];
+        return Some(format!("smb://{rest}"));
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveKind {
     Tar,

@@ -30,6 +30,8 @@ gpt_disk_types = "0.16"
 ar = "0.9"
 xz2 = "0.1"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
+tokio = { version = "1.39", features = ["rt", "rt-multi-thread"] }
+smb2 = "0.19"
 
 [dev-dependencies]
 
