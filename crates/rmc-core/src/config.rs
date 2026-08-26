@@ -144,9 +144,10 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
             Sort(SortBy::Size),
         );
+        // Alt-t cycles listing format per MC
         m.bind(
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
-            Sort(SortBy::Time),
+            Action::CycleListingFormat,
         );
         // Selection toggles
         m.bind(
@@ -243,6 +244,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "ShowUserMenu" | "UserMenu" => Some(ShowUserMenu),
         "FocusMenu" => Some(FocusMenu),
         "ShowHelp" => Some(ShowHelp),
+        "CycleListingFormat" => Some(CycleListingFormat),
         "MoveUp" => Some(MoveUp),
         "MoveDown" => Some(MoveDown),
         "PageUp" => Some(PageUp),
@@ -264,6 +266,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "ViewerQuit" => Some(ViewerQuit),
         "ViewerToggleHex" => Some(ViewerToggleHex),
         "SortName" => Some(Sort(SortBy::Name)),
+        "SortExt" => Some(Sort(SortBy::Ext)),
         "SortSize" => Some(Sort(SortBy::Size)),
         "SortTime" => Some(Sort(SortBy::Time)),
         "OpenHotlist" => Some(OpenHotlist),

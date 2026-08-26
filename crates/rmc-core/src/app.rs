@@ -53,6 +53,14 @@ pub enum UiMode {
         search_prompt: Option<String>,
     },
     Diff(DiffState),
+    // Sort order dialog for Left/Right panel
+    SortDialog {
+        side: PaneSide,
+        focus_index: usize,
+        by: SortBy,
+        reverse: bool,
+        dirs_first: bool,
+    },
     Editor {
         buf: EditorBuffer,
         show_menu: bool,
@@ -266,6 +274,15 @@ impl App {
                 // Ensure we leave any transient prompt/dialog modes.
                 self.ui_mode = UiMode::Normal;
             }
+            CycleListingFormat => {
+                use crate::panel::ListingFormat::*;
+                let p = self.active_panel_mut();
+                p.listing = match p.listing {
+                    Full => Brief,
+                    Brief => Long,
+                    Long => Full,
+                };
+            }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.reload_panels()?;
@@ -393,6 +410,7 @@ impl App {
             Sort(sb) => {
                 let (by, _dir) = match sb {
                     SortByAction::Name => (SortBy::Name, self.active_panel().sort_dir),
+                    SortByAction::Ext => (SortBy::Ext, self.active_panel().sort_dir),
                     SortByAction::Size => (SortBy::Size, self.active_panel().sort_dir),
                     SortByAction::Time => (SortBy::Time, self.active_panel().sort_dir),
                 };

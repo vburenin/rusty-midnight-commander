@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license.workspace = true
 authors.workspace = true
-description = "Rusty Midnight Commander - rmc binary"
+description = "Rusty Midnight Commander - mcr binary"
 repository = "https://github.com/vburenin/rusty-midnight-commander"
 autobins = false
 
