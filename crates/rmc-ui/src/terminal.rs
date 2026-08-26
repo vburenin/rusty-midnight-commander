@@ -4,7 +4,7 @@ use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -497,7 +497,7 @@ impl TerminalApp {
                             }
                         }
                         // Otherwise ignore
-                        let _ = mev;
+                        // nothing
                     }
                     Event::Resize(c, r) => {
                         // Resize PTY if alive; redraw next loop
