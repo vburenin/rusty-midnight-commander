@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{UNIX_EPOCH};
 use zip::read::ZipArchive;
 
 pub fn list_dir(archive_path: &Path, vfs_root: &Path, inner: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
@@ -52,10 +52,6 @@ pub fn list_dir(archive_path: &Path, vfs_root: &Path, inner: &Path, show_hidden:
                 }
             } else if !items.contains_key(&name) {
                 let p = vfs_root.join(&name);
-                let modified = file.last_modified().to_time().map(|t| {
-                    let secs = t.unix_timestamp() as u64;
-                    UNIX_EPOCH + Duration::from_secs(secs)
-                }).unwrap_or(UNIX_EPOCH);
                 items.insert(
                     name.clone(),
                     DirEntry {
@@ -66,7 +62,7 @@ pub fn list_dir(archive_path: &Path, vfs_root: &Path, inner: &Path, show_hidden:
                             is_symlink: false,
                             is_executable: false,
                             size: file.size(),
-                            modified,
+                            modified: UNIX_EPOCH,
                             permissions: 0o644,
                             owner: None,
                             group: None,
@@ -183,20 +179,21 @@ pub fn copy_out(archive_path: &Path, src_inner: &Path, dst: &Path) -> FsResult<(
     let f = File::open(archive_path)?;
     let mut ar = ZipArchive::new(f).map_err(|e| FsError::Message(format!("zip open: {e}")))?;
     let src_norm = norm(src_inner);
-    let mut matched_any = false;
+    let mut copied_exact = false;
+    let mut extracted_any = false;
     for i in 0..ar.len() {
         let mut file = ar.by_index(i).map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
         let p = norm(Path::new(file.name()));
         if p == src_norm && !file.is_dir() {
-            matched_any = true;
+            copied_exact = true;
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let mut out = std::fs::File::create(dst)?;
             std::io::copy(&mut file, &mut out)?;
-            return Ok(());
+            // continue extracting others not needed
         } else if p.starts_with(&src_norm) {
-            matched_any = true;
+            extracted_any = true;
             let rel = p.strip_prefix(&src_norm).unwrap();
             let target = dst.join(rel);
             if file.is_dir() || target.as_os_str().is_empty() {
@@ -210,7 +207,7 @@ pub fn copy_out(archive_path: &Path, src_inner: &Path, dst: &Path) -> FsResult<(
             }
         }
     }
-    if matched_any {
+    if copied_exact || extracted_any {
         Ok(())
     } else {
         Err(FsError::Message(format!(

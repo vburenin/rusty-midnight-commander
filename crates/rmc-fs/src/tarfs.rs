@@ -34,7 +34,7 @@ pub fn list_dir(archive_path: &Path, kind: ArchiveKind, inner: &Path, vfs_root: 
     let mut seen_dirs: HashSet<String> = HashSet::new();
     let mut items: HashMap<String, DirEntry> = HashMap::new();
     for entry in ar.entries()? {
-        let mut entry = entry?;
+        let entry = entry?;
         let path = entry.path()?.to_path_buf();
         let path = norm(&path);
         // Filter by inner prefix
@@ -218,21 +218,22 @@ pub fn copy_out(archive_path: &Path, kind: ArchiveKind, src_inner: &Path, dst: &
     let reader = open_tar_reader(archive_path, kind)?;
     let mut ar = Archive::new(reader);
     let src_norm = norm(src_inner);
-    let mut matched_any = false;
+    let mut copied_exact = false;
+    let mut extracted_any = false;
     for entry in ar.entries()? {
         let mut entry = entry?;
         let p = norm(&entry.path()?.to_path_buf());
         if p == src_norm {
-            matched_any = true;
+            copied_exact = true;
             // exact file
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let mut out = std::fs::File::create(dst)?;
             std::io::copy(&mut entry, &mut out)?;
-            return Ok(());
+            // continue, do not early-return to avoid unused assignment warning
         } else if p.starts_with(&src_norm) {
-            matched_any = true;
+            extracted_any = true;
             // Dir extraction
             let rel = p.strip_prefix(&src_norm).unwrap();
             let target = dst.join(rel);
@@ -247,7 +248,7 @@ pub fn copy_out(archive_path: &Path, kind: ArchiveKind, src_inner: &Path, dst: &
             }
         }
     }
-    if matched_any {
+    if copied_exact || extracted_any {
         Ok(())
     } else {
         Err(FsError::Message(format!(

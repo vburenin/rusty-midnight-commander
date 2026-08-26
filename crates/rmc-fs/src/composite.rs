@@ -4,7 +4,6 @@ use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 /// Composite virtual filesystem that routes operations to:
 /// - Local filesystem

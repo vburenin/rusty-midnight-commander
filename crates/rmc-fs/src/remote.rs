@@ -8,7 +8,6 @@
 use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 #[derive(Debug, Default)]
 pub struct FtpFs;
