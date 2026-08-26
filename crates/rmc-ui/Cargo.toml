@@ -15,6 +15,7 @@ time.workspace = true
 rmc-core = { path = "../rmc-core" }
 rmc-fs = { path = "../rmc-fs" }
 rmc-edit = { path = "../rmc-edit" }
+rmc-diff = { path = "../rmc-diff" }
 fs2.workspace = true
 whoami.workspace = true
 hostname.workspace = true

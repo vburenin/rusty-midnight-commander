@@ -1,0 +1,16 @@
+[package]
+name = "rmc-diff"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "In-process diff engine for Rusty Midnight Commander (Apache-2.0)"
+repository = "https://github.com/vburenin/rusty-midnight-commander"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+similar = "2.4"
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

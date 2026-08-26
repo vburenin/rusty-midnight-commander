@@ -4,12 +4,36 @@ use crate::find::FindDialogState;
 use crate::panel::{FileEntry, PanelState, SortBy};
 use crate::subshell::Subshell;
 use anyhow::Result;
+use rmc_diff;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
 use std::path::{Path, PathBuf};
 
 type UiOkCb = Box<dyn FnOnce(&mut App) -> Result<()> + Send>;
 type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
+
+#[derive(Clone)]
+pub struct DiffState {
+    pub left_path: PathBuf,
+    pub right_path: PathBuf,
+    pub left_lines: Vec<String>,
+    pub right_lines: Vec<String>,
+    pub hunks: Vec<rmc_diff::Hunk>,
+    pub current_hunk: usize,
+    pub left_modified: bool,
+    pub right_modified: bool,
+    pub show_line_numbers: bool,
+    pub show_hunk_status: bool,
+    pub search: Option<String>,
+    pub search_prompt: Option<String>,
+    pub goto_prompt: Option<String>,
+    pub confirm_exit: Option<YncDialog>,
+    pub left_scroll: usize,
+    pub right_scroll: usize,
+    pub panel_ratio: f32, // fraction for left [0.2..0.8]
+    pub tab_width: usize,
+    pub merge_target_right: bool, // F5 merges into right when true; swap flips this
+}
 
 pub enum UiMode {
     Normal,
@@ -21,6 +45,7 @@ pub enum UiMode {
         search: Option<String>,
         search_prompt: Option<String>,
     },
+    Diff(DiffState),
     Editor {
         buf: EditorBuffer,
         show_menu: bool,

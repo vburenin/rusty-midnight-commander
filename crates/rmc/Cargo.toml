@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 description = "Rusty Midnight Commander - rmc binary"
 repository = "https://github.com/vburenin/rusty-midnight-commander"
+autobins = false
 
 [dependencies]
 anyhow.workspace = true
@@ -14,6 +15,11 @@ rmc-fs = { path = "../rmc-fs" }
 rmc-ui = { path = "../rmc-ui" }
 rmc-view = { path = "../rmc-view" }
 crossterm.workspace = true
+rmc-diff = { path = "../rmc-diff" }
 
 [features]
 default = []
+
+[[bin]]
+name = "mcr"
+path = "src/main.rs"

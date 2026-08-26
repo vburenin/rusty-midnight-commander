@@ -170,10 +170,10 @@ Per mc(1) “Find File” and “External panelize”:
 ## 9) Diff viewer (mcdiff) — Status: Later
 
 From mcdiff(1) and mc(1) “Internal Diff Viewer”:
-- [ ] Side-by-side diff of two files; invoke standalone (mcdiff file1 file2) or via panels (keybinding)
-- [ ] Navigate hunks: next/prev; goto line; search
-- [ ] Merge current hunk (F5); swap sides (C-u); refresh (C-r)
-- [ ] Show hunk status; toggle line numbers; adjust panel widths
+- [x] Side-by-side diff of two files via panels (Command → Compare files) and CLI `mcr --diff file1 file2`
+- [x] Navigate hunks: next/prev; goto line; search (n continues)
+- [x] Merge current hunk (F5); swap sides (C-u); refresh (C-r)
+- [x] Show hunk status; toggle line numbers; adjust panel widths
 - [ ] Edit in place: open left/right in editor; diffs update dynamically
 
 ---

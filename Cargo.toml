@@ -6,6 +6,7 @@ members = [
     "crates/rmc-ui",
     "crates/rmc-view",
     "crates/rmc-edit",
+    "crates/rmc-diff",
 ]
 resolver = "2"
 

@@ -84,6 +84,12 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
+        // Full-screen diff viewer short-circuit
+        if let rmc_core::app::UiMode::Diff(state) = &app.ui_mode {
+            draw_diff(&mut painter, cols, rows, self.palette, state)?;
+            painter.out.flush()?;
+            return Ok(());
+        }
         // Otherwise draw the normal dual-pane UI
         painter.fill_line(
             0,
@@ -948,7 +954,6 @@ fn draw_subshell_fullscreen(
     app: &App,
 ) -> Result<()> {
     // MC C-o: draw captured output full-screen with default terminal colors; no frame/title/status.
-    use crossterm::style::Color;
     p.set_fg_bg(Color::Reset, Color::Reset);
     for y in 0..rows {
         p.goto(0, y);
@@ -968,6 +973,237 @@ fn draw_subshell_fullscreen(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_diff(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    state: &rmc_core::app::DiffState,
+) -> Result<()> {
+    // Background
+    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    for y in 0..rows {
+        p.goto(0, y);
+        p.text(&" ".repeat(cols as usize));
+    }
+    // Outer frame
+    p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
+    p.goto(0, 0);
+    p.text("┌");
+    p.hline(
+        1,
+        0,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.goto(cols - 1, 0);
+    p.text("┐");
+    p.vline(
+        0,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.vline(
+        cols - 1,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.goto(0, rows - 1);
+    p.text("└");
+    p.hline(
+        1,
+        rows - 1,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.goto(cols - 1, rows - 1);
+    p.text("┘");
+    // Title (paths)
+    let title = format!(
+        " {}  |  {} ",
+        state.left_path.display(),
+        state.right_path.display()
+    );
+    let tx = (cols.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, 0);
+    p.text(&title);
+    // Layout inside
+    let status_row = rows.saturating_sub(2);
+    let fbar_row = rows.saturating_sub(1);
+    let content_top = 1u16;
+    let content_h = status_row.saturating_sub(content_top);
+    // Column split from ratio
+    let total_inner = cols.saturating_sub(2);
+    let left_w = ((total_inner as f32) * state.panel_ratio).round() as u16;
+    let left_w = left_w.clamp(10, total_inner.saturating_sub(10));
+    let right_w = total_inner.saturating_sub(left_w);
+    // Divider
+    let divider_x = 1 + left_w;
+    p.vline(
+        divider_x,
+        content_top,
+        content_h,
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    // Line number column width
+    let lnw = if state.show_line_numbers { 6u16 } else { 0 };
+    // Left pane
+    for i in 0..content_h {
+        let li = state.left_scroll + i as usize;
+        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+        p.goto(1, content_top + i);
+        let l_content_w = left_w.saturating_sub(1);
+        p.text(&" ".repeat(l_content_w as usize));
+        if let Some(line) = state.left_lines.get(li) {
+            let in_hunk = state
+                .hunks
+                .get(state.current_hunk.min(state.hunks.len().saturating_sub(1)))
+                .is_some_and(|h| li >= h.left_start && li < h.left_start + h.left_len);
+            if in_hunk {
+                p.set_fg_bg(pal.selected_fg, pal.selected_bg);
+            } else {
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            }
+            let mut x = 1u16;
+            if lnw > 0 {
+                p.goto(x, content_top + i);
+                p.text(&format!("{:>width$} ", li + 1, width = (lnw - 1) as usize));
+                x += lnw;
+            }
+            p.goto(x, content_top + i);
+            let avail = l_content_w.saturating_sub(x.saturating_sub(1));
+            let t = truncate(line, avail as usize);
+            p.text(&t);
+        }
+    }
+    // Right pane
+    for i in 0..content_h {
+        let ri = state.right_scroll + i as usize;
+        let base_x = divider_x.saturating_add(1);
+        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+        p.goto(base_x, content_top + i);
+        let r_content_w = right_w.saturating_sub(1);
+        p.text(&" ".repeat(r_content_w as usize));
+        if let Some(line) = state.right_lines.get(ri) {
+            let in_hunk = state
+                .hunks
+                .get(state.current_hunk.min(state.hunks.len().saturating_sub(1)))
+                .is_some_and(|h| ri >= h.right_start && ri < h.right_start + h.right_len);
+            if in_hunk {
+                p.set_fg_bg(pal.selected_fg, pal.selected_bg);
+            } else {
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            }
+            let mut x = base_x;
+            if lnw > 0 {
+                p.goto(x, content_top + i);
+                p.text(&format!("{:>width$} ", ri + 1, width = (lnw - 1) as usize));
+                x += lnw;
+            }
+            p.goto(x, content_top + i);
+            let avail = r_content_w.saturating_sub(x - base_x);
+            let t = truncate(line, avail as usize);
+            p.text(&t);
+        }
+    }
+    // Status line
+    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
+    p.goto(0, status_row);
+    let total_hunks = state.hunks.len();
+    let cur_idx = if total_hunks == 0 {
+        0
+    } else {
+        state.current_hunk + 1
+    };
+    let mut status = format!(
+        " Hunk {}/{}    {}{}",
+        cur_idx,
+        total_hunks,
+        if state.left_modified { "[L*] " } else { "" },
+        if state.right_modified { "[R*]" } else { "" }
+    );
+    if state.show_hunk_status {
+        if let Some(h) = state
+            .hunks
+            .get(state.current_hunk.min(state.hunks.len().saturating_sub(1)))
+        {
+            status.push_str(&format!(
+                "   L:{}+{}  R:{}+{}",
+                h.left_start, h.left_len, h.right_start, h.right_len
+            ));
+        }
+    }
+    let st = truncate(&status, cols as usize);
+    p.text(&st);
+    if st.len() < cols as usize {
+        p.text(&" ".repeat(cols as usize - st.len()));
+    }
+    // F-bar
+    draw_diff_fbar(p, fbar_row, cols, pal);
+    // Overlays: search / goto / confirm-exit on top of diff
+    if let Some(current) = &state.search_prompt {
+        draw_dialog_box(p, cols, rows, pal, "Search", current, &["< OK >", "Cancel"]);
+    }
+    if let Some(current) = &state.goto_prompt {
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Goto line",
+            current,
+            &["< OK >", "Cancel"],
+        );
+    }
+    if let Some(c) = &state.confirm_exit {
+        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus);
+    }
+    Ok(())
+}
+
+fn draw_diff_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    // F1 Help, F2 Save, F4 Edit, F5 Merge, F7 Search, F10 Quit; keep Menu on F9
+    let labels = [
+        "Help", "Save", "", "Edit", "Merge", "", "Search", "", "Menu", "Quit",
+    ];
+    let mut x = 0u16;
+    for (i, lab) in labels.iter().enumerate() {
+        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg);
+        p.goto(x, y);
+        p.text(num);
+        x += num.len() as u16;
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        let ltxt = if lab.is_empty() { " " } else { lab };
+        p.text(ltxt);
+        x += ltxt.len() as u16;
+        if x < cols {
+            p.goto(x, y);
+            p.text(" ");
+            x += 1;
+        } else {
+            break;
+        }
+    }
+    if x < cols {
+        p.goto(x, y);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
+}
 fn format_entry_name(ent: &FileEntry) -> String {
     if ent.name == ".." {
         "..".to_string()

@@ -580,7 +580,7 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["Find file", "Compare dirs"],
+                    &["Find file", "Compare files", "Compare dirs"],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete"],
                 ];
@@ -646,6 +646,92 @@ impl TerminalApp {
                                 let start = app.active_panel().cwd.clone();
                                 app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
                             }
+                            "Compare files" => {
+                                // Implement Compare files (mcdiff-like)
+                                if let Some(a_ent) = app.active_panel().current_entry().cloned() {
+                                    if a_ent.is_dir {
+                                        app.ui_mode = UiMode::DialogConfirm {
+                                            title: "Compare files".into(),
+                                            message: "Select a file (not a directory) to compare."
+                                                .into(),
+                                            on_ok: Box::new(|_| Ok(())),
+                                        };
+                                    } else {
+                                        let other_entries =
+                                            app.inactive_panel_mut().entries.clone();
+                                        let mut b_path = None;
+                                        for e in other_entries.iter() {
+                                            if e.name == a_ent.name && !e.is_dir {
+                                                b_path = Some(e.path.clone());
+                                                break;
+                                            }
+                                        }
+                                        if b_path.is_none() {
+                                            if let Some(b_ent) =
+                                                app.inactive_panel_mut().current_entry().cloned()
+                                            {
+                                                if !b_ent.is_dir {
+                                                    b_path = Some(b_ent.path);
+                                                }
+                                            }
+                                        }
+                                        if let Some(b) = b_path {
+                                            // Load file contents
+                                            let mut ltxt = String::new();
+                                            let mut rtxt = String::new();
+                                            {
+                                                let mut r = app
+                                                    .vfs
+                                                    .read_file(&a_ent.path)
+                                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                use std::io::Read;
+                                                let _ = r.read_to_string(&mut ltxt);
+                                            }
+                                            {
+                                                let mut r = app
+                                                    .vfs
+                                                    .read_file(&b)
+                                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                                use std::io::Read;
+                                                let _ = r.read_to_string(&mut rtxt);
+                                            }
+                                            let left_lines = rmc_diff::split_lines(&ltxt);
+                                            let right_lines = rmc_diff::split_lines(&rtxt);
+                                            let dr = rmc_diff::compute_diff(&ltxt, &rtxt);
+                                            let state = rmc_core::app::DiffState {
+                                                left_path: a_ent.path.clone(),
+                                                right_path: b.clone(),
+                                                left_lines,
+                                                right_lines,
+                                                hunks: dr.hunks,
+                                                current_hunk: 0,
+                                                left_modified: false,
+                                                right_modified: false,
+                                                show_line_numbers: false,
+                                                show_hunk_status: true,
+                                                search: None,
+                                                search_prompt: None,
+                                                goto_prompt: None,
+                                                confirm_exit: None,
+                                                left_scroll: 0,
+                                                right_scroll: 0,
+                                                panel_ratio: 0.5,
+                                                tab_width: 4,
+                                                merge_target_right: true,
+                                            };
+                                            app.ui_mode = UiMode::Diff(state);
+                                        } else {
+                                            app.ui_mode = UiMode::DialogConfirm {
+                                                title: "Compare files".into(),
+                                                message:
+                                                    "Could not determine the other file to compare."
+                                                        .into(),
+                                                on_ok: Box::new(|_| Ok(())),
+                                            };
+                                        }
+                                    }
+                                }
+                            }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;
                             }
@@ -655,6 +741,316 @@ impl TerminalApp {
                         }
                     }
                     _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::Diff(state) => {
+                // Confirm-exit overlay
+                if let Some(confirm) = &mut state.confirm_exit {
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.confirm_exit = None;
+                        }
+                        KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                            use rmc_core::app::YncFocus as F;
+                            confirm.focus = match (key.code, confirm.focus) {
+                                (KeyCode::Left, F::No) => F::Yes,
+                                (KeyCode::Left, F::Cancel) => F::No,
+                                (KeyCode::Right, F::Yes) => F::No,
+                                (KeyCode::Right, F::No) => F::Cancel,
+                                (KeyCode::Right, F::Cancel) => F::Cancel,
+                                (_, f) => match f {
+                                    F::Yes => F::No,
+                                    F::No => F::Cancel,
+                                    F::Cancel => F::Yes,
+                                },
+                            };
+                        }
+                        KeyCode::Enter => {
+                            use rmc_core::app::YncFocus as F;
+                            match confirm.focus {
+                                F::Yes => {
+                                    // Save modified then exit
+                                    if state.left_modified {
+                                        let mut w = app
+                                            .vfs
+                                            .write_file(&state.left_path)
+                                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                        use std::io::Write;
+                                        let s = rmc_diff::join_lines(&state.left_lines);
+                                        let _ = w.write_all(s.as_bytes());
+                                    }
+                                    if state.right_modified {
+                                        let mut w = app
+                                            .vfs
+                                            .write_file(&state.right_path)
+                                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                        use std::io::Write;
+                                        let s = rmc_diff::join_lines(&state.right_lines);
+                                        let _ = w.write_all(s.as_bytes());
+                                    }
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                                F::No => {
+                                    // Discard changes and exit
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                                F::Cancel => {
+                                    state.confirm_exit = None;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // Handle inline search prompt
+                if let Some(prompt) = &mut state.search_prompt {
+                    match key.code {
+                        KeyCode::Esc => {
+                            state.search_prompt = None;
+                        }
+                        KeyCode::Enter => {
+                            let q = prompt.clone();
+                            state.search = if q.is_empty() { None } else { Some(q) };
+                            state.search_prompt = None;
+                            // Jump to first matching hunk from current
+                            if let Some(ref qq) = state.search {
+                                if let Some(idx) = Self::search_next_hunk_with(
+                                    &state.hunks,
+                                    &state.left_lines,
+                                    &state.right_lines,
+                                    state.current_hunk,
+                                    qq,
+                                ) {
+                                    state.current_hunk = idx;
+                                    Self::ensure_hunk_visible(state);
+                                }
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            prompt.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // Handle goto prompt
+                if let Some(prompt) = &mut state.goto_prompt {
+                    match key.code {
+                        KeyCode::Esc => state.goto_prompt = None,
+                        KeyCode::Enter => {
+                            let val = prompt.clone();
+                            if let Ok(n) = val.trim().parse::<usize>() {
+                                let line = n.saturating_sub(1);
+                                state.left_scroll = line;
+                                state.right_scroll = line;
+                            }
+                            state.goto_prompt = None;
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => prompt.push(c),
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(10) => {
+                        if state.left_modified || state.right_modified {
+                            state.confirm_exit = Some(rmc_core::app::YncDialog {
+                                title: "Save modified files?".into(),
+                                message: "You have unsaved merges. Save before quitting?".into(),
+                                focus: rmc_core::app::YncFocus::Yes,
+                            });
+                        } else {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        if !state.hunks.is_empty() {
+                            if let Some(next) =
+                                Self::next_diff_hunk_index(&state.hunks, state.current_hunk)
+                            {
+                                state.current_hunk = next;
+                            }
+                            Self::ensure_hunk_visible(state);
+                        }
+                    }
+                    KeyCode::Backspace | KeyCode::Char('p') => {
+                        if !state.hunks.is_empty() {
+                            if let Some(prev) =
+                                Self::prev_diff_hunk_index(&state.hunks, state.current_hunk)
+                            {
+                                state.current_hunk = prev;
+                            }
+                            Self::ensure_hunk_visible(state);
+                        }
+                    }
+                    KeyCode::Char('g') => {
+                        state.goto_prompt = Some(String::new());
+                    }
+                    KeyCode::Char('f') => state.panel_ratio = 0.8,
+                    KeyCode::Char('=') => state.panel_ratio = 0.5,
+                    KeyCode::Char('>') => state.panel_ratio = (state.panel_ratio + 0.05).min(0.8),
+                    KeyCode::Char('<') => state.panel_ratio = (state.panel_ratio - 0.05).max(0.2),
+                    KeyCode::Char('l') => state.show_line_numbers = !state.show_line_numbers,
+                    KeyCode::Char('s') => state.show_hunk_status = !state.show_hunk_status,
+                    KeyCode::Char('2') => state.tab_width = 2,
+                    KeyCode::Char('3') => state.tab_width = 3,
+                    KeyCode::Char('4') => state.tab_width = 4,
+                    KeyCode::Char('8') => state.tab_width = 8,
+                    KeyCode::Char('/') | KeyCode::F(7) => state.search_prompt = Some(String::new()),
+                    KeyCode::Char('n') | KeyCode::F(17) => {
+                        if let Some(ref qq) = state.search {
+                            if let Some(idx) = Self::search_next_hunk_with(
+                                &state.hunks,
+                                &state.left_lines,
+                                &state.right_lines,
+                                state.current_hunk,
+                                qq,
+                            ) {
+                                state.current_hunk = idx;
+                                Self::ensure_hunk_visible(state);
+                            }
+                        } else if !state.hunks.is_empty() {
+                            if let Some(next) =
+                                Self::next_diff_hunk_index(&state.hunks, state.current_hunk)
+                            {
+                                state.current_hunk = next;
+                                Self::ensure_hunk_visible(state);
+                            }
+                        }
+                    }
+                    KeyCode::F(2) => {
+                        // Save modified files
+                        if state.left_modified {
+                            let mut w = app
+                                .vfs
+                                .write_file(&state.left_path)
+                                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                            use std::io::Write;
+                            let s = rmc_diff::join_lines(&state.left_lines);
+                            let _ = w.write_all(s.as_bytes());
+                            state.left_modified = false;
+                        }
+                        if state.right_modified {
+                            let mut w = app
+                                .vfs
+                                .write_file(&state.right_path)
+                                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                            use std::io::Write;
+                            let s = rmc_diff::join_lines(&state.right_lines);
+                            let _ = w.write_all(s.as_bytes());
+                            state.right_modified = false;
+                        }
+                        // Recompute diff
+                        let la = rmc_diff::join_lines(&state.left_lines);
+                        let ra = rmc_diff::join_lines(&state.right_lines);
+                        state.hunks = rmc_diff::compute_diff(&la, &ra).hunks;
+                        state.current_hunk =
+                            state.current_hunk.min(state.hunks.len().saturating_sub(1));
+                        Self::ensure_hunk_visible(state);
+                    }
+                    KeyCode::F(4) => {
+                        // Disabled for now to avoid losing diff session; leave PARITY unchecked
+                    }
+                    KeyCode::F(5) => {
+                        if !state.hunks.is_empty() {
+                            let idx = state.current_hunk.min(state.hunks.len() - 1);
+                            if state.merge_target_right {
+                                let _ = rmc_diff::apply_hunk_merge(
+                                    &mut state.left_lines,
+                                    &mut state.right_lines,
+                                    &state.hunks,
+                                    idx,
+                                    rmc_diff::MergeTarget::Right,
+                                );
+                                state.right_modified = true;
+                            } else {
+                                let _ = rmc_diff::apply_hunk_merge(
+                                    &mut state.left_lines,
+                                    &mut state.right_lines,
+                                    &state.hunks,
+                                    idx,
+                                    rmc_diff::MergeTarget::Left,
+                                );
+                                state.left_modified = true;
+                            }
+                            // Re-diff
+                            let la = rmc_diff::join_lines(&state.left_lines);
+                            let ra = rmc_diff::join_lines(&state.right_lines);
+                            state.hunks = rmc_diff::compute_diff(&la, &ra).hunks;
+                            state.current_hunk =
+                                state.current_hunk.min(state.hunks.len().saturating_sub(1));
+                            Self::ensure_hunk_visible(state);
+                        }
+                    }
+                    KeyCode::Up => {
+                        state.left_scroll = state.left_scroll.saturating_sub(1);
+                        state.right_scroll = state.right_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        state.left_scroll = state.left_scroll.saturating_add(1);
+                        state.right_scroll = state.right_scroll.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        let step = page_rows.max(1);
+                        state.left_scroll = state.left_scroll.saturating_sub(step);
+                        state.right_scroll = state.right_scroll.saturating_sub(step);
+                    }
+                    KeyCode::PageDown => {
+                        let step = page_rows.max(1);
+                        state.left_scroll = state.left_scroll.saturating_add(step);
+                        state.right_scroll = state.right_scroll.saturating_add(step);
+                    }
+                    _ => {
+                        // Ctrl-U: swap sides; Ctrl-R: refresh
+                        if let KeyCode::Char('u') = key.code {
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                std::mem::swap(&mut state.left_path, &mut state.right_path);
+                                std::mem::swap(&mut state.left_lines, &mut state.right_lines);
+                                state.merge_target_right = !state.merge_target_right;
+                                let la = rmc_diff::join_lines(&state.left_lines);
+                                let ra = rmc_diff::join_lines(&state.right_lines);
+                                state.hunks = rmc_diff::compute_diff(&la, &ra).hunks;
+                                state.current_hunk = 0;
+                                state.left_scroll = 0;
+                                state.right_scroll = 0;
+                            }
+                        } else if let KeyCode::Char('r') = key.code {
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                            {
+                                let mut ltxt = String::new();
+                                let mut rtxt = String::new();
+                                if let Ok(mut r) = app.vfs.read_file(&state.left_path) {
+                                    use std::io::Read;
+                                    let _ = r.read_to_string(&mut ltxt);
+                                }
+                                if let Ok(mut r) = app.vfs.read_file(&state.right_path) {
+                                    use std::io::Read;
+                                    let _ = r.read_to_string(&mut rtxt);
+                                }
+                                state.left_lines = rmc_diff::split_lines(&ltxt);
+                                state.right_lines = rmc_diff::split_lines(&rtxt);
+                                state.hunks = rmc_diff::compute_diff(&ltxt, &rtxt).hunks;
+                                state.current_hunk = 0;
+                                state.left_modified = false;
+                                state.right_modified = false;
+                                state.left_scroll = 0;
+                                state.right_scroll = 0;
+                            }
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -947,5 +1343,94 @@ impl TerminalApp {
             }
         }
         Ok(())
+    }
+}
+
+impl TerminalApp {
+    fn ensure_hunk_visible(state: &mut rmc_core::app::DiffState) {
+        if state.hunks.is_empty() {
+            return;
+        }
+        let cur = state.current_hunk.min(state.hunks.len().saturating_sub(1));
+        if let Some(h) = state.hunks.get(cur) {
+            state.left_scroll = h.left_start.saturating_sub(1);
+            state.right_scroll = h.right_start.saturating_sub(1);
+        }
+    }
+}
+
+impl TerminalApp {
+    fn is_non_equal(h: &rmc_diff::Hunk) -> bool {
+        !matches!(h.kind, rmc_diff::HunkKind::Equal)
+    }
+    fn next_diff_hunk_index(hunks: &[rmc_diff::Hunk], current: usize) -> Option<usize> {
+        let mut i = current.saturating_add(1);
+        while i < hunks.len() {
+            if Self::is_non_equal(&hunks[i]) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    }
+    fn prev_diff_hunk_index(hunks: &[rmc_diff::Hunk], current: usize) -> Option<usize> {
+        if current == 0 {
+            return None;
+        }
+        let mut i = current.saturating_sub(1);
+        loop {
+            if Self::is_non_equal(&hunks[i]) {
+                return Some(i);
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+        None
+    }
+    fn hunk_contains_query(h: &rmc_diff::Hunk, left: &[String], right: &[String], q: &str) -> bool {
+        let ql = q;
+        for li in h.left_start..h.left_start.saturating_add(h.left_len) {
+            if let Some(s) = left.get(li) {
+                if s.contains(ql) {
+                    return true;
+                }
+            }
+        }
+        for ri in h.right_start..h.right_start.saturating_add(h.right_len) {
+            if let Some(s) = right.get(ri) {
+                if s.contains(ql) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn search_next_hunk_with(
+        hunks: &[rmc_diff::Hunk],
+        left: &[String],
+        right: &[String],
+        current: usize,
+        q: &str,
+    ) -> Option<usize> {
+        let mut i = current.saturating_add(1);
+        while i < hunks.len() {
+            let h = &hunks[i];
+            if Self::is_non_equal(h) && Self::hunk_contains_query(h, left, right, q) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        // Wrap around
+        i = 0;
+        while i <= current && i < hunks.len() {
+            let h = &hunks[i];
+            if Self::is_non_equal(h) && Self::hunk_contains_query(h, left, right, q) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
     }
 }
