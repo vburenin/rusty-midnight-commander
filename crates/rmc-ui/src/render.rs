@@ -764,12 +764,32 @@ fn draw_layout_dialog(
     p.text(&ttl);
     // Options (checkboxes)
     let items: [(&str, bool, LayoutFocus); 6] = [
-        ("Menu bar visible", draft.menubar_visible, LayoutFocus::MenuBar),
-        ("Command prompt", draft.command_prompt, LayoutFocus::CommandPrompt),
+        (
+            "Menu bar visible",
+            draft.menubar_visible,
+            LayoutFocus::MenuBar,
+        ),
+        (
+            "Command prompt",
+            draft.command_prompt,
+            LayoutFocus::CommandPrompt,
+        ),
         ("Keybar visible", draft.keybar_visible, LayoutFocus::KeyBar),
-        ("Hintbar visible", draft.hintbar_visible, LayoutFocus::HintBar),
-        ("XTerm window title", draft.xterm_title, LayoutFocus::XtermTitle),
-        ("Show free space", draft.show_free_space, LayoutFocus::ShowFreeSpace),
+        (
+            "Hintbar visible",
+            draft.hintbar_visible,
+            LayoutFocus::HintBar,
+        ),
+        (
+            "XTerm window title",
+            draft.xterm_title,
+            LayoutFocus::XtermTitle,
+        ),
+        (
+            "Show free space",
+            draft.show_free_space,
+            LayoutFocus::ShowFreeSpace,
+        ),
     ];
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     for (i, (label, on, lf)) in items.iter().enumerate() {
@@ -787,7 +807,11 @@ fn draw_layout_dialog(
     let cancel_sel = matches!(focus, LayoutFocus::Cancel);
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
-    let cancel_txt = if cancel_sel { "[ Cancel ]" } else { "  Cancel  " };
+    let cancel_txt = if cancel_sel {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
     let btns = format!("{ok_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);

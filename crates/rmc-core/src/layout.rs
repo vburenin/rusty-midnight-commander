@@ -33,18 +33,27 @@ pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions
     if cmd_row.is_some() && next > 0 {
         next = next.saturating_sub(1);
     }
-    let hint_row = if opt.hintbar_visible { Some(next) } else { None };
+    let hint_row = if opt.hintbar_visible {
+        Some(next)
+    } else {
+        None
+    };
     if hint_row.is_some() && next > 0 {
         next = next.saturating_sub(1);
     }
-    let gauge_row = if opt.show_free_space { Some(next) } else { None };
+    let gauge_row = if opt.show_free_space {
+        Some(next)
+    } else {
+        None
+    };
     // content_bottom is the row just above the nearest bottom chrome (gauge/hint/cmd/fbar).
     let content_bottom = {
-        let mut first_bottom = None;
-        for r in [gauge_row, hint_row, cmd_row, fbar_row] {
-            if let Some(y) = r {
-                first_bottom = Some(first_bottom.map_or(y, |cur| cur.min(y)));
-            }
+        let mut first_bottom: Option<u16> = None;
+        for y in [gauge_row, hint_row, cmd_row, fbar_row].into_iter().flatten() {
+            first_bottom = Some(match first_bottom {
+                Some(cur) => cur.min(y),
+                None => y,
+            });
         }
         if let Some(b) = first_bottom {
             b.saturating_sub(1)
@@ -61,4 +70,3 @@ pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions
         fbar_row,
     }
 }
-

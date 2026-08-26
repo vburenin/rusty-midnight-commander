@@ -1,11 +1,11 @@
 pub mod actions;
 pub mod app;
-pub mod layout;
 pub mod config;
 pub mod events;
 pub mod find;
 pub mod hotlist;
 pub mod jobs;
+pub mod layout;
 pub mod matchutil;
 pub mod panel;
 pub mod quicksearch;

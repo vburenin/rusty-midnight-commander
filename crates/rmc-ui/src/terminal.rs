@@ -11,12 +11,12 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use rmc_core::actions::{Action, PaneSide};
-use rmc_core::app::{App, LayoutFocus, LayoutOptions, UiMode};
-use rmc_core::layout::compute_chrome_geom;
+use rmc_core::app::{App, LayoutFocus, UiMode};
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
+use rmc_core::layout::compute_chrome_geom;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -65,84 +65,6 @@ fn encode_key_for_pty(key: &KeyEvent) -> Option<Vec<u8>> {
                     let b = uc & 0x1f;
                     return Some(vec![b]);
                 }
-            }
-            UiMode::LayoutDialog { draft, focus } => {
-                match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => {
-                        app.ui_mode = UiMode::Normal;
-                    }
-                    KeyCode::Tab | KeyCode::Right => {
-                        use LayoutFocus as F;
-                        *focus = match *focus {
-                            F::MenuBar => F::CommandPrompt,
-                            F::CommandPrompt => F::KeyBar,
-                            F::KeyBar => F::HintBar,
-                            F::HintBar => F::XtermTitle,
-                            F::XtermTitle => F::ShowFreeSpace,
-                            F::ShowFreeSpace => F::Ok,
-                            F::Ok => F::Cancel,
-                            F::Cancel => F::MenuBar,
-                        };
-                    }
-                    KeyCode::Left => {
-                        use LayoutFocus as F;
-                        *focus = match *focus {
-                            F::MenuBar => F::Cancel,
-                            F::CommandPrompt => F::MenuBar,
-                            F::KeyBar => F::CommandPrompt,
-                            F::HintBar => F::KeyBar,
-                            F::XtermTitle => F::HintBar,
-                            F::ShowFreeSpace => F::XtermTitle,
-                            F::Ok => F::ShowFreeSpace,
-                            F::Cancel => F::Ok,
-                        };
-                    }
-                    KeyCode::Up => {
-                        use LayoutFocus as F;
-                        *focus = match *focus {
-                            F::CommandPrompt => F::MenuBar,
-                            F::KeyBar => F::CommandPrompt,
-                            F::HintBar => F::KeyBar,
-                            F::XtermTitle => F::HintBar,
-                            F::ShowFreeSpace => F::XtermTitle,
-                            _ => *focus,
-                        };
-                    }
-                    KeyCode::Down => {
-                        use LayoutFocus as F;
-                        *focus = match *focus {
-                            F::MenuBar => F::CommandPrompt,
-                            F::CommandPrompt => F::KeyBar,
-                            F::KeyBar => F::HintBar,
-                            F::HintBar => F::XtermTitle,
-                            F::XtermTitle => F::ShowFreeSpace,
-                            _ => *focus,
-                        };
-                    }
-                    KeyCode::Char(' ') | KeyCode::Enter => {
-                        use LayoutFocus as F;
-                        match *focus {
-                            F::MenuBar => draft.menubar_visible = !draft.menubar_visible,
-                            F::CommandPrompt => draft.command_prompt = !draft.command_prompt,
-                            F::KeyBar => draft.keybar_visible = !draft.keybar_visible,
-                            F::HintBar => draft.hintbar_visible = !draft.hintbar_visible,
-                            F::XtermTitle => draft.xterm_title = !draft.xterm_title,
-                            F::ShowFreeSpace => {
-                                draft.show_free_space = !draft.show_free_space
-                            }
-                            F::Ok if matches!(key.code, KeyCode::Enter) => {
-                                app.layout = *draft;
-                                app.ui_mode = UiMode::Normal;
-                            }
-                            F::Cancel if matches!(key.code, KeyCode::Enter) => {
-                                app.ui_mode = UiMode::Normal;
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => {}
-                }
-                return Ok(());
             }
             // Alt-modified: send ESC prefix + char
             if key.modifiers.contains(KeyModifiers::ALT) {
@@ -330,9 +252,7 @@ fn menu_top_index_from_x(x: u16) -> Option<usize> {
 fn fbar_function_from_xy(app: &App, x: u16, y: u16, cols: u16, rows: u16) -> Option<u8> {
     // Hit only when keybar is visible and y matches computed fbar row
     let geom = compute_chrome_geom(cols, rows, &app.layout);
-    let Some(fbar_y) = geom.fbar_row else {
-        return None;
-    };
+    let fbar_y = geom.fbar_row?;
     if y != fbar_y {
         return None;
     }
@@ -4085,7 +4005,8 @@ impl TerminalApp {
                                     tree.cursor += 1;
                                     let (c, r) = crossterm::terminal::size()?;
                                     let geom2 = compute_chrome_geom(c, r, &app.layout);
-                                    let panel_h = geom2.content_bottom.saturating_sub(geom2.panel_top);
+                                    let panel_h =
+                                        geom2.content_bottom.saturating_sub(geom2.panel_top);
                                     let content_rows = panel_h.saturating_sub(4) as usize;
                                     if tree.cursor >= tree.scroll_top + content_rows {
                                         tree.scroll_top = tree
@@ -4119,7 +4040,8 @@ impl TerminalApp {
                                     tree.cursor = tree.entries.len() - 1;
                                     let (c, r) = crossterm::terminal::size()?;
                                     let geom2 = compute_chrome_geom(c, r, &app.layout);
-                                    let panel_h = geom2.content_bottom.saturating_sub(geom2.panel_top);
+                                    let panel_h =
+                                        geom2.content_bottom.saturating_sub(geom2.panel_top);
                                     let content_rows = panel_h.saturating_sub(4) as usize;
                                     tree.scroll_top =
                                         tree.cursor.saturating_sub(content_rows.saturating_sub(1));
