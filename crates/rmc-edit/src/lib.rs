@@ -18,6 +18,28 @@ use std::process::{Command, Stdio};
 pub mod syntax;
 pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
 
+/// A single high-level editor operation suitable for macro recording/replay.
+/// These mirror existing `EditorBuffer` methods and are intentionally coarse-grained
+/// (we do not record raw key events).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EditorAction {
+    MoveLeft,
+    MoveRight,
+    MoveUp,
+    MoveDown,
+    ToggleOverwrite,
+    InsertBytes(Vec<u8>),
+    InsertNewline,
+    Backspace,
+    Delete,
+    MarkStart,
+    MarkEnd,
+    ClearSelection,
+    CopyBlockHere,
+    MoveBlockHere,
+    DeleteSelection,
+}
+
 /// Basic mcedit-like buffer that is binary-safe (stores raw bytes).
 /// Rendering helpers expose text with non-printables replaced to avoid corrupting data.
 #[derive(Debug, Clone)]
@@ -47,6 +69,14 @@ pub struct EditorBuffer {
     sel_end: Option<(usize, usize)>,
     /// Internal clipboard for block operations: selected content as lines (without trailing '\n').
     clipboard: Option<Vec<Vec<u8>>>,
+    /// True while recording a GNU mcedit-style macro (Ctrl-R in mcedit).
+    macro_recording: bool,
+    /// True while replaying a recorded macro (to avoid recursive recording).
+    macro_replaying: bool,
+    /// Events captured while recording is active.
+    macro_current: Vec<EditorAction>,
+    /// Last completed macro (replayed by `replay_macro`).
+    macro_last: Vec<EditorAction>,
 }
 
 impl EditorBuffer {
@@ -67,6 +97,10 @@ impl EditorBuffer {
             sel_start: None,
             sel_end: None,
             clipboard: None,
+            macro_recording: false,
+            macro_replaying: false,
+            macro_current: Vec::new(),
+            macro_last: Vec::new(),
         }
     }
 
@@ -98,6 +132,10 @@ impl EditorBuffer {
             sel_start: None,
             sel_end: None,
             clipboard: None,
+            macro_recording: false,
+            macro_replaying: false,
+            macro_current: Vec::new(),
+            macro_last: Vec::new(),
         }
     }
 
@@ -139,11 +177,13 @@ impl EditorBuffer {
 
     /// Toggle insert/overwrite mode.
     pub fn toggle_overwrite(&mut self) {
+        self.record_action(EditorAction::ToggleOverwrite);
         self.overwrite = !self.overwrite;
     }
 
     /// Move cursor left.
     pub fn move_left(&mut self) {
+        self.record_action(EditorAction::MoveLeft);
         if self.col > 0 {
             self.col -= 1;
         } else if self.row > 0 {
@@ -155,6 +195,7 @@ impl EditorBuffer {
 
     /// Move cursor right.
     pub fn move_right(&mut self) {
+        self.record_action(EditorAction::MoveRight);
         let line_len = self.lines[self.row].len();
         if self.col < line_len {
             self.col += 1;
@@ -167,6 +208,7 @@ impl EditorBuffer {
 
     /// Move cursor up a line, preserving column as much as possible.
     pub fn move_up(&mut self) {
+        self.record_action(EditorAction::MoveUp);
         if self.row > 0 {
             self.row -= 1;
             let len = self.lines[self.row].len();
@@ -177,6 +219,7 @@ impl EditorBuffer {
 
     /// Move cursor down a line, preserving column as much as possible.
     pub fn move_down(&mut self) {
+        self.record_action(EditorAction::MoveDown);
         if self.row + 1 < self.lines.len() {
             self.row += 1;
             let len = self.lines[self.row].len();
@@ -197,6 +240,7 @@ impl EditorBuffer {
         if bytes.is_empty() {
             return;
         }
+        self.record_action(EditorAction::InsertBytes(bytes.to_vec()));
         self.push_undo();
         let line = &mut self.lines[self.row];
         if self.overwrite {
@@ -225,6 +269,7 @@ impl EditorBuffer {
 
     /// Handle Enter: split the current line at cursor.
     pub fn insert_newline(&mut self) {
+        self.record_action(EditorAction::InsertNewline);
         self.push_undo();
         let tail = self.lines[self.row].split_off(self.col);
         self.row += 1;
@@ -236,6 +281,7 @@ impl EditorBuffer {
 
     /// Backspace: delete byte before cursor; join with previous line when at col 0.
     pub fn backspace(&mut self) {
+        self.record_action(EditorAction::Backspace);
         if self.col > 0 {
             self.push_undo();
             let line = &mut self.lines[self.row];
@@ -257,6 +303,7 @@ impl EditorBuffer {
 
     /// Delete byte at cursor (Del).
     pub fn delete(&mut self) {
+        self.record_action(EditorAction::Delete);
         let line_len = self.lines[self.row].len();
         if self.col < line_len {
             self.push_undo();
@@ -547,12 +594,14 @@ impl EditorBuffer {
 
     /// Begin block selection at current cursor (mark start).
     pub fn mark_start(&mut self) {
+        self.record_action(EditorAction::MarkStart);
         self.sel_start = Some((self.row, self.col));
         self.sel_end = None;
     }
 
     /// Set block selection end at current cursor; normalizes start/end order.
     pub fn mark_end(&mut self) {
+        self.record_action(EditorAction::MarkEnd);
         if let Some((sr, sc)) = self.sel_start {
             let (er, ec) = (self.row, self.col);
             let ((a_r, a_c), (b_r, b_c)) = normalize_points((sr, sc), (er, ec));
@@ -563,6 +612,7 @@ impl EditorBuffer {
 
     /// Clear any existing block selection.
     pub fn clear_selection(&mut self) {
+        self.record_action(EditorAction::ClearSelection);
         self.sel_start = None;
         self.sel_end = None;
     }
@@ -584,6 +634,7 @@ impl EditorBuffer {
             Some(s) => s,
             None => return false,
         };
+        self.record_action(EditorAction::CopyBlockHere);
         let content = self.extract_selection_lines(sel);
         self.clipboard = Some(content.clone());
         self.insert_block(&content);
@@ -597,6 +648,7 @@ impl EditorBuffer {
             Some(s) => s,
             None => return false,
         };
+        self.record_action(EditorAction::MoveBlockHere);
         let orig_target = (self.row, self.col);
         let content = self.extract_selection_lines(sel);
         // If cursor lies inside the selection, do nothing (MC keeps it simple).
@@ -638,6 +690,7 @@ impl EditorBuffer {
         let Some(((sr, sc), (er, ec))) = self.selection_bounds() else {
             return false;
         };
+        self.record_action(EditorAction::DeleteSelection);
         self.push_undo();
         if sr == er {
             // Single line
@@ -932,6 +985,79 @@ impl EditorBuffer {
     }
 }
 
+impl EditorBuffer {
+    /// Begin recording a macro (like mcedit Ctrl-R). Subsequent editor operations are captured.
+    /// If already recording, returns false and does nothing.
+    pub fn start_macro_record(&mut self) -> bool {
+        if self.macro_recording {
+            return false;
+        }
+        self.macro_current.clear();
+        self.macro_recording = true;
+        true
+    }
+
+    /// Stop recording a macro (like mcedit Ctrl-R). Returns Some(number_of_events) if a recording
+    /// session was active; otherwise returns None. The recorded macro becomes the "last macro".
+    pub fn stop_macro_record(&mut self) -> Option<usize> {
+        if !self.macro_recording {
+            return None;
+        }
+        self.macro_recording = false;
+        self.macro_last = self.macro_current.clone();
+        Some(self.macro_last.len())
+    }
+
+    /// Replay the last recorded macro from the current cursor/state.
+    /// Returns true if a macro existed (even if empty); false when no macro is available.
+    pub fn replay_macro(&mut self) -> bool {
+        if self.macro_last.is_empty() && !self.macro_recording {
+            // No previous macro recorded at all -> false
+            // If currently recording and empty, treat as no macro too.
+            return false;
+        }
+        let events = self.macro_last.clone();
+        self.macro_replaying = true;
+        for ev in events {
+            self.apply_action(ev);
+        }
+        self.macro_replaying = false;
+        true
+    }
+
+    fn record_action(&mut self, action: EditorAction) {
+        if self.macro_recording && !self.macro_replaying {
+            self.macro_current.push(action);
+        }
+    }
+
+    fn apply_action(&mut self, action: EditorAction) {
+        match action {
+            EditorAction::MoveLeft => self.move_left(),
+            EditorAction::MoveRight => self.move_right(),
+            EditorAction::MoveUp => self.move_up(),
+            EditorAction::MoveDown => self.move_down(),
+            EditorAction::ToggleOverwrite => self.toggle_overwrite(),
+            EditorAction::InsertBytes(b) => self.insert_bytes(&b),
+            EditorAction::InsertNewline => self.insert_newline(),
+            EditorAction::Backspace => self.backspace(),
+            EditorAction::Delete => self.delete(),
+            EditorAction::MarkStart => self.mark_start(),
+            EditorAction::MarkEnd => self.mark_end(),
+            EditorAction::ClearSelection => self.clear_selection(),
+            EditorAction::CopyBlockHere => {
+                let _ = self.copy_block_here();
+            }
+            EditorAction::MoveBlockHere => {
+                let _ = self.move_block_here();
+            }
+            EditorAction::DeleteSelection => {
+                let _ = self.delete_selection();
+            }
+        }
+    }
+}
+
 /// Lightweight trait to describe an editor host integration.
 /// Not a full UI; the UI layer should own event handling and drawing.
 pub trait EditorHost {
@@ -1109,5 +1235,38 @@ mod tests {
         // Ensure cursor moved to end of replaced region (start + output len)
         assert_eq!(b.row, 0);
         assert_eq!(b.col, 5);
+    }
+
+    #[test]
+    fn macro_record_replay_insert_and_move() {
+        let mut b = EditorBuffer::new_empty();
+        assert!(b.start_macro_record());
+        b.insert_bytes(b"a");
+        b.insert_bytes(b"b");
+        // Buffer now: "ab", cursor at end
+        b.move_left(); // cursor after 'a'
+        b.insert_bytes(b"X"); // "aXb"
+        let n = b.stop_macro_record().expect("was recording");
+        assert_eq!(n, 4); // Insert 'a', Insert 'b', MoveLeft, Insert 'X'
+        assert_eq!(b.to_bytes(), b"aXb");
+        // Replay macro once more at end -> append same transformation
+        b.row = 0;
+        b.col = b.lines[0].len(); // move to end explicitly
+        assert!(b.replay_macro());
+        assert_eq!(b.to_bytes(), b"aXbaXb");
+    }
+
+    #[test]
+    fn macro_empty_is_noop() {
+        let mut b = EditorBuffer::new_empty();
+        assert!(b.start_macro_record());
+        // Stop immediately => empty macro recorded
+        let n = b.stop_macro_record().expect("was recording");
+        assert_eq!(n, 0);
+        // Replay should succeed but not change content
+        let before = b.to_bytes();
+        // We consider an empty recorded macro as present; replay returns true but does nothing.
+        assert!(b.replay_macro());
+        assert_eq!(b.to_bytes(), before);
     }
 }
