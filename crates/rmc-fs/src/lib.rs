@@ -87,17 +87,17 @@ pub trait Vfs: Send {
     }
 }
 
+pub mod arfs;
 pub mod composite;
 pub mod cpiofs;
+pub mod debfs;
 pub mod extfs;
 pub mod isofs;
 pub mod pathutil;
 pub mod rarfs;
 pub mod remote;
-pub mod sevenzfs;
-pub mod arfs;
-pub mod debfs;
 pub mod rpmfs;
+pub mod sevenzfs;
 pub mod tarfs;
 pub mod zipfs;
 
