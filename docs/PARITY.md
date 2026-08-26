@@ -189,8 +189,8 @@ From mc(1) “Shell Command Line”, “The subshell support”:
 
 Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “User menu”, “Edit extension file”, “Hotlist”:
 - [ ] Config files: system defaults vs user `~/.config/mc/ini` and related; auto-save setup
-- [ ] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
-- [ ] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action; “Learn keys” support
+ - [ ] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
+ - [ ] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action; “Learn keys” support
 - [ ] User menu (F2): `.mc.menu` (cwd) or `~/.config/mc/menu`, else system menu; safe ownership checks
 - [ ] Extension rules: `mc.ext.ini` to open/view with external/internal handlers; per filetype filters
 - [ ] Directory hotlist: C-\\ opens; C-x h adds current; manage labels and jump

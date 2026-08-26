@@ -1,0 +1,49 @@
+# Apache-2.0 original keymap data for Rusty Midnight Commander
+# Format: one binding per line as "Key = Action".
+# Keys follow MC-like notation:
+#   - Function keys: F1..F12
+#   - Control: C-x (e.g., C-r)
+#   - Alt/Meta: Alt-x (e.g., Alt-n)
+#   - Names: Up, Down, Left, Right, Home, End, PageUp, PageDown, Tab, Enter, Backspace, Insert, Space
+#
+# Actions use existing rmc_core::actions::Action variant names (simplified):
+#   MoveUp, MoveDown, PageUp, PageDown, Home, End, Enter, ParentDir, SwitchPanel, ToggleHidden,
+#   SwapPanels, Refresh, ShowHelp, ViewFile, Copy, Move, Mkdir, Delete, FocusMenu, Quit,
+#   ToggleSelect, SortName, SortSize, SortTime
+
+# Movement and navigation
+Up        = MoveUp
+Down      = MoveDown
+PageUp    = PageUp
+PageDown  = PageDown
+Home      = Home
+End       = End
+Tab       = SwitchPanel
+Enter     = Enter
+Backspace = ParentDir
+C-PageUp  = ParentDir
+
+# Toggles and refresh
+C-h     = ToggleHidden
+C-u     = SwapPanels
+C-r     = Refresh
+
+# Function keys (F-bar)
+F1  = ShowHelp
+F3  = ViewFile
+F5  = Copy
+F6  = Move
+F7  = Mkdir
+F8  = Delete
+F9  = FocusMenu
+F10 = Quit
+
+# Sorting shortcuts (Alt variants)
+Alt-n = SortName
+Alt-s = SortSize
+Alt-t = SortTime
+
+# Selection
+Insert = ToggleSelect
+Space  = ToggleSelect
+

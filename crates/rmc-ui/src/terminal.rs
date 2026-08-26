@@ -1,4 +1,4 @@
-use crate::mc_colors::McPalette;
+use crate::skin::load_default_palette;
 use crate::render::Renderer;
 use anyhow::Result;
 use crossterm::event::{
@@ -18,7 +18,8 @@ impl TerminalApp {
         let mut out = stdout();
         enable_raw_mode()?;
         execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-        let mut renderer = Renderer::new(McPalette::default());
+        let palette = load_default_palette();
+        let mut renderer = Renderer::new(palette);
         let mut last_draw = Instant::now();
 
         loop {
