@@ -36,4 +36,3 @@ fn extfs_list_and_leave_parent() {
     let parent = list.iter().find(|e| e.name == "..").unwrap();
     assert_eq!(parent.path, arc.parent().unwrap().to_path_buf());
 }
-

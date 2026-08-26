@@ -1,16 +1,8 @@
 use crate::{DirEntry, FsError, FsResult, Metadata};
-use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
-
-#[derive(Debug, Clone, Deserialize)]
-struct Ini {
-    extfs: Option<HashMap<String, String>>,
-    extensions: Option<HashMap<String, String>>,
-}
 
 #[derive(Debug, Clone)]
 pub struct ExtfsRegistry {
@@ -22,10 +14,10 @@ pub struct ExtfsRegistry {
 
 #[derive(Debug, Clone)]
 pub struct ExtfsPath {
-    pub archive: PathBuf,  // physical file on disk
-    pub inner: PathBuf,    // path inside (may be empty)
-    pub helper: String,    // helper short name
-    pub helper_cmd: String // resolved helper command path
+    pub archive: PathBuf,   // physical file on disk
+    pub inner: PathBuf,     // path inside (may be empty)
+    pub helper: String,     // helper short name
+    pub helper_cmd: String, // resolved helper command path
 }
 
 impl ExtfsRegistry {
@@ -40,7 +32,16 @@ impl ExtfsRegistry {
         ];
         for p in candidates {
             if let Ok(s) = std::fs::read_to_string(&p) {
-                if let Ok((helpers, ext_map)) = parse_simple_ini(&s) {
+                if let Ok((mut helpers, ext_map)) = parse_simple_ini(&s) {
+                    // Resolve helper paths relative to the ini file location when not absolute
+                    if let Some(base) = p.parent() {
+                        for (_name, cmd) in helpers.iter_mut() {
+                            let cpath = PathBuf::from(&*cmd);
+                            if !cpath.is_absolute() {
+                                *cmd = base.join(&cpath).to_string_lossy().into_owned();
+                            }
+                        }
+                    }
                     return Self { helpers, ext_map };
                 }
             }
@@ -103,6 +104,7 @@ impl ExtfsRegistry {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_simple_ini(s: &str) -> Result<(HashMap<String, String>, HashMap<String, String>), ()> {
     let mut section = String::new();
     let mut helpers: HashMap<String, String> = HashMap::new();
@@ -152,9 +154,7 @@ pub fn list_dir(
     if !inner.as_os_str().is_empty() {
         // Minimal extfs example has flat listing only; no nested directories.
         // Return just a parent marker that points to archive root.
-        let mut out = Vec::new();
-        out.push(parent_marker(vfs_root.to_path_buf()));
-        return Ok(out);
+        return Ok(vec![parent_marker(vfs_root.to_path_buf())]);
     }
     let output = Command::new(helper_cmd)
         .arg("list")
@@ -203,7 +203,7 @@ pub fn list_dir(
         }
         let real_path = PathBuf::from(real);
         let meta = match std::fs::symlink_metadata(&real_path) {
-            Ok(md) => to_meta(&md),
+            Ok(md) => to_meta(md),
             Err(_) => Metadata {
                 is_dir: false,
                 is_symlink: false,
@@ -220,7 +220,10 @@ pub fn list_dir(
         out.push(DirEntry {
             name: display,
             path: vpath,
-            meta: Metadata { is_dir: false, ..meta },
+            meta: Metadata {
+                is_dir: false,
+                ..meta
+            },
         });
     }
     Ok(out)
@@ -263,7 +266,7 @@ fn parent_marker(parent: PathBuf) -> DirEntry {
 
 fn to_meta(md: std::fs::Metadata) -> Metadata {
     #[cfg(unix)]
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     #[cfg(unix)]
     let mode = md.permissions().mode();
     #[cfg(not(unix))]
@@ -279,4 +282,3 @@ fn to_meta(md: std::fs::Metadata) -> Metadata {
         group: None,
     }
 }
-

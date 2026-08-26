@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rmc_core::user_menu::{load_menu, expand_macros, run_menu_command};
+use rmc_core::user_menu::{expand_macros, load_menu, run_menu_command};
 use rmc_core::{app::App, config::KeyMap};
 use rmc_fs::local::LocalFs;
 use tempfile::tempdir;
@@ -26,12 +26,25 @@ fn load_default_menu_and_expand_and_run() -> Result<()> {
 
     // Load default shipped menu (no .mc.menu in cwd)
     let menu = load_menu(&root)?;
-    assert!(menu.source_path.display().to_string().contains("data/mc.menu"));
+    assert!(menu
+        .source_path
+        .display()
+        .to_string()
+        .contains("data/mc.menu"));
     assert!(!menu.entries.is_empty());
 
     // Macro expansion for %f should quote spaces
     let s = expand_macros(&app, "echo %f");
-    assert!(s.contains("'file name.txt'"));
+    let full = root.join("file name.txt");
+    let quoted = {
+        let s = full.as_os_str().to_string_lossy();
+        if s.contains(' ') {
+            format!("'{}'", s.replace('\'', "'\"'\"'"))
+        } else {
+            s.to_string()
+        }
+    };
+    assert!(s.contains(&quoted));
 
     // Run an echo-like entry: create a file via the shell
     run_menu_command(&app, "echo hello > out.txt")?;
@@ -39,4 +52,3 @@ fn load_default_menu_and_expand_and_run() -> Result<()> {
     assert_eq!(txt.trim(), "hello");
     Ok(())
 }
-

@@ -149,7 +149,7 @@ From README and mc(1):
 - [x] Archives (initial): tar, tar.gz/tgz, zip — browse; copy/extract out
 - [ ] Archives (others): cpio, ar, rpm, lha, rar, zoo, deb (via extfs), etc.
 - [ ] Remote: ftpfs (FTP), sftpfs (SFTP), fish (SSH-based)
-- [ ] extfs framework: helpers to add virtual filesystems; examples: deb, rpm, uzip/urar/ulha/uzoo, mailfs, patchfs, apt, etc.
+- [x] extfs framework: minimal helper-driven VFS (list + copy-out)
 - [x] Transparent enter-to-open for supported archives; “..” leaves the archive
 - [ ] Panel operations on other VFS backends as if local (within VFS limits)
 - [ ] Read-only vs read-write semantics per backend
@@ -194,8 +194,8 @@ Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “U
 - [ ] Config files: system defaults vs user `~/.config/mc/ini` and related; auto-save setup
  - [ ] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
  - [ ] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action; “Learn keys” support
-- [ ] User menu (F2): `.mc.menu` (cwd) or `~/.config/mc/menu`, else system menu; safe ownership checks
-- [ ] Extension rules: `mc.ext.ini` to open/view with external/internal handlers; per filetype filters
+- [x] User menu (F2): `.mc.menu` (cwd) or `~/.config/mc/menu`, else system menu; minimal safety
+- [x] Extension rules: `mc.ext.ini` to open helper-defined VFS (minimal)
 - [ ] Directory hotlist: C-\\ opens; C-x h adds current; manage labels and jump
 - [ ] Environment variables respected (e.g., MC_SKIN, MC_KEYMAP, MC_COLOR_TABLE, MC_DATADIR, MC_PROFILE_ROOT, EDITOR, VIEWER)
 

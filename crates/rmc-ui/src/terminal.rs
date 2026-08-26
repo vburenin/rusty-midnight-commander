@@ -472,6 +472,7 @@ impl TerminalApp {
                 entries,
                 selected_index,
             } => {
+                let mut run_command_text: Option<String> = None;
                 match key.code {
                     KeyCode::Esc | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
@@ -488,10 +489,8 @@ impl TerminalApp {
                     }
                     KeyCode::Enter => {
                         if let Some(ent) = entries.get(*selected_index) {
-                            let cmd = rmc_core::user_menu::expand_macros(app, &ent.command);
-                            let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+                            run_command_text = Some(ent.command.clone());
                             app.ui_mode = UiMode::Normal;
-                            app.reload_panels()?;
                         }
                     }
                     KeyCode::Char(c) => {
@@ -504,14 +503,18 @@ impl TerminalApp {
                         {
                             *selected_index = idx;
                             if let Some(ent) = entries.get(idx) {
-                                let cmd = rmc_core::user_menu::expand_macros(app, &ent.command);
-                                let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+                                run_command_text = Some(ent.command.clone());
                                 app.ui_mode = UiMode::Normal;
-                                app.reload_panels()?;
                             }
                         }
                     }
                     _ => {}
+                }
+                // After releasing the mutable borrow on ui_mode, run the command if requested
+                if let Some(txt) = run_command_text {
+                    let cmd = rmc_core::user_menu::expand_macros(app, &txt);
+                    let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+                    app.reload_panels()?;
                 }
                 return Ok(());
             }
