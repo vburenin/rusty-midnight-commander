@@ -356,7 +356,9 @@ impl TerminalApp {
                 on_ok,
             } => {
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Enter => {
                         let cb = std::mem::replace(on_ok, Box::new(|_| Ok(())));
                         app.ui_mode = UiMode::Normal;
@@ -386,7 +388,9 @@ impl TerminalApp {
                     }
                 }
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Tab => {
                         state.focus = match state.focus {
                             FF::StartDir => FF::NamePattern,
@@ -615,11 +619,11 @@ impl TerminalApp {
                             *dirs_first = !*dirs_first;
                         } else if *focus_index == 6 {
                             // OK via space
-                            Self::apply_sort_dialog(app, *side, *by, *reverse, *dirs_first)?;
-                            app.ui_mode = UiMode::Normal;
+                            apply = Some((*side, *by, *reverse, *dirs_first));
+                            close_dialog = true;
                         } else if *focus_index == 7 {
                             // Cancel via space
-                            app.ui_mode = UiMode::Normal;
+                            close_dialog = true;
                         }
                     }
                     KeyCode::Enter => {
@@ -637,16 +641,27 @@ impl TerminalApp {
                             4 => *reverse = !*reverse,
                             5 => *dirs_first = !*dirs_first,
                             6 => {
-                                Self::apply_sort_dialog(app, *side, *by, *reverse, *dirs_first)?;
-                                app.ui_mode = UiMode::Normal;
+                                apply = Some((*side, *by, *reverse, *dirs_first));
+                                close_dialog = true;
                             }
                             7 => {
-                                app.ui_mode = UiMode::Normal;
+                                close_dialog = true;
                             }
                             _ => {}
                         }
                     }
                     _ => {}
+                }
+                let _ = side;
+                let _ = focus_index;
+                let _ = by;
+                let _ = reverse;
+                let _ = dirs_first;
+                if let Some((s, b, r, d)) = apply {
+                    Self::apply_sort_dialog(app, s, b, r, d)?;
+                }
+                if close_dialog {
+                    app.ui_mode = UiMode::Normal;
                 }
                 return Ok(());
             }

@@ -770,7 +770,11 @@ fn draw_sort_dialog(
     // Buttons with focus highlight: indices 6=OK, 7=Cancel
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok_txt = if focus_index == 6 { "< OK >" } else { "  OK  " };
-    let cancel_txt = if focus_index == 7 { "[ Cancel ]" } else { "  Cancel  " };
+    let cancel_txt = if focus_index == 7 {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
     let btns = format!("{ok_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
