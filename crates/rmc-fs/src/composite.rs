@@ -33,7 +33,7 @@ impl CompositeFs {
             Route::Extfs { xp, vfs_root }
         } else if remote::is_remote_url(path) {
             match remote::parse_remote_url(path) {
-                Ok(url) => Route::Remote { url, vfs_root: path },
+                Ok(url) => Route::Remote { url },
                 Err(_) => Route::Local { path }, // fallback: treat as local invalid path
             }
         } else {
@@ -62,7 +62,6 @@ enum Route<'a> {
     },
     Remote {
         url: remote::RemoteUrl,
-        vfs_root: &'a Path,
     },
 }
 
@@ -89,7 +88,7 @@ impl Vfs for CompositeFs {
                 vfs_root,
                 show_hidden,
             ),
-            Route::Remote { url, vfs_root: _ } => crate::remote::list_dir(&url, path, show_hidden),
+            Route::Remote { url } => crate::remote::list_dir(&url, path, show_hidden),
         }
     }
 
@@ -159,9 +158,7 @@ impl Vfs for CompositeFs {
             }
             (Route::Remote { url, .. }, Route::Local { path: d }) => {
                 // remote -> local
-                let mut u = url.clone();
-                // If source path points to a directory, disallow copy for now
-                crate::remote::copy_out(&u, d)
+                crate::remote::copy_out(&url, d)
             }
             (Route::Local { path: s }, Route::Remote { url, .. }) => {
                 // local -> remote
@@ -241,9 +238,9 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "stat inside extfs is not supported in this minimal implementation".into(),
             )),
-            Route::Remote { .. } => Err(FsError::Message(
-                "stat on remote is not implemented".into(),
-            )),
+            Route::Remote { .. } => {
+                Err(FsError::Message("stat on remote is not implemented".into()))
+            }
         }
     }
     fn chmod(&self, path: &Path, mode: u32, recursive: bool) -> FsResult<()> {
@@ -254,6 +251,9 @@ impl Vfs for CompositeFs {
             )),
             Route::Extfs { .. } => Err(FsError::Message(
                 "chmod inside extfs is not supported".into(),
+            )),
+            Route::Remote { .. } => Err(FsError::Message(
+                "chmod on remote is not supported".into(),
             )),
         }
     }
@@ -271,6 +271,9 @@ impl Vfs for CompositeFs {
             )),
             Route::Extfs { .. } => Err(FsError::Message(
                 "chown inside extfs is not supported".into(),
+            )),
+            Route::Remote { .. } => Err(FsError::Message(
+                "chown on remote is not supported".into(),
             )),
         }
     }
@@ -290,6 +293,9 @@ impl Vfs for CompositeFs {
             )),
             Route::Extfs { .. } => Err(FsError::Message(
                 "symlink inside extfs is not supported".into(),
+            )),
+            Route::Remote { .. } => Err(FsError::Message(
+                "symlink on remote is not supported".into(),
             )),
         }
     }

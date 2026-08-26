@@ -18,7 +18,7 @@ libc = "0.2"
 tar = "0.4"
 flate2 = { version = "1.0", features = ["rust_backend"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
-ftp = "5"
+ftp = "3"
 whoami = { workspace = true }
 tempfile = "3.10"
 

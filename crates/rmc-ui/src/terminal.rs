@@ -1474,7 +1474,10 @@ impl TerminalApp {
                                 // Prompt user for host or URL; accept "user@host" or full URL.
                                 app.ui_mode = UiMode::InputDialog {
                                     title: format!("{} link", scheme.to_uppercase()),
-                                    prompt: format!("Enter {} host/user or URL:", scheme.to_uppercase()),
+                                    prompt: format!(
+                                        "Enter {} host/user or URL:",
+                                        scheme.to_uppercase()
+                                    ),
                                     value: String::new(),
                                     focus_ok: false,
                                     on_submit: Box::new(move |app, input| {
@@ -1482,7 +1485,9 @@ impl TerminalApp {
                                         if trimmed.is_empty() {
                                             return Ok(());
                                         }
-                                        let url_str = if trimmed.starts_with("ftp://") || trimmed.starts_with("sftp://") {
+                                        let url_str = if trimmed.starts_with("ftp://")
+                                            || trimmed.starts_with("sftp://")
+                                        {
                                             trimmed.to_string()
                                         } else {
                                             // Build scheme://<input> (ensure one leading slash for empty path)

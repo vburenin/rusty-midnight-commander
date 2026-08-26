@@ -2,7 +2,6 @@ use rmc_fs::remote::{
     copy_out_with_client, list_dir_with_client, parse_remote_url_str, RemoteClient, RemoteEntry,
     RemoteScheme, RemoteUrl,
 };
-use std::path::PathBuf;
 use tempfile::tempdir;
 
 #[test]
@@ -28,11 +27,19 @@ impl RemoteClient for MockClient {
     fn list(&mut self, _path: &str) -> rmc_fs::FsResult<Vec<RemoteEntry>> {
         Ok(self.entries.clone())
     }
-    fn download(&mut self, _remote_path: &str, local_path: &std::path::Path) -> rmc_fs::FsResult<()> {
+    fn download(
+        &mut self,
+        _remote_path: &str,
+        local_path: &std::path::Path,
+    ) -> rmc_fs::FsResult<()> {
         std::fs::write(local_path, &self.blob)?;
         Ok(())
     }
-    fn upload(&mut self, _local_path: &std::path::Path, _remote_path: &str) -> rmc_fs::FsResult<()> {
+    fn upload(
+        &mut self,
+        _local_path: &std::path::Path,
+        _remote_path: &str,
+    ) -> rmc_fs::FsResult<()> {
         Ok(())
     }
     fn remove_file(&mut self, _remote_path: &str) -> rmc_fs::FsResult<()> {
@@ -83,7 +90,11 @@ fn list_dir_with_mock_client_filters_and_paths() {
     assert!(list.iter().any(|e| e.name == "file.txt" && !e.meta.is_dir));
     assert!(!list.iter().any(|e| e.name == ".hidden"));
     // Paths should be ftp://example.com/<name>
-    assert!(list.iter().any(|e| e.path == PathBuf::from("ftp://example.com/dir")));
+    assert!(list.iter().any(|e| e
+        .path
+        .to_string_lossy()
+        .as_ref()
+        == "ftp://example.com/dir"));
 }
 
 #[test]

@@ -6,7 +6,7 @@
 use crate::{DirEntry, FsError, FsResult, Metadata};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
@@ -60,12 +60,18 @@ pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
     };
     let (host_str, port_opt) = match hostport.rsplit_once(':') {
         Some((h, pstr)) if !pstr.is_empty() && pstr.chars().all(|c| c.is_ascii_digit()) => {
-            let port = pstr.parse::<u16>().map_err(|e| FsError::Message(format!("invalid port: {e}")))?;
+            let port = pstr
+                .parse::<u16>()
+                .map_err(|e| FsError::Message(format!("invalid port: {e}")))?;
             (h.to_string(), Some(port))
         }
         _ => (hostport.to_string(), None),
     };
-    let path = if path_part.is_empty() { "/".to_string() } else { path_part.to_string() };
+    let path = if path_part.is_empty() {
+        "/".to_string()
+    } else {
+        path_part.to_string()
+    };
     Ok(RemoteUrl {
         scheme,
         user: user_opt,
@@ -106,8 +112,16 @@ fn remote_parent_path(url: &RemoteUrl) -> PathBuf {
     // normalize parent of current path
     let cur = Path::new(&url.path);
     if let Some(p) = cur.parent() {
-        let pstr = if p.as_os_str().is_empty() { "/" } else { p.to_string_lossy().as_ref() };
-        let joined = format!("{}/{}", parent.to_string_lossy(), trim_leading_slash(pstr));
+        let p_own = if p.as_os_str().is_empty() {
+            "/".to_string()
+        } else {
+            p.to_string_lossy().to_string()
+        };
+        let joined = format!(
+            "{}/{}",
+            parent.to_string_lossy(),
+            trim_leading_slash(&p_own)
+        );
         parent = PathBuf::from(joined);
     }
     parent
@@ -142,7 +156,11 @@ impl RemoteUrl {
         }
     }
     pub fn to_string_path(&self) -> String {
-        format!("{}/{}", self.to_root_string(), trim_leading_slash(&self.path))
+        format!(
+            "{}/{}",
+            self.to_root_string(),
+            trim_leading_slash(&self.path)
+        )
     }
 }
 
@@ -171,7 +189,8 @@ struct FtpClient {
 impl FtpClient {
     fn connect(url: &RemoteUrl) -> FsResult<Self> {
         let addr = format!("{}:{}", url.host, url.port.unwrap_or(21));
-        let mut ftp = ftp::FtpStream::connect(addr).map_err(|e| FsError::Message(format!("FTP connect: {e}")))?;
+        let mut ftp = ftp::FtpStream::connect(addr)
+            .map_err(|e| FsError::Message(format!("FTP connect: {e}")))?;
         // Login (anonymous if not provided)
         match &url.user {
             Some(u) => {
@@ -207,19 +226,17 @@ impl RemoteClient for FtpClient {
         Ok(out)
     }
     fn download(&mut self, remote_path: &str, local_path: &Path) -> FsResult<()> {
-        let mut reader = self
+        let data = self
             .inner
-            .retr_as_stream(remote_path)
+            .simple_retr(remote_path)
             .map_err(|e| FsError::Message(format!("FTP RETR: {e}")))?;
-        let mut f = File::create(local_path)?;
-        std::io::copy(&mut reader, &mut f).map_err(|e| FsError::Message(format!("download: {e}")))?;
-        self.inner.finalize_retr_stream(reader).ok();
+        std::fs::write(local_path, data.into_inner())?;
         Ok(())
     }
     fn upload(&mut self, local_path: &Path, remote_path: &str) -> FsResult<()> {
         let mut f = File::open(local_path)?;
         self.inner
-            .put_with_stream(remote_path, &mut f)
+            .put(remote_path, &mut f)
             .map_err(|e| FsError::Message(format!("FTP STOR: {e}")))?;
         Ok(())
     }
@@ -230,9 +247,10 @@ impl RemoteClient for FtpClient {
         Ok(())
     }
     fn remove_dir(&mut self, remote_path: &str) -> FsResult<()> {
+        #[allow(deprecated)]
         self.inner
-            .rmd(remote_path)
-            .map_err(|e| FsError::Message(format!("FTP RMD: {e}")))?;
+            .rmdir(remote_path)
+            .map_err(|e| FsError::Message(format!("FTP RMDIR: {e}")))?;
         Ok(())
     }
     fn mkdir(&mut self, remote_path: &str) -> FsResult<()> {
@@ -246,18 +264,13 @@ impl RemoteClient for FtpClient {
 // Parse a typical Unix-style LIST line
 fn parse_unix_list_line(line: &str) -> Option<RemoteEntry> {
     // Example: "drwxr-xr-x   2 user group      4096 Jan 01 00:00 dirname"
-    let mut parts = line.split_whitespace();
-    let kind = parts.next()?.chars().next()?;
-    // skip next 7-ish columns (links, user, group, size, month, day, time/year)
-    let mut cols = 0;
-    let mut name_index = 0usize;
     let tokens: Vec<&str> = line.split_whitespace().collect();
-    // Try to locate name by skipping 8 columns if possible
-    name_index = tokens.iter().take(8).map(|t| t.len() + 1).sum::<usize>();
-    if name_index >= line.len() {
+    if tokens.is_empty() {
         return None;
     }
-    let name = line[name_index..].trim().to_string();
+    let kind = tokens[0].chars().next()?;
+    // Heuristic: typical unix format has name as the last token
+    let name = tokens.last()?.to_string();
     let is_dir = kind == 'd';
     let size: u64 = tokens
         .get(4)
@@ -266,11 +279,7 @@ fn parse_unix_list_line(line: &str) -> Option<RemoteEntry> {
     if name == "." || name == ".." {
         return None;
     }
-    Some(RemoteEntry {
-        name,
-        is_dir,
-        size,
-    })
+    Some(RemoteEntry { name, is_dir, size })
 }
 
 // -------- SFTP implementation (via system `sftp` binary) --------
@@ -282,10 +291,7 @@ struct SftpClient {
 
 impl SftpClient {
     fn connect(url: &RemoteUrl) -> FsResult<Self> {
-        let user = url
-            .user
-            .clone()
-            .unwrap_or_else(|| whoami::username());
+        let user = url.user.clone().unwrap_or_else(whoami::username);
         let id = format!("{user}@{}", url.host);
         Ok(Self {
             user_at_host: id,
@@ -307,14 +313,23 @@ impl SftpClient {
 impl RemoteClient for SftpClient {
     fn list(&mut self, path: &str) -> FsResult<Vec<RemoteEntry>> {
         let mut cmd = self.sftp_cmd();
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| FsError::Message("sftp stdin".into()))?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("sftp stdin".into()))?;
             let _ = writeln!(stdin, "ls -l {}", shell_escape(path));
             let _ = writeln!(stdin, "quit");
         }
-        let out = child.wait_with_output().map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(FsError::Message(format!("sftp ls: {err}")));
@@ -330,14 +345,28 @@ impl RemoteClient for SftpClient {
     }
     fn download(&mut self, remote_path: &str, local_path: &Path) -> FsResult<()> {
         let mut cmd = self.sftp_cmd();
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| FsError::Message("sftp stdin".into()))?;
-            let _ = writeln!(stdin, "get {} {}", shell_escape(remote_path), shell_escape_os(local_path.as_os_str()));
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("sftp stdin".into()))?;
+            let _ = writeln!(
+                stdin,
+                "get {} {}",
+                shell_escape(remote_path),
+                shell_escape_os(local_path.as_os_str())
+            );
             let _ = writeln!(stdin, "quit");
         }
-        let out = child.wait_with_output().map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(FsError::Message(format!("sftp get: {err}")));
@@ -346,14 +375,28 @@ impl RemoteClient for SftpClient {
     }
     fn upload(&mut self, local_path: &Path, remote_path: &str) -> FsResult<()> {
         let mut cmd = self.sftp_cmd();
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| FsError::Message("sftp stdin".into()))?;
-            let _ = writeln!(stdin, "put {} {}", shell_escape_os(local_path.as_os_str()), shell_escape(remote_path));
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("sftp stdin".into()))?;
+            let _ = writeln!(
+                stdin,
+                "put {} {}",
+                shell_escape_os(local_path.as_os_str()),
+                shell_escape(remote_path)
+            );
             let _ = writeln!(stdin, "quit");
         }
-        let out = child.wait_with_output().map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(FsError::Message(format!("sftp put: {err}")));
@@ -362,14 +405,23 @@ impl RemoteClient for SftpClient {
     }
     fn remove_file(&mut self, remote_path: &str) -> FsResult<()> {
         let mut cmd = self.sftp_cmd();
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| FsError::Message("sftp stdin".into()))?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("sftp stdin".into()))?;
             let _ = writeln!(stdin, "rm {}", shell_escape(remote_path));
             let _ = writeln!(stdin, "quit");
         }
-        let out = child.wait_with_output().map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(FsError::Message(format!("sftp rm: {err}")));
@@ -378,14 +430,23 @@ impl RemoteClient for SftpClient {
     }
     fn remove_dir(&mut self, remote_path: &str) -> FsResult<()> {
         let mut cmd = self.sftp_cmd();
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| FsError::Message("sftp stdin".into()))?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("sftp stdin".into()))?;
             let _ = writeln!(stdin, "rmdir {}", shell_escape(remote_path));
             let _ = writeln!(stdin, "quit");
         }
-        let out = child.wait_with_output().map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(FsError::Message(format!("sftp rmdir: {err}")));
@@ -394,14 +455,23 @@ impl RemoteClient for SftpClient {
     }
     fn mkdir(&mut self, remote_path: &str) -> FsResult<()> {
         let mut cmd = self.sftp_cmd();
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| FsError::Message(format!("sftp spawn: {e}")))?;
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| FsError::Message("sftp stdin".into()))?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| FsError::Message("sftp stdin".into()))?;
             let _ = writeln!(stdin, "mkdir {}", shell_escape(remote_path));
             let _ = writeln!(stdin, "quit");
         }
-        let out = child.wait_with_output().map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| FsError::Message(format!("sftp wait: {e}")))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             return Err(FsError::Message(format!("sftp mkdir: {err}")));
@@ -432,7 +502,10 @@ fn shell_escape_os(s: &OsStr) -> String {
 }
 
 // -------- High-level helpers used by CompositeFs --------
-fn with_client<T>(url: &RemoteUrl, f: impl FnOnce(&mut dyn RemoteClient) -> FsResult<T>) -> FsResult<T> {
+fn with_client<T>(
+    url: &RemoteUrl,
+    f: impl FnOnce(&mut dyn RemoteClient) -> FsResult<T>,
+) -> FsResult<T> {
     match url.scheme {
         RemoteScheme::Ftp => {
             let mut c = FtpClient::connect(url)?;
@@ -445,7 +518,7 @@ fn with_client<T>(url: &RemoteUrl, f: impl FnOnce(&mut dyn RemoteClient) -> FsRe
     }
 }
 
-pub fn list_dir(url: &RemoteUrl, vfs_root: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
+pub fn list_dir(url: &RemoteUrl, _vfs_root: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
     let mut entries = with_client(url, |c| c.list(&url.path))?;
     let mut out = Vec::with_capacity(entries.len() + 1);
     // Parent marker: navigate to one directory above
@@ -533,14 +606,17 @@ pub fn mkdir(url: &RemoteUrl) -> FsResult<()> {
 }
 
 pub fn read_file_to_temp(url: &RemoteUrl) -> FsResult<File> {
-    let tmp = tempfile::NamedTempFile::new().map_err(|e| FsError::Message(format!("tempfile: {e}")))?;
+    let tmp =
+        tempfile::NamedTempFile::new().map_err(|e| FsError::Message(format!("tempfile: {e}")))?;
     let p = tmp.path().to_path_buf();
-    // Keep temp file alive by persisting; it will be cleaned up when File is dropped (OS temp cleanup)
-    let f = tmp.reopen().map_err(|e| FsError::Message(format!("temp reopen: {e}")))?;
-    drop(tmp); // original handle dropped; we keep reopened
+    // Download to the named temp path
     with_client(url, |c| c.download(&url.path, &p))?;
-    let file = File::open(p)?;
-    Ok(file)
+    // Reopen a handle to return; dropping `tmp` unlinks the path but the handle remains valid
+    let f = tmp
+        .reopen()
+        .map_err(|e| FsError::Message(format!("temp reopen: {e}")))?;
+    drop(tmp);
+    Ok(f)
 }
 
 pub struct RemoteWrite {
@@ -551,12 +627,17 @@ pub struct RemoteWrite {
 
 impl RemoteWrite {
     pub fn new(url: RemoteUrl) -> FsResult<Self> {
-        let tmp = tempfile::NamedTempFile::new().map_err(|e| FsError::Message(format!("tempfile: {e}")))?;
+        let tmp = tempfile::NamedTempFile::new()
+            .map_err(|e| FsError::Message(format!("tempfile: {e}")))?;
         let tmp_path = tmp.path().to_path_buf();
         let file = tmp
             .reopen()
             .map_err(|e| FsError::Message(format!("temp reopen: {e}")))?;
-        Ok(Self { tmp_path, url, file })
+        Ok(Self {
+            tmp_path,
+            url,
+            file,
+        })
     }
 }
 
@@ -577,8 +658,7 @@ impl Drop for RemoteWrite {
     }
 }
 
-// -------- Tests-only helpers --------
-#[cfg(test)]
+// -------- Helpers usable for tests (public for integration tests) --------
 pub fn list_dir_with_client(
     url: &RemoteUrl,
     client: &mut dyn RemoteClient,
@@ -616,8 +696,11 @@ pub fn list_dir_with_client(
     Ok(out)
 }
 
-#[cfg(test)]
-pub fn copy_out_with_client(url: &RemoteUrl, client: &mut dyn RemoteClient, dst: &Path) -> FsResult<()> {
+pub fn copy_out_with_client(
+    url: &RemoteUrl,
+    client: &mut dyn RemoteClient,
+    dst: &Path,
+) -> FsResult<()> {
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
