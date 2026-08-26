@@ -252,9 +252,9 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "chmod inside extfs is not supported".into(),
             )),
-            Route::Remote { .. } => Err(FsError::Message(
-                "chmod on remote is not supported".into(),
-            )),
+            Route::Remote { .. } => {
+                Err(FsError::Message("chmod on remote is not supported".into()))
+            }
         }
     }
     fn chown(
@@ -272,9 +272,9 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "chown inside extfs is not supported".into(),
             )),
-            Route::Remote { .. } => Err(FsError::Message(
-                "chown on remote is not supported".into(),
-            )),
+            Route::Remote { .. } => {
+                Err(FsError::Message("chown on remote is not supported".into()))
+            }
         }
     }
     fn link_hard(&self, src: &Path, dst: &Path) -> FsResult<()> {

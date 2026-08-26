@@ -90,11 +90,9 @@ fn list_dir_with_mock_client_filters_and_paths() {
     assert!(list.iter().any(|e| e.name == "file.txt" && !e.meta.is_dir));
     assert!(!list.iter().any(|e| e.name == ".hidden"));
     // Paths should be ftp://example.com/<name>
-    assert!(list.iter().any(|e| e
-        .path
-        .to_string_lossy()
-        .as_ref()
-        == "ftp://example.com/dir"));
+    assert!(list
+        .iter()
+        .any(|e| e.path.to_string_lossy().as_ref() == "ftp://example.com/dir"));
 }
 
 #[test]
