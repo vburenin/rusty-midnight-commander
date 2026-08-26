@@ -11,3 +11,4 @@ pub mod selection;
 pub mod sorting;
 pub mod subshell;
 pub mod user_menu;
+pub mod jobs;
