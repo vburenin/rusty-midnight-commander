@@ -6,7 +6,6 @@ mod tests {
     use flate2::Compression;
     use std::fs::File;
     use std::io::{Seek, SeekFrom, Write};
-    use std::path::PathBuf;
     use tar::Builder as TarBuilder;
     use tempfile::tempdir;
 
