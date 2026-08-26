@@ -89,6 +89,34 @@ pub enum UiMode {
         stable_symlinks: bool,
         focus: CopyDialogFocus,
     },
+    // Permissions dialog
+    ChmodDialog {
+        name: String,
+        mode: u32,
+        // Bit flags
+        ur: bool,
+        uw: bool,
+        ux: bool,
+        gr: bool,
+        gw: bool,
+        gx: bool,
+        or_: bool,
+        ow: bool,
+        ox: bool,
+        suid: bool,
+        sgid: bool,
+        sticky: bool,
+        recursive: bool,
+        focus_index: usize,
+    },
+    // Ownership dialog
+    ChownDialog {
+        owner: String,
+        group: String,
+        recursive: bool,
+        // 0=owner,1=group,2=recursive,3=ok,4=cancel
+        focus_index: usize,
+    },
     MkdirDialog {
         value: String,
         focus_ok: bool, // true focuses OK button; false focuses input
@@ -107,6 +135,14 @@ pub enum UiMode {
         title: String,
         value: String,
         on_submit: UiPromptCb,
+    },
+    // Generic input dialog with a prompt line and OK/Cancel
+    InputDialog {
+        title: String,
+        prompt: String,
+        value: String,
+        on_submit: UiPromptCb,
+        focus_ok: bool,
     },
     MenuFocused,
     Help {
@@ -502,6 +538,9 @@ impl App {
             UiMode::DeleteDialog { .. } => "Delete".to_string(),
             UiMode::DialogConfirm { .. } => "Confirmations".to_string(),
             UiMode::PromptInput { .. } => "Prompts".to_string(),
+            UiMode::InputDialog { .. } => "Prompts".to_string(),
+            UiMode::ChmodDialog { .. } => "Chmod".to_string(),
+            UiMode::ChownDialog { .. } => "Chown".to_string(),
             UiMode::MenuFocused => "Menus".to_string(),
             UiMode::Help { state, .. } => state.topic.clone(),
             UiMode::ShellInput => "Panels".to_string(),

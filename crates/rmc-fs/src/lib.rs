@@ -53,6 +53,38 @@ pub trait Vfs: Send {
     fn read_file(&self, path: &Path) -> FsResult<Box<dyn Read + Send>>;
     fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>>;
     fn stat(&self, path: &Path) -> FsResult<Metadata>;
+    /// Change file permissions (octal mode). When `recursive` and `path` is a directory,
+    /// apply to all entries under it (do not follow symlinks).
+    fn chmod(&self, _path: &Path, _mode: u32, _recursive: bool) -> FsResult<()> {
+        Err(FsError::Message(
+            "chmod is not supported by this VFS backend".into(),
+        ))
+    }
+    /// Change owner and/or group by name. `None` leaves field unchanged.
+    /// When `recursive` and `path` is a directory, apply to all entries under it.
+    fn chown(
+        &self,
+        _path: &Path,
+        _owner: Option<&str>,
+        _group: Option<&str>,
+        _recursive: bool,
+    ) -> FsResult<()> {
+        Err(FsError::Message(
+            "chown is not supported by this VFS backend".into(),
+        ))
+    }
+    /// Create a hard link at `dst` pointing to `src`.
+    fn link_hard(&self, _src: &Path, _dst: &Path) -> FsResult<()> {
+        Err(FsError::Message(
+            "hard link is not supported by this VFS backend".into(),
+        ))
+    }
+    /// Create a symbolic link at `link_path` pointing to `target` (string path stored as-is).
+    fn symlink(&self, _target: &Path, _link_path: &Path) -> FsResult<()> {
+        Err(FsError::Message(
+            "symlink is not supported by this VFS backend".into(),
+        ))
+    }
 }
 
 pub mod composite;
@@ -65,6 +97,8 @@ pub mod zipfs;
 pub mod local {
     use super::*;
     use std::fs::{File, OpenOptions};
+    #[cfg(unix)]
+    use std::os::unix::fs as unixfs;
     use std::os::unix::fs::PermissionsExt;
 
     #[derive(Debug)]
@@ -224,12 +258,156 @@ pub mod local {
             let md = fs::symlink_metadata(path)?;
             Ok(meta_from(md))
         }
+        fn chmod(&self, path: &Path, mode: u32, recursive: bool) -> FsResult<()> {
+            #[cfg(unix)]
+            fn chmod_one(path: &Path, mode: u32) -> FsResult<()> {
+                let p = fs::symlink_metadata(path)?;
+                if p.file_type().is_symlink() {
+                    // Cannot chmod a symlink on Unix; skip silently
+                    return Ok(());
+                }
+                let mut perms = p.permissions();
+                perms.set_mode(mode);
+                fs::set_permissions(path, perms)?;
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            fn chmod_one(_path: &Path, _mode: u32) -> FsResult<()> {
+                Err(FsError::Message(
+                    "chmod not supported on this platform".into(),
+                ))
+            }
+            let meta = fs::symlink_metadata(path)?;
+            if meta.is_dir() && recursive {
+                for e in WalkDir::new(path).into_iter() {
+                    let e = e?;
+                    let p = e.path();
+                    chmod_one(p, mode)?;
+                }
+                Ok(())
+            } else {
+                chmod_one(path, mode)
+            }
+        }
+        fn chown(
+            &self,
+            path: &Path,
+            owner: Option<&str>,
+            group: Option<&str>,
+            recursive: bool,
+        ) -> FsResult<()> {
+            #[cfg(unix)]
+            fn chown_one(path: &Path, uid: Option<u32>, gid: Option<u32>) -> FsResult<()> {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                let md = fs::symlink_metadata(path)?;
+                let uid_t = uid
+                    .map(|u| u as libc::uid_t)
+                    .unwrap_or(!0u32 as libc::uid_t);
+                let gid_t = gid
+                    .map(|g| g as libc::gid_t)
+                    .unwrap_or(!0u32 as libc::gid_t);
+                // Use lchown for symlinks to avoid following
+                let c_path = CString::new(path.as_os_str().as_bytes())
+                    .map_err(|e| FsError::Message(format!("invalid path: {e}")))?;
+                let ret = if md.file_type().is_symlink() {
+                    unsafe { libc::lchown(c_path.as_ptr(), uid_t, gid_t) }
+                } else {
+                    unsafe { libc::chown(c_path.as_ptr(), uid_t, gid_t) }
+                };
+                if ret == 0 {
+                    Ok(())
+                } else {
+                    Err(FsError::Io(std::io::Error::last_os_error()))
+                }
+            }
+            #[cfg(not(unix))]
+            fn chown_one(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> FsResult<()> {
+                Err(FsError::Message(
+                    "chown not supported on this platform".into(),
+                ))
+            }
+            #[cfg(unix)]
+            fn lookup_uid_gid(
+                owner: Option<&str>,
+                group: Option<&str>,
+            ) -> FsResult<(Option<u32>, Option<u32>)> {
+                if let Some(name) = owner {
+                    if users::get_user_by_name(name).is_none() {
+                        return Err(FsError::Message(format!("unknown user: {name}")));
+                    }
+                }
+                if let Some(name) = group {
+                    if users::get_group_by_name(name).is_none() {
+                        return Err(FsError::Message(format!("unknown group: {name}")));
+                    }
+                }
+                let uid = owner.and_then(|name| users::get_user_by_name(name).map(|u| u.uid()));
+                let gid = group.and_then(|name| users::get_group_by_name(name).map(|g| g.gid()));
+                Ok((uid, gid))
+            }
+            #[cfg(not(unix))]
+            fn lookup_uid_gid(
+                _owner: Option<&str>,
+                _group: Option<&str>,
+            ) -> FsResult<(Option<u32>, Option<u32>)> {
+                Ok((None, None))
+            }
+            let (uid, gid) = lookup_uid_gid(owner, group)?;
+            let meta = fs::symlink_metadata(path)?;
+            if meta.is_dir() && recursive {
+                for e in WalkDir::new(path).into_iter() {
+                    let e = e?;
+                    let p = e.path();
+                    chown_one(p, uid, gid)?;
+                }
+                Ok(())
+            } else {
+                chown_one(path, uid, gid)
+            }
+        }
+        fn link_hard(&self, src: &Path, dst: &Path) -> FsResult<()> {
+            #[cfg(unix)]
+            {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::hard_link(src, dst)?;
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            {
+                Err(FsError::Message(
+                    "hard links not supported on this platform".into(),
+                ))
+            }
+        }
+        fn symlink(&self, target: &Path, link_path: &Path) -> FsResult<()> {
+            #[cfg(unix)]
+            {
+                if let Some(parent) = link_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                // Select symlink_* based on whether target is a directory if it is absolute and exists.
+                // For portability, create a generic symlink with unixfs::symlink which stores target path as-is.
+                unixfs::symlink(target, link_path)?;
+                Ok(())
+            }
+            #[cfg(not(unix))]
+            {
+                Err(FsError::Message(
+                    "symlinks not supported on this platform".into(),
+                ))
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
     #[test]
@@ -265,5 +443,47 @@ mod tests {
         // When show_hidden=true, include
         let list = fs.list_dir(root, true).unwrap();
         assert!(list.iter().any(|e| e.name == ".hidden"));
+    }
+
+    #[test]
+    fn chmod_recursive_applies_modes() {
+        let fs = local::LocalFs::new();
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let subdir = root.join("d");
+        let file = root.join("f.txt");
+        fs.mkdir(&subdir).unwrap();
+        {
+            let mut w = fs.write_file(&file).unwrap();
+            use std::io::Write;
+            writeln!(w, "data").unwrap();
+        }
+        // Change permissions recursively on root
+        fs.chmod(root, 0o755, true).unwrap();
+        let md_root = std::fs::symlink_metadata(root).unwrap();
+        let md_sub = std::fs::symlink_metadata(&subdir).unwrap();
+        let md_file = std::fs::symlink_metadata(&file).unwrap();
+        #[cfg(unix)]
+        {
+            assert_eq!(md_root.permissions().mode() & 0o7777, 0o755);
+            assert_eq!(md_sub.permissions().mode() & 0o7777, 0o755);
+            assert_eq!(md_file.permissions().mode() & 0o7777, 0o755);
+        }
+    }
+
+    #[test]
+    fn chown_nochange_ok_on_tempfile() {
+        let fs = local::LocalFs::new();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("x.txt");
+        {
+            let mut w = fs.write_file(&file).unwrap();
+            use std::io::Write;
+            writeln!(w, "data").unwrap();
+        }
+        // Call chown with None/None (no change) to verify it succeeds
+        fs.chown(&file, None, None, false).unwrap();
+        // And also on the directory recursively
+        fs.chown(dir.path(), None, None, true).unwrap();
     }
 }

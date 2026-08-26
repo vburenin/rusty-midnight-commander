@@ -208,4 +208,51 @@ impl Vfs for CompositeFs {
             )),
         }
     }
+    fn chmod(&self, path: &Path, mode: u32, recursive: bool) -> FsResult<()> {
+        match self.route_kind(path) {
+            Route::Local { path } => self.local.chmod(path, mode, recursive),
+            Route::Archive { .. } => Err(FsError::Message(
+                "chmod inside archive is not supported".into(),
+            )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "chmod inside extfs is not supported".into(),
+            )),
+        }
+    }
+    fn chown(
+        &self,
+        path: &Path,
+        owner: Option<&str>,
+        group: Option<&str>,
+        recursive: bool,
+    ) -> FsResult<()> {
+        match self.route_kind(path) {
+            Route::Local { path } => self.local.chown(path, owner, group, recursive),
+            Route::Archive { .. } => Err(FsError::Message(
+                "chown inside archive is not supported".into(),
+            )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "chown inside extfs is not supported".into(),
+            )),
+        }
+    }
+    fn link_hard(&self, src: &Path, dst: &Path) -> FsResult<()> {
+        match (self.route_kind(src), self.route_kind(dst)) {
+            (Route::Local { path: s }, Route::Local { path: d }) => self.local.link_hard(s, d),
+            _ => Err(FsError::Message(
+                "hard link is only supported on the local filesystem".into(),
+            )),
+        }
+    }
+    fn symlink(&self, target: &Path, link_path: &Path) -> FsResult<()> {
+        match self.route_kind(link_path) {
+            Route::Local { path } => self.local.symlink(target, path),
+            Route::Archive { .. } => Err(FsError::Message(
+                "symlink inside archive is not supported".into(),
+            )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "symlink inside extfs is not supported".into(),
+            )),
+        }
+    }
 }

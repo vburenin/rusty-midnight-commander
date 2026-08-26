@@ -46,6 +46,12 @@ pub enum Action {
     Move,
     Mkdir,
     Delete,
+    // Permissions/Ownership and Links
+    Chmod,
+    Chown,
+    LinkHard,
+    SymlinkAbs,
+    SymlinkRel,
     // Viewer specific
     ViewerQuit,
     ViewerToggleHex,

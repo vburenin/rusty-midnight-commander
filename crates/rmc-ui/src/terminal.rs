@@ -50,6 +50,7 @@ impl TerminalApp {
         let palette = load_default_palette();
         let mut renderer = Renderer::new(palette);
         let mut last_draw = Instant::now();
+        // pending_ctrl_x lives on App; no local flag here
 
         loop {
             // Compute content rows for page/scroll visibility
@@ -460,6 +461,41 @@ impl TerminalApp {
                         value.push(c);
                     }
                     KeyCode::Char(_) => {}
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::InputDialog {
+                title: _,
+                prompt: _,
+                value,
+                on_submit,
+                focus_ok,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        *focus_ok = !*focus_ok;
+                    }
+                    KeyCode::Enter => {
+                        if *focus_ok {
+                            let cb = std::mem::replace(on_submit, Box::new(|_, _| Ok(())));
+                            let val = value.clone();
+                            app.ui_mode = UiMode::Normal;
+                            cb(app, val)?;
+                            app.reload_panels()?;
+                        } else {
+                            // stay, user can toggle to OK
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        value.pop();
+                    }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        value.push(c);
+                    }
                     _ => {}
                 }
                 return Ok(());
@@ -972,13 +1008,268 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::ChmodDialog {
+                name: _,
+                mode,
+                ur,
+                uw,
+                ux,
+                gr,
+                gw,
+                gx,
+                or_,
+                ow,
+                ox,
+                suid,
+                sgid,
+                sticky,
+                recursive,
+                focus_index,
+            } => {
+                // 0..8: rwx (u,g,o), 9..11: suid/sgid/sticky, 12: recursive, 13: OK, 14: Cancel
+                let total_fields = 15usize;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Tab => {
+                        *focus_index = (*focus_index + 1) % total_fields;
+                    }
+                    KeyCode::BackTab => {
+                        *focus_index = (*focus_index + total_fields - 1) % total_fields;
+                    }
+                    KeyCode::Char(' ') => {
+                        match *focus_index {
+                            0 => *ur = !*ur,
+                            1 => *uw = !*uw,
+                            2 => *ux = !*ux,
+                            3 => *gr = !*gr,
+                            4 => *gw = !*gw,
+                            5 => *gx = !*gx,
+                            6 => *or_ = !*or_,
+                            7 => *ow = !*ow,
+                            8 => *ox = !*ox,
+                            9 => *suid = !*suid,
+                            10 => *sgid = !*sgid,
+                            11 => *sticky = !*sticky,
+                            12 => *recursive = !*recursive,
+                            _ => {}
+                        }
+                        // Recompute mode from flags
+                        let mut m = 0u32;
+                        if *ur {
+                            m |= 0o400
+                        }
+                        if *uw {
+                            m |= 0o200
+                        }
+                        if *ux {
+                            m |= 0o100
+                        }
+                        if *gr {
+                            m |= 0o040
+                        }
+                        if *gw {
+                            m |= 0o020
+                        }
+                        if *gx {
+                            m |= 0o010
+                        }
+                        if *or_ {
+                            m |= 0o004
+                        }
+                        if *ow {
+                            m |= 0o002
+                        }
+                        if *ox {
+                            m |= 0o001
+                        }
+                        if *suid {
+                            m |= 0o4000
+                        }
+                        if *sgid {
+                            m |= 0o2000
+                        }
+                        if *sticky {
+                            m |= 0o1000
+                        }
+                        *mode = m;
+                    }
+                    KeyCode::Enter => {
+                        // Cancel selected
+                        if *focus_index == 14 {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        // Only OK applies
+                        if *focus_index != 13 {
+                            return Ok(());
+                        }
+                        let mode_val = *mode;
+                        let recursive_val = *recursive;
+                        app.ui_mode = UiMode::Normal;
+                        // Collect paths: selected entries or current
+                        let paths: Vec<std::path::PathBuf> = {
+                            let p = app.active_panel();
+                            let mut out = Vec::new();
+                            if p.selection.is_empty() {
+                                if let Some(ent) = p.current_entry() {
+                                    if ent.name != ".." {
+                                        out.push(ent.path.clone());
+                                    }
+                                }
+                            } else {
+                                for idx in p.selection.iter() {
+                                    if let Some(ent) = p.entries.get(idx) {
+                                        if ent.name != ".." {
+                                            out.push(ent.path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            out
+                        };
+                        // Try apply; on error, show error dialog
+                        let mut first_err: Option<anyhow::Error> = None;
+                        for p in paths {
+                            if let Err(e) = app.vfs.chmod(&p, mode_val, recursive_val) {
+                                first_err = Some(anyhow::Error::new(e));
+                                break;
+                            }
+                        }
+                        if let Some(err) = first_err {
+                            app.ui_mode = UiMode::DialogConfirm {
+                                title: "Error".into(),
+                                message: format!("{err}"),
+                                on_ok: Box::new(|_| Ok(())),
+                            };
+                        } else {
+                            app.reload_panels()?;
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::ChownDialog {
+                owner,
+                group,
+                recursive,
+                focus_index,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Tab => {
+                        *focus_index = (*focus_index + 1) % 5;
+                    }
+                    KeyCode::BackTab => {
+                        *focus_index = (*focus_index + 5 - 1) % 5;
+                    }
+                    KeyCode::Char(c) if *focus_index == 0 && key.modifiers.is_empty() => {
+                        owner.push(c);
+                    }
+                    KeyCode::Backspace if *focus_index == 0 => {
+                        owner.pop();
+                    }
+                    KeyCode::Char(c) if *focus_index == 1 && key.modifiers.is_empty() => {
+                        group.push(c);
+                    }
+                    KeyCode::Backspace if *focus_index == 1 => {
+                        group.pop();
+                    }
+                    KeyCode::Char(' ') if *focus_index == 2 => {
+                        *recursive = !*recursive;
+                    }
+                    KeyCode::Enter => {
+                        // Cancel
+                        if *focus_index == 4 {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        // Only OK applies
+                        if *focus_index != 3 {
+                            return Ok(());
+                        }
+                        // Capture values and close dialog to avoid borrow conflicts
+                        let owner_val = owner.clone();
+                        let group_val = group.clone();
+                        let recursive_val = *recursive;
+                        app.ui_mode = UiMode::Normal;
+                        // Apply to selected/current
+                        let paths: Vec<std::path::PathBuf> = {
+                            let p = app.active_panel();
+                            let mut out = Vec::new();
+                            if p.selection.is_empty() {
+                                if let Some(ent) = p.current_entry() {
+                                    if ent.name != ".." {
+                                        out.push(ent.path.clone());
+                                    }
+                                }
+                            } else {
+                                for idx in p.selection.iter() {
+                                    if let Some(ent) = p.entries.get(idx) {
+                                        if ent.name != ".." {
+                                            out.push(ent.path.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            out
+                        };
+                        let owner_opt = if owner_val.trim().is_empty() {
+                            None
+                        } else {
+                            Some(owner_val.trim().to_string())
+                        };
+                        let group_opt = if group_val.trim().is_empty() {
+                            None
+                        } else {
+                            Some(group_val.trim().to_string())
+                        };
+                        let mut first_err: Option<anyhow::Error> = None;
+                        for p in paths {
+                            if let Err(e) = app.vfs.chown(
+                                &p,
+                                owner_opt.as_deref(),
+                                group_opt.as_deref(),
+                                recursive_val,
+                            ) {
+                                first_err = Some(anyhow::Error::new(e));
+                                break;
+                            }
+                        }
+                        if let Some(err) = first_err {
+                            app.ui_mode = UiMode::DialogConfirm {
+                                title: "Error".into(),
+                                message: format!("{err}"),
+                                on_ok: Box::new(|_| Ok(())),
+                            };
+                        } else {
+                            app.reload_panels()?;
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::Menu {
                 top_index,
                 selected_index,
             } => {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
-                    &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
+                    &[
+                        "View",
+                        "Edit",
+                        "Copy",
+                        "Move",
+                        "Mkdir",
+                        "Delete",
+                        "Chmod",
+                        "Chown",
+                        "Hard link",
+                        "SymLink",
+                        "Relative symlink",
+                        "Quit",
+                    ],
                     &[
                         "User menu",
                         "Find file",
@@ -1073,8 +1364,48 @@ impl TerminalApp {
                                     page_rows,
                                 );
                             }
+                            "Chmod" => {
+                                // Simulate C-x c chord
+                                app.pending_ctrl_x = true;
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::Char('c'), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Chown" => {
+                                app.pending_ctrl_x = true;
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::Char('o'), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Hard link" => {
+                                app.pending_ctrl_x = true;
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::Char('l'), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "SymLink" => {
+                                app.pending_ctrl_x = true;
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::Char('s'), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Relative symlink" => {
+                                app.pending_ctrl_x = true;
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::Char('v'), key.modifiers),
+                                    page_rows,
+                                );
+                            }
                             "User menu" => {
-                                // route like F2
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(2), key.modifiers),
@@ -1616,6 +1947,8 @@ impl TerminalApp {
             _ => {}
         }
 
+        // (C-x handling centralized below with app.pending_ctrl_x)
+
         // Global Alt-Enter: append filename to command line and enter ShellInput if necessary
         if matches!(key.code, KeyCode::Enter)
             && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
@@ -1650,6 +1983,137 @@ impl TerminalApp {
                         }),
                     };
                     return Ok(());
+                } else if let KeyCode::Char(c) = key.code {
+                    match c {
+                        'c' => {
+                            if let Some(ent) = app.active_panel().current_entry().cloned() {
+                                let m = ent.permissions & 0o7777;
+                                app.ui_mode = UiMode::ChmodDialog {
+                                    name: ent.name,
+                                    mode: m,
+                                    ur: (m & 0o400) != 0,
+                                    uw: (m & 0o200) != 0,
+                                    ux: (m & 0o100) != 0,
+                                    gr: (m & 0o040) != 0,
+                                    gw: (m & 0o020) != 0,
+                                    gx: (m & 0o010) != 0,
+                                    or_: (m & 0o004) != 0,
+                                    ow: (m & 0o002) != 0,
+                                    ox: (m & 0o001) != 0,
+                                    suid: (m & 0o4000) != 0,
+                                    sgid: (m & 0o2000) != 0,
+                                    sticky: (m & 0o1000) != 0,
+                                    recursive: false,
+                                    focus_index: 0,
+                                };
+                            }
+                            return Ok(());
+                        }
+                        'o' => {
+                            if let Some(ent) = app.active_panel().current_entry().cloned() {
+                                app.ui_mode = UiMode::ChownDialog {
+                                    owner: ent.owner.unwrap_or_default(),
+                                    group: ent.group.unwrap_or_default(),
+                                    recursive: false,
+                                    focus_index: 0,
+                                };
+                            } else {
+                                app.ui_mode = UiMode::ChownDialog {
+                                    owner: String::new(),
+                                    group: String::new(),
+                                    recursive: false,
+                                    focus_index: 0,
+                                };
+                            }
+                            return Ok(());
+                        }
+                        'l' | 's' | 'v' => {
+                            if let Some(ent) = app.active_panel().current_entry().cloned() {
+                                let dst_dir = app.inactive_panel_mut().cwd.clone();
+                                let default_to = dst_dir.join(&ent.name).display().to_string();
+                                let is_hard = c == 'l';
+                                let is_symlink_abs = c == 's';
+                                let (dlg_title, prompt) = if is_hard {
+                                    (
+                                        "Link".to_string(),
+                                        "Enter the name of the hard link to:".to_string(),
+                                    )
+                                } else if is_symlink_abs {
+                                    (
+                                        "Symbolic link".to_string(),
+                                        "Enter name of the symlink:".to_string(),
+                                    )
+                                } else {
+                                    (
+                                        "Relative symlink".to_string(),
+                                        "Enter name of the symlink:".to_string(),
+                                    )
+                                };
+                                app.ui_mode = UiMode::InputDialog {
+                                    title: dlg_title,
+                                    prompt,
+                                    value: default_to.clone(),
+                                    focus_ok: true,
+                                    on_submit: Box::new(move |app, val| {
+                                        let src = ent.path.clone();
+                                        let dst = std::path::PathBuf::from(val);
+                                        if is_hard {
+                                            app.vfs.link_hard(&src, &dst)?;
+                                        } else if is_symlink_abs {
+                                            let abs_target = if src.is_absolute() {
+                                                src.clone()
+                                            } else {
+                                                active_cwd.join(&src)
+                                            };
+                                            app.vfs.symlink(&abs_target, &dst)?;
+                                        } else {
+                                            let base = dst
+                                                .parent()
+                                                .unwrap_or_else(|| std::path::Path::new("."));
+                                            let abs_src = if src.is_absolute() {
+                                                src.clone()
+                                            } else {
+                                                active_cwd.join(&src)
+                                            };
+                                            let abs_base = if base.is_absolute() {
+                                                base.to_path_buf()
+                                            } else {
+                                                active_cwd.join(base)
+                                            };
+                                            fn relpath(
+                                                from: &std::path::Path,
+                                                to: &std::path::Path,
+                                            ) -> std::path::PathBuf
+                                            {
+                                                let from = from.components().collect::<Vec<_>>();
+                                                let to = to.components().collect::<Vec<_>>();
+                                                let mut i = 0usize;
+                                                while i < from.len()
+                                                    && i < to.len()
+                                                    && from[i] == to[i]
+                                                {
+                                                    i += 1;
+                                                }
+                                                let mut out = std::path::PathBuf::new();
+                                                for _ in i..from.len() {
+                                                    out.push("..");
+                                                }
+                                                for comp in &to[i..] {
+                                                    out.push(comp.as_os_str());
+                                                }
+                                                out
+                                            }
+                                            let rel = relpath(&abs_base, &abs_src);
+                                            app.vfs.symlink(&rel, &dst)?;
+                                        }
+                                        Ok(())
+                                    }),
+                                };
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
                 }
             }
             // Unrecognized chord after C-x: fall through to normal handling
@@ -1686,6 +2150,129 @@ impl TerminalApp {
                             name: ent.name,
                             path,
                             focus_ok: true,
+                        };
+                    }
+                }
+                Action::Chmod => {
+                    if let Some(ent) = app.active_panel().current_entry().cloned() {
+                        let m = ent.permissions & 0o7777;
+                        app.ui_mode = UiMode::ChmodDialog {
+                            name: ent.name,
+                            mode: m,
+                            ur: (m & 0o400) != 0,
+                            uw: (m & 0o200) != 0,
+                            ux: (m & 0o100) != 0,
+                            gr: (m & 0o040) != 0,
+                            gw: (m & 0o020) != 0,
+                            gx: (m & 0o010) != 0,
+                            or_: (m & 0o004) != 0,
+                            ow: (m & 0o002) != 0,
+                            ox: (m & 0o001) != 0,
+                            suid: (m & 0o4000) != 0,
+                            sgid: (m & 0o2000) != 0,
+                            sticky: (m & 0o1000) != 0,
+                            recursive: false,
+                            focus_index: 0,
+                        };
+                    }
+                }
+                Action::Chown => {
+                    if let Some(ent) = app.active_panel().current_entry().cloned() {
+                        app.ui_mode = UiMode::ChownDialog {
+                            owner: ent.owner.unwrap_or_default(),
+                            group: ent.group.unwrap_or_default(),
+                            recursive: false,
+                            focus_index: 0,
+                        };
+                    } else {
+                        app.ui_mode = UiMode::ChownDialog {
+                            owner: String::new(),
+                            group: String::new(),
+                            recursive: false,
+                            focus_index: 0,
+                        };
+                    }
+                }
+                Action::LinkHard | Action::SymlinkAbs | Action::SymlinkRel => {
+                    if let Some(ent) = app.active_panel().current_entry().cloned() {
+                        let dst_dir = app.inactive_panel_mut().cwd.clone();
+                        let default_to = dst_dir.join(&ent.name).display().to_string();
+                        let is_hard = matches!(action, Action::LinkHard);
+                        let is_symlink_abs = matches!(action, Action::SymlinkAbs);
+                        let (dlg_title, prompt) = if is_hard {
+                            (
+                                "Link".to_string(),
+                                "Enter the name of the hard link to:".to_string(),
+                            )
+                        } else if is_symlink_abs {
+                            (
+                                "Symbolic link".to_string(),
+                                "Enter name of the symlink:".to_string(),
+                            )
+                        } else {
+                            (
+                                "Relative symlink".to_string(),
+                                "Enter name of the symlink:".to_string(),
+                            )
+                        };
+                        app.ui_mode = UiMode::InputDialog {
+                            title: dlg_title,
+                            prompt,
+                            value: default_to.clone(),
+                            focus_ok: true,
+                            on_submit: Box::new(move |app, val| {
+                                let src = ent.path.clone();
+                                let dst = std::path::PathBuf::from(val);
+                                if is_hard {
+                                    app.vfs.link_hard(&src, &dst)?;
+                                } else if is_symlink_abs {
+                                    let abs_target = if src.is_absolute() {
+                                        src.clone()
+                                    } else {
+                                        active_cwd.join(&src)
+                                    };
+                                    app.vfs.symlink(&abs_target, &dst)?;
+                                } else {
+                                    let base =
+                                        dst.parent().unwrap_or_else(|| std::path::Path::new("."));
+                                    let abs_src = if src.is_absolute() {
+                                        src.clone()
+                                    } else {
+                                        active_cwd.join(&src)
+                                    };
+                                    let abs_base = if base.is_absolute() {
+                                        base.to_path_buf()
+                                    } else {
+                                        active_cwd.join(base)
+                                    };
+                                    let rel = {
+                                        fn relpath(
+                                            from: &std::path::Path,
+                                            to: &std::path::Path,
+                                        ) -> std::path::PathBuf
+                                        {
+                                            let from = from.components().collect::<Vec<_>>();
+                                            let to = to.components().collect::<Vec<_>>();
+                                            let mut i = 0usize;
+                                            while i < from.len() && i < to.len() && from[i] == to[i]
+                                            {
+                                                i += 1;
+                                            }
+                                            let mut out = std::path::PathBuf::new();
+                                            for _ in i..from.len() {
+                                                out.push("..");
+                                            }
+                                            for comp in &to[i..] {
+                                                out.push(comp.as_os_str());
+                                            }
+                                            out
+                                        }
+                                        relpath(&abs_base, &abs_src)
+                                    };
+                                    app.vfs.symlink(&rel, &dst)?;
+                                }
+                                Ok(())
+                            }),
                         };
                     }
                 }
