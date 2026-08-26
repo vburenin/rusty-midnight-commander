@@ -6,7 +6,6 @@ use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::App;
-use rmc_core::hotlist::HotlistDialogState;
 use rmc_core::panel::FileEntry;
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;

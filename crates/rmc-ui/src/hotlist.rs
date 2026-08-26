@@ -10,7 +10,7 @@ pub fn draw_hotlist_dialog(
     st: &HotlistDialogState,
 ) {
     let w = (cols as usize).min(64) as u16;
-    let h = (rows as usize).min(20).max(12) as u16;
+    let h = (rows as usize).clamp(12, 20) as u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame

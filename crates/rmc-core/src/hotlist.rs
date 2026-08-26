@@ -55,10 +55,7 @@ impl Hotlist {
         if !path.exists() {
             return Self::default();
         }
-        match Self::load_from_file(&path) {
-            Ok(h) => h,
-            Err(_) => Self::default(),
-        }
+        Self::load_from_file(&path).unwrap_or_default()
     }
 
     pub fn load_from_file(path: &Path) -> Result<Self> {
