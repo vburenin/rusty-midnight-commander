@@ -1179,10 +1179,16 @@ impl TerminalApp {
                             }
                             out
                         };
-                        let owner_opt =
-                            if owner_val.trim().is_empty() { None } else { Some(owner_val.trim().to_string()) };
-                        let group_opt =
-                            if group_val.trim().is_empty() { None } else { Some(group_val.trim().to_string()) };
+                        let owner_opt = if owner_val.trim().is_empty() {
+                            None
+                        } else {
+                            Some(owner_val.trim().to_string())
+                        };
+                        let group_opt = if group_val.trim().is_empty() {
+                            None
+                        } else {
+                            Some(group_val.trim().to_string())
+                        };
                         let mut first_err: Option<anyhow::Error> = None;
                         for p in paths {
                             if let Err(e) = app.vfs.chown(

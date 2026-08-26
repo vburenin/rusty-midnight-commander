@@ -214,6 +214,9 @@ impl Vfs for CompositeFs {
             Route::Archive { .. } => Err(FsError::Message(
                 "chmod inside archive is not supported".into(),
             )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "chmod inside extfs is not supported".into(),
+            )),
         }
     }
     fn chown(
@@ -227,6 +230,9 @@ impl Vfs for CompositeFs {
             Route::Local { path } => self.local.chown(path, owner, group, recursive),
             Route::Archive { .. } => Err(FsError::Message(
                 "chown inside archive is not supported".into(),
+            )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "chown inside extfs is not supported".into(),
             )),
         }
     }
@@ -243,6 +249,9 @@ impl Vfs for CompositeFs {
             Route::Local { path } => self.local.symlink(target, path),
             Route::Archive { .. } => Err(FsError::Message(
                 "symlink inside archive is not supported".into(),
+            )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "symlink inside extfs is not supported".into(),
             )),
         }
     }

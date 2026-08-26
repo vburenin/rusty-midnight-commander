@@ -2195,7 +2195,11 @@ fn draw_chmod_dialog(
     let ok_focus = focus_index == 13;
     let cancel_focus = focus_index == 14;
     let ok = if ok_focus { "< OK >" } else { "[ OK ]" };
-    let cancel = if cancel_focus { "< Cancel >" } else { "[ Cancel ]" };
+    let cancel = if cancel_focus {
+        "< Cancel >"
+    } else {
+        "[ Cancel ]"
+    };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let btns = format!("{ok}  {cancel}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
@@ -2327,7 +2331,11 @@ fn draw_chown_dialog(
     let cancel_focus = focus_index == 4;
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok = if ok_focus { "< OK >" } else { "[ OK ]" };
-    let cancel = if cancel_focus { "< Cancel >" } else { "[ Cancel ]" };
+    let cancel = if cancel_focus {
+        "< Cancel >"
+    } else {
+        "[ Cancel ]"
+    };
     let btns = format!("{ok}  {cancel}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);

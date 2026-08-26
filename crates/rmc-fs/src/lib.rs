@@ -328,7 +328,10 @@ pub mod local {
                 ))
             }
             #[cfg(unix)]
-            fn lookup_uid_gid(owner: Option<&str>, group: Option<&str>) -> FsResult<(Option<u32>, Option<u32>)> {
+            fn lookup_uid_gid(
+                owner: Option<&str>,
+                group: Option<&str>,
+            ) -> FsResult<(Option<u32>, Option<u32>)> {
                 if let Some(name) = owner {
                     if users::get_user_by_name(name).is_none() {
                         return Err(FsError::Message(format!("unknown user: {name}")));
@@ -341,10 +344,13 @@ pub mod local {
                 }
                 let uid = owner.and_then(|name| users::get_user_by_name(name).map(|u| u.uid()));
                 let gid = group.and_then(|name| users::get_group_by_name(name).map(|g| g.gid()));
-                Ok((uid, gid));
+                Ok((uid, gid))
             }
             #[cfg(not(unix))]
-            fn lookup_uid_gid(_owner: Option<&str>, _group: Option<&str>) -> FsResult<(Option<u32>, Option<u32>)> {
+            fn lookup_uid_gid(
+                _owner: Option<&str>,
+                _group: Option<&str>,
+            ) -> FsResult<(Option<u32>, Option<u32>)> {
                 Ok((None, None))
             }
             let (uid, gid) = lookup_uid_gid(owner, group)?;
