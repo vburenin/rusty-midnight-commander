@@ -163,6 +163,251 @@ impl TerminalApp {
         }
         // Dialog handling first
         match &mut app.ui_mode {
+            UiMode::Editor {
+                buf,
+                show_menu: _,
+                status_msg,
+                search_input,
+                save_as_input,
+                pending_quit: _,
+                confirm_exit,
+            } => {
+                // Confirm-exit overlay (F10/q on dirty)
+                if let Some(c) = confirm_exit {
+                    use rmc_core::app::YncFocus as F;
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            // Close overlay only
+                            *confirm_exit = None;
+                        }
+                        KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                            c.focus = match c.focus {
+                                F::Yes => F::No,
+                                F::No => F::Cancel,
+                                F::Cancel => F::Yes,
+                            };
+                        }
+                        KeyCode::Enter => {
+                            match c.focus {
+                                F::Yes => {
+                                    // Save and exit to panels
+                                    if let Some(path) = &buf.path {
+                                        let mut w = app
+                                            .vfs
+                                            .write_file(path)
+                                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                        use std::io::Write;
+                                        let _ = w.write_all(&buf.to_bytes());
+                                    }
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                                F::No => {
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                                F::Cancel => {
+                                    *confirm_exit = None;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // Inline "Find:" overlay
+                if let Some(q) = search_input {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            // Close overlay only
+                            *search_input = None;
+                        }
+                        KeyCode::Enter => {
+                            let needle = q.clone();
+                            if !needle.is_empty() {
+                                let _ = buf.search_forward_opts(needle.as_bytes(), false, true);
+                                *status_msg = if buf.last_search.is_empty() {
+                                    Some("Not found".into())
+                                } else {
+                                    Some("Found".into())
+                                };
+                            }
+                            *search_input = None;
+                        }
+                        KeyCode::Backspace => {
+                            q.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            q.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // Inline "Save as:" overlay used here for Replace-with text as well
+                if let Some(val) = save_as_input {
+                    // Disambiguate by status message hint (very lightweight)
+                    let replacing = status_msg
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("Replace with"));
+                    if replacing {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::F(10) => {
+                                *save_as_input = None;
+                                *status_msg = None;
+                            }
+                            KeyCode::Enter => {
+                                let repl = val.clone();
+                                if !buf.last_search.is_empty() {
+                                    let find = buf.last_search.clone();
+                                    let ci = buf.last_search_case_insensitive;
+                                    let _ = buf.replace_next(&find, repl.as_bytes(), ci, true);
+                                    *status_msg = Some("Replaced".into());
+                                }
+                                *save_as_input = None;
+                            }
+                            KeyCode::Char('a')
+                                if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                            {
+                                let repl = val.clone();
+                                if !buf.last_search.is_empty() {
+                                    let find = buf.last_search.clone();
+                                    let ci = buf.last_search_case_insensitive;
+                                    let n = buf.replace_all(&find, repl.as_bytes(), ci);
+                                    *status_msg = Some(format!("Replaced all: {n}"));
+                                }
+                                *save_as_input = None;
+                            }
+                            KeyCode::Backspace => {
+                                val.pop();
+                            }
+                            KeyCode::Char(c) if key.modifiers.is_empty() => {
+                                val.push(c);
+                            }
+                            _ => {}
+                        }
+                        return Ok(());
+                    } else {
+                        // Save-as path input
+                        match key.code {
+                            KeyCode::Esc | KeyCode::F(10) => {
+                                *save_as_input = None;
+                            }
+                            KeyCode::Enter => {
+                                let p = std::path::PathBuf::from(val.clone());
+                                let mut w = app
+                                    .vfs
+                                    .write_file(&p)
+                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                                use std::io::Write;
+                                let _ = w.write_all(&buf.to_bytes());
+                                buf.path = Some(p);
+                                buf.dirty = false;
+                                *save_as_input = None;
+                                *status_msg = Some("Saved".into());
+                            }
+                            KeyCode::Backspace => {
+                                val.pop();
+                            }
+                            KeyCode::Char(c) if key.modifiers.is_empty() => {
+                                val.push(c);
+                            }
+                            _ => {}
+                        }
+                        return Ok(());
+                    }
+                }
+                // Base editor keys
+                match key.code {
+                    // MC: F7 search dialog
+                    KeyCode::F(7) => {
+                        *search_input = Some(String::new());
+                    }
+                    // Shift-F7 (F19) or 'n': next match with wrap
+                    KeyCode::F(19) | KeyCode::Char('n') => {
+                        let _ = buf.search_next_opts(true);
+                    }
+                    // F4 Replace: prompt find if empty, otherwise prompt replacement
+                    KeyCode::F(4) => {
+                        if buf.last_search.is_empty() {
+                            *search_input = Some(String::new());
+                            *status_msg = Some("Find (Enter to confirm)".into());
+                        } else {
+                            *save_as_input = Some(String::new());
+                            *status_msg = Some("Replace with (Enter=Replace, Alt-a=All)".into());
+                        }
+                    }
+                    // Block ops
+                    KeyCode::F(3) => {
+                        if buf.selection_bounds().is_none() {
+                            buf.mark_start();
+                            *status_msg = Some("Mark start".into());
+                        } else if buf.selection_bounds().is_some() && buf.last_search.is_empty() {
+                            // No-op hint; allow second press to clear
+                            buf.mark_end();
+                            *status_msg = Some("Mark end".into());
+                        } else {
+                            buf.clear_selection();
+                            *status_msg = Some("Unmark".into());
+                        }
+                    }
+                    KeyCode::F(5) => {
+                        if buf.copy_block_here() {
+                            *status_msg = Some("Copied block".into());
+                        }
+                    }
+                    KeyCode::F(6) => {
+                        if buf.move_block_here() {
+                            *status_msg = Some("Moved block".into());
+                        }
+                    }
+                    KeyCode::F(8) => {
+                        if buf.delete_selection() {
+                            *status_msg = Some("Deleted block".into());
+                        }
+                    }
+                    // Save / Quit
+                    KeyCode::F(2) => {
+                        if let Some(path) = &buf.path {
+                            let mut w = app
+                                .vfs
+                                .write_file(path)
+                                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                            use std::io::Write;
+                            let _ = w.write_all(&buf.to_bytes());
+                            buf.dirty = false;
+                            *status_msg = Some("Saved".into());
+                        } else {
+                            *save_as_input = Some(String::new());
+                        }
+                    }
+                    KeyCode::F(10) | KeyCode::Char('q') => {
+                        if buf.dirty {
+                            *confirm_exit = Some(rmc_core::app::YncDialog {
+                                title: "Save modified file?".into(),
+                                message:
+                                    "The file has unsaved changes. Save before leaving the editor?"
+                                        .into(),
+                                focus: rmc_core::app::YncFocus::Yes,
+                            });
+                        } else {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    }
+                    // Basic cursor/editing
+                    KeyCode::Left => buf.move_left(),
+                    KeyCode::Right => buf.move_right(),
+                    KeyCode::Up => buf.move_up(),
+                    KeyCode::Down => buf.move_down(),
+                    KeyCode::Backspace => buf.backspace(),
+                    KeyCode::Delete => buf.delete(),
+                    KeyCode::Enter => buf.insert_newline(),
+                    KeyCode::Insert => buf.toggle_overwrite(),
+                    KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
+                        buf.insert_char(c)
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::Help { state, prev } => {
                 // Navigation within help
                 match key.code {
@@ -2741,6 +2986,34 @@ impl TerminalApp {
                 }
             }
             match action {
+                Action::FunctionKey(4) => {
+                    // Open editor on selected file (panels Normal mode)
+                    if matches!(app.ui_mode, UiMode::Normal) {
+                        if let Some(ent) = app.active_panel().current_entry().cloned() {
+                            if !ent.is_dir {
+                                // Read file bytes via VFS
+                                let mut data = Vec::new();
+                                if let Ok(mut r) = app.vfs.read_file(&ent.path) {
+                                    use std::io::Read;
+                                    let _ = r.read_to_end(&mut data);
+                                }
+                                let buf = rmc_edit::EditorBuffer::from_bytes(
+                                    &data,
+                                    Some(ent.path.clone()),
+                                );
+                                app.ui_mode = UiMode::Editor {
+                                    buf,
+                                    show_menu: false,
+                                    status_msg: None,
+                                    search_input: None,
+                                    save_as_input: None,
+                                    pending_quit: false,
+                                    confirm_exit: None,
+                                };
+                            }
+                        }
+                    }
+                }
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::ToggleSubshell => {
