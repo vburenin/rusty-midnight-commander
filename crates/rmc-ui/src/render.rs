@@ -6,7 +6,8 @@ use anyhow::Result;
 use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
-use rmc_core::app::App;
+use rmc_core::app::{App, LayoutFocus, LayoutOptions};
+use rmc_core::layout::compute_chrome_geom;
 use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
@@ -124,16 +125,21 @@ impl Renderer {
             self.palette.core_default_bg,
             self.palette.core_default_fg,
         );
+        // XTerm window title (OSC 0) from active CWD when enabled (write raw; do not move cursor)
+        if app.layout.xterm_title {
+            let title = format!("{}", app.active_panel().cwd.display());
+            let osc = format!("\x1b]0;{title}\x07");
+            let _ = std::io::Write::write_all(&mut painter.out, osc.as_bytes());
+        }
         // Menu bar
-        draw_menu_bar(&mut painter, cols, self.palette);
-        // Panels area layout:
-        // rows: 1 menu + 1 frame top + content + frame bottom + 1 gauge + 1 hint + 1 cmd + 1 fbar
-        let panel_top = 1;
-        let gauge_row = rows.saturating_sub(4);
-        let hint_row = rows.saturating_sub(3);
-        let cmd_row = rows.saturating_sub(2);
-        let fbar_row = rows.saturating_sub(1);
-        let content_bottom = gauge_row.saturating_sub(1);
+        if app.layout.menubar_visible {
+            draw_menu_bar(&mut painter, cols, self.palette);
+        }
+        // Panels area layout (shared geometry with terminal.rs for mouse hit-tests)
+        // rows: [menu?] + 1 frame top + content + frame bottom + [gauge?] + [hint?] + [cmd?] + [fbar?]
+        let geom = compute_chrome_geom(cols, rows, &app.layout);
+        let panel_top = geom.panel_top;
+        let content_bottom = geom.content_bottom;
         // Split columns
         let mid = cols / 2;
         draw_panel(
@@ -159,10 +165,18 @@ impl Renderer {
             self.palette,
         )?;
         // Gauge/status line between panels
-        draw_gauge(&mut painter, gauge_row, cols, self.palette, app);
-        draw_hint(&mut painter, hint_row, cols, self.palette);
-        draw_cmdline(&mut painter, cmd_row, cols, self.palette, app);
-        draw_fbar(&mut painter, fbar_row, cols, self.palette);
+        if let Some(y) = geom.gauge_row {
+            draw_gauge(&mut painter, y, cols, self.palette, app);
+        }
+        if let Some(y) = geom.hint_row {
+            draw_hint(&mut painter, y, cols, self.palette);
+        }
+        if let Some(y) = geom.cmd_row {
+            draw_cmdline(&mut painter, y, cols, self.palette, app);
+        }
+        if let Some(y) = geom.fbar_row {
+            draw_fbar(&mut painter, y, cols, self.palette);
+        }
         // Overlays (dialogs)
         draw_overlays(&mut painter, app, cols, rows, self.palette)?;
         painter.out.flush()?;
@@ -234,6 +248,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *focus_index,
                 *focus_ok,
             );
+        }
+        rmc_core::app::UiMode::LayoutDialog { draft, focus } => {
+            draw_layout_dialog(p, cols, rows, pal, draft, *focus);
         }
         rmc_core::app::UiMode::Help { .. } => {
             // Full-screen; nothing overlays
@@ -696,6 +713,120 @@ fn draw_user_menu_dialog(
         p.goto(x + 1, row);
         p.text(&line);
     }
+}
+
+fn draw_layout_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    draft: &LayoutOptions,
+    focus: LayoutFocus,
+) {
+    let title = "Layout";
+    let w = 54u16.min(cols.saturating_sub(2));
+    let h = 14u16.min(rows.saturating_sub(2)).max(10);
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Options (checkboxes)
+    let items: [(&str, bool, LayoutFocus); 6] = [
+        (
+            "Menu bar visible",
+            draft.menubar_visible,
+            LayoutFocus::MenuBar,
+        ),
+        (
+            "Command prompt",
+            draft.command_prompt,
+            LayoutFocus::CommandPrompt,
+        ),
+        ("Keybar visible", draft.keybar_visible, LayoutFocus::KeyBar),
+        (
+            "Hintbar visible",
+            draft.hintbar_visible,
+            LayoutFocus::HintBar,
+        ),
+        (
+            "XTerm window title",
+            draft.xterm_title,
+            LayoutFocus::XtermTitle,
+        ),
+        (
+            "Show free space",
+            draft.show_free_space,
+            LayoutFocus::ShowFreeSpace,
+        ),
+    ];
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for (i, (label, on, lf)) in items.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        if focus == *lf {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
+    }
+    // Buttons
+    let ok_sel = matches!(focus, LayoutFocus::Ok);
+    let cancel_sel = matches!(focus, LayoutFocus::Cancel);
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
+    let cancel_txt = if cancel_sel {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
 #[allow(clippy::too_many_arguments)]

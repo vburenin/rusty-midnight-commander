@@ -41,6 +41,42 @@ pub enum JobsDialogFocus {
     Ok,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct LayoutOptions {
+    pub menubar_visible: bool,
+    pub command_prompt: bool,
+    pub keybar_visible: bool,
+    pub hintbar_visible: bool,
+    // Optional extras; default ON to match GNU mc
+    pub xterm_title: bool,
+    pub show_free_space: bool,
+}
+
+impl Default for LayoutOptions {
+    fn default() -> Self {
+        Self {
+            menubar_visible: true,
+            command_prompt: true,
+            keybar_visible: true,
+            hintbar_visible: true,
+            xterm_title: true,
+            show_free_space: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LayoutFocus {
+    MenuBar,
+    CommandPrompt,
+    KeyBar,
+    HintBar,
+    XtermTitle,
+    ShowFreeSpace,
+    Ok,
+    Cancel,
+}
+
 #[derive(Clone)]
 pub struct DiffState {
     pub left_path: PathBuf,
@@ -237,6 +273,11 @@ pub enum UiMode {
         mode: CompareDirsMode,
         focus: CompareDirsFocus,
     },
+    /// GNU mc Options → Layout dialog
+    LayoutDialog {
+        draft: LayoutOptions,
+        focus: LayoutFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -324,6 +365,8 @@ pub struct App {
     pub quick_search: Option<crate::quicksearch::QuickSearchState>,
     /// Background job queue (copy/move on worker thread).
     pub jobs: crate::jobs::JobQueue,
+    /// Options controlling UI chrome visibility/layout.
+    pub layout: LayoutOptions,
 }
 
 impl App {
@@ -344,6 +387,7 @@ impl App {
             pending_ctrl_x: false,
             quick_search: None,
             jobs: crate::jobs::JobQueue::new(),
+            layout: LayoutOptions::default(),
         };
         app.reload_panels()?;
         Ok(app)
@@ -645,6 +689,7 @@ impl App {
             UiMode::HotlistDialog(_) => "Panels".to_string(),
             UiMode::JobsDialog { .. } => "Panels".to_string(),
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
+            UiMode::LayoutDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
