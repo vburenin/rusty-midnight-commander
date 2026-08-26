@@ -338,6 +338,12 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         } => {
             draw_menu_dropdown(p, pal, *top_index, *selected_index);
         }
+        rmc_core::app::UiMode::JobsDialog {
+            selected_index,
+            focus,
+        } => {
+            draw_jobs_dialog(p, cols, rows, pal, app, *selected_index, *focus);
+        }
         _ => {}
     }
     Ok(())
@@ -2393,6 +2399,151 @@ fn draw_input_dialog(
     let ok = if focus_ok { "< OK >" } else { "[ OK ]" };
     let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
     let btns = format!("{ok}  {cancel}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+fn draw_jobs_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    app: &App,
+    selected: usize,
+    focus: rmc_core::app::JobsDialogFocus,
+) {
+    let jobs = app.jobs.snapshot();
+    // Size: width up to 80, height based on number of jobs + chrome
+    let w = (cols as usize).min(80) as u16;
+    let min_h = 7u16;
+    let list_h = (jobs.len() as u16).clamp(1, rows.saturating_sub(6));
+    let h = (list_h + 4).max(min_h).min(rows.saturating_sub(2));
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = " Background jobs ";
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(ttl);
+    // Column headers (light)
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let header =
+        "Kind  Source                     → Destination                          Progress  Status";
+    p.goto(x + 2, y + 1);
+    p.text(&truncate(header, (w - 4) as usize));
+    // List rows
+    let list_top = y + 2;
+    for i in 0..(h.saturating_sub(4) as usize) {
+        let row_y = list_top + i as u16;
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        p.goto(x + 1, row_y);
+        p.text(&" ".repeat((w - 2) as usize));
+        if let Some(job) = jobs.get(i) {
+            let is_sel = i == selected;
+            if is_sel && matches!(focus, rmc_core::app::JobsDialogFocus::List) {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+            } else {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+            }
+            p.goto(x + 2, row_y);
+            // Kind
+            let kind = match job.kind {
+                rmc_core::jobs::JobKind::Copy => "Copy",
+                rmc_core::jobs::JobKind::Move => "Move",
+            };
+            p.text(kind);
+            // Source basename
+            p.goto(x + 8, row_y);
+            let src_base_owned: String = job
+                .src
+                .file_name()
+                .and_then(|s| s.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| job.src.to_string_lossy().into_owned());
+            let src_txt = truncate(&src_base_owned, 24);
+            p.text(&src_txt);
+            // Arrow and destination
+            p.goto(x + 8 + 26, row_y);
+            p.text("→ ");
+            let dst_txt = truncate(&job.dst.display().to_string(), 30);
+            p.text(&dst_txt);
+            // Progress
+            p.goto(x + w.saturating_sub(24), row_y);
+            let pct_txt = if job.bytes_total > 0 {
+                let pct = (job.bytes_done as f64 / job.bytes_total as f64 * 100.0).round() as u64;
+                format!("{:>3}%", pct.min(100))
+            } else {
+                "  …%".to_string()
+            };
+            p.text(&pct_txt);
+            // Status
+            p.goto(x + w.saturating_sub(12), row_y);
+            let status = match job.status {
+                rmc_core::jobs::JobStatus::Queued => "Queued",
+                rmc_core::jobs::JobStatus::Running => "Running",
+                rmc_core::jobs::JobStatus::Done => "Done",
+                rmc_core::jobs::JobStatus::Failed => "Failed",
+                rmc_core::jobs::JobStatus::Cancelled => "Cancelled",
+            };
+            let st = truncate(status, 10);
+            p.text(&st);
+        }
+    }
+    // Buttons
+    let sel_btn = |want: rmc_core::app::JobsDialogFocus, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!(
+        "{}  {}  {}",
+        sel_btn(rmc_core::app::JobsDialogFocus::Cancel, "Cancel"),
+        sel_btn(rmc_core::app::JobsDialogFocus::Cleanup, "Clean up"),
+        sel_btn(rmc_core::app::JobsDialogFocus::Ok, "OK")
+    );
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);

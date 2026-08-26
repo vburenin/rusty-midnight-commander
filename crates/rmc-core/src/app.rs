@@ -13,6 +13,18 @@ use std::path::{Path, PathBuf};
 type UiOkCb = Box<dyn FnOnce(&mut App) -> Result<()> + Send>;
 type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum JobsDialogFocus {
+    /// The list of jobs has focus; Up/Down change selection.
+    List,
+    /// Bottom-row buttons focus: Cancel selected job.
+    Cancel,
+    /// Bottom-row buttons focus: Drop finished jobs.
+    Cleanup,
+    /// Bottom-row buttons focus: Close dialog (OK).
+    Ok,
+}
+
 #[derive(Clone)]
 pub struct DiffState {
     pub left_path: PathBuf,
@@ -182,6 +194,13 @@ pub enum UiMode {
     ShellInput,
     // Directory Hotlist
     HotlistDialog(HotlistDialogState),
+    /// Background jobs list dialog (C-x j).
+    JobsDialog {
+        /// Selected row in the jobs list.
+        selected_index: usize,
+        /// Which part of the dialog is focused (list or which button).
+        focus: JobsDialogFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -267,6 +286,8 @@ pub struct App {
     pub pending_ctrl_x: bool,
     /// MC-style incremental quick search state for the active panel.
     pub quick_search: Option<crate::quicksearch::QuickSearchState>,
+    /// Background job queue (copy/move on worker thread).
+    pub jobs: crate::jobs::JobQueue,
 }
 
 impl App {
@@ -286,6 +307,7 @@ impl App {
             hotlist: Hotlist::load_from_default_path(),
             pending_ctrl_x: false,
             quick_search: None,
+            jobs: crate::jobs::JobQueue::new(),
         };
         app.reload_panels()?;
         Ok(app)
@@ -584,6 +606,7 @@ impl App {
             UiMode::Help { state, .. } => state.topic.clone(),
             UiMode::ShellInput => "Panels".to_string(),
             UiMode::HotlistDialog(_) => "Panels".to_string(),
+            UiMode::JobsDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
