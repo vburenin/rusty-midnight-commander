@@ -39,6 +39,13 @@ pub type FsResult<T> = Result<T, FsError>;
 pub trait Vfs: Send {
     fn cwd(&self) -> FsResult<PathBuf>;
     fn list_dir(&self, path: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>>;
+    /// Given a filesystem path, return a virtual directory path to enter if this
+    /// path is an “enterable container” (e.g., an archive or remote location).
+    /// Returns None when the path cannot be entered specially (regular files).
+    /// Default implementation returns None to preserve existing backends.
+    fn enter_path(&self, _path: &Path) -> Option<PathBuf> {
+        None
+    }
     fn mkdir(&self, path: &Path) -> FsResult<()>;
     fn remove(&self, path: &Path, recursive: bool) -> FsResult<()>;
     fn copy(&self, src: &Path, dst: &Path) -> FsResult<()>;
@@ -47,6 +54,12 @@ pub trait Vfs: Send {
     fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>>;
     fn stat(&self, path: &Path) -> FsResult<Metadata>;
 }
+
+pub mod pathutil;
+pub mod tarfs;
+pub mod zipfs;
+pub mod composite;
+pub mod remote;
 
 pub mod local {
     use super::*;
