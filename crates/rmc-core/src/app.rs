@@ -14,6 +14,9 @@ pub enum UiMode {
     Viewer {
         path: PathBuf,
         hex: bool,
+        wrap: bool,
+        offset: u64,
+        search: Option<String>,
     },
     Editor {
         buf: EditorBuffer,
@@ -248,6 +251,9 @@ impl App {
                         self.ui_mode = UiMode::Viewer {
                             path: ent.path.clone(),
                             hex: false,
+                            wrap: false,
+                            offset: 0,
+                            search: None,
                         };
                     }
                 }
@@ -257,7 +263,7 @@ impl App {
             }
             ViewerQuit => self.ui_mode = UiMode::Normal,
             ViewerToggleHex => {
-                if let UiMode::Viewer { path: _, hex } = &mut self.ui_mode {
+                if let UiMode::Viewer { hex, .. } = &mut self.ui_mode {
                     *hex = !*hex;
                 }
             }

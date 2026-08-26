@@ -198,8 +198,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *focus,
             );
         }
-        rmc_core::app::UiMode::Viewer { path, hex } => {
-            draw_viewer(p, app, cols, rows, pal, path, *hex)?;
+        rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, .. } => {
+            draw_viewer(p, app, cols, rows, pal, path, *hex, *wrap, *offset)?;
         }
         rmc_core::app::UiMode::Menu {
             top_index,
@@ -572,6 +572,8 @@ fn draw_viewer(
     pal: McPalette,
     path: &std::path::Path,
     hex: bool,
+    wrap: bool,
+    offset: u64,
 ) -> Result<()> {
     // MC-style viewer: blue background with frame and title
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -626,53 +628,31 @@ fn draw_viewer(
     let tx = (cols.saturating_sub(title.len() as u16)) / 2;
     p.goto(tx, 0);
     p.text(&title);
-    // Read file
-    let mut reader = app.vfs.read_file(path)?;
-    let mut buf = Vec::new();
-    use std::io::Read;
-    reader.read_to_end(&mut buf)?;
-    let lines = if hex {
-        bytes_to_hex_lines(&buf)
-    } else {
-        let s = String::from_utf8_lossy(&buf);
-        s.lines().map(|l| l.to_string()).collect::<Vec<_>>()
-    };
-    let max_lines = rows.saturating_sub(2) as usize;
-    for (i, line) in lines.into_iter().take(max_lines).enumerate() {
+    // Render content window using rmc-view (windowed)
+    let content_rows = rows.saturating_sub(2);
+    let rr = rmc_view::render_window(
+        path,
+        rmc_view::ViewOptions { hex, wrap },
+        offset,
+        cols.saturating_sub(2), // content width inside frame
+        content_rows,
+    )?;
+    for (i, line) in rr.lines.into_iter().enumerate() {
         p.goto(1, 1 + i as u16);
-        let t = truncate(&line, cols as usize);
+        let t = truncate(&line, (cols.saturating_sub(2)) as usize);
         p.text(&t);
+        if (1 + i as u16) >= rows.saturating_sub(1) {
+            break;
+        }
     }
     // Footer/status
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(0, rows - 1);
-    let foot = format!(
-        " {}  {}  Press q to quit, h to toggle hex ",
-        path.display(),
-        if hex { "[HEX]" } else { "[TEXT]" }
-    );
+    let mode = if hex { "[HEX]" } else { if wrap { "[TEXT WRAP]" } else { "[TEXT]" } };
+    let foot = format!(" {}  {}  / F7: search, n/N: next/prev, w: wrap, q: quit ", path.display(), mode);
     let t = truncate(&foot, cols as usize);
     p.text(&t);
     Ok(())
-}
-
-fn bytes_to_hex_lines(data: &[u8]) -> Vec<String> {
-    let mut out = Vec::new();
-    for chunk in data.chunks(16).take(1024) {
-        let hexs: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
-        let text: String = chunk
-            .iter()
-            .map(|&b| {
-                if (32..=126).contains(&b) {
-                    b as char
-                } else {
-                    '.'
-                }
-            })
-            .collect();
-        out.push(format!("{:47}  {}", hexs.join(" "), text));
-    }
-    out
 }
 
 #[allow(clippy::too_many_arguments)]

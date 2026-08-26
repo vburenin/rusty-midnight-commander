@@ -18,6 +18,7 @@ rmc-edit = { path = "../rmc-edit" }
 fs2.workspace = true
 whoami.workspace = true
 hostname.workspace = true
+rmc-view = { path = "../rmc-view" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
