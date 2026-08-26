@@ -2753,7 +2753,7 @@ fn draw_chown_dialog(
 fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selected: usize) {
     // Real top menus and stub items
     let menus: [&[&str]; 5] = [
-        &["Copy", "Move", "Mkdir", "Delete"],
+        &["Copy", "Move", "Mkdir", "Delete", "Sort order...", "Tree"],
         &[
             "View",
             "Edit",
@@ -2775,7 +2775,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Compare dirs",
         ],
         &["Layout", "Panels", "Confirmations"],
-        &["Copy", "Move", "Mkdir", "Delete"],
+        &["Copy", "Move", "Mkdir", "Delete", "Sort order...", "Tree"],
     ];
     let titles = [" Left ", " File ", " Command ", " Options ", " Right "];
     // Compute x position under the selected top title
