@@ -568,7 +568,7 @@ impl EditorBuffer {
         }
         // Delete selection first; adjust cursor if deletion precedes it
         self.delete_selection(); // moves cursor to start
-        // Compute mapped insertion point after deletion
+                                 // Compute mapped insertion point after deletion
         let ((sr, sc), (er, ec)) = sel;
         let mut target = orig_target;
         // If target was after the removed region, rows may have shifted up
