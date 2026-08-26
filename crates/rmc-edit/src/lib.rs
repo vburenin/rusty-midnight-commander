@@ -1,6 +1,20 @@
+// Copyright 2026 rusty-midnight-commander contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//     http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use anyhow::Result;
 use std::cmp::min;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub mod syntax;
+pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
 
 /// Basic mcedit-like buffer that is binary-safe (stores raw bytes).
 /// Rendering helpers expose text with non-printables replaced to avoid corrupting data.
@@ -318,6 +332,28 @@ impl EditorBuffer {
                 out.push(s);
             } else {
                 out.push(" ".repeat(width));
+            }
+        }
+        out
+    }
+
+    /// Render a window of tokenized spans suitable for syntax-colored drawing.
+    /// This mirrors `render_window` semantics (printable ASCII, tabs to space, others as '.'),
+    /// but returns `(text, kind)` spans clipped to the current viewport.
+    pub fn render_window_spans(&self, width: usize, height: usize) -> Vec<Vec<Span>> {
+        let mut out: Vec<Vec<Span>> = Vec::new();
+        let lang = guess_language(self.path.as_deref());
+        for i in 0..height {
+            let li = self.view_row + i;
+            if let Some(line) = self.lines.get(li) {
+                let spans =
+                    tokenize_for_render(line, lang, self.view_col, width);
+                out.push(spans);
+            } else {
+                out.push(vec![Span {
+                    text: " ".repeat(width),
+                    kind: TokenKind::Normal,
+                }]);
             }
         }
         out
