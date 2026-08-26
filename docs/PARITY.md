@@ -48,9 +48,9 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [ ] User-defined fields: name, size/bsize, type marks (* / @ = - + | ~ !), mark, mtime/atime/ctime, perm, mode, nlink, owner/group (name/num), inode, etc.
 - [ ] Panel modes: Quick view, Info, Tree, Panelize (results)
 - [ ] Sort: name (alpha/natural), ext, mtime/atime/ctime, size, inode, unsorted; reverse toggle
-- [ ] Options: directories first vs “Mix all files”
+- [x] Options: directories first vs “Mix all files”
 - [ ] Filter dialog: glob/regex, files only toggle, case sensitivity
-- [ ] Show hidden files toggle (dotfiles)
+- [x] Show hidden files toggle (dotfiles)
 - [ ] Fast directory reload; manual rescan C-r
 - [ ] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection
 

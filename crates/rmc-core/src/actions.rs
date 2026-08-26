@@ -9,6 +9,7 @@ pub enum PaneSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
     Name,
+    Ext,
     Size,
     Time,
 }
@@ -35,6 +36,8 @@ pub enum Action {
     ParentDir,
     SwitchPanel,
     ToggleSelect,
+    // View formats
+    CycleListingFormat,
     // Sorting
     Sort(SortBy),
     // File operations

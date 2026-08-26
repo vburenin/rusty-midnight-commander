@@ -9,7 +9,7 @@
 # Actions use existing rmc_core::actions::Action variant names (simplified):
 #   MoveUp, MoveDown, PageUp, PageDown, Home, End, Enter, ParentDir, SwitchPanel, ToggleHidden,
 #   SwapPanels, Refresh, ShowHelp, ViewFile, Copy, Move, Mkdir, Delete, FocusMenu, Quit,
-#   ToggleSelect, SortName, SortSize, SortTime
+#   ToggleSelect, SortName, SortSize, SortTime, CycleListingFormat
 
 # Movement and navigation
 Up        = MoveUp
@@ -43,7 +43,8 @@ F10 = Quit
 # Sorting shortcuts (Alt variants)
 Alt-n = SortName
 Alt-s = SortSize
-Alt-t = SortTime
+# Alt-t cycles listing formats (Brief/Long/Full) as in MC
+Alt-t = CycleListingFormat
 
 # Directory hotlist
 C-\\ = OpenHotlist

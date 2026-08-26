@@ -20,6 +20,28 @@ use std::time::{Duration, Instant};
 pub struct TerminalApp;
 
 impl TerminalApp {
+    fn apply_sort_dialog(
+        app: &mut App,
+        side: rmc_core::actions::PaneSide,
+        by: rmc_core::panel::SortBy,
+        reverse: bool,
+        dirs_first: bool,
+    ) -> Result<()> {
+        let p = if matches!(side, rmc_core::actions::PaneSide::Left) {
+            &mut app.left
+        } else {
+            &mut app.right
+        };
+        p.sort_by = by;
+        p.sort_dir = if reverse {
+            rmc_core::sorting::SortDir::Desc
+        } else {
+            rmc_core::sorting::SortDir::Asc
+        };
+        p.dirs_first = dirs_first;
+        p.apply_sort();
+        Ok(())
+    }
     pub fn run(app: &mut App) -> Result<()> {
         let mut out = stdout();
         enable_raw_mode()?;
@@ -30,18 +52,28 @@ impl TerminalApp {
 
         loop {
             // Compute content rows for page/scroll visibility
-            let (_cols, rows) = crossterm::terminal::size()?;
+            let (cols, rows) = crossterm::terminal::size()?;
             let panel_top = 1u16;
             let gauge_row = rows.saturating_sub(4);
             let content_bottom = gauge_row.saturating_sub(1);
             let panel_h = content_bottom - panel_top;
             let content_rows = panel_h.saturating_sub(4) as usize;
+            // Compute per-panel visible capacity (rows or 2*rows for Brief two-column)
+            let mid = cols / 2;
+            let left_w = mid;
+            let right_w = cols - mid;
+            let left_two_cols =
+                matches!(app.left.listing, rmc_core::panel::ListingFormat::Brief) && left_w >= 30;
+            let right_two_cols =
+                matches!(app.right.listing, rmc_core::panel::ListingFormat::Brief) && right_w >= 30;
+            let left_capacity = content_rows * if left_two_cols { 2 } else { 1 };
+            let right_capacity = content_rows * if right_two_cols { 2 } else { 1 };
             // Ensure cursor visibility based on last-known height
             {
                 let left = &mut app.left;
-                left.ensure_visible(content_rows);
+                left.ensure_visible(left_capacity);
                 let right = &mut app.right;
-                right.ensure_visible(content_rows);
+                right.ensure_visible(right_capacity);
             }
             // Draw at least at 30 FPS-equivalent idle to react to resize
             // Also check for background find results to update UI even without keypresses
@@ -77,7 +109,12 @@ impl TerminalApp {
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        Self::handle_key(app, key, content_rows)?;
+                        // Effective page size depends on active panel format/width
+                        let active_capacity = match app.active {
+                            rmc_core::actions::PaneSide::Left => left_capacity,
+                            rmc_core::actions::PaneSide::Right => right_capacity,
+                        };
+                        Self::handle_key(app, key, active_capacity)?;
                     }
                     Event::Resize(_, _) => {
                         // redraw next loop
@@ -193,7 +230,9 @@ impl TerminalApp {
                 let (_cols, rows) = crossterm::terminal::size()?;
                 let list_rows = rows.saturating_sub(4).clamp(12, 20).saturating_sub(4) as usize;
                 match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Tab => {
                         state.focus = match state.focus {
                             HDF::List => HDF::ButtonGoto,
@@ -319,7 +358,9 @@ impl TerminalApp {
                 on_ok,
             } => {
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Enter => {
                         let cb = std::mem::replace(on_ok, Box::new(|_| Ok(())));
                         app.ui_mode = UiMode::Normal;
@@ -349,7 +390,9 @@ impl TerminalApp {
                     }
                 }
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Tab => {
                         state.focus = match state.focus {
                             FF::StartDir => FF::NamePattern,
@@ -536,6 +579,100 @@ impl TerminalApp {
                         }
                     }
                     _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::SortDialog {
+                side,
+                focus_index,
+                by,
+                reverse,
+                dirs_first,
+            } => {
+                // Focus order: 0..3 radios; 4 Reverse; 5 Dirs-first; 6 OK; 7 Cancel
+                let mut apply: Option<(
+                    rmc_core::actions::PaneSide,
+                    rmc_core::panel::SortBy,
+                    bool,
+                    bool,
+                )> = None;
+                let mut close_dialog = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        close_dialog = true;
+                    }
+                    KeyCode::Tab => {
+                        *focus_index = (*focus_index + 1) % 8;
+                    }
+                    KeyCode::BackTab => {
+                        *focus_index = (*focus_index + 8 - 1) % 8;
+                    }
+                    KeyCode::Up => {
+                        if *focus_index > 0 {
+                            *focus_index -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        *focus_index = (*focus_index + 1).min(7);
+                    }
+                    KeyCode::Char(' ') => {
+                        if *focus_index <= 3 {
+                            *by = match *focus_index {
+                                0 => rmc_core::panel::SortBy::Name,
+                                1 => rmc_core::panel::SortBy::Ext,
+                                2 => rmc_core::panel::SortBy::Time,
+                                3 => rmc_core::panel::SortBy::Size,
+                                _ => *by,
+                            };
+                        } else if *focus_index == 4 {
+                            *reverse = !*reverse;
+                        } else if *focus_index == 5 {
+                            *dirs_first = !*dirs_first;
+                        } else if *focus_index == 6 {
+                            // OK via space
+                            apply = Some((*side, *by, *reverse, *dirs_first));
+                            close_dialog = true;
+                        } else if *focus_index == 7 {
+                            // Cancel via space
+                            close_dialog = true;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        match *focus_index {
+                            0..=3 => {
+                                // select radio
+                                *by = match *focus_index {
+                                    0 => rmc_core::panel::SortBy::Name,
+                                    1 => rmc_core::panel::SortBy::Ext,
+                                    2 => rmc_core::panel::SortBy::Time,
+                                    3 => rmc_core::panel::SortBy::Size,
+                                    _ => *by,
+                                };
+                            }
+                            4 => *reverse = !*reverse,
+                            5 => *dirs_first = !*dirs_first,
+                            6 => {
+                                apply = Some((*side, *by, *reverse, *dirs_first));
+                                close_dialog = true;
+                            }
+                            7 => {
+                                close_dialog = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+                let _ = side;
+                let _ = focus_index;
+                let _ = by;
+                let _ = reverse;
+                let _ = dirs_first;
+                if let Some((s, b, r, d)) = apply {
+                    Self::apply_sort_dialog(app, s, b, r, d)?;
+                }
+                if close_dialog {
+                    app.ui_mode = UiMode::Normal;
                 }
                 return Ok(());
             }
@@ -728,7 +865,7 @@ impl TerminalApp {
                 selected_index,
             } => {
                 let menus: [&[&str]; 5] = [
-                    &["Copy", "Move", "Mkdir", "Delete"],
+                    &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
                     &[
                         "User menu",
@@ -737,7 +874,7 @@ impl TerminalApp {
                         "Compare dirs",
                     ],
                     &["Layout", "Panels", "Confirmations"],
-                    &["Copy", "Move", "Mkdir", "Delete"],
+                    &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
                 ];
                 match key.code {
                     KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
@@ -769,6 +906,33 @@ impl TerminalApp {
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
+                            "Sort order..." => {
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => rmc_core::actions::PaneSide::Left,
+                                };
+                                // Prefill from the chosen panel
+                                let (by, reverse, dirs_first) = {
+                                    let p = if matches!(side, rmc_core::actions::PaneSide::Left) {
+                                        &app.left
+                                    } else {
+                                        &app.right
+                                    };
+                                    (
+                                        p.sort_by,
+                                        matches!(p.sort_dir, rmc_core::sorting::SortDir::Desc),
+                                        p.dirs_first,
+                                    )
+                                };
+                                app.ui_mode = UiMode::SortDialog {
+                                    side,
+                                    focus_index: 0,
+                                    by,
+                                    reverse,
+                                    dirs_first,
+                                };
+                            }
                             "Copy" => {
                                 return Self::handle_key(
                                     app,
@@ -814,92 +978,6 @@ impl TerminalApp {
                             "Find file" => {
                                 let start = app.active_panel().cwd.clone();
                                 app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
-                            }
-                            "Compare files" => {
-                                // Implement Compare files (mcdiff-like)
-                                if let Some(a_ent) = app.active_panel().current_entry().cloned() {
-                                    if a_ent.is_dir {
-                                        app.ui_mode = UiMode::DialogConfirm {
-                                            title: "Compare files".into(),
-                                            message: "Select a file (not a directory) to compare."
-                                                .into(),
-                                            on_ok: Box::new(|_| Ok(())),
-                                        };
-                                    } else {
-                                        let other_entries =
-                                            app.inactive_panel_mut().entries.clone();
-                                        let mut b_path = None;
-                                        for e in other_entries.iter() {
-                                            if e.name == a_ent.name && !e.is_dir {
-                                                b_path = Some(e.path.clone());
-                                                break;
-                                            }
-                                        }
-                                        if b_path.is_none() {
-                                            if let Some(b_ent) =
-                                                app.inactive_panel_mut().current_entry().cloned()
-                                            {
-                                                if !b_ent.is_dir {
-                                                    b_path = Some(b_ent.path);
-                                                }
-                                            }
-                                        }
-                                        if let Some(b) = b_path {
-                                            // Load file contents
-                                            let mut ltxt = String::new();
-                                            let mut rtxt = String::new();
-                                            {
-                                                let mut r = app
-                                                    .vfs
-                                                    .read_file(&a_ent.path)
-                                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                                use std::io::Read;
-                                                let _ = r.read_to_string(&mut ltxt);
-                                            }
-                                            {
-                                                let mut r = app
-                                                    .vfs
-                                                    .read_file(&b)
-                                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                                use std::io::Read;
-                                                let _ = r.read_to_string(&mut rtxt);
-                                            }
-                                            let left_lines = rmc_diff::split_lines(&ltxt);
-                                            let right_lines = rmc_diff::split_lines(&rtxt);
-                                            let dr = rmc_diff::compute_diff(&ltxt, &rtxt);
-                                            let state = rmc_core::app::DiffState {
-                                                left_path: a_ent.path.clone(),
-                                                right_path: b.clone(),
-                                                left_lines,
-                                                right_lines,
-                                                hunks: dr.hunks,
-                                                current_hunk: 0,
-                                                left_modified: false,
-                                                right_modified: false,
-                                                show_line_numbers: false,
-                                                show_hunk_status: true,
-                                                search: None,
-                                                search_prompt: None,
-                                                goto_prompt: None,
-                                                confirm_exit: None,
-                                                left_scroll: 0,
-                                                right_scroll: 0,
-                                                panel_ratio: 0.5,
-                                                tab_width: 4,
-                                                merge_target_right: true,
-                                            };
-                                            app.ui_mode = UiMode::Diff(state);
-                                        } else {
-                                            app.ui_mode = UiMode::DialogConfirm {
-                                                title: "Compare files".into(),
-                                                message:
-                                                    "Could not determine the other file to compare."
-                                                        .into(),
-                                                on_ok: Box::new(|_| Ok(())),
-                                            };
-                                        }
-                                    }
-                                }
                             }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;

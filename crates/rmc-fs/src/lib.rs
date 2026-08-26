@@ -249,4 +249,21 @@ mod tests {
             .iter()
             .any(|e| e.name == "a"));
     }
+
+    #[test]
+    fn hidden_files_filtering() {
+        let fs = local::LocalFs::new();
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs.write_file(&root.join(".hidden")).unwrap();
+        fs.write_file(&root.join("visible")).unwrap();
+        // When show_hidden=false, dotfiles are omitted
+        let list = fs.list_dir(root, false).unwrap();
+        assert!(list.iter().any(|e| e.name == ".."));
+        assert!(list.iter().any(|e| e.name == "visible"));
+        assert!(!list.iter().any(|e| e.name == ".hidden"));
+        // When show_hidden=true, include
+        let list = fs.list_dir(root, true).unwrap();
+        assert!(list.iter().any(|e| e.name == ".hidden"));
+    }
 }

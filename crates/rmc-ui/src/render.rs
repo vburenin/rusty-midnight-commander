@@ -171,6 +171,25 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         } => {
             draw_user_menu_dialog(p, cols, rows, pal, title, entries, *selected_index);
         }
+        rmc_core::app::UiMode::SortDialog {
+            side,
+            focus_index,
+            by,
+            reverse,
+            dirs_first,
+        } => {
+            draw_sort_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                *side,
+                *focus_index,
+                *by,
+                *reverse,
+                *dirs_first,
+            );
+        }
         rmc_core::app::UiMode::FindDialog(state) => {
             draw_find_dialog(p, cols, rows, pal, state);
         }
@@ -665,6 +684,115 @@ fn draw_dialog_box(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn draw_sort_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    side: rmc_core::actions::PaneSide,
+    focus_index: usize,
+    by: rmc_core::panel::SortBy,
+    reverse: bool,
+    dirs_first: bool,
+) {
+    let _ = side; // implied by Left/Right menu; title remains generic
+    let title = "Sort order";
+    let w = 50u16.min(cols.saturating_sub(2));
+    let h = 10u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Options: radios on the left, checkboxes on the right (same rows), then buttons
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let radios = [
+        ("Name", rmc_core::panel::SortBy::Name),
+        ("Extension", rmc_core::panel::SortBy::Ext),
+        ("Modify time", rmc_core::panel::SortBy::Time),
+        ("Size", rmc_core::panel::SortBy::Size),
+    ];
+    for (i, (label, kind)) in radios.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        let sel = if *kind == by { 'x' } else { ' ' };
+        if focus_index == i {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("({sel}) {label}"));
+    }
+    // Checkboxes on rows y+2 and y+3, to the right of radios
+    let checks = [("Reverse", reverse), ("Directories first", dirs_first)];
+    for (j, (label, on)) in checks.iter().enumerate() {
+        let idx = radios.len() + j;
+        let row_y = y + 2 + j as u16;
+        if focus_index == idx {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 28, row_y);
+        p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
+    }
+    // Buttons with focus highlight: indices 6=OK, 7=Cancel
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_txt = if focus_index == 6 { "< OK >" } else { "  OK  " };
+    let cancel_txt = if focus_index == 7 {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_viewer(
     p: &mut Painter,
     cols: u16,
@@ -851,57 +979,172 @@ fn draw_panel(
     let header_fg = pal.header_fg;
     let header_bg = pal.header_bg;
     p.set_fg_bg(header_fg, header_bg);
-    p.goto(x + 1, y + 1);
-    p.text("Name");
-    let size_col = x + w / 2;
-    p.goto(size_col, y + 1);
-    p.text("Size");
-    p.goto(x + w - 15, y + 1);
-    p.text("Modify time");
+    let panel = if is_left { &app.left } else { &app.right };
+    match panel.listing {
+        rmc_core::panel::ListingFormat::Full => {
+            p.goto(x + 1, y + 1);
+            p.text("Name");
+            p.goto(x + w / 2, y + 1);
+            p.text("Size");
+            p.goto(x + w - 15, y + 1);
+            p.text("Modify time");
+        }
+        rmc_core::panel::ListingFormat::Brief => {
+            p.goto(x + 1, y + 1);
+            p.text("Name");
+        }
+        rmc_core::panel::ListingFormat::Long => {
+            // Column-aligned like ls -l
+            let perms_col = x + 1;
+            let owner_col = perms_col + 12; // 10 perms + 2 spaces
+            let group_col = owner_col + 9; // owner 8 + 1 space
+            let size_col = group_col + 9; // group 8 + 1 space
+            let time_col = size_col + 9; // size 8 + 1 space
+            p.goto(perms_col, y + 1);
+            p.text("Perms");
+            p.goto(owner_col, y + 1);
+            p.text("Owner");
+            p.goto(group_col, y + 1);
+            p.text("Group");
+            p.goto(size_col, y + 1);
+            p.text("Size");
+            p.goto(time_col, y + 1);
+            p.text("Modify time");
+        }
+    }
 
     // Content rows
     let content_top = y + 2;
     let content_h = h.saturating_sub(4);
     let _panel = if is_left { &app.left } else { &app.right };
-    // Viewport uses panel.scroll_top, updated by the event loop per content height
+    // Viewport uses panel.scroll_top, updated by the event loop per visible capacity
     let panel = if is_left { &app.left } else { &app.right };
-    for i in 0..content_h as usize {
-        let row_y = content_top + i as u16;
-        // Clear row
-        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
-        p.goto(x + 1, row_y);
-        p.text(&" ".repeat((w - 2) as usize));
-        let idx = panel.scroll_top + i;
-        if let Some(ent) = panel.entries.get(idx) {
-            // active row highlight
-            let is_active_panel = (is_left
-                && matches!(app.active, rmc_core::actions::PaneSide::Left))
-                || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
-            let is_cursor = idx == panel.cursor;
-            let selected = panel.selection.is_selected(idx);
-            // Determine colors following MC rules
-            let (fg, bg) = if is_cursor && is_active_panel {
-                (pal.selected_fg, pal.selected_bg)
-            } else if selected && is_cursor {
-                (pal.markselect_fg, pal.markselect_bg)
-            } else if selected {
-                (pal.marked_fg, pal.marked_bg)
+    match panel.listing {
+        rmc_core::panel::ListingFormat::Full => {
+            let size_col = x + w / 2;
+            for i in 0..content_h as usize {
+                let row_y = content_top + i as u16;
+                // Clear row
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                p.goto(x + 1, row_y);
+                p.text(&" ".repeat((w - 2) as usize));
+                let idx = panel.scroll_top + i;
+                if let Some(ent) = panel.entries.get(idx) {
+                    // active row highlight
+                    let is_active_panel = (is_left
+                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                    let is_cursor = idx == panel.cursor;
+                    let selected = panel.selection.is_selected(idx);
+                    // Determine colors following MC rules
+                    let (fg, bg) = if is_cursor && is_active_panel {
+                        (pal.selected_fg, pal.selected_bg)
+                    } else if selected && is_cursor {
+                        (pal.markselect_fg, pal.markselect_bg)
+                    } else if selected {
+                        (pal.marked_fg, pal.marked_bg)
+                    } else {
+                        (pal.core_default_fg, pal.core_default_bg)
+                    };
+                    p.set_fg_bg(fg, bg);
+                    // Name
+                    let display_name = format_entry_name(ent);
+                    p.goto(x + 1, row_y);
+                    let name_width = (w - 2).saturating_sub(26);
+                    let name_trunc = truncate(&display_name, name_width as usize);
+                    p.text(&name_trunc);
+                    // Size
+                    p.goto(size_col, row_y);
+                    p.text(&format_size(ent));
+                    // Time
+                    p.goto(x + w - 15, row_y);
+                    p.text(&format_time(ent));
+                }
+            }
+        }
+        rmc_core::panel::ListingFormat::Brief => {
+            // Two columns if there is enough width
+            let two_cols = w >= 30;
+            let per_col_width = if two_cols {
+                (w - 3) / 2 // 1 left pad + 1 space + 1 right pad
             } else {
-                (pal.core_default_fg, pal.core_default_bg)
+                w - 2
             };
-            p.set_fg_bg(fg, bg);
-            // Name
-            let display_name = format_entry_name(ent);
-            p.goto(x + 1, row_y);
-            let name_width = (w - 2).saturating_sub(26);
-            let name_trunc = truncate(&display_name, name_width as usize);
-            p.text(&name_trunc);
-            // Size
-            p.goto(size_col, row_y);
-            p.text(&format_size(ent));
-            // Time
-            p.goto(x + w - 15, row_y);
-            p.text(&format_time(ent));
+            for i in 0..content_h as usize {
+                let row_y = content_top + i as u16;
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                p.goto(x + 1, row_y);
+                p.text(&" ".repeat((w - 2) as usize));
+                let left_idx = panel.scroll_top + i;
+                let right_idx = if two_cols {
+                    panel.scroll_top + i + content_h as usize
+                } else {
+                    usize::MAX
+                };
+                for (j, idx) in [left_idx, right_idx].into_iter().enumerate() {
+                    if let Some(ent) = panel.entries.get(idx) {
+                        let is_active_panel = (is_left
+                            && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                            || (!is_left
+                                && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                        let is_cursor = idx == panel.cursor;
+                        let selected = panel.selection.is_selected(idx);
+                        let (fg, bg) = if is_cursor && is_active_panel {
+                            (pal.selected_fg, pal.selected_bg)
+                        } else if selected && is_cursor {
+                            (pal.markselect_fg, pal.markselect_bg)
+                        } else if selected {
+                            (pal.marked_fg, pal.marked_bg)
+                        } else {
+                            (pal.core_default_fg, pal.core_default_bg)
+                        };
+                        p.set_fg_bg(fg, bg);
+                        let col_x = if j == 0 { x + 1 } else { x + 2 + per_col_width };
+                        p.goto(col_x, row_y);
+                        let display_name = format_entry_name(ent);
+                        let name_trunc = truncate(&display_name, per_col_width as usize);
+                        p.text(&name_trunc);
+                    }
+                }
+            }
+        }
+        rmc_core::panel::ListingFormat::Long => {
+            for i in 0..content_h as usize {
+                let row_y = content_top + i as u16;
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                p.goto(x + 1, row_y);
+                p.text(&" ".repeat((w - 2) as usize));
+                let idx = panel.scroll_top + i;
+                if let Some(ent) = panel.entries.get(idx) {
+                    let is_active_panel = (is_left
+                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                    let is_cursor = idx == panel.cursor;
+                    let selected = panel.selection.is_selected(idx);
+                    let (fg, bg) = if is_cursor && is_active_panel {
+                        (pal.selected_fg, pal.selected_bg)
+                    } else if selected && is_cursor {
+                        (pal.markselect_fg, pal.markselect_bg)
+                    } else if selected {
+                        (pal.marked_fg, pal.marked_bg)
+                    } else {
+                        (pal.core_default_fg, pal.core_default_bg)
+                    };
+                    p.set_fg_bg(fg, bg);
+                    let perms = perm_string(ent.permissions, ent.is_dir);
+                    let owner = ent.owner.as_deref().unwrap_or("-");
+                    let group = ent.group.as_deref().unwrap_or("-");
+                    let size = if ent.is_dir { 0 } else { ent.size };
+                    let tm = format_time(ent);
+                    let mut line = format!(
+                        "{perms}  {owner:>8} {group:>8} {size:>8} {tm}  {}",
+                        ent.name
+                    );
+                    line = truncate(&line, (w - 2) as usize);
+                    p.goto(x + 1, row_y);
+                    p.text(&line);
+                }
+            }
         }
     }
     // Mini status
