@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use std::cmp::min;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub mod syntax;
 pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
