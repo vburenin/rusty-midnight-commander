@@ -465,6 +465,41 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::InputDialog {
+                title: _,
+                prompt: _,
+                value,
+                on_submit,
+                focus_ok,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        *focus_ok = !*focus_ok;
+                    }
+                    KeyCode::Enter => {
+                        if *focus_ok {
+                            let cb = std::mem::replace(on_submit, Box::new(|_, _| Ok(())));
+                            let val = value.clone();
+                            app.ui_mode = UiMode::Normal;
+                            cb(app, val)?;
+                            app.reload_panels()?;
+                        } else {
+                            // stay, user can toggle to OK
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        value.pop();
+                    }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        value.push(c);
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::DialogConfirm {
                 title: _,
                 message: _,
@@ -1220,17 +1255,7 @@ impl TerminalApp {
                 selected_index,
             } => {
                 let menus: [&[&str]; 5] = [
-<<<<<<< HEAD
                     &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
-                    &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &[
-                        "User menu",
-                        "Find file",
-                        "Directory hotlist",
-                        "Compare dirs",
-                    ],
-=======
-                    &["Copy", "Move", "Mkdir", "Delete"],
                     &[
                         "View",
                         "Edit",
@@ -1245,8 +1270,12 @@ impl TerminalApp {
                         "Relative symlink",
                         "Quit",
                     ],
-                    &["User menu", "Find file", "Compare dirs"],
->>>>>>> aba0090 (fs: extend Vfs with chmod/chown/link; implement in LocalFs/CompositeFs; add libc; tests for chmod/chown)
+                    &[
+                        "User menu",
+                        "Find file",
+                        "Directory hotlist",
+                        "Compare dirs",
+                    ],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
                 ];
@@ -2005,11 +2034,20 @@ impl TerminalApp {
                                 let is_hard = c == 'l';
                                 let is_symlink_abs = c == 's';
                                 let (dlg_title, prompt) = if is_hard {
-                                    ("Link".to_string(), "Enter the name of the hard link to:".to_string())
+                                    (
+                                        "Link".to_string(),
+                                        "Enter the name of the hard link to:".to_string(),
+                                    )
                                 } else if is_symlink_abs {
-                                    ("Symbolic link".to_string(), "Enter name of the symlink:".to_string())
+                                    (
+                                        "Symbolic link".to_string(),
+                                        "Enter name of the symlink:".to_string(),
+                                    )
                                 } else {
-                                    ("Relative symlink".to_string(), "Enter name of the symlink:".to_string())
+                                    (
+                                        "Relative symlink".to_string(),
+                                        "Enter name of the symlink:".to_string(),
+                                    )
                                 };
                                 app.ui_mode = UiMode::InputDialog {
                                     title: dlg_title,
@@ -2029,14 +2067,31 @@ impl TerminalApp {
                                             };
                                             app.vfs.symlink(&abs_target, &dst)?;
                                         } else {
-                                            let base = dst.parent().unwrap_or_else(|| std::path::Path::new("."));
-                                            let abs_src = if src.is_absolute() { src.clone() } else { active_cwd.join(&src) };
-                                            let abs_base = if base.is_absolute() { base.to_path_buf() } else { active_cwd.join(base) };
-                                            fn relpath(from: &std::path::Path, to: &std::path::Path) -> std::path::PathBuf {
+                                            let base = dst
+                                                .parent()
+                                                .unwrap_or_else(|| std::path::Path::new("."));
+                                            let abs_src = if src.is_absolute() {
+                                                src.clone()
+                                            } else {
+                                                active_cwd.join(&src)
+                                            };
+                                            let abs_base = if base.is_absolute() {
+                                                base.to_path_buf()
+                                            } else {
+                                                active_cwd.join(base)
+                                            };
+                                            fn relpath(
+                                                from: &std::path::Path,
+                                                to: &std::path::Path,
+                                            ) -> std::path::PathBuf
+                                            {
                                                 let from = from.components().collect::<Vec<_>>();
                                                 let to = to.components().collect::<Vec<_>>();
                                                 let mut i = 0usize;
-                                                while i < from.len() && i < to.len() && from[i] == to[i] {
+                                                while i < from.len()
+                                                    && i < to.len()
+                                                    && from[i] == to[i]
+                                                {
                                                     i += 1;
                                                 }
                                                 let mut out = std::path::PathBuf::new();
@@ -2122,12 +2177,21 @@ impl TerminalApp {
                     }
                 }
                 Action::Chown => {
-                    app.ui_mode = UiMode::ChownDialog {
-                        owner: String::new(),
-                        group: String::new(),
-                        recursive: false,
-                        focus_index: 0,
-                    };
+                    if let Some(ent) = app.active_panel().current_entry().cloned() {
+                        app.ui_mode = UiMode::ChownDialog {
+                            owner: ent.owner.unwrap_or_default(),
+                            group: ent.group.unwrap_or_default(),
+                            recursive: false,
+                            focus_index: 0,
+                        };
+                    } else {
+                        app.ui_mode = UiMode::ChownDialog {
+                            owner: String::new(),
+                            group: String::new(),
+                            recursive: false,
+                            focus_index: 0,
+                        };
+                    }
                 }
                 Action::LinkHard | Action::SymlinkAbs | Action::SymlinkRel => {
                     if let Some(ent) = app.active_panel().current_entry().cloned() {
@@ -2135,16 +2199,27 @@ impl TerminalApp {
                         let default_to = dst_dir.join(&ent.name).display().to_string();
                         let is_hard = matches!(action, Action::LinkHard);
                         let is_symlink_abs = matches!(action, Action::SymlinkAbs);
-                        let title = if is_hard {
-                            "Hardlink to:".to_string()
+                        let (dlg_title, prompt) = if is_hard {
+                            (
+                                "Link".to_string(),
+                                "Enter the name of the hard link to:".to_string(),
+                            )
                         } else if is_symlink_abs {
-                            "Symlink absolute to:".to_string()
+                            (
+                                "Symbolic link".to_string(),
+                                "Enter name of the symlink:".to_string(),
+                            )
                         } else {
-                            "Symlink relative to:".to_string()
+                            (
+                                "Relative symlink".to_string(),
+                                "Enter name of the symlink:".to_string(),
+                            )
                         };
-                        app.ui_mode = UiMode::PromptInput {
-                            title,
+                        app.ui_mode = UiMode::InputDialog {
+                            title: dlg_title,
+                            prompt,
                             value: default_to.clone(),
+                            focus_ok: true,
                             on_submit: Box::new(move |app, val| {
                                 let src = ent.path.clone();
                                 let dst = std::path::PathBuf::from(val);

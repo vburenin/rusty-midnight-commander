@@ -136,6 +136,14 @@ pub enum UiMode {
         value: String,
         on_submit: UiPromptCb,
     },
+    // Generic input dialog with a prompt line and OK/Cancel
+    InputDialog {
+        title: String,
+        prompt: String,
+        value: String,
+        on_submit: UiPromptCb,
+        focus_ok: bool,
+    },
     MenuFocused,
     Help {
         state: HelpState,

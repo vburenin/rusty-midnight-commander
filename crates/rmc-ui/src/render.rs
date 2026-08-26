@@ -183,8 +183,17 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
+        rmc_core::app::UiMode::InputDialog {
+            title,
+            prompt,
+            value,
+            focus_ok,
+            ..
+        } => {
+            draw_input_dialog(p, cols, rows, pal, title, prompt, value, *focus_ok);
+        }
         rmc_core::app::UiMode::Help { .. } => {
-            // full-screen; nothing overlays
+            // Full-screen; nothing overlays
         }
         rmc_core::app::UiMode::UserMenu {
             title,
@@ -1920,6 +1929,85 @@ fn draw_mkdir_dialog(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn draw_input_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    title: &str,
+    prompt: &str,
+    value: &str,
+    focus_ok: bool,
+) {
+    let w = (cols as usize).min(66) as u16;
+    let h = 9u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Prompt
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 2);
+    p.text(&truncate(prompt, (w - 4) as usize));
+    // Input line
+    p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    p.goto(x + 2, y + 4);
+    let t = truncate(value, (w - 4) as usize);
+    p.text(&format!("{t}{}", " ".repeat((w - 4) as usize - t.len())));
+    // Buttons
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok = if focus_ok { "< OK >" } else { "[ OK ]" };
+    let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
+    let btns = format!("{ok}  {cancel}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_copy_move_dialog(
     p: &mut Painter,
     cols: u16,
@@ -2371,7 +2459,12 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Relative symlink",
             "Quit",
         ],
-        &["User menu", "Find file", "Directory hotlist", "Compare dirs"],
+        &[
+            "User menu",
+            "Find file",
+            "Directory hotlist",
+            "Compare dirs",
+        ],
         &["Layout", "Panels", "Confirmations"],
         &["Copy", "Move", "Mkdir", "Delete"],
     ];
