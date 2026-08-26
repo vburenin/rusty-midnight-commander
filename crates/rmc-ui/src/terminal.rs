@@ -1,11 +1,13 @@
-use crate::skin::load_default_palette;
 use crate::render::Renderer;
+use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use rmc_core::actions::Action;
 use rmc_core::app::{App, UiMode};
 use std::io::stdout;
@@ -69,7 +71,11 @@ impl TerminalApp {
         let active_cwd = app.active_panel().cwd.clone();
         // Dialog handling first
         match &mut app.ui_mode {
-            UiMode::PromptInput { title: _, value, on_submit } => {
+            UiMode::PromptInput {
+                title: _,
+                value,
+                on_submit,
+            } => {
                 match key.code {
                     KeyCode::Esc => {
                         app.ui_mode = UiMode::Normal;
@@ -84,16 +90,18 @@ impl TerminalApp {
                     KeyCode::Backspace => {
                         value.pop();
                     }
-                    KeyCode::Char(c) => {
-                        if key.modifiers.is_empty() {
-                            value.push(c);
-                        }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        value.push(c);
                     }
                     _ => {}
                 }
                 return Ok(());
             }
-            UiMode::DialogConfirm { title: _, message: _, on_ok } => {
+            UiMode::DialogConfirm {
+                title: _,
+                message: _,
+                on_ok,
+            } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
                     KeyCode::Enter => {
@@ -125,16 +133,18 @@ impl TerminalApp {
                             value.pop();
                         }
                     }
-                    KeyCode::Char(c) => {
-                        if !*focus_ok && key.modifiers.is_empty() {
-                            value.push(c);
-                        }
+                    KeyCode::Char(c) if !*focus_ok && key.modifiers.is_empty() => {
+                        value.push(c);
                     }
                     _ => {}
                 }
                 return Ok(());
             }
-            UiMode::DeleteDialog { name: _, path, focus_ok } => {
+            UiMode::DeleteDialog {
+                name: _,
+                path,
+                focus_ok,
+            } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
                     KeyCode::Tab => *focus_ok = !*focus_ok,
@@ -149,7 +159,19 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
-            UiMode::CopyDialog { title, src_name: _, src_path, mask, to, using_shell_patterns, follow_links, preserve_attrs, dive_into_subdir, stable_symlinks, focus } => {
+            UiMode::CopyDialog {
+                title,
+                src_name: _,
+                src_path,
+                mask,
+                to,
+                using_shell_patterns,
+                follow_links,
+                preserve_attrs,
+                dive_into_subdir,
+                stable_symlinks,
+                focus,
+            } => {
                 use rmc_core::app::CopyDialogFocus as F;
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
@@ -167,13 +189,15 @@ impl TerminalApp {
                             F::Cancel => F::Mask,
                         };
                     }
-                    KeyCode::Backspace => {
-                        match *focus {
-                            F::Mask => { mask.pop(); }
-                            F::To => { to.pop(); }
-                            _ => {}
+                    KeyCode::Backspace => match *focus {
+                        F::Mask => {
+                            mask.pop();
                         }
-                    }
+                        F::To => {
+                            to.pop();
+                        }
+                        _ => {}
+                    },
                     KeyCode::Char(c) => {
                         if key.modifiers.is_empty() {
                             if c == ' ' {
@@ -217,12 +241,15 @@ impl TerminalApp {
                             _ => {}
                         }
                     }
-                    
+
                     _ => {}
                 }
                 return Ok(());
             }
-            UiMode::Menu { top_index, selected_index } => {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+            } => {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
@@ -235,29 +262,65 @@ impl TerminalApp {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Left => {
-                        if *top_index > 0 { *top_index -= 1; }
+                        if *top_index > 0 {
+                            *top_index -= 1;
+                        }
                         *selected_index = 0;
                     }
                     KeyCode::Right => {
-                        if *top_index < 4 { *top_index += 1; }
+                        if *top_index < 4 {
+                            *top_index += 1;
+                        }
                         *selected_index = 0;
                     }
                     KeyCode::Up => {
-                        if *selected_index > 0 { *selected_index -= 1; }
+                        if *selected_index > 0 {
+                            *selected_index -= 1;
+                        }
                     }
                     KeyCode::Down => {
                         let max = menus[*top_index].len().saturating_sub(1);
-                        if *selected_index < max { *selected_index += 1; }
+                        if *selected_index < max {
+                            *selected_index += 1;
+                        }
                     }
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
-                            "Copy" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(5), key.modifiers), page_rows); }
-                            "Move" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(6), key.modifiers), page_rows); }
-                            "Mkdir" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(7), key.modifiers), page_rows); }
-                            "Delete" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(8), key.modifiers), page_rows); }
-                            "Quit" => { app.handle_action(Action::Quit)?; }
-                            _ => { app.ui_mode = UiMode::Normal; }
+                            "Copy" => {
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::F(5), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Move" => {
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::F(6), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Mkdir" => {
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::F(7), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Delete" => {
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::F(8), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "Quit" => {
+                                app.handle_action(Action::Quit)?;
+                            }
+                            _ => {
+                                app.ui_mode = UiMode::Normal;
+                            }
                         }
                     }
                     _ => {}
@@ -266,7 +329,14 @@ impl TerminalApp {
             }
             UiMode::Viewer { .. } => {
                 // If viewer has an active search prompt, handle it first
-                if let UiMode::Viewer { path, offset, search, search_prompt: Some(prompt), .. } = &mut app.ui_mode {
+                if let UiMode::Viewer {
+                    path,
+                    offset,
+                    search,
+                    search_prompt: Some(prompt),
+                    ..
+                } = &mut app.ui_mode
+                {
                     match key.code {
                         KeyCode::Esc => {
                             *prompt = String::new();
@@ -287,18 +357,20 @@ impl TerminalApp {
                         KeyCode::Backspace => {
                             prompt.pop();
                         }
-                        KeyCode::Char(c) => {
-                            if key.modifiers.is_empty() {
-                                prompt.push(c);
-                            }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            prompt.push(c);
                         }
                         _ => {}
                     }
                     return Ok(());
                 }
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => app.handle_action(Action::ViewerQuit)?,
-                    KeyCode::Char('h') | KeyCode::Char('x') | KeyCode::F(4) => app.handle_action(Action::ViewerToggleHex)?,
+                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => {
+                        app.handle_action(Action::ViewerQuit)?
+                    }
+                    KeyCode::Char('h') | KeyCode::Char('x') | KeyCode::F(4) => {
+                        app.handle_action(Action::ViewerToggleHex)?
+                    }
                     KeyCode::F(2) => {
                         // Save — no-op stub for now
                     }
@@ -310,7 +382,10 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Up => {
-                        if let UiMode::Viewer { path, hex, offset, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path, hex, offset, ..
+                        } = &mut app.ui_mode
+                        {
                             if *hex {
                                 *offset = offset.saturating_sub(16);
                             } else {
@@ -319,7 +394,10 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Down => {
-                        if let UiMode::Viewer { path, hex, offset, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path, hex, offset, ..
+                        } = &mut app.ui_mode
+                        {
                             if *hex {
                                 *offset = offset.saturating_add(16);
                             } else {
@@ -328,7 +406,14 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::PageDown => {
-                        if let UiMode::Viewer { path, hex, wrap, offset, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path,
+                            hex,
+                            wrap,
+                            offset,
+                            ..
+                        } = &mut app.ui_mode
+                        {
                             let (cols, rows) = crossterm::terminal::size()?;
                             // content area inside frame is rows-3, cols-2
                             let content_rows = rows.saturating_sub(3);
@@ -336,19 +421,38 @@ impl TerminalApp {
                                 let step = 16u64 * (content_rows as u64);
                                 *offset = offset.saturating_add(step);
                             } else {
-                                *offset = rmc_view::nav_page_down(path, *offset, cols.saturating_sub(2), content_rows, *wrap)?;
+                                *offset = rmc_view::nav_page_down(
+                                    path,
+                                    *offset,
+                                    cols.saturating_sub(2),
+                                    content_rows,
+                                    *wrap,
+                                )?;
                             }
                         }
                     }
                     KeyCode::PageUp => {
-                        if let UiMode::Viewer { path, hex, wrap, offset, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path,
+                            hex,
+                            wrap,
+                            offset,
+                            ..
+                        } = &mut app.ui_mode
+                        {
                             let (cols, rows) = crossterm::terminal::size()?;
                             let content_rows = rows.saturating_sub(3);
                             if *hex {
                                 let step = 16u64 * (content_rows as u64);
                                 *offset = offset.saturating_sub(step);
                             } else {
-                                *offset = rmc_view::nav_page_up(path, *offset, cols.saturating_sub(2), content_rows, *wrap)?;
+                                *offset = rmc_view::nav_page_up(
+                                    path,
+                                    *offset,
+                                    cols.saturating_sub(2),
+                                    content_rows,
+                                    *wrap,
+                                )?;
                             }
                         }
                     }
@@ -358,7 +462,14 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::End => {
-                        if let UiMode::Viewer { path, hex, wrap, offset, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path,
+                            hex,
+                            wrap,
+                            offset,
+                            ..
+                        } = &mut app.ui_mode
+                        {
                             let (cols, rows) = crossterm::terminal::size()?;
                             let content_rows = rows.saturating_sub(3);
                             if *hex {
@@ -366,7 +477,12 @@ impl TerminalApp {
                                 let page = 16u64 * (content_rows as u64);
                                 *offset = len.saturating_sub(page);
                             } else {
-                                *offset = rmc_view::nav_end(path, cols.saturating_sub(2), content_rows, *wrap)?;
+                                *offset = rmc_view::nav_end(
+                                    path,
+                                    cols.saturating_sub(2),
+                                    content_rows,
+                                    *wrap,
+                                )?;
                             }
                         }
                     }
@@ -376,16 +492,30 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Char('n') => {
-                        if let UiMode::Viewer { path, offset, search, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path,
+                            offset,
+                            search,
+                            ..
+                        } = &mut app.ui_mode
+                        {
                             if let Some(q) = search.clone() {
-                                if let Some(pos) = rmc_view::search_forward(path, offset.saturating_add(1), &q)? {
+                                if let Some(pos) =
+                                    rmc_view::search_forward(path, offset.saturating_add(1), &q)?
+                                {
                                     *offset = pos;
                                 }
                             }
                         }
                     }
                     KeyCode::Char('N') => {
-                        if let UiMode::Viewer { path, offset, search, .. } = &mut app.ui_mode {
+                        if let UiMode::Viewer {
+                            path,
+                            offset,
+                            search,
+                            ..
+                        } = &mut app.ui_mode
+                        {
                             if let Some(q) = search.clone() {
                                 if let Some(pos) = rmc_view::search_backward(path, *offset, &q)? {
                                     *offset = pos;
@@ -405,12 +535,19 @@ impl TerminalApp {
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::Mkdir => {
-                    app.ui_mode = UiMode::MkdirDialog { value: String::new(), focus_ok: false };
+                    app.ui_mode = UiMode::MkdirDialog {
+                        value: String::new(),
+                        focus_ok: false,
+                    };
                 }
                 Action::Delete => {
                     if let Some(ent) = app.active_panel().current_entry().cloned() {
                         let path = ent.path.clone();
-                        app.ui_mode = UiMode::DeleteDialog { name: ent.name, path, focus_ok: true };
+                        app.ui_mode = UiMode::DeleteDialog {
+                            name: ent.name,
+                            path,
+                            focus_ok: true,
+                        };
                     }
                 }
                 Action::Copy => {

@@ -42,12 +42,23 @@ pub fn clamp_offset(path: &Path, offset: u64) -> Result<u64> {
 
 /// Render a window of content for the given file starting at (approximately) `offset`.
 /// The content area height should exclude chrome (frame/title/status) if those are handled by UI.
-pub fn render_window(path: &Path, opts: ViewOptions, mut offset: u64, cols: u16, rows: u16) -> Result<RenderResult> {
+pub fn render_window(
+    path: &Path,
+    opts: ViewOptions,
+    mut offset: u64,
+    cols: u16,
+    rows: u16,
+) -> Result<RenderResult> {
     let cols = cols.max(1);
     let rows = rows.max(1);
     let len = file_len(path)?;
     if len == 0 {
-        return Ok(RenderResult { lines: vec![], offset: 0, eof: true, next_screen_offset: 0 });
+        return Ok(RenderResult {
+            lines: vec![],
+            offset: 0,
+            eof: true,
+            next_screen_offset: 0,
+        });
     }
     offset = min(offset, len.saturating_sub(1));
     let mut f = File::open(path)?;
@@ -68,7 +79,16 @@ fn render_hex(f: &mut File, offset: u64, _cols: u16, rows: u16) -> Result<Render
     let mut lines = Vec::with_capacity(lines_capacity);
     for chunk in buf.chunks(16) {
         let hexs: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
-        let text: String = chunk.iter().map(|&b| if (32..=126).contains(&b) { b as char } else { '.' }).collect();
+        let text: String = chunk
+            .iter()
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
         // 16*3 - 1 = 47 chars for hex (including spaces), then two spaces, then ascii 16
         lines.push(format!("{:47}  {}", hexs.join(" "), text));
         if lines.len() >= lines_capacity {
@@ -77,13 +97,29 @@ fn render_hex(f: &mut File, offset: u64, _cols: u16, rows: u16) -> Result<Render
     }
     let eof = offset.saturating_add(read as u64) >= f.metadata()?.len();
     let next_screen_offset = offset.saturating_add((16 * lines.len()) as u64);
-    Ok(RenderResult { lines, offset, eof, next_screen_offset })
+    Ok(RenderResult {
+        lines,
+        offset,
+        eof,
+        next_screen_offset,
+    })
 }
 
-fn render_text(f: &mut File, offset: u64, cols: u16, rows: u16, wrap: bool) -> Result<RenderResult> {
+fn render_text(
+    f: &mut File,
+    offset: u64,
+    cols: u16,
+    rows: u16,
+    wrap: bool,
+) -> Result<RenderResult> {
     let len = f.metadata()?.len();
     if len == 0 {
-        return Ok(RenderResult { lines: vec![], offset: 0, eof: true, next_screen_offset: 0 });
+        return Ok(RenderResult {
+            lines: vec![],
+            offset: 0,
+            eof: true,
+            next_screen_offset: 0,
+        });
     }
     // Read a window with lookback to find a line boundary before offset.
     let start = offset.saturating_sub(LOOKBACK_BYTES as u64);
@@ -119,7 +155,12 @@ fn render_text(f: &mut File, offset: u64, cols: u16, rows: u16, wrap: bool) -> R
     let eof = next_screen_offset >= len;
     // Adjust normalized offset to the computed line_start
     let normalized_offset = start + line_start as u64;
-    Ok(RenderResult { lines: visual_lines, offset: normalized_offset, eof, next_screen_offset })
+    Ok(RenderResult {
+        lines: visual_lines,
+        offset: normalized_offset,
+        eof,
+        next_screen_offset,
+    })
 }
 
 fn find_prev_line_start(buf: &[u8], mut idx: usize) -> usize {
@@ -400,7 +441,17 @@ mod tests {
         let data: Vec<u8> = (0..64).collect(); // 4 lines
         f.write_all(&data).unwrap();
         let path = f.path().to_path_buf();
-        let r = render_window(&path, ViewOptions { hex: true, wrap: false }, 0, 80, 10).unwrap();
+        let r = render_window(
+            &path,
+            ViewOptions {
+                hex: true,
+                wrap: false,
+            },
+            0,
+            80,
+            10,
+        )
+        .unwrap();
         assert_eq!(r.lines.len(), 4);
         assert!(r.lines[0].contains("00 01 02 03"));
         assert!(r.lines[0].ends_with("...............")); // ascii part 16 dots or visible
@@ -412,8 +463,28 @@ mod tests {
         let s = "αβγδεζηθικλμνξοπρστυφχψω\nshort\n";
         f.write_all(s.as_bytes()).unwrap();
         let path = f.path().to_path_buf();
-        let r_nowrap = render_window(&path, ViewOptions { hex: false, wrap: false }, 0, 10, 10).unwrap();
-        let r_wrap = render_window(&path, ViewOptions { hex: false, wrap: true }, 0, 10, 10).unwrap();
+        let r_nowrap = render_window(
+            &path,
+            ViewOptions {
+                hex: false,
+                wrap: false,
+            },
+            0,
+            10,
+            10,
+        )
+        .unwrap();
+        let r_wrap = render_window(
+            &path,
+            ViewOptions {
+                hex: false,
+                wrap: true,
+            },
+            0,
+            10,
+            10,
+        )
+        .unwrap();
         assert!(r_wrap.lines.len() >= r_nowrap.lines.len());
     }
 

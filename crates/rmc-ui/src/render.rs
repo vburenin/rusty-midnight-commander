@@ -54,13 +54,36 @@ impl Renderer {
             return Ok(());
         }
         // Full-screen viewer mode short-circuit: draw only viewer chrome/content/status/fbar
-        if let rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, search_prompt, .. } = &app.ui_mode {
-            draw_viewer(&mut painter, cols, rows, self.palette, path, *hex, *wrap, *offset, search_prompt)?;
+        if let rmc_core::app::UiMode::Viewer {
+            path,
+            hex,
+            wrap,
+            offset,
+            search_prompt,
+            ..
+        } = &app.ui_mode
+        {
+            draw_viewer(
+                &mut painter,
+                cols,
+                rows,
+                self.palette,
+                path,
+                *hex,
+                *wrap,
+                *offset,
+                search_prompt,
+            )?;
             painter.out.flush()?;
             return Ok(());
         }
         // Otherwise draw the normal dual-pane UI
-        painter.fill_line(0, cols, self.palette.core_default_bg, self.palette.core_default_fg);
+        painter.fill_line(
+            0,
+            cols,
+            self.palette.core_default_bg,
+            self.palette.core_default_fg,
+        );
         // Menu bar
         draw_menu_bar(&mut painter, cols, self.palette);
         // Panels area layout:
@@ -198,7 +221,10 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *focus,
             );
         }
-        rmc_core::app::UiMode::Menu { top_index, selected_index } => {
+        rmc_core::app::UiMode::Menu {
+            top_index,
+            selected_index,
+        } => {
             draw_menu_dropdown(p, pal, *top_index, *selected_index);
         }
         _ => {}
@@ -652,7 +678,11 @@ fn draw_viewer(
         "[TEXT]"
     };
     let total = rmc_view::file_len(path).unwrap_or(0);
-    let pct = if total > 0 { ((rr.offset.saturating_mul(100)) / total) as u64 } else { 100 };
+    let pct = rr
+        .offset
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(100);
     let status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
     let st = truncate(&status, cols as usize);
     p.text(&st);
@@ -890,7 +920,9 @@ fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
 
 fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
     // MC-like order: Help, Save, Quit, Hex, Goto, (Raw), Search, Wrap, Menu, Quit
-    let labels = ["Help", "Save", "Quit", "Hex", "Goto", "Raw", "Search", "Wrap", "Menu", "Quit"];
+    let labels = [
+        "Help", "Save", "Quit", "Hex", "Goto", "Raw", "Search", "Wrap", "Menu", "Quit",
+    ];
     let mut x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num = if i == 9 { "10" } else { &(i + 1).to_string() };
