@@ -5,3 +5,4 @@ pub mod events;
 pub mod panel;
 pub mod selection;
 pub mod sorting;
+pub mod find;

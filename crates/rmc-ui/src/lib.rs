@@ -3,3 +3,4 @@ mod render;
 mod skin;
 pub mod terminal;
 mod widgets;
+pub mod find;

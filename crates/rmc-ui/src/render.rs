@@ -8,6 +8,7 @@ use rmc_core::app::App;
 use rmc_core::panel::FileEntry;
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
+use crate::find::draw_find_dialog;
 
 pub struct Renderer {
     palette: McPalette,
@@ -151,27 +152,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
-        rmc_core::app::UiMode::Editor {
-            buf,
-            show_menu,
-            status_msg,
-            search_input,
-            save_as_input,
-            confirm_exit,
-            ..
-        } => {
-            draw_editor(
-                p,
-                cols,
-                rows,
-                pal,
-                buf,
-                *show_menu,
-                status_msg.as_deref(),
-                search_input.as_deref(),
-                save_as_input.as_deref(),
-                confirm_exit.as_ref(),
-            );
+        rmc_core::app::UiMode::FindDialog(state) => {
+            draw_find_dialog(p, cols, rows, pal, state);
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();

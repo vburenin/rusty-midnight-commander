@@ -162,7 +162,7 @@ Per mc(1) “Find File” and “External panelize”:
 - [ ] Find File dialog: start dir (tree picker), filename pattern (glob/regex), content search string, case sensitivity, whole words
 - [ ] Exclude/ignore directories list (colon-separated), follow symlinks options
 - [ ] Buttons: OK, Stop/Start, Again, Chdir, Panelize, Quit
-- [ ] Panelize results into panel; return to normal listing with “..” or switching mode
+- [x] Panelize results into panel; return to normal listing with “..” or switching mode
 - [ ] External Panelize: Ctrl-x !; run arbitrary shell command producing path list; save named commands; re-panelize results
 
 ---

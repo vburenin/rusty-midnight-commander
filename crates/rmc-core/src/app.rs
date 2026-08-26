@@ -1,6 +1,7 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::panel::{FileEntry, PanelState, SortBy};
+use crate::find::{FindDialogState};
 use anyhow::Result;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
@@ -32,6 +33,8 @@ pub enum UiMode {
         top_index: usize,
         selected_index: usize,
     },
+    // Find File dialog state (UI renders and drives this)
+    FindDialog(FindDialogState),
     CopyDialog {
         title: String, // "Copy" or "Move"
         src_name: String,
@@ -206,9 +209,12 @@ impl App {
             Home => self.active_panel_mut().home(),
             End => self.active_panel_mut().end(),
             Enter => {
+                let panelized = self.active_panel().is_panelized();
                 let ent_opt = self.active_panel().current_entry().cloned();
                 if let Some(ent) = ent_opt {
-                    if ent.is_dir {
+                    if panelized && ent.name == ".." {
+                        self.active_panel_mut().unpanelize();
+                    } else if ent.is_dir {
                         self.change_dir(&ent.path)?;
                     } else {
                         // Ask VFS if this path is enterable (e.g., archives)
@@ -221,9 +227,13 @@ impl App {
                 }
             }
             ParentDir => {
-                let parent = self.active_panel().cwd.parent().map(Path::to_path_buf);
-                if let Some(p) = parent {
-                    self.change_dir(&p)?;
+                if self.active_panel().is_panelized() {
+                    self.active_panel_mut().unpanelize();
+                } else {
+                    let parent = self.active_panel().cwd.parent().map(Path::to_path_buf);
+                    if let Some(p) = parent {
+                        self.change_dir(&p)?;
+                    }
                 }
             }
             SwitchPanel => {
@@ -292,5 +302,41 @@ impl App {
     }
     pub fn page_down_by(&mut self, rows: usize) {
         self.active_panel_mut().page_down(rows);
+    }
+
+    pub fn panelize_paths(&mut self, paths: &[PathBuf]) -> Result<()> {
+        // Build FileEntry list from paths, including a `..` parent marker to leave panelized mode.
+        let mut entries = Vec::with_capacity(paths.len() + 1);
+        // Parent marker that points to current cwd for caption/restore
+        entries.push(FileEntry {
+            name: "..".to_string(),
+            path: self.active_panel().cwd.clone(),
+            is_dir: true,
+            is_symlink: false,
+            is_exe: false,
+            size: 0,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            permissions: 0,
+            owner: None,
+            group: None,
+        });
+        for p in paths {
+            let meta = self.vfs.stat(p)?;
+            entries.push(FileEntry {
+                name: p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string()),
+                path: p.clone(),
+                is_dir: meta.is_dir,
+                is_symlink: meta.is_symlink,
+                is_exe: meta.is_executable,
+                size: meta.size,
+                modified: meta.modified,
+                permissions: meta.permissions,
+                owner: meta.owner,
+                group: meta.group,
+            });
+        }
+        let caption = self.active_panel().cwd.clone();
+        self.active_panel_mut().set_panelized_entries(caption, entries);
+        Ok(())
     }
 }

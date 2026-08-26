@@ -10,6 +10,7 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::Action;
 use rmc_core::app::{App, UiMode};
+use rmc_core::find::{FindDialogFocus as FF, FindDialogState, search_files, CancelHandle};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,19 @@ impl TerminalApp {
                 right.ensure_visible(content_rows);
             }
             // Draw at least at 30 FPS-equivalent idle to react to resize
+            // Also check for background find results to update UI even without keypresses
+            if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                if state.running {
+                    if let Some(rx) = &state.results_rx {
+                        if let Ok(paths) = rx.try_recv() {
+                            state.results.paths = paths;
+                            state.running = false;
+                            state.cancel = None;
+                            state.results_rx = None;
+                        }
+                    }
+                }
+            }
             if last_draw.elapsed() > Duration::from_millis(33) {
                 renderer.draw(app)?;
                 last_draw = Instant::now();
@@ -109,6 +123,131 @@ impl TerminalApp {
                         app.ui_mode = UiMode::Normal;
                         cb(app)?;
                         app.reload_panels()?;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::FindDialog(state) => {
+                // Update from background search if completed
+                if state.running {
+                    if let Some(rx) = &state.results_rx {
+                        if let Ok(paths) = rx.try_recv() {
+                            state.results.paths = paths;
+                            state.running = false;
+                            state.cancel = None;
+                            state.results_rx = None;
+                        }
+                    }
+                }
+                match key.code {
+                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Tab => {
+                        state.focus = match state.focus {
+                            FF::StartDir => FF::NamePattern,
+                            FF::NamePattern => FF::Content,
+                            FF::Content => FF::CaseSensitive,
+                            FF::CaseSensitive => FF::ButtonOk,
+                            FF::ButtonOk => FF::ButtonStop,
+                            FF::ButtonStop => FF::ButtonChdir,
+                            FF::ButtonChdir => FF::ButtonPanelize,
+                            FF::ButtonPanelize => FF::ButtonQuit,
+                            FF::ButtonQuit => FF::StartDir,
+                        };
+                    }
+                    KeyCode::Backspace => {
+                        match state.focus {
+                            FF::StartDir => { state.params.start_dir.pop(); }
+                            FF::NamePattern => {
+                                match &mut state.params.name_pattern {
+                                    rmc_core::find::NamePattern::Glob(s) => { s.pop(); }
+                                }
+                            }
+                            FF::Content => {
+                                if let Some(s) = &mut state.params.content_substring {
+                                    s.pop();
+                                    if s.is_empty() { state.params.content_substring = None; }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if key.modifiers.is_empty() {
+                            match state.focus {
+                                FF::StartDir => {
+                                    // Append if printable
+                                    if !c.is_control() {
+                                        let mut s = state.params.start_dir.display().to_string();
+                                        s.push(c);
+                                        state.params.start_dir = std::path::PathBuf::from(s);
+                                    }
+                                }
+                                FF::NamePattern => {
+                                    match &mut state.params.name_pattern {
+                                        rmc_core::find::NamePattern::Glob(s) => { s.push(c); }
+                                    }
+                                }
+                                FF::Content => {
+                                    if c == '\n' { /* ignore */ } else if let Some(ref mut s) = state.params.content_substring {
+                                        s.push(c);
+                                    } else {
+                                        state.params.content_substring = Some(c.to_string());
+                                    }
+                                }
+                                FF::CaseSensitive => {
+                                    if c == ' ' {
+                                        state.params.case_sensitive = !state.params.case_sensitive;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && c == 'c' {
+                            // Allow Ctrl-C to stop search when focused anywhere
+                            if let Some(ch) = &state.cancel {
+                                ch.cancel();
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        match state.focus {
+                            FF::ButtonOk => {
+                                if !state.running {
+                                    // Kick off background search
+                                    let params = state.params.clone();
+                                    let cancel = CancelHandle::new();
+                                    let flag = cancel.flag();
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    state.cancel = Some(cancel);
+                                    state.results_rx = Some(rx);
+                                    state.running = true;
+                                    std::thread::spawn(move || {
+                                        let res = search_files(&params, &flag);
+                                        let _ = tx.send(res);
+                                    });
+                                }
+                            }
+                            FF::ButtonStop => {
+                                if let Some(ch) = &state.cancel {
+                                    ch.cancel();
+                                }
+                            }
+                            FF::ButtonChdir => {
+                                // Set start dir to active panel cwd
+                                state.params.start_dir = active_cwd.clone();
+                            }
+                            FF::ButtonPanelize => {
+                                if !state.running && !state.results.paths.is_empty() {
+                                    let paths = state.results.paths.clone();
+                                    app.panelize_paths(&paths)?;
+                                    app.ui_mode = UiMode::Normal;
+                                }
+                            }
+                            FF::ButtonQuit => {
+                                app.ui_mode = UiMode::Normal;
+                            }
+                            _ => {}
+                        }
                     }
                     _ => {}
                 }
@@ -287,40 +426,16 @@ impl TerminalApp {
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
-                            "Copy" => {
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::F(5), key.modifiers),
-                                    page_rows,
-                                );
+                            "Copy" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(5), key.modifiers), page_rows); }
+                            "Move" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(6), key.modifiers), page_rows); }
+                            "Mkdir" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(7), key.modifiers), page_rows); }
+                            "Delete" => { return Self::handle_key(app, KeyEvent::new(KeyCode::F(8), key.modifiers), page_rows); }
+                            "Find file" => {
+                                let start = app.active_panel().cwd.clone();
+                                app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
                             }
-                            "Move" => {
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::F(6), key.modifiers),
-                                    page_rows,
-                                );
-                            }
-                            "Mkdir" => {
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::F(7), key.modifiers),
-                                    page_rows,
-                                );
-                            }
-                            "Delete" => {
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::F(8), key.modifiers),
-                                    page_rows,
-                                );
-                            }
-                            "Quit" => {
-                                app.handle_action(Action::Quit)?;
-                            }
-                            _ => {
-                                app.ui_mode = UiMode::Normal;
-                            }
+                            "Quit" => { app.handle_action(Action::Quit)?; }
+                            _ => { app.ui_mode = UiMode::Normal; }
                         }
                     }
                     _ => {}
