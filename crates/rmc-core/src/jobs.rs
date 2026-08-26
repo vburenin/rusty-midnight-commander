@@ -106,10 +106,10 @@ impl JobQueue {
     /// Cancel a job by id. Best-effort: running copies will stop mid-copy.
     /// - If the job is queued, it transitions to Cancelled immediately.
     /// - If the job is running, it will stop at the next chunk boundary.
-    /// Returns true if a job with this id existed.
+    ///   Returns true if a job with this id existed.
     pub fn cancel(&self, id: JobId) -> bool {
         let (lock, cvar) = &*self.inner;
-        let mut inner = lock.lock().expect("JobQueue mutex poisoned");
+        let inner = lock.lock().expect("JobQueue mutex poisoned");
         let mut found = false;
         for job_arc in &inner.jobs {
             let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
