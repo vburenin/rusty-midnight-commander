@@ -36,6 +36,24 @@ pub struct DiffState {
     pub merge_target_right: bool, // F5 merges into right when true; swap flips this
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CopyMoveOp {
+    Copy,
+    Move,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum OverwriteFocus {
+    Yes,
+    No,
+    All,
+    Older,
+    None,
+    Smaller,
+    SizeDiffers,
+    Append,
+}
+
 pub enum UiMode {
     Normal,
     /// MC User Menu (F2) – list of user-defined commands with hotkeys
@@ -88,6 +106,13 @@ pub enum UiMode {
         dive_into_subdir: bool,
         stable_symlinks: bool,
         focus: CopyDialogFocus,
+    },
+    /// Overwrite/Replace dialog shown when destination exists for Copy/Move.
+    OverwriteDialog {
+        op: CopyMoveOp,
+        src_path: PathBuf,
+        dst_path: PathBuf,
+        focus: OverwriteFocus,
     },
     // Permissions dialog
     ChmodDialog {
@@ -534,6 +559,10 @@ impl App {
                     "Move".to_string()
                 }
             }
+            UiMode::OverwriteDialog { op, .. } => match op {
+                CopyMoveOp::Copy => "Copy".to_string(),
+                CopyMoveOp::Move => "Move".to_string(),
+            },
             UiMode::MkdirDialog { .. } => "Mkdir".to_string(),
             UiMode::DeleteDialog { .. } => "Delete".to_string(),
             UiMode::DialogConfirm { .. } => "Confirmations".to_string(),

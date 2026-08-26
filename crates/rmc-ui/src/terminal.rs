@@ -989,13 +989,30 @@ impl TerminalApp {
                             F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
                             F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
                             F::Ok => {
-                                if title == "Copy" {
-                                    app.vfs.copy(src_path, Path::new(&*to))?;
+                                // If destination exists, open overwrite dialog; else perform action
+                                let dst = Path::new(&*to).to_path_buf();
+                                let exists = app.vfs.stat(&dst).is_ok();
+                                if exists {
+                                    let op = if title == "Copy" {
+                                        rmc_core::app::CopyMoveOp::Copy
+                                    } else {
+                                        rmc_core::app::CopyMoveOp::Move
+                                    };
+                                    app.ui_mode = UiMode::OverwriteDialog {
+                                        op,
+                                        src_path: src_path.clone(),
+                                        dst_path: dst,
+                                        focus: rmc_core::app::OverwriteFocus::Yes,
+                                    };
                                 } else {
-                                    app.vfs.move_path(src_path, Path::new(&*to))?;
+                                    if title == "Copy" {
+                                        app.vfs.copy(src_path, Path::new(&*to))?;
+                                    } else {
+                                        app.vfs.move_path(src_path, Path::new(&*to))?;
+                                    }
+                                    app.ui_mode = UiMode::Normal;
+                                    app.reload_panels()?;
                                 }
-                                app.ui_mode = UiMode::Normal;
-                                app.reload_panels()?;
                             }
                             F::Background | F::Cancel => {
                                 app.ui_mode = UiMode::Normal;
@@ -1004,6 +1021,131 @@ impl TerminalApp {
                         }
                     }
 
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::OverwriteDialog {
+                op,
+                src_path,
+                dst_path,
+                focus,
+            } => {
+                use rmc_core::app::OverwriteFocus as OF;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        *focus = match *focus {
+                            OF::Yes => OF::No,
+                            OF::No => OF::All,
+                            OF::All => OF::Older,
+                            OF::Older => OF::None,
+                            OF::None => OF::Smaller,
+                            OF::Smaller => OF::SizeDiffers,
+                            OF::SizeDiffers => OF::Append,
+                            OF::Append => OF::Yes,
+                        };
+                    }
+                    KeyCode::BackTab => {
+                        *focus = match *focus {
+                            OF::Yes => OF::Append,
+                            OF::No => OF::Yes,
+                            OF::All => OF::No,
+                            OF::Older => OF::All,
+                            OF::None => OF::Older,
+                            OF::Smaller => OF::None,
+                            OF::SizeDiffers => OF::Smaller,
+                            OF::Append => OF::SizeDiffers,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        // Apply selection
+                        let act_yes = match *focus {
+                            OF::Yes | OF::All => true,
+                            OF::No | OF::None => false,
+                            OF::Older => {
+                                if let (Ok(s), Ok(d)) =
+                                    (app.vfs.stat(src_path), app.vfs.stat(dst_path))
+                                {
+                                    s.modified > d.modified
+                                } else {
+                                    false
+                                }
+                            }
+                            OF::Smaller => {
+                                if let (Ok(s), Ok(d)) =
+                                    (app.vfs.stat(src_path), app.vfs.stat(dst_path))
+                                {
+                                    s.size < d.size
+                                } else {
+                                    false
+                                }
+                            }
+                            OF::SizeDiffers => {
+                                if let (Ok(s), Ok(d)) =
+                                    (app.vfs.stat(src_path), app.vfs.stat(dst_path))
+                                {
+                                    s.size != d.size
+                                } else {
+                                    false
+                                }
+                            }
+                            OF::Append => false,
+                        };
+                        if *focus == OF::Append {
+                            use std::fs::OpenOptions;
+                            use std::io::{Read, Write};
+                            let res = (|| -> anyhow::Result<()> {
+                                let mut rdr = app.vfs.read_file(src_path)?;
+                                let mut f = OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(dst_path)?;
+                                let mut buf = Vec::new();
+                                rdr.read_to_end(&mut buf)?;
+                                f.write_all(&buf)?;
+                                Ok(())
+                            })();
+                            match res {
+                                Ok(()) => {
+                                    app.ui_mode = UiMode::Normal;
+                                    app.reload_panels()?;
+                                }
+                                Err(err) => {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: format!("{err}"),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                }
+                            }
+                        } else if act_yes {
+                            let _ = app.vfs.remove(dst_path, false);
+                            let res = match *op {
+                                rmc_core::app::CopyMoveOp::Copy => app.vfs.copy(src_path, dst_path),
+                                rmc_core::app::CopyMoveOp::Move => {
+                                    app.vfs.move_path(src_path, dst_path)
+                                }
+                            };
+                            match res {
+                                Ok(()) => {
+                                    app.ui_mode = UiMode::Normal;
+                                    app.reload_panels()?;
+                                }
+                                Err(err) => {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: format!("{err}"),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                }
+                            }
+                        } else {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    }
                     _ => {}
                 }
                 return Ok(());
