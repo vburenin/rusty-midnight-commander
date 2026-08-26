@@ -152,6 +152,13 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
+        rmc_core::app::UiMode::UserMenu {
+            title,
+            entries,
+            selected_index,
+        } => {
+            draw_user_menu_dialog(p, cols, rows, pal, title, entries, *selected_index);
+        }
         rmc_core::app::UiMode::FindDialog(state) => {
             draw_find_dialog(p, cols, rows, pal, state);
         }
@@ -212,6 +219,88 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         _ => {}
     }
     Ok(())
+}
+
+fn draw_user_menu_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    title: &str,
+    entries: &[rmc_core::user_menu::MenuEntry],
+    selected: usize,
+) {
+    // Size according to longest title, max 60 cols, height entries+4
+    let max_title = entries.iter().map(|e| e.title.len()).max().unwrap_or(10);
+    let list_w = (max_title + 8).clamp(24, 60) as u16;
+    let w = list_w;
+    let h = (entries.len() as u16 + 4).clamp(7, rows.saturating_sub(4));
+    let x = (cols.saturating_sub(w)) / 2;
+    let y = (rows.saturating_sub(h)) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let t = format!(" {title} ");
+    let tx = x + (w.saturating_sub(t.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&t);
+    // List
+    let list_top = y + 2;
+    for (i, e) in entries.iter().enumerate() {
+        let row = list_top + i as u16;
+        if row >= y + h - 1 {
+            break;
+        }
+        let label = if let Some(hk) = e.hotkey {
+            format!(" {}. {}", hk, e.title)
+        } else {
+            format!("    {}", e.title)
+        };
+        let mut line = label;
+        while line.len() < (w - 2) as usize {
+            line.push(' ');
+        }
+        if i == selected {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 1, row);
+        p.text(&line);
+    }
+    // Footer hint
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let hint = "<Enter> Run   <Esc/F10> Close";
+    let hx = x + (w.saturating_sub(hint.len() as u16)) / 2;
+    p.goto(hx, y + h - 2);
+    p.text(hint);
 }
 
 #[allow(clippy::too_many_arguments)]

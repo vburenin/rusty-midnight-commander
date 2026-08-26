@@ -116,6 +116,8 @@ impl KeyMap {
         );
         // Function keys
         m.bind(new_event(KeyCode::F(1)), ShowHelp);
+        // F2: User Menu
+        m.bind(new_event(KeyCode::F(2)), Action::ShowUserMenu);
         m.bind(new_event(KeyCode::F(3)), ViewFile);
         m.bind(new_event(KeyCode::F(4)), Action::FunctionKey(4));
         m.bind(new_event(KeyCode::F(5)), Copy);
@@ -228,6 +230,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "Refresh" => Some(Refresh),
         "ToggleHidden" => Some(ToggleHidden),
         "SwapPanels" => Some(SwapPanels),
+        "ShowUserMenu" | "UserMenu" => Some(ShowUserMenu),
         "FocusMenu" => Some(FocusMenu),
         "ShowHelp" => Some(ShowHelp),
         "MoveUp" => Some(MoveUp),

@@ -60,6 +60,7 @@ pub mod pathutil;
 pub mod remote;
 pub mod tarfs;
 pub mod zipfs;
+pub mod extfs;
 
 pub mod local {
     use super::*;
