@@ -71,6 +71,8 @@ pub enum UiMode {
         search_prompt: Option<String>,
         // Inline overlays and toggles specific to viewer
         goto_prompt: Option<String>,
+        /// Optional filter command prompt (MC viewer "Filter command")
+        filter_prompt: Option<String>,
         show_line_numbers: bool,
         show_cr: bool,
     },
@@ -520,6 +522,7 @@ impl App {
                             search: None,
                             search_prompt: None,
                             goto_prompt: None,
+                            filter_prompt: None,
                             show_line_numbers: false,
                             show_cr: false,
                         };
