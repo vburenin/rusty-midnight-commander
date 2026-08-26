@@ -4,7 +4,7 @@ This project is a Cargo workspace with clear separation of concerns and an exten
 
 ## Crates
 
-- `rmc` — binary. Very small `main.rs` that wires `rmc-core` and `rmc-ui`.
+- `mcr` — binary. Very small `main.rs` that wires `rmc-core` and `rmc-ui`.
 - `rmc-core` — core application state and logic:
   - `App` holds two `PanelState`s (left/right), active side, and global toggles.
   - `actions` defines semantic actions (navigation, file ops, dialogs).

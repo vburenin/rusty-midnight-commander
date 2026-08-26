@@ -1,4 +1,4 @@
-# Rusty Midnight Commander (rmc)
+# Rusty Midnight Commander (mcr)
 
 An Apache-2.0 licensed, clean-room Rust rewrite aiming for cell-accurate visual and interaction parity with GNU Midnight Commander (mc) for local files.
 
@@ -7,10 +7,10 @@ This repository ships the foundation: a working dual-pane terminal file manager 
 ## Building and Running
 
 ```bash
-cargo run --release -p rmc
+cargo run --release -p mcr
 ```
 
-This launches `rmc` in your current working directory in a full-screen terminal UI.
+This launches `mcr` in your current working directory in a full-screen terminal UI.
 
 ## Current Feature Parity
 
@@ -32,7 +32,7 @@ This launches `rmc` in your current working directory in a full-screen terminal 
 
 Workspace crates:
 
-- `rmc`: binary entrypoint
+- `mcr`: binary entrypoint
 - `rmc-core`: app state, actions, keymap, events, panels
 - `rmc-fs`: VFS trait and local filesystem backend
 - `rmc-ui`: exact-MC renderer, dialogs, input handling
