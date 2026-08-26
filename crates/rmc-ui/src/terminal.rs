@@ -2267,6 +2267,104 @@ impl TerminalApp {
             app.pending_ctrl_x = true;
             return Ok(());
         }
+        // Panel quick search handling (only in UiMode::Normal), placed after C-x handling.
+        if matches!(app.ui_mode, UiMode::Normal) {
+            // Next-match helper with wrap-around
+            let find_next =
+                |app_ref: &App, pattern: &str, start_after: Option<usize>| -> Option<usize> {
+                    if pattern.is_empty() {
+                        return None;
+                    }
+                    let entries = &app_ref.active_panel().entries;
+                    if entries.is_empty() {
+                        return None;
+                    }
+                    let mut start = start_after
+                        .map(|i| i.saturating_add(1))
+                        .unwrap_or_else(|| app_ref.active_panel().cursor);
+                    if start >= entries.len() {
+                        start = 0;
+                    }
+                    let total = entries.len();
+                    for pass in 0..2 {
+                        let (begin, end) = if pass == 0 {
+                            (start, total)
+                        } else {
+                            (0, start.min(total))
+                        };
+                        for (i, e) in entries
+                            .iter()
+                            .enumerate()
+                            .skip(begin)
+                            .take(end.saturating_sub(begin))
+                        {
+                            if e.name == ".." {
+                                continue;
+                            }
+                            if rmc_core::matchutil::name_matches(pattern, &e.name) {
+                                return Some(i);
+                            }
+                        }
+                    }
+                    None
+                };
+            if app.quick_search.is_some() {
+                let mut qs = app.quick_search.take().unwrap();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter => {
+                        app.quick_search = None;
+                        return Ok(());
+                    }
+                    KeyCode::Backspace => {
+                        qs.pattern.pop();
+                        if let Some(idx) = find_next(app, &qs.pattern, Some(usize::MAX)) {
+                            app.active_panel_mut().cursor = idx;
+                            app.active_panel_mut().ensure_visible(page_rows);
+                        }
+                        app.quick_search = Some(qs);
+                        return Ok(());
+                    }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        if !c.is_control() {
+                            qs.pattern.push(c);
+                            if let Some(idx) = find_next(app, &qs.pattern, Some(usize::MAX)) {
+                                app.active_panel_mut().cursor = idx;
+                                app.active_panel_mut().ensure_visible(page_rows);
+                            }
+                        }
+                        app.quick_search = Some(qs);
+                        return Ok(());
+                    }
+                    _ => {
+                        // C-s / Alt-s repeats next match
+                        if (matches!(key.code, KeyCode::Char('s'))
+                            && (key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                                || key.modifiers.contains(crossterm::event::KeyModifiers::ALT)))
+                        {
+                            let cur = app.active_panel().cursor;
+                            if let Some(idx) = find_next(app, &qs.pattern, Some(cur)) {
+                                app.active_panel_mut().cursor = idx;
+                                app.active_panel_mut().ensure_visible(page_rows);
+                            }
+                            app.quick_search = Some(qs);
+                            return Ok(());
+                        }
+                        // Not a search key: exit search and fall through (do not swallow C-x etc.)
+                        app.quick_search = None;
+                    }
+                }
+            } else if matches!(key.code, KeyCode::Char('s'))
+                && (key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+                    || key.modifiers.contains(crossterm::event::KeyModifiers::ALT))
+            {
+                app.quick_search = Some(rmc_core::quicksearch::QuickSearchState::new());
+                return Ok(());
+            }
+        }
         if let Some(action) = app.keymap.resolve(&key) {
             match action {
                 Action::PageUp => app.page_up_by(page_rows),

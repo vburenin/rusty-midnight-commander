@@ -261,6 +261,8 @@ pub struct App {
     pub subshell: Subshell,
     pub hotlist: Hotlist,
     pub pending_ctrl_x: bool,
+    /// MC-style incremental quick search state for the active panel.
+    pub quick_search: Option<crate::quicksearch::QuickSearchState>,
 }
 
 impl App {
@@ -279,6 +281,7 @@ impl App {
             subshell: Subshell::new(),
             hotlist: Hotlist::load_from_default_path(),
             pending_ctrl_x: false,
+            quick_search: None,
         };
         app.reload_panels()?;
         Ok(app)
