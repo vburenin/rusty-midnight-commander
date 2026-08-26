@@ -5,6 +5,27 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelMode {
+    Listing,
+    QuickView,
+    Info,
+    Tree,
+}
+
+#[derive(Debug, Clone)]
+pub struct TreeEntry {
+    pub path: PathBuf,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct TreeState {
+    pub entries: Vec<TreeEntry>,
+    pub cursor: usize,
+    pub scroll_top: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListingFormat {
     Full,
@@ -46,6 +67,10 @@ pub struct PanelState {
     pub entries: Vec<FileEntry>,
     pub cursor: usize,
     pub scroll_top: usize,
+    /// Current panel mode (Listing/QuickView/Info/Tree)
+    pub mode: PanelMode,
+    /// Tree state when mode == Tree
+    pub tree: Option<TreeState>,
     pub show_hidden: bool,
     pub sort_by: SortBy,
     pub sort_dir: SortDir,
@@ -71,6 +96,8 @@ impl PanelState {
             entries: Vec::new(),
             cursor: 0,
             scroll_top: 0,
+            mode: PanelMode::Listing,
+            tree: None,
             show_hidden: false,
             sort_by: SortBy::Name,
             sort_dir: SortDir::Asc,
