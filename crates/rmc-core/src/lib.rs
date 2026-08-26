@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod app;
+pub mod layout;
 pub mod config;
 pub mod events;
 pub mod find;
