@@ -1,7 +1,6 @@
 use crate::selection::Selection;
 use crate::sorting::{self, SortDir};
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -79,6 +78,8 @@ pub struct PanelState {
     pub selection: Selection,
     // When panelized, entries show a virtual list; pressing `..` or leaving mode restores saved state.
     pub panelized: Option<PanelizeSaved>,
+    /// Optional filename filter (shell glob like *.c). `None` or "*" shows all.
+    pub filter_glob: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,21 +106,39 @@ impl PanelState {
             listing: ListingFormat::Full,
             selection: Selection::default(),
             panelized: None,
+            filter_glob: None,
         }
     }
 
     pub fn set_entries(&mut self, mut entries: Vec<FileEntry>) {
-        // Always put parent dir marker first
-        entries.sort_by(|a, b| {
-            let ap = a.is_dir && a.name == "..";
-            let bp = b.is_dir && b.name == "..";
-            match (ap, bp) {
-                (true, true) | (false, false) => Ordering::Equal,
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
+        // Separate parent marker (if any) to keep it visible and first.
+        let mut parent_marker: Option<FileEntry> = None;
+        entries.retain(|e| {
+            if e.is_dir && e.name == ".." && parent_marker.is_none() {
+                parent_marker = Some(e.clone());
+                false
+            } else {
+                true
             }
         });
-        self.entries = entries;
+        // Apply filename filter (shell glob) if present and not equal to "*".
+        if let Some(pat) = self
+            .filter_glob
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && *s != "*")
+        {
+            entries.retain(|e| glob_match(pat, &e.name));
+        }
+        // Put parent marker back on top if exists.
+        if let Some(pm) = parent_marker {
+            let mut filtered = Vec::with_capacity(entries.len() + 1);
+            filtered.push(pm);
+            filtered.extend(entries);
+            self.entries = filtered;
+        } else {
+            self.entries = entries;
+        }
         self.apply_sort();
         if self.cursor >= self.entries.len() {
             self.cursor = self.entries.len().saturating_sub(1);
@@ -237,6 +256,40 @@ impl PanelState {
             self.scroll_top = saved.scroll_top;
         }
     }
+}
+
+// Simple glob matcher supporting '*' (any sequence) and '?' (single char).
+// Case-sensitive, anchored to full string.
+fn glob_match(pat: &str, name: &str) -> bool {
+    glob_match_impl(pat.as_bytes(), name.as_bytes())
+}
+
+fn glob_match_impl(p: &[u8], s: &[u8]) -> bool {
+    // Two-pointer with backtracking on '*'
+    let (mut i, mut j) = (0usize, 0usize);
+    let (mut star_i, mut star_j) = (None, 0usize);
+    while j < s.len() {
+        if i < p.len() && (p[i] == b'?' || p[i] == s[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == b'*' {
+            star_i = Some(i);
+            i += 1;
+            star_j = j;
+        } else if let Some(si) = star_i {
+            // backtrack: advance match under last '*'
+            i = si + 1;
+            star_j += 1;
+            j = star_j;
+        } else {
+            return false;
+        }
+    }
+    // Consume trailing '*' in pattern
+    while i < p.len() && p[i] == b'*' {
+        i += 1;
+    }
+    i == p.len()
 }
 
 #[cfg(test)]
