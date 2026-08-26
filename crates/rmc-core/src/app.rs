@@ -185,6 +185,21 @@ pub enum UiMode {
         on_submit: UiPromptCb,
         focus_ok: bool,
     },
+    /// FTP/SFTP connect dialog (GNU mc-style multi-field form)
+    FtpConnectDialog {
+        /// "ftp" or "sftp"
+        scheme: String,
+        host: String,
+        port: String,      // empty -> default (21/22)
+        user: String,      // empty -> none (or anonymous if checkbox on)
+        password: String,  // may be empty
+        directory: String, // defaults to "/"
+        anonymous: bool,
+        /// 0=host,1=port,2=user,3=password,4=directory,5=anonymous
+        focus_index: usize,
+        /// true -> OK button focused; false -> fields focused
+        focus_ok: bool,
+    },
     MenuFocused,
     Help {
         state: HelpState,
@@ -600,6 +615,7 @@ impl App {
             UiMode::DialogConfirm { .. } => "Confirmations".to_string(),
             UiMode::PromptInput { .. } => "Prompts".to_string(),
             UiMode::InputDialog { .. } => "Prompts".to_string(),
+            UiMode::FtpConnectDialog { .. } => "FTP".to_string(),
             UiMode::ChmodDialog { .. } => "Chmod".to_string(),
             UiMode::ChownDialog { .. } => "Chown".to_string(),
             UiMode::MenuFocused => "Menus".to_string(),

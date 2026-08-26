@@ -208,6 +208,33 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         } => {
             draw_input_dialog(p, cols, rows, pal, title, prompt, value, *focus_ok);
         }
+        rmc_core::app::UiMode::FtpConnectDialog {
+            scheme,
+            host,
+            port,
+            user,
+            password,
+            directory,
+            anonymous,
+            focus_index,
+            focus_ok,
+        } => {
+            draw_ftp_connect_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                scheme,
+                host,
+                port,
+                user,
+                password,
+                directory,
+                *anonymous,
+                *focus_index,
+                *focus_ok,
+            );
+        }
         rmc_core::app::UiMode::Help { .. } => {
             // Full-screen; nothing overlays
         }
@@ -2394,6 +2421,176 @@ fn draw_input_dialog(
     p.goto(x + 2, y + 4);
     let t = truncate(value, (w - 4) as usize);
     p.text(&format!("{t}{}", " ".repeat((w - 4) as usize - t.len())));
+    // Buttons
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok = if focus_ok { "< OK >" } else { "[ OK ]" };
+    let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
+    let btns = format!("{ok}  {cancel}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_ftp_connect_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    scheme: &str,
+    host: &str,
+    port: &str,
+    user: &str,
+    password: &str,
+    directory: &str,
+    anonymous: bool,
+    focus_index: usize,
+    focus_ok: bool,
+) {
+    let w = (cols as usize).min(66) as u16;
+    let h = 12u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = if scheme == "sftp" {
+        " SFTP to machine "
+    } else {
+        " FTP to machine "
+    };
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(ttl);
+    // Labels and fields
+    let lab_x = x + 2;
+    let fld_x = x + 14;
+    // Host
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(lab_x, y + 2);
+    p.text("Host name:");
+    if focus_index == 0 {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(fld_x, y + 2);
+    let hv = truncate(host, (w - (fld_x - x) - 2) as usize);
+    p.text(&format!(
+        "{hv}{}",
+        " ".repeat((w - (fld_x - x) - 2) as usize - hv.len())
+    ));
+    // Port
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(lab_x, y + 3);
+    p.text("Port:");
+    if focus_index == 1 {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(fld_x, y + 3);
+    let pv = truncate(port, (w - (fld_x - x) - 2) as usize);
+    p.text(&format!(
+        "{pv}{}",
+        " ".repeat((w - (fld_x - x) - 2) as usize - pv.len())
+    ));
+    // User
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(lab_x, y + 4);
+    p.text("User name:");
+    if focus_index == 2 {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(fld_x, y + 4);
+    let uv = truncate(user, (w - (fld_x - x) - 2) as usize);
+    p.text(&format!(
+        "{uv}{}",
+        " ".repeat((w - (fld_x - x) - 2) as usize - uv.len())
+    ));
+    // Password (draw as asterisks)
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(lab_x, y + 5);
+    p.text("Password:");
+    if focus_index == 3 {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(fld_x, y + 5);
+    let stars = "*".repeat(password.chars().count());
+    let pwv = truncate(&stars, (w - (fld_x - x) - 2) as usize);
+    p.text(&format!(
+        "{pwv}{}",
+        " ".repeat((w - (fld_x - x) - 2) as usize - pwv.len())
+    ));
+    // Directory
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(lab_x, y + 6);
+    p.text("Directory:");
+    if focus_index == 4 {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(fld_x, y + 6);
+    let dv = truncate(directory, (w - (fld_x - x) - 2) as usize);
+    p.text(&format!(
+        "{dv}{}",
+        " ".repeat((w - (fld_x - x) - 2) as usize - dv.len())
+    ));
+    // Anonymous checkbox
+    if focus_index == 5 {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 8);
+    p.text(&format!(
+        "[{}] {}",
+        if anonymous { 'x' } else { ' ' },
+        "Anonymous"
+    ));
     // Buttons
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok = if focus_ok { "< OK >" } else { "[ OK ]" };
