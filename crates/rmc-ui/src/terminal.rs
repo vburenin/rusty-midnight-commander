@@ -1745,7 +1745,87 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::Viewer { .. } => {
-                // If viewer has an active search prompt, handle it first
+                // If viewer has an active goto or search prompt, handle overlay first
+                if let UiMode::Viewer {
+                    path,
+                    offset,
+                    hex,
+                    goto_prompt: Some(prompt),
+                    ..
+                } = &mut app.ui_mode
+                {
+                    match key.code {
+                        KeyCode::Esc => {
+                            *prompt = String::new();
+                            if let UiMode::Viewer { goto_prompt, .. } = &mut app.ui_mode {
+                                *goto_prompt = None;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let q = prompt.trim().to_string();
+                            // Parse goto input:
+                            // - Prefix "@": decimal byte offset
+                            // - Prefix "0x": hex byte offset
+                            // - Prefix ":" or "l " => line number (1-based)
+                            // - Otherwise: if hex mode => offset; else => line number
+                            let lower = q.to_ascii_lowercase();
+                            let res = if let Some(rest) = lower.strip_prefix('@') {
+                                rest.parse::<u64>()
+                                    .ok()
+                                    .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                            } else if let Some(rest) = lower.strip_prefix("0x") {
+                                u64::from_str_radix(rest, 16)
+                                    .ok()
+                                    .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                            } else if lower.starts_with(':') || lower.starts_with("l ") {
+                                let num_str = if let Some(rest) = lower.strip_prefix(':') {
+                                    rest
+                                } else {
+                                    // must start with "l " here
+                                    &lower[2..]
+                                };
+                                num_str
+                                    .trim()
+                                    .parse::<u64>()
+                                    .ok()
+                                    .and_then(|ln| rmc_view::goto_line(path, ln).ok())
+                            } else if *hex {
+                                // hex mode default: treat as offset (hex if contains 0x else decimal)
+                                if let Some(rest) = lower.strip_prefix("0x") {
+                                    u64::from_str_radix(rest, 16)
+                                        .ok()
+                                        .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                                } else {
+                                    lower
+                                        .parse::<u64>()
+                                        .ok()
+                                        .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                                }
+                            } else {
+                                // text mode default: treat as line number
+                                lower
+                                    .parse::<u64>()
+                                    .ok()
+                                    .and_then(|ln| rmc_view::goto_line(path, ln).ok())
+                            };
+                            if let Some(new_off) = res {
+                                *offset = new_off;
+                            }
+                            if let UiMode::Viewer { goto_prompt, .. } = &mut app.ui_mode {
+                                *goto_prompt = None;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            prompt.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // Then handle search overlay
                 if let UiMode::Viewer {
                     path,
                     offset,
@@ -1788,6 +1868,11 @@ impl TerminalApp {
                     KeyCode::Char('h') | KeyCode::Char('x') | KeyCode::F(4) => {
                         app.handle_action(Action::ViewerToggleHex)?
                     }
+                    KeyCode::F(5) | KeyCode::Char('g') => {
+                        if let UiMode::Viewer { goto_prompt, .. } = &mut app.ui_mode {
+                            *goto_prompt = Some(String::new());
+                        }
+                    }
                     KeyCode::F(2) => {
                         // Save — no-op stub for now
                     }
@@ -1796,6 +1881,19 @@ impl TerminalApp {
                             if !*hex {
                                 *wrap = !*wrap;
                             }
+                        }
+                    }
+                    KeyCode::Char('l') => {
+                        if let UiMode::Viewer {
+                            show_line_numbers, ..
+                        } = &mut app.ui_mode
+                        {
+                            *show_line_numbers = !*show_line_numbers;
+                        }
+                    }
+                    KeyCode::Char('r') => {
+                        if let UiMode::Viewer { show_cr, .. } = &mut app.ui_mode {
+                            *show_cr = !*show_cr;
                         }
                     }
                     KeyCode::Up => {
