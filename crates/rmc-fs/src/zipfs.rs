@@ -3,17 +3,24 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::time::{UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use zip::read::ZipArchive;
 
-pub fn list_dir(archive_path: &Path, vfs_root: &Path, inner: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
+pub fn list_dir(
+    archive_path: &Path,
+    vfs_root: &Path,
+    inner: &Path,
+    show_hidden: bool,
+) -> FsResult<Vec<DirEntry>> {
     let f = File::open(archive_path)?;
     let mut ar = ZipArchive::new(f).map_err(|e| FsError::Message(format!("zip open: {e}")))?;
     let inner_norm = norm(inner);
     let mut seen_dirs: HashSet<String> = HashSet::new();
     let mut items: HashMap<String, DirEntry> = HashMap::new();
     for i in 0..ar.len() {
-        let file = ar.by_index(i).map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
+        let file = ar
+            .by_index(i)
+            .map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
         let path = norm(Path::new(file.name()));
         if !path.starts_with(&inner_norm) {
             continue;
@@ -90,12 +97,10 @@ pub fn list_dir(archive_path: &Path, vfs_root: &Path, inner: &Path, show_hidden:
         });
     }
     let mut vals: Vec<DirEntry> = items.into_values().collect();
-    vals.sort_by(|a, b| {
-        match (a.meta.is_dir, b.meta.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    vals.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
     out.extend(vals);
     Ok(out)
@@ -106,7 +111,9 @@ pub fn read_file(archive_path: &Path, inner_full: &Path) -> FsResult<Box<dyn Rea
     let mut ar = ZipArchive::new(f).map_err(|e| FsError::Message(format!("zip open: {e}")))?;
     let in_norm = norm(inner_full);
     for i in 0..ar.len() {
-        let mut file = ar.by_index(i).map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
+        let mut file = ar
+            .by_index(i)
+            .map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
         let path = norm(Path::new(file.name()));
         if path == in_norm && !file.is_dir() {
             let mut buf = Vec::new();
@@ -138,7 +145,9 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
     let in_norm = norm(inner_full);
     let mut dir_marker = false;
     for i in 0..ar.len() {
-        let file = ar.by_index(i).map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
+        let file = ar
+            .by_index(i)
+            .map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
         let path = norm(Path::new(file.name()));
         if path == in_norm {
             return Ok(Metadata {
@@ -182,7 +191,9 @@ pub fn copy_out(archive_path: &Path, src_inner: &Path, dst: &Path) -> FsResult<(
     let mut copied_exact = false;
     let mut extracted_any = false;
     for i in 0..ar.len() {
-        let mut file = ar.by_index(i).map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
+        let mut file = ar
+            .by_index(i)
+            .map_err(|e| FsError::Message(format!("zip entry: {e}")))?;
         let p = norm(Path::new(file.name()));
         if p == src_norm && !file.is_dir() {
             copied_exact = true;
@@ -228,4 +239,3 @@ fn norm<P: AsRef<Path>>(p: P) -> PathBuf {
     }
     out
 }
-

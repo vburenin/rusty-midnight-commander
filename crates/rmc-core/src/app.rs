@@ -2,16 +2,19 @@ use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::panel::{FileEntry, PanelState, SortBy};
 use anyhow::Result;
+use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
 use std::path::{Path, PathBuf};
-use rmc_edit::EditorBuffer;
 
 type UiOkCb = Box<dyn FnOnce(&mut App) -> Result<()> + Send>;
 type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 
 pub enum UiMode {
     Normal,
-    Viewer { path: PathBuf, hex: bool },
+    Viewer {
+        path: PathBuf,
+        hex: bool,
+    },
     Editor {
         buf: EditorBuffer,
         show_menu: bool,
@@ -179,7 +182,12 @@ impl App {
                     PaneSide::Right => PaneSide::Left,
                 };
             }
-            FocusMenu => self.ui_mode = UiMode::Menu { top_index: 0, selected_index: 0 },
+            FocusMenu => {
+                self.ui_mode = UiMode::Menu {
+                    top_index: 0,
+                    selected_index: 0,
+                }
+            }
             ShowHelp => self.ui_mode = UiMode::Help,
             MoveUp => self.active_panel_mut().move_up(),
             MoveDown => self.active_panel_mut().move_down(),
@@ -237,7 +245,10 @@ impl App {
             ViewFile => {
                 if let Some(ent) = self.active_panel().current_entry() {
                     if !ent.is_dir {
-                        self.ui_mode = UiMode::Viewer { path: ent.path.clone(), hex: false };
+                        self.ui_mode = UiMode::Viewer {
+                            path: ent.path.clone(),
+                            hex: false,
+                        };
                     }
                 }
             }

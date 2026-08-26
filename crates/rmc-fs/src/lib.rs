@@ -55,11 +55,11 @@ pub trait Vfs: Send {
     fn stat(&self, path: &Path) -> FsResult<Metadata>;
 }
 
+pub mod composite;
 pub mod pathutil;
+pub mod remote;
 pub mod tarfs;
 pub mod zipfs;
-pub mod composite;
-pub mod remote;
 
 pub mod local {
     use super::*;
@@ -89,8 +89,10 @@ pub mod local {
         let (owner, group) = {
             let uid = md.uid();
             let gid = md.gid();
-            let uname = users::get_user_by_uid(uid).map(|u| u.name().to_string_lossy().into_owned());
-            let gname = users::get_group_by_gid(gid).map(|g| g.name().to_string_lossy().into_owned());
+            let uname =
+                users::get_user_by_uid(uid).map(|u| u.name().to_string_lossy().into_owned());
+            let gname =
+                users::get_group_by_gid(gid).map(|g| g.name().to_string_lossy().into_owned());
             (uname, gname)
         };
         #[cfg(not(unix))]
@@ -146,12 +148,10 @@ pub mod local {
                 });
             }
             // Directories first, then files by name
-            out.sort_by(|a, b| {
-                match (a.meta.is_dir, b.meta.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                }
+            out.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             });
             Ok(out)
         }
@@ -211,7 +211,11 @@ pub mod local {
         }
 
         fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>> {
-            let f = OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)?;
             Ok(Box::new(f))
         }
 
@@ -238,6 +242,10 @@ mod tests {
         assert!(list.iter().any(|e| e.name == "a"));
         assert!(list.iter().any(|e| e.name == "b.txt"));
         fs.remove(&root.join("a"), true).unwrap();
-        assert!(!fs.list_dir(root, true).unwrap().iter().any(|e| e.name == "a"));
+        assert!(!fs
+            .list_dir(root, true)
+            .unwrap()
+            .iter()
+            .any(|e| e.name == "a"));
     }
 }

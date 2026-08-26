@@ -93,4 +93,3 @@ pub fn is_remote_url(path: &Path) -> bool {
     let s = path.as_os_str().to_string_lossy();
     s.starts_with("ftp://") || s.starts_with("sftp://")
 }
-

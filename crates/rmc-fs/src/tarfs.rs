@@ -1,5 +1,5 @@
-use crate::{DirEntry, FsError, FsResult, Metadata};
 use crate::pathutil::ArchiveKind;
+use crate::{DirEntry, FsError, FsResult, Metadata};
 use flate2::read::GzDecoder;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -27,7 +27,13 @@ fn header_mode(h: &tar::Header, is_dir: bool) -> u32 {
     h.mode().unwrap_or(if is_dir { 0o755 } else { 0o644 })
 }
 
-pub fn list_dir(archive_path: &Path, kind: ArchiveKind, inner: &Path, vfs_root: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
+pub fn list_dir(
+    archive_path: &Path,
+    kind: ArchiveKind,
+    inner: &Path,
+    vfs_root: &Path,
+    show_hidden: bool,
+) -> FsResult<Vec<DirEntry>> {
     let reader = open_tar_reader(archive_path, kind)?;
     let mut ar = Archive::new(reader);
     let inner_norm = norm(inner);
@@ -51,7 +57,8 @@ pub fn list_dir(archive_path: &Path, kind: ArchiveKind, inner: &Path, vfs_root: 
             if !show_hidden && name.starts_with('.') {
                 continue;
             }
-            let is_dir = comps.next().is_some() || entry.header().entry_type() == EntryType::Directory;
+            let is_dir =
+                comps.next().is_some() || entry.header().entry_type() == EntryType::Directory;
             if is_dir {
                 if seen_dirs.insert(name.clone()) {
                     let p = vfs_root.join(&name);
@@ -120,18 +127,20 @@ pub fn list_dir(archive_path: &Path, kind: ArchiveKind, inner: &Path, vfs_root: 
     }
     let mut vals: Vec<DirEntry> = items.into_values().collect();
     // Directories first, then files by name (case-insensitive)
-    vals.sort_by(|a, b| {
-        match (a.meta.is_dir, b.meta.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    vals.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
     out.extend(vals);
     Ok(out)
 }
 
-pub fn read_file(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResult<Box<dyn Read + Send>> {
+pub fn read_file(
+    archive_path: &Path,
+    kind: ArchiveKind,
+    inner_full: &Path,
+) -> FsResult<Box<dyn Read + Send>> {
     let reader = open_tar_reader(archive_path, kind)?;
     let mut ar = Archive::new(reader);
     let in_norm = norm(inner_full);
@@ -212,7 +221,12 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
     }
 }
 
-pub fn copy_out(archive_path: &Path, kind: ArchiveKind, src_inner: &Path, dst: &Path) -> FsResult<()> {
+pub fn copy_out(
+    archive_path: &Path,
+    kind: ArchiveKind,
+    src_inner: &Path,
+    dst: &Path,
+) -> FsResult<()> {
     // Copy one file or a directory tree out to dst.
     // If src_inner is a file, dst is the file path. If a directory, dst is the target dir.
     let reader = open_tar_reader(archive_path, kind)?;
@@ -237,7 +251,8 @@ pub fn copy_out(archive_path: &Path, kind: ArchiveKind, src_inner: &Path, dst: &
             // Dir extraction
             let rel = p.strip_prefix(&src_norm).unwrap();
             let target = dst.join(rel);
-            if entry.header().entry_type() == EntryType::Directory || target.as_os_str().is_empty() {
+            if entry.header().entry_type() == EntryType::Directory || target.as_os_str().is_empty()
+            {
                 std::fs::create_dir_all(&target)?;
             } else {
                 if let Some(parent) = target.parent() {
@@ -269,4 +284,3 @@ fn norm<P: AsRef<Path>>(p: P) -> PathBuf {
     }
     out
 }
-

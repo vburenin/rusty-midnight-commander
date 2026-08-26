@@ -15,7 +15,9 @@ pub struct CompositeFs {
 
 impl CompositeFs {
     pub fn new() -> Self {
-        Self { local: LocalFs::new() }
+        Self {
+            local: LocalFs::new(),
+        }
     }
 
     fn route_kind<'a>(&self, path: &'a Path) -> Route<'a> {
@@ -29,8 +31,13 @@ impl CompositeFs {
 }
 
 enum Route<'a> {
-    Local { path: &'a Path },
-    Archive { ap: crate::pathutil::ArchivePath, vfs_root: &'a Path },
+    Local {
+        path: &'a Path,
+    },
+    Archive {
+        ap: crate::pathutil::ArchivePath,
+        vfs_root: &'a Path,
+    },
 }
 
 impl Vfs for CompositeFs {
@@ -45,7 +52,9 @@ impl Vfs for CompositeFs {
                 ArchiveKind::Tar | ArchiveKind::TarGz => {
                     crate::tarfs::list_dir(&ap.archive, ap.kind, &ap.inner, vfs_root, show_hidden)
                 }
-                ArchiveKind::Zip => crate::zipfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden),
+                ArchiveKind::Zip => {
+                    crate::zipfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
             },
         }
     }
@@ -69,14 +78,18 @@ impl Vfs for CompositeFs {
     fn mkdir(&self, path: &Path) -> FsResult<()> {
         match self.route_kind(path) {
             Route::Local { path } => self.local.mkdir(path),
-            Route::Archive { .. } => Err(FsError::Message("mkdir inside archive is not supported".into())),
+            Route::Archive { .. } => Err(FsError::Message(
+                "mkdir inside archive is not supported".into(),
+            )),
         }
     }
 
     fn remove(&self, path: &Path, recursive: bool) -> FsResult<()> {
         match self.route_kind(path) {
             Route::Local { path } => self.local.remove(path, recursive),
-            Route::Archive { .. } => Err(FsError::Message("remove inside archive is not supported".into())),
+            Route::Archive { .. } => Err(FsError::Message(
+                "remove inside archive is not supported".into(),
+            )),
         }
     }
 
@@ -84,15 +97,17 @@ impl Vfs for CompositeFs {
         match (self.route_kind(src), self.route_kind(dst)) {
             (Route::Local { path: s }, Route::Local { path: d }) => self.local.copy(s, d),
             (Route::Archive { ap, .. }, Route::Local { path: d }) => match ap.kind {
-                ArchiveKind::Tar | ArchiveKind::TarGz => crate::tarfs::copy_out(&ap.archive, ap.kind, &ap.inner, d),
+                ArchiveKind::Tar | ArchiveKind::TarGz => {
+                    crate::tarfs::copy_out(&ap.archive, ap.kind, &ap.inner, d)
+                }
                 ArchiveKind::Zip => crate::zipfs::copy_out(&ap.archive, &ap.inner, d),
             },
-            (Route::Local { .. }, Route::Archive { .. }) => {
-                Err(FsError::Message("copy into an archive is not supported".into()))
-            }
-            (Route::Archive { .. }, Route::Archive { .. }) => {
-                Err(FsError::Message("copy between archives is not supported".into()))
-            }
+            (Route::Local { .. }, Route::Archive { .. }) => Err(FsError::Message(
+                "copy into an archive is not supported".into(),
+            )),
+            (Route::Archive { .. }, Route::Archive { .. }) => Err(FsError::Message(
+                "copy between archives is not supported".into(),
+            )),
         }
     }
 
@@ -109,7 +124,9 @@ impl Vfs for CompositeFs {
         match self.route_kind(path) {
             Route::Local { path } => self.local.read_file(path),
             Route::Archive { ap, .. } => match ap.kind {
-                ArchiveKind::Tar | ArchiveKind::TarGz => crate::tarfs::read_file(&ap.archive, ap.kind, &ap.inner),
+                ArchiveKind::Tar | ArchiveKind::TarGz => {
+                    crate::tarfs::read_file(&ap.archive, ap.kind, &ap.inner)
+                }
                 ArchiveKind::Zip => crate::zipfs::read_file(&ap.archive, &ap.inner),
             },
         }
@@ -118,7 +135,9 @@ impl Vfs for CompositeFs {
     fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>> {
         match self.route_kind(path) {
             Route::Local { path } => self.local.write_file(path),
-            Route::Archive { .. } => Err(FsError::Message("write into an archive is not supported".into())),
+            Route::Archive { .. } => Err(FsError::Message(
+                "write into an archive is not supported".into(),
+            )),
         }
     }
 
@@ -126,10 +145,11 @@ impl Vfs for CompositeFs {
         match self.route_kind(path) {
             Route::Local { path } => self.local.stat(path),
             Route::Archive { ap, .. } => match ap.kind {
-                ArchiveKind::Tar | ArchiveKind::TarGz => crate::tarfs::stat(&ap.archive, ap.kind, &ap.inner),
+                ArchiveKind::Tar | ArchiveKind::TarGz => {
+                    crate::tarfs::stat(&ap.archive, ap.kind, &ap.inner)
+                }
                 ArchiveKind::Zip => crate::zipfs::stat(&ap.archive, &ap.inner),
             },
         }
     }
 }
-

@@ -16,14 +16,26 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(palette: McPalette) -> Self {
-        Self { palette, out: stdout() }
+        Self {
+            palette,
+            out: stdout(),
+        }
     }
 
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
         // Full-screen modes: short-circuit to avoid drawing panels underneath.
-        if let rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, confirm_exit, .. } = &app.ui_mode {
+        if let rmc_core::app::UiMode::Editor {
+            buf,
+            show_menu,
+            status_msg,
+            search_input,
+            save_as_input,
+            confirm_exit,
+            ..
+        } = &app.ui_mode
+        {
             // Clear and draw the editor only
             painter.out.queue(Clear(ClearType::All))?;
             draw_editor(
@@ -43,7 +55,12 @@ impl Renderer {
         }
         // Clear to panel background (blue)
         painter.out.queue(Clear(ClearType::All))?;
-        painter.fill_line(0, cols, self.palette.core_default_bg, self.palette.core_default_fg);
+        painter.fill_line(
+            0,
+            cols,
+            self.palette.core_default_bg,
+            self.palette.core_default_fg,
+        );
         // Menu bar
         draw_menu_bar(&mut painter, cols, self.palette);
         // Panels area layout:
@@ -111,8 +128,27 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
-        rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, confirm_exit, .. } => {
-            draw_editor(p, cols, rows, pal, buf, *show_menu, status_msg.as_deref(), search_input.as_deref(), save_as_input.as_deref(), confirm_exit.as_ref());
+        rmc_core::app::UiMode::Editor {
+            buf,
+            show_menu,
+            status_msg,
+            search_input,
+            save_as_input,
+            confirm_exit,
+            ..
+        } => {
+            draw_editor(
+                p,
+                cols,
+                rows,
+                pal,
+                buf,
+                *show_menu,
+                status_msg.as_deref(),
+                search_input.as_deref(),
+                save_as_input.as_deref(),
+                confirm_exit.as_ref(),
+            );
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
@@ -122,10 +158,28 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok);
         }
         rmc_core::app::UiMode::DeleteDialog { name, .. } => {
-            draw_dialog_box(p, cols, rows, pal, "Delete", &format!("Delete \"{name}\"?"), &["< Yes >", "No"]);
+            draw_dialog_box(
+                p,
+                cols,
+                rows,
+                pal,
+                "Delete",
+                &format!("Delete \"{name}\"?"),
+                &["< Yes >", "No"],
+            );
         }
         rmc_core::app::UiMode::CopyDialog {
-            title, src_name, mask, to, using_shell_patterns, follow_links, preserve_attrs, dive_into_subdir, stable_symlinks, focus, ..
+            title,
+            src_name,
+            mask,
+            to,
+            using_shell_patterns,
+            follow_links,
+            preserve_attrs,
+            dive_into_subdir,
+            stable_symlinks,
+            focus,
+            ..
         } => {
             draw_copy_move_dialog(
                 p,
@@ -147,7 +201,10 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::Viewer { path, hex } => {
             draw_viewer(p, app, cols, rows, pal, path, *hex)?;
         }
-        rmc_core::app::UiMode::Menu { top_index, selected_index } => {
+        rmc_core::app::UiMode::Menu {
+            top_index,
+            selected_index,
+        } => {
             draw_menu_dropdown(p, pal, *top_index, *selected_index);
         }
         _ => {}
@@ -248,7 +305,14 @@ fn draw_editor(
 fn draw_editor_menu_bar(p: &mut Painter, cols: u16, pal: McPalette) {
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(0, 0);
-    let items = [" File ", " Edit ", " Search ", " Command ", " Options ", " Help "];
+    let items = [
+        " File ",
+        " Edit ",
+        " Search ",
+        " Command ",
+        " Options ",
+        " Help ",
+    ];
     let mut x = 0u16;
     for it in items.iter() {
         p.goto(x, 0);
@@ -295,7 +359,9 @@ fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette) {
 }
 
 fn draw_editor_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = ["Help", "Save", "Mark", "Replac", "Copy", "Move", "Search", "Delete", "PullDn", "Quit"];
+    let labels = [
+        "Help", "Save", "Mark", "Replac", "Copy", "Move", "Search", "Delete", "PullDn", "Quit",
+    ];
     let mut x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num = if i == 9 { "10" } else { &(i + 1).to_string() };
@@ -323,7 +389,14 @@ fn draw_editor_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
     }
 }
 
-fn draw_inline_prompt(p: &mut Painter, pal: McPalette, rows: u16, cols: u16, title: &str, val: &str) {
+fn draw_inline_prompt(
+    p: &mut Painter,
+    pal: McPalette,
+    rows: u16,
+    cols: u16,
+    title: &str,
+    val: &str,
+) {
     // Use dialog style bar on last row
     let y = rows.saturating_sub(1);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -358,10 +431,24 @@ fn draw_dialog_ync(
     p.goto(x + w - 1, y);
     p.text("┐");
     p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // Title
@@ -383,14 +470,26 @@ fn draw_dialog_ync(
             format!("[ {txt} ]")
         }
     };
-    let btns = format!("{}  {}  {}", sel(rmc_core::app::YncFocus::Yes, "Yes"), sel(rmc_core::app::YncFocus::No, "No"), sel(rmc_core::app::YncFocus::Cancel, "Cancel"));
+    let btns = format!(
+        "{}  {}  {}",
+        sel(rmc_core::app::YncFocus::Yes, "Yes"),
+        sel(rmc_core::app::YncFocus::No, "No"),
+        sel(rmc_core::app::YncFocus::Cancel, "Cancel")
+    );
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(x + 1, y + h, w.saturating_sub(1), ' ', pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 fn draw_dialog_box(
@@ -415,10 +514,24 @@ fn draw_dialog_box(
     p.goto(x + w - 1, y);
     p.text("┐");
     p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // Title
@@ -440,7 +553,14 @@ fn draw_dialog_box(
     p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(x + 1, y + h, w.saturating_sub(1), ' ', pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
@@ -463,14 +583,42 @@ fn draw_viewer(
     p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
     p.goto(0, 0);
     p.text("┌");
-    p.hline(1, 0, cols.saturating_sub(2), '─', pal.frame_fg, pal.core_default_bg);
+    p.hline(
+        1,
+        0,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
     p.goto(cols - 1, 0);
     p.text("┐");
-    p.vline(0, 1, rows.saturating_sub(2), '│', pal.frame_fg, pal.core_default_bg);
-    p.vline(cols - 1, 1, rows.saturating_sub(2), '│', pal.frame_fg, pal.core_default_bg);
+    p.vline(
+        0,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.vline(
+        cols - 1,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
     p.goto(0, rows - 1);
     p.text("└");
-    p.hline(1, rows - 1, cols.saturating_sub(2), '─', pal.frame_fg, pal.core_default_bg);
+    p.hline(
+        1,
+        rows - 1,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
     p.goto(cols - 1, rows - 1);
     p.text("┘");
     // Title
@@ -498,7 +646,11 @@ fn draw_viewer(
     // Footer/status
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(0, rows - 1);
-    let foot = format!(" {}  {}  Press q to quit, h to toggle hex ", path.display(), if hex { "[HEX]" } else { "[TEXT]" });
+    let foot = format!(
+        " {}  {}  Press q to quit, h to toggle hex ",
+        path.display(),
+        if hex { "[HEX]" } else { "[TEXT]" }
+    );
     let t = truncate(&foot, cols as usize);
     p.text(&t);
     Ok(())
@@ -510,7 +662,13 @@ fn bytes_to_hex_lines(data: &[u8]) -> Vec<String> {
         let hexs: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
         let text: String = chunk
             .iter()
-            .map(|&b| if (32..=126).contains(&b) { b as char } else { '.' })
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         out.push(format!("{:47}  {}", hexs.join(" "), text));
     }
@@ -542,14 +700,32 @@ fn draw_panel(
     // bottom
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w.saturating_sub(2), '─', frame_fg, frame_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w.saturating_sub(2),
+        '─',
+        frame_fg,
+        frame_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // sides
     p.vline(x, y + 1, h.saturating_sub(2), '│', frame_fg, frame_bg);
-    p.vline(x + w - 1, y + 1, h.saturating_sub(2), '│', frame_fg, frame_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        frame_fg,
+        frame_bg,
+    );
     // caption path in top frame (hide internal '#' anchor for archives)
-    let path = if is_left { &app.left.cwd } else { &app.right.cwd };
+    let path = if is_left {
+        &app.left.cwd
+    } else {
+        &app.right.cwd
+    };
     let path_str_display = {
         if let Some(ap) = rmc_fs::pathutil::parse_archive_path(path) {
             if ap.inner.as_os_str().is_empty() {
@@ -583,24 +759,25 @@ fn draw_panel(
     let _panel = if is_left { &app.left } else { &app.right };
     // Viewport uses panel.scroll_top, updated by the event loop per content height
     let panel = if is_left { &app.left } else { &app.right };
-        for i in 0..content_h as usize {
+    for i in 0..content_h as usize {
         let row_y = content_top + i as u16;
         // Clear row
         p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
         p.goto(x + 1, row_y);
         p.text(&" ".repeat((w - 2) as usize));
-            let idx = panel.scroll_top + i;
+        let idx = panel.scroll_top + i;
         if let Some(ent) = panel.entries.get(idx) {
             // active row highlight
-            let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
+            let is_active_panel = (is_left
+                && matches!(app.active, rmc_core::actions::PaneSide::Left))
                 || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
             let is_cursor = idx == panel.cursor;
             let selected = panel.selection.is_selected(idx);
             // Determine colors following MC rules
-                let (fg, bg) = if is_cursor && is_active_panel {
+            let (fg, bg) = if is_cursor && is_active_panel {
                 (pal.selected_fg, pal.selected_bg)
-                } else if selected && is_cursor {
-                    (pal.markselect_fg, pal.markselect_bg)
+            } else if selected && is_cursor {
+                (pal.markselect_fg, pal.markselect_bg)
             } else if selected {
                 (pal.marked_fg, pal.marked_bg)
             } else {
@@ -626,7 +803,7 @@ fn draw_panel(
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(x + 1, status_y);
     if let Some(cur) = panel.current_entry() {
-            let s = format_mini_status(cur);
+        let s = format_mini_status(cur);
         let s = truncate(&s, (w - 2) as usize);
         p.text(&s);
     } else {
@@ -643,8 +820,17 @@ fn draw_gauge(p: &mut Painter, y: u16, cols: u16, pal: McPalette, app: &App) {
     let text = match (fs2::available_space(path), fs2::total_space(path)) {
         (Ok(avail), Ok(total)) => {
             let used = total.saturating_sub(avail);
-            let pct = if total > 0 { (used as f64 / total as f64) * 100.0 } else { 0.0 };
-            format!("{} / {} ({:.0}%)", human_bytes(used), human_bytes(total), pct)
+            let pct = if total > 0 {
+                (used as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            format!(
+                "{} / {} ({:.0}%)",
+                human_bytes(used),
+                human_bytes(total),
+                pct
+            )
         }
         _ => "".to_string(),
     };
@@ -668,7 +854,10 @@ fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, _pal: McPalette, app: &App) 
     p.set_fg_bg(Color::White, Color::Black);
     p.goto(0, y);
     let user = whoami::username();
-    let host = hostname::get().ok().and_then(|s| s.into_string().ok()).unwrap_or_default();
+    let host = hostname::get()
+        .ok()
+        .and_then(|s| s.into_string().ok())
+        .unwrap_or_default();
     let cwd = app.active_panel().cwd.display().to_string();
     let s = format!("{user}@{host}:{cwd}$ ");
     let t = truncate(&s, cols as usize);
@@ -733,14 +922,20 @@ fn format_size(ent: &FileEntry) -> String {
 
 fn format_time(ent: &FileEntry) -> String {
     let dt: OffsetDateTime = ent.modified.into();
-    dt.format(&time::macros::format_description!("[month repr:short] [day padding:space] [hour]:[minute]")).unwrap_or_default()
+    dt.format(&time::macros::format_description!(
+        "[month repr:short] [day padding:space] [hour]:[minute]"
+    ))
+    .unwrap_or_default()
 }
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        s.chars().take(max.saturating_sub(1)).chain("…".chars()).collect()
+        s.chars()
+            .take(max.saturating_sub(1))
+            .chain("…".chars())
+            .collect()
     }
 }
 
@@ -751,7 +946,9 @@ fn format_mini_status(ent: &FileEntry) -> String {
     let size = if ent.is_dir { 0 } else { ent.size };
     let tm: OffsetDateTime = ent.modified.into();
     let ts = tm
-        .format(&time::macros::format_description!("[month repr:short] [day padding:space] [hour]:[minute]"))
+        .format(&time::macros::format_description!(
+            "[month repr:short] [day padding:space] [hour]:[minute]"
+        ))
         .unwrap_or_default();
     format!("{perms}  {owner:>8} {group:>8} {size:>8} {ts}")
 }
@@ -788,7 +985,14 @@ fn human_bytes(b: u64) -> String {
     }
 }
 
-fn draw_mkdir_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, value: &str, focus_ok: bool) {
+fn draw_mkdir_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    value: &str,
+    focus_ok: bool,
+) {
     let w = (cols as usize).min(60) as u16;
     let h = 7u16;
     let x = (cols - w) / 2;
@@ -801,10 +1005,24 @@ fn draw_mkdir_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, valu
     p.goto(x + w - 1, y);
     p.text("┐");
     p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // Title
@@ -828,7 +1046,14 @@ fn draw_mkdir_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, valu
     p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(x + 1, y + h, w.saturating_sub(1), ' ', pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
@@ -862,10 +1087,24 @@ fn draw_copy_move_dialog(
     p.goto(x + w - 1, y);
     p.text("┐");
     p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // Title
@@ -877,10 +1116,24 @@ fn draw_copy_move_dialog(
     // Lines
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 2);
-    p.text(&truncate(&format!("{title} file \"{src_name}\" with source mask:"), (w - 4) as usize));
+    p.text(&truncate(
+        &format!("{title} file \"{src_name}\" with source mask:"),
+        (w - 4) as usize,
+    ));
     // mask field
     let mask_focus = matches!(focus, F::Mask);
-    p.set_fg_bg(if mask_focus { pal.dfocus_fg } else { pal.dialog_default_fg }, if mask_focus { pal.dfocus_bg } else { pal.dialog_default_bg });
+    p.set_fg_bg(
+        if mask_focus {
+            pal.dfocus_fg
+        } else {
+            pal.dialog_default_fg
+        },
+        if mask_focus {
+            pal.dfocus_bg
+        } else {
+            pal.dialog_default_bg
+        },
+    );
     p.goto(x + 2, y + 3);
     let m = truncate(mask, (w - 4) as usize);
     p.text(&format!("{m}{}", " ".repeat((w - 4) as usize - m.len())));
@@ -889,7 +1142,18 @@ fn draw_copy_move_dialog(
     p.goto(x + 2, y + 5);
     p.text("to:");
     let to_focus = matches!(focus, F::To);
-    p.set_fg_bg(if to_focus { pal.dfocus_fg } else { pal.dialog_default_fg }, if to_focus { pal.dfocus_bg } else { pal.dialog_default_bg });
+    p.set_fg_bg(
+        if to_focus {
+            pal.dfocus_fg
+        } else {
+            pal.dialog_default_fg
+        },
+        if to_focus {
+            pal.dfocus_bg
+        } else {
+            pal.dialog_default_bg
+        },
+    );
     p.goto(x + 6, y + 5);
     let t = truncate(to, (w - 8) as usize);
     p.text(&format!("{t}{}", " ".repeat((w - 8) as usize - t.len())));
@@ -905,7 +1169,14 @@ fn draw_copy_move_dialog(
     let mut cy = y + 7;
     for (i, (label, on)) in checks.iter().enumerate() {
         p.goto(x + 4, cy);
-        let focused = matches!((i, focus), (0, F::Checkbox1) | (1, F::Checkbox2) | (2, F::Checkbox3) | (3, F::Checkbox4) | (4, F::Checkbox5));
+        let focused = matches!(
+            (i, focus),
+            (0, F::Checkbox1)
+                | (1, F::Checkbox2)
+                | (2, F::Checkbox3)
+                | (3, F::Checkbox4)
+                | (4, F::Checkbox5)
+        );
         if focused {
             p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
         } else {
@@ -916,14 +1187,32 @@ fn draw_copy_move_dialog(
     }
     // Buttons
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let sel = |f: F, txt: &str| if f == focus { format!("< {txt} >") } else { format!("[ {txt} ]") };
-    let btns = format!("{}  {}  {}", sel(F::Ok, "OK"), sel(F::Background, "Background"), sel(F::Cancel, "Cancel"));
+    let sel = |f: F, txt: &str| {
+        if f == focus {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    let btns = format!(
+        "{}  {}  {}",
+        sel(F::Ok, "OK"),
+        sel(F::Background, "Background"),
+        sel(F::Cancel, "Cancel")
+    );
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(x + 1, y + h, w.saturating_sub(1), ' ', pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
