@@ -1,0 +1,15 @@
+# Apache-2.0 original help text
+= Diff Viewer | Diff
+
+The diff viewer shows side‑by‑side differences between two files.
+
+Keys (typical):
+  - Up/Down, PageUp/PageDown: navigate
+  - n / N: next/previous hunk
+  - F5: merge current hunk (when supported)
+  - F10: quit
+
+Links:
+* Contents -> Contents
+* Panels -> Panels
+

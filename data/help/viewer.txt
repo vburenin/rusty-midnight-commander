@@ -1,0 +1,16 @@
+# Apache-2.0 original help text
+= Viewer
+
+The internal viewer displays files in a full‑screen window.
+
+Keys:
+  - q, F10, or F3: quit the viewer
+  - F4 or h: toggle hex mode (text/hex)
+  - w: toggle word wrap (text mode)
+  - Up/Down, PageUp/PageDown, Home/End: navigate
+  - / or F7: start a search; n / N: find next / previous
+
+Links:
+* Contents -> Contents
+* Panels -> Panels
+

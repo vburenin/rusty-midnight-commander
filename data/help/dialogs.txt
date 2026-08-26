@@ -1,0 +1,18 @@
+# Apache-2.0 original help text
+= Dialogs
+
+File operation dialogs appear as centered boxes. Use Tab to move focus.
+
+Common controls:
+  - Enter: activate the focused button or toggle a checkbox
+  - Tab: switch between input fields, checkboxes, and buttons
+  - Esc: cancel and return to the panels
+
+Specific dialogs:
+* Copy -> Copy
+* Move -> Move
+* Mkdir -> Mkdir
+* Delete -> Delete
+* Find File -> Find File
+* Contents -> Contents
+

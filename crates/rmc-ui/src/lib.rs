@@ -1,4 +1,5 @@
 pub mod find;
+pub mod help;
 pub mod hotlist;
 mod mc_colors;
 mod render;

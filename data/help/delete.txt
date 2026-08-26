@@ -1,0 +1,14 @@
+# Apache-2.0 original help text
+= Delete
+
+Delete (F8) asks for confirmation before removing files or directories.
+
+Controls:
+  - Tab switches focus between Yes and No
+  - Enter activates the focused choice
+  - Esc cancels
+
+Links:
+* Dialogs -> Dialogs
+* Contents -> Contents
+

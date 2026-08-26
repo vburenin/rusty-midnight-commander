@@ -1,0 +1,15 @@
+# Apache-2.0 original help text
+= Editor
+
+The internal editor opens a file in a full‑screen window with its own menu bar.
+
+Keys:
+  - F2: save
+  - F9: show the editor menu bar
+  - F10 or Esc Esc: quit (with confirmation when there are unsaved changes)
+  - Arrow keys, PageUp/PageDown, Home/End: navigate
+
+Links:
+* Contents -> Contents
+* Panels -> Panels
+

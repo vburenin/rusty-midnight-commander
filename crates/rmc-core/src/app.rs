@@ -109,7 +109,10 @@ pub enum UiMode {
         on_submit: UiPromptCb,
     },
     MenuFocused,
-    Help,
+    Help {
+        state: HelpState,
+        prev: Box<UiMode>,
+    },
     /// Command line at bottom has focus for editing/executing.
     ShellInput,
     // Directory Hotlist
@@ -148,6 +151,14 @@ fn glob_match_impl(p: &[u8], s: &[u8]) -> bool {
         i += 1;
     }
     i == p.len()
+}
+
+#[derive(Clone)]
+pub struct HelpState {
+    pub topic: String,        // current node name
+    pub cursor: usize,        // index within current node links
+    pub scroll_top: usize,    // first visible content line
+    pub history: Vec<String>, // simple back stack
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -356,7 +367,19 @@ impl App {
                     selected_index: 0,
                 }
             }
-            ShowHelp => self.ui_mode = UiMode::Help,
+            ShowHelp => {
+                let prev = std::mem::replace(&mut self.ui_mode, UiMode::MenuFocused);
+                let topic = Self::context_help_topic_from_mode(&prev);
+                self.ui_mode = UiMode::Help {
+                    state: HelpState {
+                        topic,
+                        cursor: 0,
+                        scroll_top: 0,
+                        history: Vec::new(),
+                    },
+                    prev: Box::new(prev),
+                };
+            }
             MoveUp => self.active_panel_mut().move_up(),
             MoveDown => self.active_panel_mut().move_down(),
             PageUp => {
@@ -459,6 +482,32 @@ impl App {
 }
 
 impl App {
+    fn context_help_topic_from_mode(mode: &UiMode) -> String {
+        match mode {
+            UiMode::Normal | UiMode::Menu { .. } => "Panels".to_string(),
+            UiMode::Viewer { .. } => "Viewer".to_string(),
+            UiMode::Diff(_) => "Diff".to_string(),
+            UiMode::UserMenu { .. } => "User Menu".to_string(),
+            UiMode::SortDialog { .. } => "Panels".to_string(),
+            UiMode::Editor { .. } => "Editor".to_string(),
+            UiMode::FindDialog(_) => "Find File".to_string(),
+            UiMode::CopyDialog { title, .. } => {
+                if title == "Copy" {
+                    "Copy".to_string()
+                } else {
+                    "Move".to_string()
+                }
+            }
+            UiMode::MkdirDialog { .. } => "Mkdir".to_string(),
+            UiMode::DeleteDialog { .. } => "Delete".to_string(),
+            UiMode::DialogConfirm { .. } => "Confirmations".to_string(),
+            UiMode::PromptInput { .. } => "Prompts".to_string(),
+            UiMode::MenuFocused => "Menus".to_string(),
+            UiMode::Help { state, .. } => state.topic.clone(),
+            UiMode::ShellInput => "Panels".to_string(),
+            UiMode::HotlistDialog(_) => "Panels".to_string(),
+        }
+    }
     pub fn page_up_by(&mut self, rows: usize) {
         self.active_panel_mut().page_up(rows);
     }

@@ -1,0 +1,14 @@
+# Apache-2.0 original help text
+= Find File
+
+The Find File tool searches under a starting directory by name and optionally by content.
+
+Controls:
+  - Start dir, Name pattern, and Content fields define the search
+  - Buttons: Start/Again, Stop, Chdir, Panelize, Quit
+  - Results appear in a list; Enter “Chdir” jumps to the containing directory
+
+Links:
+* Dialogs -> Dialogs
+* Contents -> Contents
+

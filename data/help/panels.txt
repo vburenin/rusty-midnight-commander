@@ -1,0 +1,17 @@
+# Apache-2.0 original help text
+= Panels
+
+Rusty Midnight Commander shows two directory panels side by side.
+
+Basics:
+  - The highlighted row is the cursor; the highlighted panel is active.
+  - F9 opens the top menu bar. F10 quits.
+  - Use Up/Down, PageUp/PageDown, Home/End to move.
+  - Enter opens a directory; Backspace goes to parent; Tab switches panel.
+  - F3 views the selected file in the internal viewer.
+
+Links:
+* Contents -> Contents
+* Viewer -> Viewer
+* File operations and dialogs -> Dialogs
+

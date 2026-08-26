@@ -1,3 +1,4 @@
+use crate::help::{global_index, HelpItem};
 use crate::render::Renderer;
 use crate::skin::load_default_palette;
 use anyhow::Result;
@@ -161,6 +162,117 @@ impl TerminalApp {
         }
         // Dialog handling first
         match &mut app.ui_mode {
+            UiMode::Help { state, prev } => {
+                // Navigation within help
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        let prior = std::mem::replace(&mut **prev, UiMode::Normal);
+                        app.ui_mode = prior;
+                    }
+                    KeyCode::F(2) => {
+                        // Index (Contents)
+                        state.topic = global_index().contents_name();
+                        state.cursor = 0;
+                        state.scroll_top = 0;
+                    }
+                    KeyCode::F(3) => {
+                        // Prev (history back)
+                        if let Some(prev_topic) = state.history.pop() {
+                            state.topic = prev_topic;
+                            state.cursor = 0;
+                            state.scroll_top = 0;
+                        }
+                    }
+                    KeyCode::F(4) => {
+                        // Next (follow selected link)
+                        if let Some(node) = global_index().get(&state.topic) {
+                            let mut cur = 0usize;
+                            for it in &node.items {
+                                if let HelpItem::Link { target, .. } = it {
+                                    if cur == state.cursor {
+                                        state.history.push(state.topic.clone());
+                                        state.topic = target.clone();
+                                        state.cursor = 0;
+                                        state.scroll_top = 0;
+                                        break;
+                                    }
+                                    cur += 1;
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Tab | KeyCode::Down | KeyCode::Right => {
+                        if let Some(node) = global_index().get(&state.topic) {
+                            let links = node
+                                .items
+                                .iter()
+                                .filter(|it| matches!(it, HelpItem::Link { .. }))
+                                .count();
+                            if links > 0 {
+                                state.cursor = (state.cursor + 1) % links;
+                            }
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Left => {
+                        if let Some(node) = global_index().get(&state.topic) {
+                            let links = node
+                                .items
+                                .iter()
+                                .filter(|it| matches!(it, HelpItem::Link { .. }))
+                                .count();
+                            if links > 0 {
+                                let prev_idx = state.cursor as isize - 1;
+                                state.cursor = if prev_idx < 0 {
+                                    links.saturating_sub(1)
+                                } else {
+                                    prev_idx as usize
+                                };
+                            }
+                        }
+                    }
+                    KeyCode::PageDown => {
+                        state.scroll_top = state.scroll_top.saturating_add(page_rows);
+                    }
+                    KeyCode::PageUp => {
+                        state.scroll_top = state.scroll_top.saturating_sub(page_rows);
+                    }
+                    KeyCode::Home => state.scroll_top = 0,
+                    KeyCode::End => {
+                        state.scroll_top = state.scroll_top.saturating_add(10 * page_rows)
+                    }
+                    KeyCode::Enter | KeyCode::Char('\n') => {
+                        if let Some(node) = global_index().get(&state.topic) {
+                            let mut cur = 0usize;
+                            for it in &node.items {
+                                if let HelpItem::Link { target, .. } = it {
+                                    if cur == state.cursor {
+                                        state.history.push(state.topic.clone());
+                                        state.topic = target.clone();
+                                        state.cursor = 0;
+                                        state.scroll_top = 0;
+                                        break;
+                                    }
+                                    cur += 1;
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Backspace | KeyCode::Char('l') => {
+                        if let Some(prev_topic) = state.history.pop() {
+                            state.topic = prev_topic;
+                            state.cursor = 0;
+                            state.scroll_top = 0;
+                        }
+                    }
+                    KeyCode::F(1) => {
+                        state.topic = global_index().contents_name();
+                        state.cursor = 0;
+                        state.scroll_top = 0;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::ShellInput => {
                 // Command line editing and execution
                 match key.code {
