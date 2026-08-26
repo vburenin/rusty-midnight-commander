@@ -12,3 +12,6 @@ rmc-core = { path = "../rmc-core" }
 rmc-fs = { path = "../rmc-fs" }
 unicode-width.workspace = true
 time.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"

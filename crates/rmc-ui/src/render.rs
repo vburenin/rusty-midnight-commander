@@ -199,7 +199,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             );
         }
         rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, .. } => {
-            draw_viewer(p, app, cols, rows, pal, path, *hex, *wrap, *offset)?;
+            draw_viewer(p, cols, rows, pal, path, *hex, *wrap, *offset)?;
         }
         rmc_core::app::UiMode::Menu {
             top_index,
@@ -564,9 +564,9 @@ fn draw_dialog_box(
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_viewer(
     p: &mut Painter,
-    app: &App,
     cols: u16,
     rows: u16,
     pal: McPalette,
@@ -648,7 +648,13 @@ fn draw_viewer(
     // Footer/status
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(0, rows - 1);
-    let mode = if hex { "[HEX]" } else { if wrap { "[TEXT WRAP]" } else { "[TEXT]" } };
+    let mode = if hex {
+        "[HEX]"
+    } else if wrap {
+        "[TEXT WRAP]"
+    } else {
+        "[TEXT]"
+    };
     let foot = format!(" {}  {}  / F7: search, n/N: next/prev, w: wrap, q: quit ", path.display(), mode);
     let t = truncate(&foot, cols as usize);
     p.text(&t);

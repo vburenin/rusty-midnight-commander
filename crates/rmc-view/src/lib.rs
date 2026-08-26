@@ -4,7 +4,7 @@
 //! UI crates are expected to provide chrome (frame, titles, status) and feed sizes/keys.
 
 use anyhow::{bail, Result};
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -14,16 +14,10 @@ use unicode_width::UnicodeWidthChar;
 const WINDOW_BYTES: usize = 256 * 1024; // 256 KiB
 const LOOKBACK_BYTES: usize = 8 * 1024; // include some context before offset to find boundaries
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ViewOptions {
     pub hex: bool,
     pub wrap: bool,
-}
-
-impl Default for ViewOptions {
-    fn default() -> Self {
-        Self { hex: false, wrap: false }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +58,7 @@ pub fn render_window(path: &Path, opts: ViewOptions, mut offset: u64, cols: u16,
     }
 }
 
-fn render_hex(f: &mut File, offset: u64, cols: u16, rows: u16) -> Result<RenderResult> {
+fn render_hex(f: &mut File, offset: u64, _cols: u16, rows: u16) -> Result<RenderResult> {
     // 16 bytes per row hex with ASCII column
     let lines_capacity = rows as usize;
     let mut buf = vec![0u8; 16 * lines_capacity];
@@ -99,7 +93,7 @@ fn render_text(f: &mut File, offset: u64, cols: u16, rows: u16, wrap: bool) -> R
     buf.truncate(read);
     let rel_off = (offset - start) as usize;
     // Find a reasonable line start at/before rel_off
-    let mut line_start = find_prev_line_start(&buf, rel_off);
+    let line_start = find_prev_line_start(&buf, rel_off);
     let mut visual_lines = Vec::new();
     let mut i = line_start;
     while i < buf.len() && (visual_lines.len() as u16) < rows {
@@ -169,7 +163,7 @@ fn truncate_line(s: &str, max_cols: usize) -> String {
     let mut width = 0usize;
     let mut out = String::new();
     for ch in s.chars() {
-        let w = ch.width().unwrap_or(0).max(0) as usize;
+        let w = ch.width().unwrap_or(0);
         if width + w > max_cols.saturating_sub(1) {
             out.push('…');
             return out;
@@ -192,12 +186,12 @@ fn wrap_line(s: &str, max_cols: usize, out: &mut Vec<String>) {
     let mut width = 0usize;
     for ch in s.chars() {
         let w = ch.width().unwrap_or(0);
-        if width + (w as usize) > max_cols {
+        if width + w > max_cols {
             out.push(std::mem::take(&mut cur));
             width = 0;
         }
         cur.push(ch);
-        width += w as usize;
+        width += w;
         if width == max_cols {
             out.push(std::mem::take(&mut cur));
             width = 0;
@@ -223,15 +217,7 @@ pub fn nav_line_down(path: &Path, offset: u64) -> Result<u64> {
             return Ok(len);
         }
         if let Some(i) = buf[..n].iter().position(|&b| b == b'\n') {
-            let mut new_off = pos + i as u64 + 1;
-            // Handle CRLF
-            if new_off > 1 {
-                f.seek(SeekFrom::Start(new_off - 2))?;
-                let mut cr = [0u8; 1];
-                if f.read(&mut cr)? == 1 && cr[0] == b'\r' {
-                    new_off = new_off;
-                }
-            }
+            let new_off = pos + i as u64 + 1;
             return Ok(new_off);
         }
         pos += n as u64;
@@ -377,7 +363,7 @@ pub fn search_backward(path: &Path, start_offset: u64, needle: &str) -> Result<O
         f.seek(SeekFrom::Start(chunk_start))?;
         f.read_exact(&mut buf)?;
         if let Some(i) = rfind_subslice(&buf, needle_bytes) {
-            if chunk_start + i as u64 < start_offset {
+            if chunk_start + (i as u64) < start_offset {
                 return Ok(Some(chunk_start + i as u64));
             }
         }
