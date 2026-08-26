@@ -387,6 +387,64 @@ impl TerminalApp {
                             *status_msg = Some("Replace with (Enter=Replace, Alt-a=All)".into());
                         }
                     }
+                    // Pipe selection (or whole buffer) through external command (GNU mcedit behavior)
+                    KeyCode::Char('|') => {
+                        let buf_snapshot = buf.clone();
+                        app.ui_mode = UiMode::InputDialog {
+                            title: "Pipe command".into(),
+                            prompt: "Enter shell command:".into(),
+                            value: String::new(),
+                            focus_ok: false,
+                            on_submit: Box::new(move |app, input| {
+                                let cmd = input.trim();
+                                // Always return to editor; empty command is a no-op.
+                                if cmd.is_empty() {
+                                    app.ui_mode = UiMode::Editor {
+                                        buf: buf_snapshot,
+                                        show_menu: false,
+                                        status_msg: None,
+                                        search_input: None,
+                                        save_as_input: None,
+                                        pending_quit: false,
+                                        confirm_exit: None,
+                                    };
+                                    return Ok(());
+                                }
+                                // Apply pipe to a working copy of the buffer; on success update editor, on error show dialog and restore.
+                                let mut new_buf = buf_snapshot.clone();
+                                if let Err(e) = new_buf.pipe_selection(cmd) {
+                                    let restore_buf = buf_snapshot;
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: format!("{e}"),
+                                        on_ok: Box::new(move |app| {
+                                            app.ui_mode = UiMode::Editor {
+                                                buf: restore_buf,
+                                                show_menu: false,
+                                                status_msg: None,
+                                                search_input: None,
+                                                save_as_input: None,
+                                                pending_quit: false,
+                                                confirm_exit: None,
+                                            };
+                                            Ok(())
+                                        }),
+                                    };
+                                } else {
+                                    app.ui_mode = UiMode::Editor {
+                                        buf: new_buf,
+                                        show_menu: false,
+                                        status_msg: None,
+                                        search_input: None,
+                                        save_as_input: None,
+                                        pending_quit: false,
+                                        confirm_exit: None,
+                                    };
+                                }
+                                Ok(())
+                            }),
+                        };
+                    }
                     // Block ops
                     KeyCode::F(3) => {
                         if buf.selection_bounds().is_none() {
