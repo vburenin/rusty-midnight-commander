@@ -230,7 +230,9 @@ impl TerminalApp {
                 let (_cols, rows) = crossterm::terminal::size()?;
                 let list_rows = rows.saturating_sub(4).clamp(12, 20).saturating_sub(4) as usize;
                 match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Tab => {
                         state.focus = match state.focus {
                             HDF::List => HDF::ButtonGoto,
@@ -588,8 +590,17 @@ impl TerminalApp {
                 dirs_first,
             } => {
                 // Focus order: 0..3 radios; 4 Reverse; 5 Dirs-first; 6 OK; 7 Cancel
+                let mut apply: Option<(
+                    rmc_core::actions::PaneSide,
+                    rmc_core::panel::SortBy,
+                    bool,
+                    bool,
+                )> = None;
+                let mut close_dialog = false;
                 match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        close_dialog = true;
+                    }
                     KeyCode::Tab => {
                         *focus_index = (*focus_index + 1) % 8;
                     }
@@ -649,10 +660,6 @@ impl TerminalApp {
                             }
                             _ => {}
                         }
-                    }
-                    KeyCode::F(10) => {
-                        // Cancel like Esc
-                        close_dialog = true;
                     }
                     _ => {}
                 }
@@ -860,7 +867,12 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["User menu", "Find file", "Directory hotlist", "Compare dirs"],
+                    &[
+                        "User menu",
+                        "Find file",
+                        "Directory hotlist",
+                        "Compare dirs",
+                    ],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
                 ];
