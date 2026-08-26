@@ -7,10 +7,10 @@ This repository ships the foundation: a working dual-pane terminal file manager 
 ## Building and Running
 
 ```bash
-cargo run --release -p rmc
+cargo run --release --bin mcr
 ```
 
-This launches `rmc` in your current working directory in a full-screen terminal UI.
+This launches `mcr` in your current working directory in a full-screen terminal UI.
 
 ## Current Feature Parity
 
@@ -32,7 +32,7 @@ This launches `rmc` in your current working directory in a full-screen terminal 
 
 Workspace crates:
 
-- `rmc`: binary entrypoint
+- `mcr`: binary entrypoint
 - `rmc-core`: app state, actions, keymap, events, panels
 - `rmc-fs`: VFS trait and local filesystem backend
 - `rmc-ui`: exact-MC renderer, dialogs, input handling

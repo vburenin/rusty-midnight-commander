@@ -35,7 +35,7 @@ impl ExtfsRegistry {
                 if let Ok((mut helpers, ext_map)) = parse_simple_ini(&s) {
                     // Resolve helper paths relative to the ini file location when not absolute
                     if let Some(base) = p.parent() {
-                        for (_name, cmd) in helpers.iter_mut() {
+                        for cmd in helpers.values_mut() {
                             let cpath = PathBuf::from(&*cmd);
                             if !cpath.is_absolute() {
                                 *cmd = base.join(&cpath).to_string_lossy().into_owned();
