@@ -1397,7 +1397,7 @@ impl TerminalApp {
                 selected_index,
             } => {
                 let menus: [&[&str]; 5] = [
-                    &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
+                    &["Copy", "Move", "Mkdir", "Delete", "Sort order...", "Tree"],
                     &[
                         "View",
                         "Edit",
@@ -1419,7 +1419,7 @@ impl TerminalApp {
                         "Compare dirs",
                     ],
                     &["Layout", "Panels", "Confirmations"],
-                    &["Copy", "Move", "Mkdir", "Delete", "Sort order..."],
+                    &["Copy", "Move", "Mkdir", "Delete", "Sort order...", "Tree"],
                 ];
                 match key.code {
                     KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
@@ -1477,6 +1477,32 @@ impl TerminalApp {
                                     reverse,
                                     dirs_first,
                                 };
+                            }
+                            "Tree" => {
+                                // Set Tree mode for the chosen side and make it active.
+                                let set_left = *top_index == 0;
+                                let panel = if set_left {
+                                    &mut app.left
+                                } else {
+                                    &mut app.right
+                                };
+                                panel.mode = rmc_core::panel::PanelMode::Tree;
+                                // Build a simple flattened tree starting at the panel's cwd
+                                let start = panel.cwd.clone();
+                                let max_entries = 2048usize;
+                                let mut entries: Vec<rmc_core::panel::TreeEntry> = Vec::new();
+                                build_tree_flat(&*app.vfs, &start, 0, max_entries, &mut entries);
+                                panel.tree = Some(rmc_core::panel::TreeState {
+                                    entries,
+                                    cursor: 0,
+                                    scroll_top: 0,
+                                });
+                                app.active = if set_left {
+                                    rmc_core::actions::PaneSide::Left
+                                } else {
+                                    rmc_core::actions::PaneSide::Right
+                                };
+                                app.ui_mode = UiMode::Normal;
                             }
                             "Copy" => {
                                 return Self::handle_key(
@@ -2200,6 +2226,27 @@ impl TerminalApp {
             }
             return Ok(());
         }
+        // If UI is Normal and Esc is pressed, exit QuickView/Info/Tree modes on panels back to Listing.
+        if matches!(app.ui_mode, UiMode::Normal) && matches!(key.code, KeyCode::Esc) {
+            let mut changed = false;
+            for side in [
+                rmc_core::actions::PaneSide::Left,
+                rmc_core::actions::PaneSide::Right,
+            ] {
+                let p = if matches!(side, rmc_core::actions::PaneSide::Left) {
+                    &mut app.left
+                } else {
+                    &mut app.right
+                };
+                if !matches!(p.mode, rmc_core::panel::PanelMode::Listing) {
+                    p.mode = rmc_core::panel::PanelMode::Listing;
+                    changed = true;
+                }
+            }
+            if changed {
+                return Ok(());
+            }
+        }
         // Key chord handling for C-x prefix (emulate MC prefixes)
         if app.pending_ctrl_x {
             app.pending_ctrl_x = false;
@@ -2225,6 +2272,26 @@ impl TerminalApp {
                     return Ok(());
                 } else if let KeyCode::Char(c) = key.code {
                     match c {
+                        'q' => {
+                            // Toggle Quick view on the inactive panel
+                            let p = app.inactive_panel_mut();
+                            p.mode = if matches!(p.mode, rmc_core::panel::PanelMode::QuickView) {
+                                rmc_core::panel::PanelMode::Listing
+                            } else {
+                                rmc_core::panel::PanelMode::QuickView
+                            };
+                            return Ok(());
+                        }
+                        'i' => {
+                            // Toggle Info on the inactive panel
+                            let p = app.inactive_panel_mut();
+                            p.mode = if matches!(p.mode, rmc_core::panel::PanelMode::Info) {
+                                rmc_core::panel::PanelMode::Listing
+                            } else {
+                                rmc_core::panel::PanelMode::Info
+                            };
+                            return Ok(());
+                        }
                         'c' => {
                             if let Some(ent) = app.active_panel().current_entry().cloned() {
                                 let m = ent.permissions & 0o7777;
@@ -2464,6 +2531,158 @@ impl TerminalApp {
             }
         }
         if let Some(action) = app.keymap.resolve(&key) {
+            // Intercept navigation and Enter for Tree mode on the ACTIVE panel.
+            if matches!(app.ui_mode, UiMode::Normal) {
+                let is_tree_active = {
+                    let ap = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                        &app.left
+                    } else {
+                        &app.right
+                    };
+                    matches!(ap.mode, rmc_core::panel::PanelMode::Tree)
+                };
+                if is_tree_active {
+                    match action {
+                        Action::MoveUp => {
+                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                                &mut app.left
+                            } else {
+                                &mut app.right
+                            };
+                            if let Some(tree) = &mut p.tree {
+                                if tree.cursor > 0 {
+                                    tree.cursor -= 1;
+                                    if tree.cursor < tree.scroll_top {
+                                        tree.scroll_top = tree.cursor;
+                                    }
+                                }
+                            }
+                            return Ok(());
+                        }
+                        Action::MoveDown => {
+                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                                &mut app.left
+                            } else {
+                                &mut app.right
+                            };
+                            if let Some(tree) = &mut p.tree {
+                                if tree.cursor + 1 < tree.entries.len() {
+                                    tree.cursor += 1;
+                                    let (_c, r) = crossterm::terminal::size()?;
+                                    let panel_top = 1u16;
+                                    let gauge_row = r.saturating_sub(4);
+                                    let content_bottom = gauge_row.saturating_sub(1);
+                                    let panel_h = content_bottom - panel_top;
+                                    let content_rows = panel_h.saturating_sub(4) as usize;
+                                    if tree.cursor >= tree.scroll_top + content_rows {
+                                        tree.scroll_top = tree
+                                            .cursor
+                                            .saturating_sub(content_rows.saturating_sub(1));
+                                    }
+                                }
+                            }
+                            return Ok(());
+                        }
+                        Action::Home => {
+                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                                &mut app.left
+                            } else {
+                                &mut app.right
+                            };
+                            if let Some(tree) = &mut p.tree {
+                                tree.cursor = 0;
+                                tree.scroll_top = 0;
+                            }
+                            return Ok(());
+                        }
+                        Action::End => {
+                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                                &mut app.left
+                            } else {
+                                &mut app.right
+                            };
+                            if let Some(tree) = &mut p.tree {
+                                if !tree.entries.is_empty() {
+                                    tree.cursor = tree.entries.len() - 1;
+                                    let (_c, r) = crossterm::terminal::size()?;
+                                    let panel_top = 1u16;
+                                    let gauge_row = r.saturating_sub(4);
+                                    let content_bottom = gauge_row.saturating_sub(1);
+                                    let panel_h = content_bottom - panel_top;
+                                    let content_rows = panel_h.saturating_sub(4) as usize;
+                                    tree.scroll_top =
+                                        tree.cursor.saturating_sub(content_rows.saturating_sub(1));
+                                }
+                            }
+                            return Ok(());
+                        }
+                        Action::PageUp => {
+                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                                &mut app.left
+                            } else {
+                                &mut app.right
+                            };
+                            if let Some(tree) = &mut p.tree {
+                                let prev = tree.cursor;
+                                tree.cursor = tree.cursor.saturating_sub(page_rows);
+                                if tree.cursor < tree.scroll_top {
+                                    tree.scroll_top = tree.cursor;
+                                }
+                                if prev != tree.cursor {
+                                    // adjusted above
+                                }
+                                return Ok(());
+                            }
+                        }
+                        Action::PageDown => {
+                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
+                                &mut app.left
+                            } else {
+                                &mut app.right
+                            };
+                            if let Some(tree) = &mut p.tree {
+                                let max = tree.entries.len().saturating_sub(1);
+                                let prev = tree.cursor;
+                                tree.cursor = (tree.cursor + page_rows).min(max);
+                                if tree.cursor >= tree.scroll_top + page_rows {
+                                    tree.scroll_top =
+                                        tree.cursor.saturating_sub(page_rows.saturating_sub(1));
+                                }
+                                if prev != tree.cursor {
+                                    // adjusted
+                                }
+                                return Ok(());
+                            }
+                        }
+                        Action::Enter => {
+                            // Enter in Tree changes directory of the other panel (keep focus)
+                            let (tree_side_left, dest_opt) = {
+                                let is_left =
+                                    matches!(app.active, rmc_core::actions::PaneSide::Left);
+                                let p = if is_left { &app.left } else { &app.right };
+                                let path = p
+                                    .tree
+                                    .as_ref()
+                                    .and_then(|t| t.entries.get(t.cursor))
+                                    .map(|e| e.path.clone());
+                                (is_left, path)
+                            };
+                            if let Some(dest) = dest_opt {
+                                let original_active = app.active;
+                                app.active = if tree_side_left {
+                                    rmc_core::actions::PaneSide::Right
+                                } else {
+                                    rmc_core::actions::PaneSide::Left
+                                };
+                                let _ = app.change_dir(&dest);
+                                app.active = original_active;
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
             match action {
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
@@ -2687,6 +2906,40 @@ impl TerminalApp {
     }
 }
 
+/// Build a flattened directory tree starting at `start`, up to `max_entries`, depth-first.
+fn build_tree_flat(
+    vfs: &dyn rmc_fs::Vfs,
+    start: &std::path::Path,
+    depth: usize,
+    max_entries: usize,
+    out: &mut Vec<rmc_core::panel::TreeEntry>,
+) {
+    if out.len() >= max_entries {
+        return;
+    }
+    let mut dirs: Vec<(std::path::PathBuf, usize)> = Vec::new();
+    if let Ok(entries) = vfs.list_dir(start, false) {
+        for e in entries {
+            if e.meta.is_dir {
+                dirs.push((e.path, depth + 1));
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (p, d) in dirs {
+        if out.len() >= max_entries {
+            break;
+        }
+        out.push(rmc_core::panel::TreeEntry {
+            path: p.clone(),
+            depth: d,
+        });
+        build_tree_flat(vfs, &p, d, max_entries, out);
+        if out.len() >= max_entries {
+            break;
+        }
+    }
+}
 impl TerminalApp {
     fn ensure_hunk_visible(state: &mut rmc_core::app::DiffState) {
         if state.hunks.is_empty() {

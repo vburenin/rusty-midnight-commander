@@ -7,7 +7,7 @@ use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::App;
-use rmc_core::panel::FileEntry;
+use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
 
@@ -1229,6 +1229,112 @@ fn draw_panel(
     let cap_x = x + ((w.saturating_sub(path_str_display.len() as u16)) / 2);
     p.goto(cap_x.max(x + 1), y);
     p.text(&path_str_display);
+
+    // Non-listing panel modes (QuickView/Info/Tree): override standard listing rendering.
+    let panel = if is_left { &app.left } else { &app.right };
+    if !matches!(panel.mode, PanelMode::Listing) {
+        let content_top = y + 1;
+        let content_h = h.saturating_sub(2);
+        // Clear inner area
+        for i in 0..content_h {
+            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            p.goto(x + 1, content_top + i);
+            p.text(&" ".repeat((w - 2) as usize));
+        }
+        match panel.mode {
+            PanelMode::QuickView => {
+                // Show selected file from ACTIVE panel
+                if let Some(ent) = app.active_panel().current_entry() {
+                    if !ent.is_dir {
+                        let rr = rmc_view::render_window(
+                            &ent.path,
+                            rmc_view::ViewOptions {
+                                hex: false,
+                                wrap: true,
+                                show_cr: false,
+                            },
+                            0,
+                            w.saturating_sub(2),
+                            content_h,
+                        )?;
+                        for (i, line) in rr.lines.into_iter().enumerate() {
+                            if (i as u16) >= content_h {
+                                break;
+                            }
+                            p.goto(x + 1, content_top + i as u16);
+                            let t = truncate(&line, (w - 2) as usize);
+                            p.text(&t);
+                        }
+                    } else {
+                        p.goto(x + 1, content_top);
+                        let msg = format!("Directory: {}", ent.name);
+                        p.text(&truncate(&msg, (w - 2) as usize));
+                    }
+                }
+            }
+            PanelMode::Info => {
+                if let Some(ent) = app.active_panel().current_entry() {
+                    let perms = perm_string(ent.permissions, ent.is_dir);
+                    let owner = ent.owner.as_deref().unwrap_or("-");
+                    let group = ent.group.as_deref().unwrap_or("-");
+                    let size = if ent.is_dir { 0 } else { ent.size };
+                    let tm: OffsetDateTime = ent.modified.into();
+                    let ts = tm
+                        .format(&time::macros::format_description!(
+                            "[year]-[month repr:numerical]-[day] [hour]:[minute]"
+                        ))
+                        .unwrap_or_default();
+                    let lines = [
+                        format!("Name: {}", ent.name),
+                        format!("Path: {}", ent.path.display()),
+                        format!("Type: {}", if ent.is_dir { "Directory" } else { "File" }),
+                        format!("Size: {}", size),
+                        format!("Owner: {owner}  Group: {group}"),
+                        format!("Perms: {perms}"),
+                        format!("Modified: {ts}"),
+                    ];
+                    for (i, line) in lines.iter().enumerate() {
+                        if (i as u16) >= content_h {
+                            break;
+                        }
+                        p.goto(x + 1, content_top + i as u16);
+                        p.text(&truncate(line, (w - 2) as usize));
+                    }
+                }
+            }
+            PanelMode::Tree => {
+                if let Some(tree) = &panel.tree {
+                    for i in 0..content_h as usize {
+                        let idx = tree.scroll_top + i;
+                        if let Some(ent) = tree.entries.get(idx) {
+                            let row_y = content_top + i as u16;
+                            let is_active_panel = (is_left
+                                && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                                || (!is_left
+                                    && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                            let is_cursor = idx == tree.cursor;
+                            let (fg, bg) = if is_cursor && is_active_panel {
+                                (pal.selected_fg, pal.selected_bg)
+                            } else {
+                                (pal.core_default_fg, pal.core_default_bg)
+                            };
+                            p.set_fg_bg(fg, bg);
+                            p.goto(x + 1, row_y);
+                            let name = ent.path.file_name().and_then(|s| s.to_str()).unwrap_or("/");
+                            let indent = "  ".repeat(ent.depth);
+                            let display = format!("{indent}{name}/");
+                            p.text(&truncate(&display, (w - 2) as usize));
+                        }
+                    }
+                } else {
+                    p.goto(x + 1, content_top);
+                    p.text("No tree");
+                }
+            }
+            PanelMode::Listing => {}
+        }
+        return Ok(());
+    }
 
     // Headers
     let header_fg = pal.header_fg;
