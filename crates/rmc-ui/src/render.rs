@@ -948,7 +948,6 @@ fn draw_subshell_fullscreen(
     app: &App,
 ) -> Result<()> {
     // MC C-o: draw captured output full-screen with default terminal colors; no frame/title/status.
-    use crossterm::style::Color;
     p.set_fg_bg(Color::Reset, Color::Reset);
     for y in 0..rows {
         p.goto(0, y);
@@ -957,9 +956,7 @@ fn draw_subshell_fullscreen(
     let max_lines = rows as usize;
     let mut y = 0u16;
     for line in app.subshell.window(max_lines) {
-        if y >= rows {
-            break;
-        }
+        if y >= rows { break; }
         p.goto(0, y);
         let t = truncate(line, cols as usize);
         p.text(&t);

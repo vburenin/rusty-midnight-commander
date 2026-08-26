@@ -782,16 +782,17 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Char('g') => {
-                        let on_submit = Box::new(|app: &mut App, val: String| -> anyhow::Result<()> {
-                            if let UiMode::Diff(s) = &mut app.ui_mode {
-                                if let Ok(n) = val.trim().parse::<usize>() {
-                                    let line = n.saturating_sub(1);
-                                    s.left_scroll = line;
-                                    s.right_scroll = line;
+                        let on_submit =
+                            Box::new(|app: &mut App, val: String| -> anyhow::Result<()> {
+                                if let UiMode::Diff(s) = &mut app.ui_mode {
+                                    if let Ok(n) = val.trim().parse::<usize>() {
+                                        let line = n.saturating_sub(1);
+                                        s.left_scroll = line;
+                                        s.right_scroll = line;
+                                    }
                                 }
-                            }
-                            Ok(())
-                        });
+                                Ok(())
+                            });
                         app.ui_mode = UiMode::PromptInput {
                             title: "Goto line".into(),
                             value: String::new(),
