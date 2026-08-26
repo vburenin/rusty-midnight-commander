@@ -236,13 +236,14 @@ fn python_keywords() -> &'static [&'static str] {
     ]
 }
 fn shell_keywords() -> &'static [&'static str] {
+    // Keep sorted for binary_search to be correct.
     &[
-        "if", "then", "else", "elif", "fi", "for", "do", "done", "case", "esac", "function", "in",
-        "while", "until", "select",
+        "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+        "select", "then", "until", "while",
     ]
 }
 
-fn tokenize_rust_like(text: &str, is_rust: bool) -> Vec<SpanUnit> {
+fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
     // Handles Rust; C-like done separately to catch preproc
     let mut out: Vec<SpanUnit> = Vec::new();
     let mut i = 0usize;
@@ -765,7 +766,7 @@ fn tokenize_ini(text: &str) -> Vec<SpanUnit> {
         return out;
     }
     // Comment: ';' or '#'
-    if let Some(pos) = text.find(|c| c == ';' || c == '#') {
+    if let Some(pos) = text.find([';', '#']) {
         // Everything after marker is comment
         // Left side may still be tokenized roughly as key=value
         let (left, _) = text.split_at(pos);
