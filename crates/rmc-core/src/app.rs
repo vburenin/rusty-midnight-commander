@@ -304,7 +304,7 @@ impl App {
         self.active_panel_mut().page_down(rows);
     }
 
-    pub fn panelize_paths(&mut self, paths: &[PathBuf]) -> Result<()> {
+    pub fn panelize_paths(&mut self, paths: &[PathBuf], base: Option<&Path>) -> Result<()> {
         // Build FileEntry list from paths, including a `..` parent marker to leave panelized mode.
         let mut entries = Vec::with_capacity(paths.len() + 1);
         // Parent marker that points to current cwd for caption/restore
@@ -322,8 +322,17 @@ impl App {
         });
         for p in paths {
             let meta = self.vfs.stat(p)?;
+            let display_name = if let Some(b) = base {
+                if let Ok(rel) = p.strip_prefix(b) {
+                    rel.display().to_string()
+                } else {
+                    p.display().to_string()
+                }
+            } else {
+                p.display().to_string()
+            };
             entries.push(FileEntry {
-                name: p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string()),
+                name: display_name,
                 path: p.clone(),
                 is_dir: meta.is_dir,
                 is_symlink: meta.is_symlink,

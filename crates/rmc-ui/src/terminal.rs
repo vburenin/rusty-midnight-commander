@@ -10,7 +10,7 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::Action;
 use rmc_core::app::{App, UiMode};
-use rmc_core::find::{FindDialogFocus as FF, FindDialogState, search_files, CancelHandle};
+use rmc_core::find::{FindDialogFocus as FF, FindDialogState, search_files_streaming, CancelHandle};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -45,11 +45,22 @@ impl TerminalApp {
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
                 if state.running {
                     if let Some(rx) = &state.results_rx {
-                        if let Ok(paths) = rx.try_recv() {
-                            state.results.paths = paths;
-                            state.running = false;
-                            state.cancel = None;
-                            state.results_rx = None;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(p) => {
+                                    state.results.paths.push(p);
+                                    if state.selected_index >= state.results.paths.len() {
+                                        state.selected_index = state.results.paths.len().saturating_sub(1);
+                                    }
+                                }
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    state.running = false;
+                                    state.cancel = None;
+                                    state.results_rx = None;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -132,11 +143,17 @@ impl TerminalApp {
                 // Update from background search if completed
                 if state.running {
                     if let Some(rx) = &state.results_rx {
-                        if let Ok(paths) = rx.try_recv() {
-                            state.results.paths = paths;
-                            state.running = false;
-                            state.cancel = None;
-                            state.results_rx = None;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(p) => state.results.paths.push(p),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    state.running = false;
+                                    state.cancel = None;
+                                    state.results_rx = None;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -147,17 +164,53 @@ impl TerminalApp {
                             FF::StartDir => FF::NamePattern,
                             FF::NamePattern => FF::Content,
                             FF::Content => FF::CaseSensitive,
-                            FF::CaseSensitive => FF::ButtonOk,
-                            FF::ButtonOk => FF::ButtonStop,
+                            FF::CaseSensitive => FF::ButtonStart,
+                            FF::ButtonStart => FF::ButtonStop,
                             FF::ButtonStop => FF::ButtonChdir,
-                            FF::ButtonChdir => FF::ButtonPanelize,
+                            FF::ButtonChdir => FF::ButtonAgain,
+                            FF::ButtonAgain => FF::ButtonPanelize,
                             FF::ButtonPanelize => FF::ButtonQuit,
                             FF::ButtonQuit => FF::StartDir,
                         };
                     }
+                    KeyCode::Up => {
+                        if state.selected_index > 0 {
+                            state.selected_index -= 1;
+                        }
+                        // ensure visible
+                        let (_c, r) = crossterm::terminal::size()?;
+                        let h = r.saturating_sub(4).clamp(16, 22);
+                        let list_rows = (h - 12) as usize;
+                        if state.selected_index < state.scroll_top {
+                            state.scroll_top = state.selected_index;
+                        } else if state.selected_index >= state.scroll_top + list_rows {
+                            state.scroll_top = state.selected_index.saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Down => {
+                        if state.selected_index + 1 < state.results.paths.len() {
+                            state.selected_index += 1;
+                        }
+                        let (_c, r) = crossterm::terminal::size()?;
+                        let h = r.saturating_sub(4).clamp(16, 22);
+                        let list_rows = (h - 12) as usize;
+                        if state.selected_index < state.scroll_top {
+                            state.scroll_top = state.selected_index;
+                        } else if state.selected_index >= state.scroll_top + list_rows {
+                            state.scroll_top = state.selected_index.saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Home => { state.selected_index = 0; state.scroll_top = 0; }
+                    KeyCode::End => { if !state.results.paths.is_empty() {
+                        state.selected_index = state.results.paths.len()-1;
+                        let (_c, r) = crossterm::terminal::size()?;
+                        let h = r.saturating_sub(4).clamp(16, 22);
+                        let list_rows = (h - 12) as usize;
+                        state.scroll_top = state.selected_index.saturating_sub(list_rows.saturating_sub(1));
+                    } }
                     KeyCode::Backspace => {
                         match state.focus {
-                            FF::StartDir => { state.params.start_dir.pop(); }
+                            FF::StartDir => { state.start_dir_edit.pop(); }
                             FF::NamePattern => {
                                 match &mut state.params.name_pattern {
                                     rmc_core::find::NamePattern::Glob(s) => { s.pop(); }
@@ -178,9 +231,7 @@ impl TerminalApp {
                                 FF::StartDir => {
                                     // Append if printable
                                     if !c.is_control() {
-                                        let mut s = state.params.start_dir.display().to_string();
-                                        s.push(c);
-                                        state.params.start_dir = std::path::PathBuf::from(s);
+                                    state.start_dir_edit.push(c);
                                     }
                                 }
                                 FF::NamePattern => {
@@ -211,9 +262,17 @@ impl TerminalApp {
                     }
                     KeyCode::Enter => {
                         match state.focus {
-                            FF::ButtonOk => {
+                            FF::ButtonStart | FF::ButtonAgain => {
                                 if !state.running {
-                                    // Kick off background search
+                                    // Prepare params (apply Start at edit)
+                                    let start_str = state.start_dir_edit.trim().to_string();
+                                    let start_dir = if start_str.is_empty() { active_cwd.clone() } else { std::path::PathBuf::from(start_str) };
+                                    state.params.start_dir = start_dir;
+                                    // Reset results and selection
+                                    state.results.paths.clear();
+                                    state.selected_index = 0;
+                                    state.scroll_top = 0;
+                                    // Kick off background search (streaming)
                                     let params = state.params.clone();
                                     let cancel = CancelHandle::new();
                                     let flag = cancel.flag();
@@ -222,8 +281,10 @@ impl TerminalApp {
                                     state.results_rx = Some(rx);
                                     state.running = true;
                                     std::thread::spawn(move || {
-                                        let res = search_files(&params, &flag);
-                                        let _ = tx.send(res);
+                                        search_files_streaming(&params, &flag, |p| {
+                                            let _ = tx.send(p);
+                                        });
+                                        // dropping tx signals completion
                                     });
                                 }
                             }
@@ -233,13 +294,23 @@ impl TerminalApp {
                                 }
                             }
                             FF::ButtonChdir => {
-                                // Set start dir to active panel cwd
-                                state.params.start_dir = active_cwd.clone();
+                                if let Some(p) = state.results.paths.get(state.selected_index).cloned() {
+                                    if let Ok(md) = app.vfs.stat(&p) {
+                                        let dest = if md.is_dir {
+                                            p
+                                        } else {
+                                            p.parent().map(|x| x.to_path_buf()).unwrap_or(active_cwd.clone())
+                                        };
+                                        let _ = app.change_dir(&dest);
+                                        app.ui_mode = UiMode::Normal;
+                                    }
+                                }
                             }
                             FF::ButtonPanelize => {
                                 if !state.running && !state.results.paths.is_empty() {
                                     let paths = state.results.paths.clone();
-                                    app.panelize_paths(&paths)?;
+                                    let base = state.params.start_dir.clone();
+                                    app.panelize_paths(&paths, Some(&base))?;
                                     app.ui_mode = UiMode::Normal;
                                 }
                             }

@@ -26,7 +26,8 @@ pub enum FindDialogFocus {
     NamePattern,
     Content,
     CaseSensitive,
-    ButtonOk,
+    ButtonStart,
+    ButtonAgain,
     ButtonStop,
     ButtonChdir,
     ButtonPanelize,
@@ -68,46 +69,60 @@ impl Default for CancelHandle {
 #[derive(Debug)]
 pub struct FindDialogState {
     pub params: FindParams,
+    pub start_dir_edit: String,
     pub focus: FindDialogFocus,
     pub running: bool,
     pub results: FindResults,
     pub cancel: Option<CancelHandle>,
-    pub results_rx: Option<Receiver<Vec<PathBuf>>>,
+    pub results_rx: Option<Receiver<PathBuf>>,
+    pub selected_index: usize,
+    pub scroll_top: usize,
 }
 
 impl FindDialogState {
     pub fn new(start_dir: PathBuf) -> Self {
         Self {
             params: FindParams {
-                start_dir,
+                start_dir: start_dir.clone(),
                 name_pattern: NamePattern::Glob("*".into()),
                 content_substring: None,
                 case_sensitive: false,
             },
+            start_dir_edit: start_dir.display().to_string(),
             focus: FindDialogFocus::NamePattern,
             running: false,
             results: FindResults::default(),
             cancel: None,
             results_rx: None,
+            selected_index: 0,
+            scroll_top: 0,
         }
     }
 }
 
 pub fn search_files(params: &FindParams, cancel: &Arc<AtomicBool>) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    search_files_streaming(params, cancel, |p| out.push(p));
+    out
+}
+
+pub fn search_files_streaming<F: FnMut(PathBuf)>(params: &FindParams, cancel: &Arc<AtomicBool>, mut on_hit: F) {
     // Prepare name matcher (basic glob with * and ?)
     let matcher = GlobMatcher::new(match &params.name_pattern {
         NamePattern::Glob(s) => s,
     });
     let content_query = params.content_substring.clone();
     let case_sensitive = params.case_sensitive;
-
-    for entry in WalkDir::new(&params.start_dir).into_iter().filter_map(Result::ok) {
+    let root = params.start_dir.clone();
+    for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
         let p = entry.path();
-        // Skip directories for name-only filtering, but allow returning directories if they match the name pattern and no content search requested.
+        // Do not include the search root directory itself as a hit
+        if p == root {
+            continue;
+        }
         let is_dir = entry.file_type().is_dir();
         let name = entry.file_name().to_string_lossy();
         if !matcher.is_match(&name) {
@@ -119,13 +134,12 @@ pub fn search_files(params: &FindParams, cancel: &Arc<AtomicBool>) -> Vec<PathBu
                 continue;
             }
             if file_contains(p, q, case_sensitive) {
-                out.push(p.to_path_buf());
+                on_hit(p.to_path_buf());
             }
         } else {
-            out.push(p.to_path_buf());
+            on_hit(p.to_path_buf());
         }
     }
-    out
 }
 
 fn file_contains(path: &Path, needle: &str, case_sensitive: bool) -> bool {
@@ -231,6 +245,23 @@ mod tests {
         let res = search_files(&params, &cancel);
         assert_eq!(res.len(), 1);
         assert_eq!(res[0], foo);
+    }
+
+    #[test]
+    fn root_dir_not_included_for_star() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // create a file to ensure traversal visits children
+        std::fs::write(root.join("x"), "x").unwrap();
+        let params = FindParams {
+            start_dir: root.clone(),
+            name_pattern: NamePattern::Glob("*".into()),
+            content_substring: None,
+            case_sensitive: true,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let hits = search_files(&params, &cancel);
+        assert!(!hits.iter().any(|p| p == &root));
     }
 }
 

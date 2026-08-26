@@ -4,7 +4,8 @@ use rmc_core::find::{FindDialogFocus as F, FindDialogState};
 
 pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, st: &FindDialogState) {
     let w = (cols as usize).min(76) as u16;
-    let h = 13u16;
+    // Flexible height to fit a results list
+    let h = rows.saturating_sub(4).clamp(16, 22);
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
@@ -32,9 +33,9 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
     p.goto(x + 2, y + 2);
     p.text("Start at:");
     p.goto(x + 2, y + 4);
-    p.text("File name:");
+    p.text("Filename:");
     p.goto(x + 2, y + 6);
-    p.text("Content (optional):");
+    p.text("Content:");
     p.goto(x + 2, y + 8);
     p.text("[ ] Case sensitive");
     // Fields
@@ -45,7 +46,7 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
         p.text(&format!("{t}{}", " ".repeat((w - 2) as usize - t.len())));
     };
     let field_w = w - 4;
-    draw_field(p, x + 12, y + 2, field_w - 12, &st.params.start_dir.display().to_string(), matches!(st.focus, F::StartDir), pal);
+    draw_field(p, x + 12, y + 2, field_w - 12, &st.start_dir_edit, matches!(st.focus, F::StartDir), pal);
     // Name pattern
     let pat = match &st.params.name_pattern { rmc_core::find::NamePattern::Glob(s) => s.as_str() };
     draw_field(p, x + 12, y + 4, field_w - 12, pat, matches!(st.focus, F::NamePattern), pal);
@@ -59,23 +60,50 @@ pub fn draw_find_dialog(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, s
     // Status line
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 9);
-    let status = if st.running {
-        "Searching... (Press Stop)"
-    } else {
-        let n = st.results.paths.len();
-        if n == 0 { "No results yet" } else { "Search complete" }
-    };
-    let t = truncate(status, (w - 4) as usize);
+    let n = st.results.paths.len();
+    let status = if st.running { format!("Searching... {n} matches") } else { format!("{n} matches") };
+    let t = truncate(&status, (w - 4) as usize);
     p.text(&t);
+    // Results list area
+    let list_top = y + 10;
+    let list_bottom = y + h - 3;
+    let list_h = list_bottom.saturating_sub(list_top).saturating_add(1);
+    for i in 0..list_h {
+        let row_y = list_top + i;
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        p.goto(x + 2, row_y);
+        p.text(&" ".repeat((w - 4) as usize));
+        let idx = st.scroll_top as u16 + i;
+        let idx_usize = idx as usize;
+        if let Some(path) = st.results.paths.get(idx_usize) {
+            let mut disp = match path.strip_prefix(&st.params.start_dir) {
+                Ok(rel) => rel.display().to_string(),
+                Err(_) => path.display().to_string(),
+            };
+            if disp.is_empty() {
+                disp = path.display().to_string();
+            }
+            // Highlight selection
+            if idx_usize == st.selected_index {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+            } else {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+            }
+            let t = truncate(&disp, (w - 6) as usize);
+            p.goto(x + 3, row_y);
+            p.text(&t);
+        }
+    }
     // Buttons
     let sel = |f: F, txt: &str| -> String {
         if st.focus == f { format!("< {txt} >") } else { format!("[ {txt} ]") }
     };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let btns = format!(
-        "{}  {}  {}  {}  {}",
-        sel(F::ButtonOk, "OK"),
+        "{}  {}  {}  {}  {}  {}",
+        sel(F::ButtonStart, "Start"),
         sel(F::ButtonStop, "Stop"),
+        sel(F::ButtonAgain, "Again"),
         sel(F::ButtonChdir, "Chdir"),
         sel(F::ButtonPanelize, "Panelize"),
         sel(F::ButtonQuit, "Quit")
