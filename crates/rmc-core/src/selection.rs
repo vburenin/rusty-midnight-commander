@@ -9,6 +9,12 @@ impl Selection {
     pub fn clear(&mut self) {
         self.indices.clear();
     }
+    pub fn select(&mut self, idx: usize) {
+        let _ = self.indices.insert(idx);
+    }
+    pub fn unselect(&mut self, idx: usize) {
+        self.indices.remove(&idx);
+    }
     pub fn is_selected(&self, idx: usize) -> bool {
         self.indices.contains(&idx)
     }

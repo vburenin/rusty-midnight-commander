@@ -28,6 +28,12 @@ impl Renderer {
         let mut painter = Painter { out: &mut self.out };
         // Clear screen
         painter.out.queue(Clear(ClearType::All))?;
+        // Full-screen subshell/output view short-circuit
+        if app.subshell.show_output_screen {
+            draw_subshell_fullscreen(&mut painter, cols, rows, self.palette, app)?;
+            painter.out.flush()?;
+            return Ok(());
+        }
         // Full-screen modes: short-circuit to avoid drawing panels underneath.
         if let rmc_core::app::UiMode::Editor {
             buf,
@@ -861,7 +867,8 @@ fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, _pal: McPalette, app: &App) 
         .and_then(|s| s.into_string().ok())
         .unwrap_or_default();
     let cwd = app.active_panel().cwd.display().to_string();
-    let s = format!("{user}@{host}:{cwd}$ ");
+    let mut s = format!("{user}@{host}:{cwd}$ ");
+    s.push_str(&app.subshell.cmdline);
     let t = truncate(&s, cols as usize);
     p.text(&t);
     if t.len() < cols as usize {
@@ -931,6 +938,34 @@ fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.goto(x, y);
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
+}
+
+fn draw_subshell_fullscreen(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    _pal: McPalette,
+    app: &App,
+) -> Result<()> {
+    // MC C-o: draw captured output full-screen with default terminal colors; no frame/title/status.
+    use crossterm::style::Color;
+    p.set_fg_bg(Color::Reset, Color::Reset);
+    for y in 0..rows {
+        p.goto(0, y);
+        p.text(&" ".repeat(cols as usize));
+    }
+    let max_lines = rows as usize;
+    let mut y = 0u16;
+    for line in app.subshell.window(max_lines) {
+        if y >= rows {
+            break;
+        }
+        p.goto(0, y);
+        let t = truncate(line, cols as usize);
+        p.text(&t);
+        y = y.saturating_add(1);
+    }
+    Ok(())
 }
 
 fn format_entry_name(ent: &FileEntry) -> String {

@@ -182,7 +182,7 @@ From mcdiff(1) and mc(1) “Internal Diff Viewer”:
 
 From mc(1) “Shell Command Line”, “The subshell support”:
 - [ ] Embedded subshell (bash, zsh, tcsh, fish, etc. where enabled)
-- [ ] Toggle panels vs subshell/output: C-o; suspend/return behavior
+- [x] Toggle panels vs subshell/output: C-o; suspend/return behavior
 - [ ] SHELL override on invocation; -U/--subshell or -u/--nosubshell flags
 - [ ] Command line editing keys (Emacs-like) and filename helpers (see Section 3)
 

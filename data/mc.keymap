@@ -27,6 +27,7 @@ C-PageUp  = ParentDir
 C-h     = ToggleHidden
 C-u     = SwapPanels
 C-r     = Refresh
+C-o     = ToggleSubshell
 
 # Function keys (F-bar)
 F1  = ShowHelp
@@ -46,4 +47,8 @@ Alt-t = SortTime
 # Selection
 Insert = ToggleSelect
 Space  = ToggleSelect
+# Group selection (panel)
++  = SelectGroup
+\\  = UnselectGroup
+*  = InvertSelection
 

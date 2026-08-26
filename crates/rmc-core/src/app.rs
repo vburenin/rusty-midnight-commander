@@ -2,6 +2,7 @@ use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::find::FindDialogState;
 use crate::panel::{FileEntry, PanelState, SortBy};
+use crate::subshell::Subshell;
 use anyhow::Result;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
@@ -69,6 +70,42 @@ pub enum UiMode {
     },
     MenuFocused,
     Help,
+    /// Command line at bottom has focus for editing/executing.
+    ShellInput,
+}
+
+// Simple glob matcher supporting '*' (any sequence) and '?' (single char).
+// Case-sensitive, anchored to full string.
+fn glob_match(pat: &str, name: &str) -> bool {
+    glob_match_impl(pat.as_bytes(), name.as_bytes())
+}
+
+fn glob_match_impl(p: &[u8], s: &[u8]) -> bool {
+    // Two-pointer with backtracking on '*'
+    let (mut i, mut j) = (0usize, 0usize);
+    let (mut star_i, mut star_j) = (None, 0usize);
+    while j < s.len() {
+        if i < p.len() && (p[i] == b'?' || p[i] == s[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == b'*' {
+            star_i = Some(i);
+            i += 1;
+            star_j = j;
+        } else if let Some(si) = star_i {
+            // backtrack: advance match under last '*'
+            i = si + 1;
+            star_j += 1;
+            j = star_j;
+        } else {
+            return false;
+        }
+    }
+    // Consume trailing '*' in pattern
+    while i < p.len() && p[i] == b'*' {
+        i += 1;
+    }
+    i == p.len()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +143,8 @@ pub struct App {
     pub show_hidden: bool,
     pub quit: bool,
     pub ui_mode: UiMode,
+    /// Subshell / command line state and last output.
+    pub subshell: Subshell,
 }
 
 impl App {
@@ -121,6 +160,7 @@ impl App {
             show_hidden: false,
             quit: false,
             ui_mode: UiMode::Normal,
+            subshell: Subshell::new(),
         };
         app.reload_panels()?;
         Ok(app)
@@ -178,9 +218,71 @@ impl App {
             Refresh => {
                 self.reload_panels()?;
             }
+            ToggleSubshell => {
+                // Toggle full-screen subshell/output view.
+                self.subshell.toggle_output_screen();
+                // Ensure we leave any transient prompt/dialog modes.
+                self.ui_mode = UiMode::Normal;
+            }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.reload_panels()?;
+            }
+            InvertSelection => {
+                // Invert selection for all non-parent entries in the active panel
+                let len = self.active_panel().entries.len();
+                for idx in 0..len {
+                    let ent = &self.active_panel().entries[idx];
+                    if !ent.is_parent_marker() {
+                        self.active_panel_mut().selection.toggle(idx);
+                    }
+                }
+            }
+            SelectGroup => {
+                let title = "Select group (glob):".to_string();
+                self.ui_mode = UiMode::PromptInput {
+                    title,
+                    value: "*".to_string(),
+                    on_submit: Box::new(|app, pattern| {
+                        let pat = pattern.trim().to_string();
+                        let len = app.active_panel().entries.len();
+                        for idx in 0..len {
+                            let ent = &app.active_panel().entries[idx];
+                            if ent.is_parent_marker() {
+                                continue;
+                            }
+                            if glob_match(&pat, &ent.name)
+                                && !app.active_panel().selection.is_selected(idx)
+                            {
+                                app.active_panel_mut().selection.select(idx);
+                            }
+                        }
+                        Ok(())
+                    }),
+                };
+            }
+            UnselectGroup => {
+                let title = "Unselect group (glob):".to_string();
+                self.ui_mode = UiMode::PromptInput {
+                    title,
+                    value: "*".to_string(),
+                    on_submit: Box::new(|app, pattern| {
+                        let pat = pattern.trim().to_string();
+                        let len = app.active_panel().entries.len();
+                        for idx in 0..len {
+                            let ent = &app.active_panel().entries[idx];
+                            if ent.is_parent_marker() {
+                                continue;
+                            }
+                            if glob_match(&pat, &ent.name)
+                                && app.active_panel().selection.is_selected(idx)
+                            {
+                                app.active_panel_mut().selection.unselect(idx);
+                            }
+                        }
+                        Ok(())
+                    }),
+                };
             }
             SwapPanels => {
                 std::mem::swap(&mut self.left, &mut self.right);

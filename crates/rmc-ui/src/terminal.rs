@@ -97,8 +97,96 @@ impl TerminalApp {
 
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
         let active_cwd = app.active_panel().cwd.clone();
+        // Subshell full-screen mode: C-o toggles back; support PgUp/PgDn/Up/Down scrolling.
+        if app.subshell.show_output_screen {
+            match key.code {
+                KeyCode::Char('o')
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    app.handle_action(Action::ToggleSubshell)?;
+                }
+                KeyCode::PageUp => {
+                    let (_c, r) = crossterm::terminal::size()?;
+                    app.subshell.scroll_page_up(r as usize);
+                }
+                KeyCode::PageDown => {
+                    let (_c, r) = crossterm::terminal::size()?;
+                    app.subshell.scroll_page_down(r as usize);
+                }
+                KeyCode::Up => app.subshell.scroll_page_up(1),
+                KeyCode::Down => app.subshell.scroll_page_down(1),
+                _ => {}
+            }
+            return Ok(());
+        }
         // Dialog handling first
         match &mut app.ui_mode {
+            UiMode::ShellInput => {
+                // Command line editing and execution
+                match key.code {
+                    KeyCode::Esc => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Enter if key.modifiers.is_empty() => {
+                        if app.subshell.cmdline.trim().is_empty() {
+                            // Empty command: use panel Enter behavior
+                            app.ui_mode = UiMode::Normal;
+                            app.handle_action(Action::Enter)?;
+                        } else {
+                            let _outcome = app.subshell.execute_current(&active_cwd)?;
+                            // Always rescan panels after a command (local VFS only here).
+                            app.reload_panels()?;
+                            app.subshell.clear_cmdline();
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        app.subshell.cmdline.pop();
+                        app.subshell.clear_history_nav();
+                    }
+                    KeyCode::Up => {
+                        if let Some(s) = app.subshell.history_prev() {
+                            app.subshell.cmdline = s;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(s) = app.subshell.history_next() {
+                            app.subshell.cmdline = s;
+                        }
+                    }
+                    KeyCode::Char('p')
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                    {
+                        if let Some(s) = app.subshell.history_prev() {
+                            app.subshell.cmdline = s;
+                        }
+                    }
+                    KeyCode::Char('n')
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                    {
+                        if let Some(s) = app.subshell.history_next() {
+                            app.subshell.cmdline = s;
+                        }
+                    }
+                    KeyCode::Enter
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                    {
+                        // Alt-Enter: copy current filename into command line
+                        if let Some(ent) = app.active_panel().current_entry() {
+                            let name = ent.name.clone();
+                            app.subshell.append_filename(&name);
+                        }
+                    }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        app.subshell.cmdline.push(c);
+                        app.subshell.clear_history_nav();
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::PromptInput {
                 title: _,
                 value,
@@ -773,10 +861,24 @@ impl TerminalApp {
             _ => {}
         }
 
+        // Global Alt-Enter: append filename to command line and enter ShellInput if necessary
+        if matches!(key.code, KeyCode::Enter)
+            && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+        {
+            if let Some(ent) = app.active_panel().current_entry() {
+                let name = ent.name.clone();
+                app.subshell.append_filename(&name);
+                app.ui_mode = UiMode::ShellInput;
+            }
+            return Ok(());
+        }
         if let Some(action) = app.keymap.resolve(&key) {
             match action {
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
+                Action::ToggleSubshell => {
+                    app.handle_action(Action::ToggleSubshell)?;
+                }
                 Action::Mkdir => {
                     app.ui_mode = UiMode::MkdirDialog {
                         value: String::new(),
@@ -832,6 +934,16 @@ impl TerminalApp {
                     }
                 }
                 _ => app.handle_action(action)?,
+            }
+        } else {
+            // Only if not a mapped action, treat plain char as command-line typing.
+            if let KeyCode::Char(c) = key.code {
+                if key.modifiers.is_empty() {
+                    app.subshell.cmdline.push(c);
+                    app.subshell.clear_history_nav();
+                    app.ui_mode = UiMode::ShellInput;
+                    return Ok(());
+                }
             }
         }
         Ok(())
