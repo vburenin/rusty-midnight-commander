@@ -1,6 +1,6 @@
+use crate::extfs::{ExtfsPath, ExtfsRegistry};
 use crate::local::LocalFs;
 use crate::pathutil::{append_anchor, parse_archive_path, ArchiveKind};
-use crate::extfs::{ExtfsRegistry, ExtfsPath};
 use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
 use std::fs;
 use std::io::{Read, Write};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// Composite virtual filesystem that routes operations to:
 /// - Local filesystem
 /// - Archive files (tar, tar.gz, zip) when the path contains an `archive#` anchor
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CompositeFs {
     local: LocalFs,
     extfs: ExtfsRegistry,
@@ -33,6 +33,12 @@ impl CompositeFs {
         } else {
             Route::Local { path }
         }
+    }
+}
+
+impl Default for CompositeFs {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -140,11 +146,14 @@ impl Vfs for CompositeFs {
             (Route::Archive { .. }, Route::Archive { .. }) => Err(FsError::Message(
                 "copy between archives is not supported".into(),
             )),
-            (Route::Local { .. }, Route::Extfs { .. }) => Err(FsError::Message(
-                "copy into extfs is not supported".into(),
-            )),
+            (Route::Local { .. }, Route::Extfs { .. }) => {
+                Err(FsError::Message("copy into extfs is not supported".into()))
+            }
             (Route::Extfs { .. }, Route::Extfs { .. }) => Err(FsError::Message(
                 "copy between extfs is not supported".into(),
+            )),
+            _ => Err(FsError::Message(
+                "copy between different VFS backends is not supported".into(),
             )),
         }
     }
@@ -179,9 +188,9 @@ impl Vfs for CompositeFs {
             Route::Archive { .. } => Err(FsError::Message(
                 "write into an archive is not supported".into(),
             )),
-            Route::Extfs { .. } => Err(FsError::Message(
-                "write into extfs is not supported".into(),
-            )),
+            Route::Extfs { .. } => {
+                Err(FsError::Message("write into extfs is not supported".into()))
+            }
         }
     }
 

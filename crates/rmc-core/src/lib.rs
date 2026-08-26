@@ -3,7 +3,7 @@ pub mod app;
 pub mod config;
 pub mod events;
 pub mod find;
-pub mod user_menu;
 pub mod panel;
 pub mod selection;
 pub mod sorting;
+pub mod user_menu;

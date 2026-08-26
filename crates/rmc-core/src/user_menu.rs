@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,8 +26,8 @@ pub struct UserMenu {
 pub fn load_menu(cwd: &Path) -> Result<UserMenu> {
     let mut candidates: Vec<(PathBuf, bool)> = Vec::new();
     candidates.push((cwd.join(".mc.menu"), true));
-    if let Some(home) = dirs::home_dir() {
-        candidates.push((home.join(".config/mc/menu"), true));
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push((PathBuf::from(home).join(".config/mc/menu"), true));
     }
     // Two repo-relative fallbacks like keymap loader uses
     candidates.push((PathBuf::from("data/mc.menu"), false));
@@ -38,11 +37,9 @@ pub fn load_menu(cwd: &Path) -> Result<UserMenu> {
     ));
 
     for (p, require_safe) in candidates {
-        if p.exists() {
-            if !require_safe || is_safe_file(&p) {
-                if let Ok(m) = parse_menu_file(&p) {
-                    return Ok(m);
-                }
+        if p.exists() && (!require_safe || is_safe_file(&p)) {
+            if let Ok(m) = parse_menu_file(&p) {
+                return Ok(m);
             }
         }
     }
@@ -54,12 +51,11 @@ fn is_safe_file(path: &Path) -> bool {
     // On non-Unix platforms, consider it safe.
     #[cfg(unix)]
     {
-        if let Ok(md) = std::fs::symlink_metadata(path) {
-            let my_uid = unsafe { libc::getuid() } as u32;
-            let mode = md.mode();
-            return md.uid() == my_uid && (mode & 0o022 == 0);
-        }
-        false
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .ok()
+            .map(|md| md.permissions().mode() & 0o022 == 0)
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {
@@ -71,11 +67,11 @@ fn is_safe_file(path: &Path) -> bool {
 /// - Lines starting with '#' are comments; empty lines separate entries.
 /// - Entry begins with: "<key>: <Title>" or "Title" (no hotkey).
 /// - Following indented lines (starting with one or more spaces or a tab) form the command (joined with '\n').
-/// Example:
+///   Example:
 ///   a: Echo file
-///     echo %f
+///   echo %f
 ///   Show dir
-///     echo %d
+///   echo %d
 pub fn parse_menu_file(path: &Path) -> Result<UserMenu> {
     let f = File::open(path)?;
     let mut rdr = BufReader::new(f).lines().peekable();
@@ -101,7 +97,7 @@ pub fn parse_menu_file(path: &Path) -> Result<UserMenu> {
         };
         // Collect indented command lines
         let mut cmd_lines: Vec<String> = Vec::new();
-        while let Some(Ok(peek)) = rdr.peek().cloned() {
+        while let Some(Ok(peek)) = rdr.peek() {
             let is_cmd = {
                 let trimmed = peek.trim_end();
                 !trimmed.is_empty() && (trimmed.starts_with(' ') || trimmed.starts_with('\t'))
@@ -133,10 +129,7 @@ pub fn parse_menu_file(path: &Path) -> Result<UserMenu> {
 /// - %d current directory (active panel)
 /// - %f selected file (cursor)
 /// - %s / %t tagged files (space-separated). If none tagged, falls back to %f.
-pub fn expand_macros(
-    app: &rmc_core::app::App,
-    command: &str,
-) -> String {
+pub fn expand_macros(app: &crate::app::App, command: &str) -> String {
     let panel = app.active_panel();
     let cwd = panel.cwd.clone();
     let cur_file = panel
@@ -152,10 +145,7 @@ pub fn expand_macros(
         .map(|e| e.path.clone())
         .collect();
     let list_for_st = if tagged.is_empty() {
-        cur_file
-            .as_ref()
-            .map(|p| vec![p.clone()])
-            .unwrap_or_else(Vec::new)
+        cur_file.as_ref().map(|p| vec![p.clone()]).unwrap_or_default()
     } else {
         tagged
     };
@@ -203,7 +193,7 @@ fn shell_quote(s: &str) -> String {
 
 /// Execute a command string using the system shell in the active panel's cwd.
 /// Returns Ok(()) regardless of command exit code; errors only for spawn failures.
-pub fn run_menu_command(app: &rmc_core::app::App, cmd: &str) -> Result<()> {
+pub fn run_menu_command(app: &crate::app::App, cmd: &str) -> Result<()> {
     use std::process::Command;
     let cwd = app.active_panel().cwd.clone();
     let status = Command::new("sh")
@@ -220,21 +210,16 @@ pub fn run_menu_command(app: &rmc_core::app::App, cmd: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
+    use crate::config::KeyMap;
     use rmc_fs::local::LocalFs;
-    use rmc_core::app::App;
-    use rmc_core::config::KeyMap;
     use tempfile::tempdir;
-    use std::io::Write;
 
     #[test]
     fn parse_simple_menu() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("menu");
-        std::fs::write(
-            &p,
-            "a: Echo file\n  echo %f\n\nShow dir\n  echo %d\n",
-        )
-        .unwrap();
+        std::fs::write(&p, "a: Echo file\n  echo %f\n\nShow dir\n  echo %d\n").unwrap();
         let m = parse_menu_file(&p).unwrap();
         assert_eq!(m.entries.len(), 2);
         assert_eq!(m.entries[0].hotkey, Some('a'));
@@ -262,8 +247,8 @@ mod tests {
         app.active_panel_mut().cursor = idx;
         let cmd = "echo %f %d %s %t";
         let exp = expand_macros(&app, cmd);
-        assert!(exp.contains("'a b.txt'"));
+        let fq = shell_quote_path(&f);
+        assert!(exp.contains(&fq));
         assert!(exp.contains(&shell_quote_path(&root)));
     }
 }
-
