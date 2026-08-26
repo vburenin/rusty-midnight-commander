@@ -68,7 +68,7 @@ Directory panels (selection, navigation, layout):
 - [ ] Insert / C-t: toggle mark; “Mark moves down” option
 - [ ] Alt-g / Alt-r / Alt-j: jump to top/middle/bottom item
 - [ ] Alt-t: cycle listing format (Brief/Long/User/Full)
-- [ ] C-\\ (Ctrl-Backslash): Directory hotlist dialog
+- [x] C-\\ (Ctrl-Backslash): Directory hotlist dialog
 - [ ] ‘+’ Select group; ‘\\’ Unselect group; ‘*’ Invert selection
 - [ ] Quick search: C-s / Alt-s starts; C-s repeats; wildcards * ?
 - [ ] Refresh/rescan directory: C-r (when enabled)
@@ -90,7 +90,7 @@ Misc panel actions:
 - [ ] Swap panels, Equalize panels (menu actions; include keys if assigned)
 
 Subshell/screen toggle:
-- [ ] C-o: toggle panels vs subshell/output screen (when subshell enabled)
+- [x] C-o: toggle panels vs subshell/output screen (when subshell enabled)
 
 Tree/directory navigation (from tree and general movement keys):
 - [ ] b/C-b/C-h/Backspace/Delete: page up; Space: page down; u/d: half-page; g/G: begin/end
@@ -170,7 +170,7 @@ Per mc(1) “Find File” and “External panelize”:
 ## 9) Diff viewer (mcdiff) — Status: Later
 
 From mcdiff(1) and mc(1) “Internal Diff Viewer”:
-- [x] Side-by-side diff of two files via panels (Command → Compare files) and CLI `mcr --diff file1 file2`
+- [x] Side-by-side diff of two files via panels and CLI `mcr --diff file1 file2`
 - [x] Navigate hunks: next/prev; goto line; search (n continues)
 - [x] Merge current hunk (F5); swap sides (C-u); refresh (C-r)
 - [x] Show hunk status; toggle line numbers; adjust panel widths
@@ -196,7 +196,7 @@ Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “U
  - [ ] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action; “Learn keys” support
 - [x] User menu (F2): `.mc.menu` (cwd) or `~/.config/mc/menu`, else system menu; minimal safety
 - [x] Extension rules: `mc.ext.ini` to open helper-defined VFS (minimal)
-- [ ] Directory hotlist: C-\\ opens; C-x h adds current; manage labels and jump
+- [x] Directory hotlist: C-\\ opens; C-x h adds current; manage labels and jump
 - [ ] Environment variables respected (e.g., MC_SKIN, MC_KEYMAP, MC_COLOR_TABLE, MC_DATADIR, MC_PROFILE_ROOT, EDITOR, VIEWER)
 
 ---

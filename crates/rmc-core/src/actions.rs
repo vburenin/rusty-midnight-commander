@@ -52,6 +52,8 @@ pub enum Action {
     InvertSelection,
     /// Toggle full-screen subshell/output view (C-o).
     ToggleSubshell,
+    // Hotlist
+    OpenHotlist,
     // Mouse interactions (coordinates handled by UI)
     MouseClick {
         x: u16,

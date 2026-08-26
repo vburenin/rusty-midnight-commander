@@ -174,6 +174,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::FindDialog(state) => {
             draw_find_dialog(p, cols, rows, pal, state);
         }
+        rmc_core::app::UiMode::HotlistDialog(state) => {
+            crate::hotlist::draw_hotlist_dialog(p, cols, rows, pal, state);
+        }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
             draw_dialog_box(p, cols, rows, pal, title, &msg, &["< OK >", "Cancel"]);
@@ -1615,7 +1618,12 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
     let menus: [&[&str]; 5] = [
         &["Copy", "Move", "Mkdir", "Delete"],
         &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-        &["User menu", "Find file", "Compare dirs"],
+        &[
+            "User menu",
+            "Find file",
+            "Directory hotlist",
+            "Compare dirs",
+        ],
         &["Layout", "Panels", "Confirmations"],
         &["Copy", "Move", "Mkdir", "Delete"],
     ];

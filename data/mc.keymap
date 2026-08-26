@@ -45,6 +45,10 @@ Alt-n = SortName
 Alt-s = SortSize
 Alt-t = SortTime
 
+# Directory hotlist
+C-\\ = OpenHotlist
+# Note: 'C-x h' (Add current dir to hotlist) is handled as a key chord by the UI layer.
+
 # Selection
 Insert = ToggleSelect
 Space  = ToggleSelect

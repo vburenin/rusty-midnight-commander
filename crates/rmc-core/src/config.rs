@@ -266,6 +266,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "SortName" => Some(Sort(SortBy::Name)),
         "SortSize" => Some(Sort(SortBy::Size)),
         "SortTime" => Some(Sort(SortBy::Time)),
+        "OpenHotlist" => Some(OpenHotlist),
         _ => None,
     }
 }
