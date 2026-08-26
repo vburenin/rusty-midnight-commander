@@ -242,7 +242,7 @@ fn shell_keywords() -> &'static [&'static str] {
     ]
 }
 
-fn tokenize_rust_like(text: &str, is_rust: bool) -> Vec<SpanUnit> {
+fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
     // Handles Rust; C-like done separately to catch preproc
     let mut out: Vec<SpanUnit> = Vec::new();
     let mut i = 0usize;
@@ -331,7 +331,7 @@ fn tokenize_rust_like(text: &str, is_rust: bool) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            let kind = if kws.binary_search_by(|k| k.cmp(&word.as_str())).is_ok() {
+            let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Identifier
@@ -472,7 +472,7 @@ fn tokenize_c_like(text: &str) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            let kind = if kws.binary_search_by(|k| k.cmp(&word.as_str())).is_ok() {
+            let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Identifier
@@ -599,7 +599,7 @@ fn tokenize_python(text: &str) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            let kind = if kws.binary_search_by(|k| k.cmp(&word.as_str())).is_ok() {
+            let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Identifier
@@ -704,7 +704,7 @@ fn tokenize_shell(text: &str) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            let kind = if kws.binary_search_by(|k| k.cmp(&word.as_str())).is_ok() {
+            let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Identifier
@@ -765,7 +765,7 @@ fn tokenize_ini(text: &str) -> Vec<SpanUnit> {
         return out;
     }
     // Comment: ';' or '#'
-    if let Some(pos) = text.find(|c| c == ';' || c == '#') {
+    if let Some(pos) = text.find([';', '#']) {
         // Everything after marker is comment
         // Left side may still be tokenized roughly as key=value
         let (left, _) = text.split_at(pos);
