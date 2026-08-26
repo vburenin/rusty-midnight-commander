@@ -1897,7 +1897,7 @@ impl TerminalApp {
                 } = &mut app.ui_mode
                 {
                     match key.code {
-                        KeyCode::Esc => {
+                        KeyCode::Esc | KeyCode::F(10) => {
                             *prompt = String::new();
                             if let UiMode::Viewer { goto_prompt, .. } = &mut app.ui_mode {
                                 *goto_prompt = None;
@@ -1977,7 +1977,7 @@ impl TerminalApp {
                 } = &mut app.ui_mode
                 {
                     match key.code {
-                        KeyCode::Esc => {
+                        KeyCode::Esc | KeyCode::F(10) => {
                             *prompt = String::new();
                             if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
                                 *search_prompt = None;
