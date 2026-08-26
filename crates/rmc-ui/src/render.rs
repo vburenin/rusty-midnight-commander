@@ -69,7 +69,10 @@ impl Renderer {
             hex,
             wrap,
             offset,
+            show_line_numbers,
+            show_cr,
             search_prompt,
+            goto_prompt,
             ..
         } = &app.ui_mode
         {
@@ -82,7 +85,10 @@ impl Renderer {
                 *hex,
                 *wrap,
                 *offset,
+                *show_line_numbers,
+                *show_cr,
                 search_prompt,
+                goto_prompt,
             )?;
             painter.out.flush()?;
             return Ok(());
@@ -1018,7 +1024,10 @@ fn draw_viewer(
     hex: bool,
     wrap: bool,
     offset: u64,
+    show_line_numbers: bool,
+    show_cr: bool,
     search_prompt: &Option<String>,
+    goto_prompt: &Option<String>,
 ) -> Result<()> {
     // MC-style viewer: blue background with frame and title
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -1076,16 +1085,37 @@ fn draw_viewer(
     // Render content window using rmc-view (windowed)
     // Layout: full frame; content rows = rows - 3 (status + fbar)
     let content_rows = rows.saturating_sub(3);
+    // Reserve space for optional line numbers (text mode only)
+    let ln_enabled = show_line_numbers && !hex;
+    // Compute line number gutter width conservatively (up to 7 digits + space)
+    let ln_gutter: u16 = if ln_enabled { 8 } else { 0 };
+    let content_cols = cols.saturating_sub(2 + ln_gutter);
     let rr = rmc_view::render_window(
         path,
-        rmc_view::ViewOptions { hex, wrap },
+        rmc_view::ViewOptions { hex, wrap, show_cr },
         offset,
-        cols.saturating_sub(2), // content width inside frame
+        content_cols, // content width inside frame
         content_rows,
     )?;
+    // If showing line numbers, compute starting line number at rr.offset
+    let mut start_ln = 1u64;
+    if ln_enabled {
+        if let Ok(n) = rmc_view::line_number_at(path, rr.offset) {
+            start_ln = n;
+        }
+    }
     for (i, line) in rr.lines.into_iter().enumerate() {
-        p.goto(1, 1 + i as u16);
-        let t = truncate(&line, (cols.saturating_sub(2)) as usize);
+        let row_y = 1 + i as u16;
+        p.goto(1, row_y);
+        if ln_enabled {
+            // Draw gray-ish line number gutter
+            p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
+            let label = format!("{:>6} ", start_ln + i as u64);
+            p.text(&label);
+            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            p.goto(1 + ln_gutter, row_y);
+        }
+        let t = truncate(&line, content_cols as usize);
         p.text(&t);
         if (1 + i as u16) >= rows.saturating_sub(2) {
             break;
@@ -1107,7 +1137,12 @@ fn draw_viewer(
         .saturating_mul(100)
         .checked_div(total)
         .unwrap_or(100);
-    let status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
+    let mut status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
+    if ln_enabled {
+        if let Ok(cur_ln) = rmc_view::line_number_at(path, rr.offset) {
+            status.push_str(&format!("  Ln {}", cur_ln));
+        }
+    }
     let st = truncate(&status, cols as usize);
     p.text(&st);
     // Viewer F-bar (white-on-black numbers, black-on-cyan labels)
@@ -1115,6 +1150,18 @@ fn draw_viewer(
     // Search prompt overlay (MC-style input dialog)
     if let Some(current) = search_prompt {
         draw_dialog_box(p, cols, rows, pal, "Search", current, &["< OK >", "Cancel"]);
+    }
+    // Goto prompt overlay (MC-style input dialog)
+    if let Some(current) = goto_prompt {
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Goto (:@offset, :line)",
+            current,
+            &["< OK >", "Cancel"],
+        );
     }
     Ok(())
 }
