@@ -3,8 +3,63 @@ use rmc_core::actions::Action;
 use rmc_core::app::App;
 use rmc_core::config::KeyMap;
 use rmc_core::find::{search_files, FindParams, NamePattern};
-use rmc_fs::local::LocalFs;
+use rmc_fs::{local::LocalFs, Vfs};
 use tempfile::tempdir;
+
+#[derive(Debug)]
+struct FixedCwdFs {
+    inner: LocalFs,
+    cwd: std::path::PathBuf,
+}
+
+impl FixedCwdFs {
+    fn new(cwd: std::path::PathBuf) -> Self {
+        Self {
+            inner: LocalFs::new(),
+            cwd,
+        }
+    }
+}
+
+impl Vfs for FixedCwdFs {
+    fn cwd(&self) -> rmc_fs::FsResult<std::path::PathBuf> {
+        Ok(self.cwd.clone())
+    }
+    fn list_dir(
+        &self,
+        path: &std::path::Path,
+        show_hidden: bool,
+    ) -> rmc_fs::FsResult<Vec<rmc_fs::DirEntry>> {
+        self.inner.list_dir(path, show_hidden)
+    }
+    fn enter_path(&self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+        self.inner.enter_path(path)
+    }
+    fn mkdir(&self, path: &std::path::Path) -> rmc_fs::FsResult<()> {
+        self.inner.mkdir(path)
+    }
+    fn remove(&self, path: &std::path::Path, recursive: bool) -> rmc_fs::FsResult<()> {
+        self.inner.remove(path, recursive)
+    }
+    fn copy(&self, src: &std::path::Path, dst: &std::path::Path) -> rmc_fs::FsResult<()> {
+        self.inner.copy(src, dst)
+    }
+    fn move_path(&self, src: &std::path::Path, dst: &std::path::Path) -> rmc_fs::FsResult<()> {
+        self.inner.move_path(src, dst)
+    }
+    fn read_file(&self, path: &std::path::Path) -> rmc_fs::FsResult<Box<dyn std::io::Read + Send>> {
+        self.inner.read_file(path)
+    }
+    fn write_file(
+        &self,
+        path: &std::path::Path,
+    ) -> rmc_fs::FsResult<Box<dyn std::io::Write + Send>> {
+        self.inner.write_file(path)
+    }
+    fn stat(&self, path: &std::path::Path) -> rmc_fs::FsResult<rmc_fs::Metadata> {
+        self.inner.stat(path)
+    }
+}
 
 #[test]
 fn find_and_panelize_results_restore_on_parent() -> Result<()> {
@@ -27,9 +82,8 @@ fn find_and_panelize_results_restore_on_parent() -> Result<()> {
     let hits = search_files(&params, &cancel);
     assert_eq!(hits, vec![f1.clone()]);
 
-    // App rooted at temp dir
-    std::env::set_current_dir(&root)?;
-    let vfs = LocalFs::new();
+    // App rooted at temp dir (avoid global cwd to prevent race in parallel tests)
+    let vfs = FixedCwdFs::new(root.clone());
     let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
     assert_eq!(app.active_panel().cwd, root);
 
@@ -69,8 +123,8 @@ fn panelize_uses_relative_names_for_disambiguation() -> Result<()> {
     let f2 = sub2.join("dup.txt");
     std::fs::write(&f1, "a")?;
     std::fs::write(&f2, "b")?;
-    std::env::set_current_dir(&root)?;
-    let vfs = LocalFs::new();
+    // App rooted at temp dir (avoid global cwd to prevent race in parallel tests)
+    let vfs = FixedCwdFs::new(root.clone());
     let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
     app.panelize_paths(&[f1.clone(), f2.clone()], Some(&root))?;
     let names: Vec<String> = app
