@@ -1,3 +1,4 @@
+use crate::extfs::{ExtfsPath, ExtfsRegistry};
 use crate::local::LocalFs;
 use crate::pathutil::{append_anchor, parse_archive_path, ArchiveKind};
 use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
@@ -8,15 +9,17 @@ use std::path::{Path, PathBuf};
 /// Composite virtual filesystem that routes operations to:
 /// - Local filesystem
 /// - Archive files (tar, tar.gz, zip) when the path contains an `archive#` anchor
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CompositeFs {
     local: LocalFs,
+    extfs: ExtfsRegistry,
 }
 
 impl CompositeFs {
     pub fn new() -> Self {
         Self {
             local: LocalFs::new(),
+            extfs: ExtfsRegistry::load_default(),
         }
     }
 
@@ -24,9 +27,18 @@ impl CompositeFs {
         if let Some(ap) = parse_archive_path(path) {
             let vfs_root = path; // the full composite path with '#'
             Route::Archive { ap, vfs_root }
+        } else if let Some(xp) = self.extfs.parse_extfs_path(path) {
+            let vfs_root = path;
+            Route::Extfs { xp, vfs_root }
         } else {
             Route::Local { path }
         }
+    }
+}
+
+impl Default for CompositeFs {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -36,6 +48,10 @@ enum Route<'a> {
     },
     Archive {
         ap: crate::pathutil::ArchivePath,
+        vfs_root: &'a Path,
+    },
+    Extfs {
+        xp: ExtfsPath,
         vfs_root: &'a Path,
     },
 }
@@ -56,16 +72,29 @@ impl Vfs for CompositeFs {
                     crate::zipfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
                 }
             },
+            Route::Extfs { xp, vfs_root } => crate::extfs::list_dir(
+                &xp.helper_cmd,
+                &xp.archive,
+                &xp.inner,
+                vfs_root,
+                show_hidden,
+            ),
         }
     }
 
     fn enter_path(&self, path: &Path) -> Option<PathBuf> {
         // Enter on archive files by extension; disallow when already in an archive
-        if parse_archive_path(path).is_some() {
+        if parse_archive_path(path).is_some() || self.extfs.parse_extfs_path(path).is_some() {
             return None;
         }
         if crate::pathutil::detect_archive_kind(path).is_some() {
             // Ensure the file exists and is a regular file
+            if let Ok(md) = fs::symlink_metadata(path) {
+                if md.is_file() {
+                    return Some(append_anchor(path));
+                }
+            }
+        } else if self.extfs.match_extension(path).is_some() {
             if let Ok(md) = fs::symlink_metadata(path) {
                 if md.is_file() {
                     return Some(append_anchor(path));
@@ -81,6 +110,9 @@ impl Vfs for CompositeFs {
             Route::Archive { .. } => Err(FsError::Message(
                 "mkdir inside archive is not supported".into(),
             )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "mkdir inside extfs is not supported".into(),
+            )),
         }
     }
 
@@ -89,6 +121,9 @@ impl Vfs for CompositeFs {
             Route::Local { path } => self.local.remove(path, recursive),
             Route::Archive { .. } => Err(FsError::Message(
                 "remove inside archive is not supported".into(),
+            )),
+            Route::Extfs { .. } => Err(FsError::Message(
+                "remove inside extfs is not supported".into(),
             )),
         }
     }
@@ -102,11 +137,23 @@ impl Vfs for CompositeFs {
                 }
                 ArchiveKind::Zip => crate::zipfs::copy_out(&ap.archive, &ap.inner, d),
             },
+            (Route::Extfs { xp, .. }, Route::Local { path: d }) => {
+                crate::extfs::copy_out(&xp.helper_cmd, &xp.archive, &xp.inner, d)
+            }
             (Route::Local { .. }, Route::Archive { .. }) => Err(FsError::Message(
                 "copy into an archive is not supported".into(),
             )),
             (Route::Archive { .. }, Route::Archive { .. }) => Err(FsError::Message(
                 "copy between archives is not supported".into(),
+            )),
+            (Route::Local { .. }, Route::Extfs { .. }) => {
+                Err(FsError::Message("copy into extfs is not supported".into()))
+            }
+            (Route::Extfs { .. }, Route::Extfs { .. }) => Err(FsError::Message(
+                "copy between extfs is not supported".into(),
+            )),
+            _ => Err(FsError::Message(
+                "copy between different VFS backends is not supported".into(),
             )),
         }
     }
@@ -129,6 +176,9 @@ impl Vfs for CompositeFs {
                 }
                 ArchiveKind::Zip => crate::zipfs::read_file(&ap.archive, &ap.inner),
             },
+            Route::Extfs { .. } => Err(FsError::Message(
+                "read_file inside extfs is not supported; use copy-out".into(),
+            )),
         }
     }
 
@@ -138,6 +188,9 @@ impl Vfs for CompositeFs {
             Route::Archive { .. } => Err(FsError::Message(
                 "write into an archive is not supported".into(),
             )),
+            Route::Extfs { .. } => {
+                Err(FsError::Message("write into extfs is not supported".into()))
+            }
         }
     }
 
@@ -150,6 +203,9 @@ impl Vfs for CompositeFs {
                 }
                 ArchiveKind::Zip => crate::zipfs::stat(&ap.archive, &ap.inner),
             },
+            Route::Extfs { .. } => Err(FsError::Message(
+                "stat inside extfs is not supported in this minimal implementation".into(),
+            )),
         }
     }
 }

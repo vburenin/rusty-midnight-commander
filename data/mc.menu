@@ -1,0 +1,16 @@
+# Rusty Midnight Commander - Default User Menu (Apache-2.0)
+# Format:
+#   <key>: <Title>
+#     <command...>
+# Indent the command with spaces or a tab. Use %f (selected file), %d (cwd),
+# and %s/%t (tagged files) macros. Lines starting with # are comments.
+
+a: Echo selected file
+  echo %f
+
+d: Show current directory
+  echo %d
+
+t: Echo tagged files (or current file)
+  echo %t
+

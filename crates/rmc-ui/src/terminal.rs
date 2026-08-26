@@ -467,6 +467,57 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::UserMenu {
+                title: _,
+                entries,
+                selected_index,
+            } => {
+                let mut run_command_text: Option<String> = None;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Up => {
+                        if *selected_index > 0 {
+                            *selected_index -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected_index + 1 < entries.len() {
+                            *selected_index += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(ent) = entries.get(*selected_index) {
+                            run_command_text = Some(ent.command.clone());
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        // Hotkey invoke
+                        let lc = c.to_ascii_lowercase();
+                        if let Some((idx, _)) = entries
+                            .iter()
+                            .enumerate()
+                            .find(|(_, e)| e.hotkey.map(|k| k.to_ascii_lowercase()) == Some(lc))
+                        {
+                            *selected_index = idx;
+                            if let Some(ent) = entries.get(idx) {
+                                run_command_text = Some(ent.command.clone());
+                                app.ui_mode = UiMode::Normal;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                // After releasing the mutable borrow on ui_mode, run the command if requested
+                if let Some(txt) = run_command_text {
+                    let cmd = rmc_core::user_menu::expand_macros(app, &txt);
+                    let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+                    app.reload_panels()?;
+                }
+                return Ok(());
+            }
             UiMode::DeleteDialog {
                 name: _,
                 path,
@@ -580,7 +631,7 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["Find file", "Compare files", "Compare dirs"],
+                    &["User menu", "Find file", "Compare files", "Compare dirs"],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete"],
                 ];
@@ -639,6 +690,14 @@ impl TerminalApp {
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(8), key.modifiers),
+                                    page_rows,
+                                );
+                            }
+                            "User menu" => {
+                                // route like F2
+                                return Self::handle_key(
+                                    app,
+                                    KeyEvent::new(KeyCode::F(2), key.modifiers),
                                     page_rows,
                                 );
                             }
@@ -1341,6 +1400,24 @@ impl TerminalApp {
                     return Ok(());
                 }
             }
+        }
+        // Dedicated handling for F2 User Menu action
+        if let Some(Action::ShowUserMenu) = app.keymap.resolve(&key) {
+            // Load menu and open dialog
+            let cwd = app.active_panel().cwd.clone();
+            match rmc_core::user_menu::load_menu(&cwd) {
+                Ok(menu) => {
+                    app.ui_mode = UiMode::UserMenu {
+                        title: menu.title,
+                        entries: menu.entries,
+                        selected_index: 0,
+                    };
+                }
+                Err(_) => {
+                    // No menu found — ignore
+                }
+            }
+            return Ok(());
         }
         Ok(())
     }

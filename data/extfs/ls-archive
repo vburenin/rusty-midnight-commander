@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Apache-2.0
+# Simple extfs helper for Rusty Midnight Commander.
+# Treats a ".lsar" text file as a list of paths to expose virtually.
+# Commands:
+#   list <archive.lsar>           # print "F <display> <realpath>" per line
+#   extract <archive.lsar> <name> <dest>  # copy out file whose basename matches <name>
+set -euo pipefail
+cmd="${1:-}"
+archive="${2:-}"
+
+die() { echo "ls-archive: $*" >&2; exit 1; }
+
+if [[ "$cmd" == "list" ]]; then
+  [[ -n "$archive" ]] || die "archive not provided"
+  base_dir="$(dirname "$archive")"
+  while IFS= read -r line; do
+    # Skip comments and empty lines
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^# ]] && continue
+    # If relative, resolve against archive directory
+    path="$line"
+    if [[ "$path" != /* ]]; then
+      path="$base_dir/$path"
+    fi
+    if [[ -f "$path" ]]; then
+      name="$(basename "$path")"
+      # Output format understood by rmc extfs: kind name realpath
+      echo "F $name $path"
+    fi
+  done <"$archive"
+  exit 0
+elif [[ "$cmd" == "extract" ]]; then
+  name="${3:-}"
+  dest="${4:-}"
+  [[ -n "$archive" && -n "$name" && -n "$dest" ]] || die "usage: extract <archive> <name> <dest>"
+  base_dir="$(dirname "$archive")"
+  found=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^# ]] && continue
+    path="$line"
+    if [[ "$path" != /* ]]; then
+      path="$base_dir/$path"
+    fi
+    if [[ -f "$path" && "$(basename "$path")" == "$name" ]]; then
+      found="$path"
+      break
+    fi
+  done <"$archive"
+  [[ -n "$found" ]] || die "entry not found: $name"
+  # Ensure destination directory exists
+  mkdir -p "$(dirname "$dest")"
+  cp -f -- "$found" "$dest"
+  exit 0
+else
+  die "unknown command: $cmd"
+fi
+
