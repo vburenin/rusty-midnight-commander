@@ -176,7 +176,12 @@ impl App {
                     if ent.is_dir {
                         self.change_dir(&ent.path)?;
                     } else {
-                        // No-op for files (ext associations to be added later)
+                        // Ask VFS if this path is enterable (e.g., archives)
+                        if let Some(p) = self.vfs.enter_path(&ent.path) {
+                            self.change_dir(&p)?;
+                        } else {
+                            // No-op for regular files (open with View action instead)
+                        }
                     }
                 }
             }
