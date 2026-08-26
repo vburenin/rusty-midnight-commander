@@ -138,3 +138,63 @@ fn zip_browse_and_copy_out() {
     assert_eq!(fs::read_to_string(&out).unwrap(), "inner");
 }
 
+fn find_parent_path(vfs: &dyn Vfs, path: &Path) -> PathBuf {
+    let list = vfs.list_dir(path, true).unwrap();
+    let parent = list.iter().find(|e| e.name == "..").expect("parent entry");
+    parent.path.clone()
+}
+
+#[test]
+fn tar_parent_navigation_dots() {
+    let tmp = tempdir().unwrap();
+    let src_root = tmp.path().join("src");
+    fs::create_dir_all(src_root.join("dir1/sub")).unwrap();
+    fs::write(src_root.join("root.txt"), b"root").unwrap();
+    fs::write(src_root.join("dir1/file1.txt"), b"hello").unwrap();
+    fs::write(src_root.join("dir1/sub/inner.txt"), b"inner").unwrap();
+    let tar_path = tmp.path().join("sample.tar");
+    build_tar(&tar_path, &tmp.path().join("src"));
+
+    let vfs = CompositeFs::new();
+    let root = anchor_path(&tar_path);
+    // From archive root, .. must go to the directory that contains the archive
+    let parent_outside = find_parent_path(&vfs, &root);
+    assert_eq!(parent_outside, tar_path.parent().unwrap().to_path_buf());
+    // From nested dir inside the archive, .. must stay inside first
+    let inner = root.join("dir1/sub");
+    let p1 = find_parent_path(&vfs, &inner);
+    assert_eq!(p1, root.join("dir1"));
+    let p2 = find_parent_path(&vfs, &p1);
+    assert_eq!(p2, root);
+    // And then leaving the archive
+    let p3 = find_parent_path(&vfs, &p2);
+    assert_eq!(p3, tar_path.parent().unwrap().to_path_buf());
+}
+
+#[test]
+fn zip_parent_navigation_dots() {
+    let tmp = tempdir().unwrap();
+    let src_root = tmp.path().join("src");
+    fs::create_dir_all(src_root.join("dir1/sub")).unwrap();
+    fs::write(src_root.join("root.txt"), b"root").unwrap();
+    fs::write(src_root.join("dir1/file1.txt"), b"hello").unwrap();
+    fs::write(src_root.join("dir1/sub/inner.txt"), b"inner").unwrap();
+    let zip_path = tmp.path().join("sample.zip");
+    build_zip(&zip_path, &src_root);
+
+    let vfs = CompositeFs::new();
+    let root = anchor_path(&zip_path);
+    // From archive root, .. must go to the directory that contains the archive
+    let parent_outside = find_parent_path(&vfs, &root);
+    assert_eq!(parent_outside, zip_path.parent().unwrap().to_path_buf());
+    // From nested dir inside the archive, .. must stay inside first
+    let inner = root.join("dir1/sub");
+    let p1 = find_parent_path(&vfs, &inner);
+    assert_eq!(p1, root.join("dir1"));
+    let p2 = find_parent_path(&vfs, &p1);
+    assert_eq!(p2, root);
+    // And then leaving the archive
+    let p3 = find_parent_path(&vfs, &p2);
+    assert_eq!(p3, zip_path.parent().unwrap().to_path_buf());
+}
+
