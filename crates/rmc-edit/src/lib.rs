@@ -8,18 +8,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#![allow(unused_variables)]
-#![allow(clippy::manual_pattern_char_comparison)]
 
 use anyhow::{anyhow, Result};
 use std::cmp::min;
-<<<<<<< ours
-use std::path::PathBuf;
-=======
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
->>>>>>> theirs
 
 pub mod syntax;
 pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
