@@ -650,6 +650,10 @@ impl TerminalApp {
                             _ => {}
                         }
                     }
+                    KeyCode::F(10) => {
+                        // Cancel like Esc
+                        close_dialog = true;
+                    }
                     _ => {}
                 }
                 let _ = side;
