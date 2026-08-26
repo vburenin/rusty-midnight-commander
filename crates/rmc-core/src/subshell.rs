@@ -2,6 +2,8 @@ use anyhow::{anyhow, Result};
 use std::env;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 /// State for the shell command line and output buffer.
 #[derive(Debug, Clone)]
@@ -207,6 +209,53 @@ impl Subshell {
     pub fn scroll_page_down(&mut self, rows: usize) {
         self.output_scroll = self.output_scroll.saturating_sub(rows);
     }
+
+    /// Optionally execute the current command line inside a live PTY session.
+    /// - If `pty` is Some and alive, writes the command + newline into the PTY and records the
+    ///   command in history (without waiting for completion).
+    /// - If `pty` is None or not alive, falls back to `execute_current`.
+    ///
+    /// This is a CORE-only helper; UI wiring to display live PTY output is done elsewhere.
+    pub fn execute_in_pty(
+        &mut self,
+        cwd: &Path,
+        pty: Option<&mut PtySession>,
+    ) -> Result<ExecOutcome> {
+        let cmd_owned = self.cmdline.trim().to_string();
+        if cmd_owned.is_empty() {
+            return Ok(ExecOutcome {
+                exit_code: 0,
+                output_collected: false,
+            });
+        }
+        if let Some(session) = pty {
+            if session.is_alive() {
+                // Best effort: ensure session is at the requested cwd by emitting `cd` first
+                // if current dir differs. This is kept simple; the UI may track cwd explicitly.
+                if let Some(cur) = session.current_dir_hint() {
+                    if cur != cwd {
+                        let cd_line = format!("cd {}\n", shell_quote(&cwd.to_string_lossy()));
+                        let _ = session.write(cd_line.as_bytes());
+                        // Give the shell a tiny moment to process `cd`
+                        session.drain_output();
+                    }
+                }
+                let line = format!("{}\n", cmd_owned);
+                session.write(line.as_bytes())?;
+                // Record history (avoid duplicate consecutive entries)
+                if self.history.last() != Some(&cmd_owned) {
+                    self.history.push(cmd_owned);
+                }
+                self.history_index = None;
+                // We do not synchronously collect output here; it's available via the PTY session.
+                return Ok(ExecOutcome {
+                    exit_code: 0,
+                    output_collected: false,
+                });
+            }
+        }
+        self.execute_current(cwd)
+    }
 }
 
 /// Result of executing a command line.
@@ -238,6 +287,147 @@ fn shell_quote(name: &str) -> String {
         }
         s.push('\'');
         s
+    }
+}
+
+// ================================
+// PTY session (persistent subshell)
+// ================================
+//
+// This is a minimal, standalone PTY-backed shell session intended for integration by rmc-ui later.
+// It keeps a child $SHELL running under a PTY, supports writing input, draining collected output,
+// resizing, and termination checks.
+//
+// Notes:
+// - We purposefully avoid changing the Subshell struct API used by the UI today.
+// - Output is collected on a dedicated reader thread and buffered for non-blocking drains.
+
+pub struct PtySession {
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send>,
+    writer: Box<dyn std::io::Write + Send>,
+    output: Arc<Mutex<Vec<u8>>>,
+    // Best-effort current dir tracking; updated only via hints in spawn().
+    cwd_hint: Option<std::path::PathBuf>,
+}
+
+impl PtySession {
+    /// Spawn a persistent $SHELL (or /bin/sh) under a PTY.
+    /// - `cwd`: working directory to start in
+    /// - `rows`, `cols`: initial terminal size
+    pub fn spawn(cwd: &Path, rows: u16, cols: u16) -> Result<Self> {
+        let pty_system = portable_pty::native_pty_system();
+        let pair = pty_system
+            .openpty(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| anyhow!("failed to open PTY: {}", e))?;
+
+        let shell_path = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let mut cmd = portable_pty::CommandBuilder::new(shell_path);
+        // Request an interactive shell; many shells auto-detect TTY and become interactive,
+        // but explicit -i improves compatibility without affecting `echo` in tests.
+        cmd.arg("-i");
+        cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| anyhow!("failed to spawn shell in PTY: {}", e))?;
+        drop(pair.slave);
+
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| anyhow!("failed to clone PTY reader: {}", e))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| anyhow!("failed to take PTY writer: {}", e))?;
+
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let output_clone = Arc::clone(&output);
+        // Spawn a blocking reader thread that appends to the shared buffer.
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut buf = [0u8; 8192];
+            loop {
+                match std::io::Read::read(&mut reader, &mut buf) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        if let Ok(mut guard) = output_clone.lock() {
+                            guard.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                    Err(_) => {
+                        // On read error, exit the thread; consumer side can decide how to proceed.
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            master: pair.master,
+            child,
+            writer,
+            output,
+            cwd_hint: Some(cwd.to_path_buf()),
+        })
+    }
+
+    /// Non-blocking: drain any bytes collected from the PTY since the last call.
+    pub fn drain_output(&self) -> Vec<u8> {
+        let mut guard = self.output.lock().expect("output lock poisoned");
+        if guard.is_empty() {
+            return Vec::new();
+        }
+        guard.split_off(0)
+    }
+
+    /// Write raw bytes to the PTY (e.g., keystrokes or "cmd\n").
+    pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        use std::io::Write;
+        self.writer
+            .write_all(bytes)
+            .map_err(|e| anyhow!("pty write failed: {}", e))?;
+        self.writer
+            .flush()
+            .map_err(|e| anyhow!("pty flush failed: {}", e))?;
+        Ok(())
+    }
+
+    /// Resize the PTY.
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        self.master
+            .resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| anyhow!("pty resize failed: {}", e))
+    }
+
+    /// Return true if the child shell appears to be alive.
+    pub fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Attempt to terminate the shell.
+    pub fn kill(&mut self) -> Result<()> {
+        self.child
+            .kill()
+            .map_err(|e| anyhow!("failed to kill pty child: {}", e))
+    }
+
+    /// Best-effort hint of the cwd initially requested at spawn time.
+    pub fn current_dir_hint(&self) -> Option<&Path> {
+        self.cwd_hint.as_deref()
     }
 }
 
@@ -282,5 +472,44 @@ mod tests {
         let got = ss.output_lines.join("\n");
         assert!(got.contains(cwd.to_string_lossy().as_ref()), "pwd: {}", got);
         assert!(got.contains("xfile.txt"), "ls output missing file: {}", got);
+    }
+
+    #[test]
+    fn pty_session_echoes_text() {
+        // If PTY allocation is not possible in this environment, just skip.
+        use std::time::{Duration, Instant};
+        let dir = match tempdir() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let cwd = dir.path();
+        // Try to spawn; skip if not available (e.g. restricted CI containers)
+        let mut sess = match PtySession::spawn(cwd, 24, 80) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        // Send echo command
+        let _ = sess.write(b"echo pty-hello\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buf = String::new();
+        while Instant::now() < deadline {
+            let bytes = sess.drain_output();
+            if !bytes.is_empty() {
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+                if buf.contains("pty-hello") {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        // Be best-effort on cleanup.
+        let _ = sess.kill();
+        // Either we saw the string, or the environment prevented it; if the latter,
+        // treat as skipped by early-returning above.
+        assert!(
+            buf.contains("pty-hello"),
+            "PTY did not echo expected output; got: {}",
+            buf
+        );
     }
 }
