@@ -11,8 +11,6 @@ use rmc_core::app::{App, UiMode};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
-type OkCb = Box<dyn FnOnce(&mut App) -> anyhow::Result<()> + Send>;
-
 pub struct TerminalApp;
 
 impl TerminalApp {
@@ -284,21 +282,64 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
-            UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, pending_quit } => {
+            UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, pending_quit, confirm_exit } => {
                 use std::io::Write;
                 match key.code {
-                    KeyCode::F(9) => {
-                        *show_menu = !*show_menu;
+                    // Confirm dialog handling (when open)
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Enter | KeyCode::Esc if confirm_exit.is_some() => {
+                        if let Some(c) = confirm_exit {
+                            match key.code {
+                                KeyCode::Left => {
+                                    c.focus = match c.focus {
+                                        rmc_core::app::YncFocus::Yes => rmc_core::app::YncFocus::Cancel,
+                                        rmc_core::app::YncFocus::No => rmc_core::app::YncFocus::Yes,
+                                        rmc_core::app::YncFocus::Cancel => rmc_core::app::YncFocus::No,
+                                    };
+                                }
+                                KeyCode::Right | KeyCode::Tab => {
+                                    c.focus = match c.focus {
+                                        rmc_core::app::YncFocus::Yes => rmc_core::app::YncFocus::No,
+                                        rmc_core::app::YncFocus::No => rmc_core::app::YncFocus::Cancel,
+                                        rmc_core::app::YncFocus::Cancel => rmc_core::app::YncFocus::Yes,
+                                    };
+                                }
+                                KeyCode::Esc => {
+                                    *confirm_exit = None;
+                                }
+                                KeyCode::Enter => {
+                                    match c.focus {
+                                        rmc_core::app::YncFocus::Yes => {
+                                            if let Some(path) = &buf.path {
+                                                let mut w = app.vfs.write_file(path)?;
+                                                let data = buf.to_bytes();
+                                                w.write_all(&data)?; w.flush()?;
+                                                app.ui_mode = UiMode::Normal;
+                                            } else {
+                                                *save_as_input = Some(String::new());
+                                                *pending_quit = true;
+                                                *confirm_exit = None;
+                                                *status_msg = Some("Enter filename and press Enter".into());
+                                            }
+                                        }
+                                        rmc_core::app::YncFocus::No => {
+                                            app.ui_mode = UiMode::Normal;
+                                        }
+                                        rmc_core::app::YncFocus::Cancel => {
+                                            *confirm_exit = None;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                     }
+                    KeyCode::F(9) => { *show_menu = !*show_menu; }
                     KeyCode::F(2) => {
-                        // Save
                         if let Some(path) = &buf.path {
                             let mut w = app.vfs.write_file(path)?;
                             let data = buf.to_bytes();
-                            w.write_all(&data)?;
-                            w.flush()?;
-                            *status_msg = Some("Saved".into());
-                            buf.dirty = false;
+                            w.write_all(&data)?; w.flush()?;
+                            *status_msg = Some("Saved".into()); buf.dirty = false;
                         } else {
                             *save_as_input = Some(String::new());
                             *status_msg = Some("Enter filename and press Enter".into());
@@ -306,219 +347,58 @@ impl TerminalApp {
                     }
                     KeyCode::F(10) => {
                         if buf.dirty {
-                            let snapshot = buf.clone();
-                            let snap_yes = snapshot.clone();
-                            let snap_cancel = snapshot;
-                            let on_yes: OkCb = Box::new(move |app| {
-                                if let Some(path) = &snap_yes.path {
-                                    let mut w = app.vfs.write_file(path)?;
-                                    let data = snap_yes.to_bytes();
-                                    use std::io::Write;
-                                    w.write_all(&data)?;
-                                    w.flush()?;
-                                    // Exit after save
-                                    app.ui_mode = UiMode::Normal;
-                                } else {
-                                    // No name: restore editor with save-as prompt
-                                    app.ui_mode = UiMode::Editor {
-                                        buf: snap_yes,
-                                        show_menu: false,
-                                        status_msg: Some("Enter filename and press Enter".into()),
-                                        search_input: None,
-                                        save_as_input: Some(String::new()),
-                                        pending_quit: false,
-                                    };
-                                }
-                                Ok(())
-                            });
-                            let on_no: OkCb = Box::new(|app| {
-                                app.ui_mode = UiMode::Normal;
-                                Ok(())
-                            });
-                            let on_cancel: OkCb = Box::new(move |app| {
-                                app.ui_mode = UiMode::Editor {
-                                    buf: snap_cancel,
-                                    show_menu: false,
-                                    status_msg: None,
-                                    search_input: None,
-                                    save_as_input: None,
-                                    pending_quit: false,
-                                };
-                                Ok(())
-                            });
-                            app.ui_mode = UiMode::DialogYesNoCancel {
+                            *confirm_exit = Some(rmc_core::app::YncDialog {
                                 title: "Confirm".into(),
                                 message: "File was modified. Save with exit?".into(),
                                 focus: rmc_core::app::YncFocus::Yes,
-                                on_yes,
-                                on_no,
-                                on_cancel,
-                            };
+                            });
                         } else {
                             app.ui_mode = UiMode::Normal;
                         }
                     }
                     KeyCode::Esc => {
                         if *save_as_input == Some(String::new()) || search_input.is_some() {
-                            // Close inline prompts
-                            *save_as_input = None;
-                            *search_input = None;
-                        } else if *pending_quit || !buf.dirty {
-                            app.ui_mode = UiMode::Normal;
-                        } else {
-                            // Show dialog like F10 with snapshot
-                            let snapshot = buf.clone();
-                            let snap_yes = snapshot.clone();
-                            let snap_cancel = snapshot;
-                            let on_yes: OkCb = Box::new(move |app| {
-                                if let Some(path) = &snap_yes.path {
-                                    let mut w = app.vfs.write_file(path)?;
-                                    let data = snap_yes.to_bytes();
-                                    use std::io::Write;
-                                    w.write_all(&data)?;
-                                    w.flush()?;
-                                    app.ui_mode = UiMode::Normal;
-                                } else {
-                                    app.ui_mode = UiMode::Editor {
-                                        buf: snap_yes,
-                                        show_menu: false,
-                                        status_msg: Some("Enter filename and press Enter".into()),
-                                        search_input: None,
-                                        save_as_input: Some(String::new()),
-                                        pending_quit: false,
-                                    };
-                                }
-                                Ok(())
-                            });
-                            let on_no: OkCb = Box::new(|app| {
-                                app.ui_mode = UiMode::Normal;
-                                Ok(())
-                            });
-                            let on_cancel: OkCb = Box::new(move |app| {
-                                app.ui_mode = UiMode::Editor {
-                                    buf: snap_cancel,
-                                    show_menu: false,
-                                    status_msg: None,
-                                    search_input: None,
-                                    save_as_input: None,
-                                    pending_quit: false,
-                                };
-                                Ok(())
-                            });
-                            app.ui_mode = UiMode::DialogYesNoCancel {
+                            *save_as_input = None; *search_input = None;
+                        } else if buf.dirty {
+                            *confirm_exit = Some(rmc_core::app::YncDialog {
                                 title: "Confirm".into(),
                                 message: "File was modified. Save with exit?".into(),
                                 focus: rmc_core::app::YncFocus::Yes,
-                                on_yes,
-                                on_no,
-                                on_cancel,
-                            };
-                        }
+                            });
+                        } else { app.ui_mode = UiMode::Normal; }
                     }
-                    KeyCode::F(7) => {
-                        *search_input = Some(String::new());
-                        *status_msg = Some("Find: type text and press Enter".into());
-                    }
+                    KeyCode::F(7) => { *search_input = Some(String::new()); *status_msg = Some("Find: type text and press Enter".into()); }
                     KeyCode::Enter => {
                         if let Some(q) = search_input.take() {
-                            if let Some((_r, _c)) = buf.search_forward(q.as_bytes()) {
-                                *status_msg = Some("Found".into());
-                            } else {
-                                *status_msg = Some("Not found".into());
-                            }
+                            if let Some((_r, _c)) = buf.search_forward(q.as_bytes()) { *status_msg = Some("Found".into()); } else { *status_msg = Some("Not found".into()); }
                         } else if let Some(name) = save_as_input.take() {
                             let mut path = active_cwd.join(name);
-                            // Normalize dir path if ended with slash
-                            if path.is_dir() {
-                                path = path.join("untitled.txt");
-                            }
-                            let mut w = app.vfs.write_file(&path)?;
-                            let data = buf.to_bytes();
-                            w.write_all(&data)?;
-                            w.flush()?;
-                            buf.path = Some(path);
-                            buf.dirty = false;
-                            *status_msg = Some("Saved".into());
+                            if path.is_dir() { path = path.join("untitled.txt"); }
+                            let mut w = app.vfs.write_file(&path)?; let data = buf.to_bytes();
+                            w.write_all(&data)?; w.flush()?;
+                            buf.path = Some(path); buf.dirty = false; *status_msg = Some("Saved".into());
+                            if *pending_quit { app.ui_mode = UiMode::Normal; }
                         } else {
-                            buf.insert_newline();
-                            *pending_quit = false;
+                            buf.insert_newline(); *pending_quit = false;
                         }
                     }
                     KeyCode::Backspace => {
-                        if let Some(s) = search_input {
-                            s.pop();
-                        } else if let Some(s) = save_as_input {
-                            s.pop();
-                        } else {
-                            buf.backspace();
-                            *pending_quit = false;
-                        }
+                        if let Some(s) = search_input { s.pop(); }
+                        else if let Some(s) = save_as_input { s.pop(); }
+                        else { buf.backspace(); *pending_quit = false; }
                     }
-                    KeyCode::Delete => {
-                        buf.delete();
-                        *pending_quit = false;
-                    }
-                    KeyCode::Insert => {
-                        buf.toggle_overwrite();
-                    }
+                    KeyCode::Delete => { buf.delete(); *pending_quit = false; }
+                    KeyCode::Insert => { buf.toggle_overwrite(); }
                     KeyCode::Left => { buf.move_left(); *pending_quit = false; }
                     KeyCode::Right => { buf.move_right(); *pending_quit = false; }
                     KeyCode::Up => { buf.move_up(); *pending_quit = false; }
                     KeyCode::Down => { buf.move_down(); *pending_quit = false; }
-                    KeyCode::Char('z') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                        let _ = buf.undo();
-                        *pending_quit = false;
-                    }
+                    KeyCode::Char('z') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => { let _ = buf.undo(); *pending_quit = false; }
                     KeyCode::Char(c) => {
                         if key.modifiers.is_empty() {
-                            if let Some(s) = search_input {
-                                s.push(c);
-                            } else if let Some(s) = save_as_input {
-                                s.push(c);
-                            } else {
-                                buf.insert_char(c);
-                                *pending_quit = false;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                return Ok(());
-            }
-            UiMode::DialogYesNoCancel { title: _, message: _, focus, on_yes, on_no, on_cancel } => {
-                match key.code {
-                    KeyCode::Left => {
-                        *focus = match *focus {
-                            rmc_core::app::YncFocus::Yes => rmc_core::app::YncFocus::Cancel,
-                            rmc_core::app::YncFocus::No => rmc_core::app::YncFocus::Yes,
-                            rmc_core::app::YncFocus::Cancel => rmc_core::app::YncFocus::No,
-                        };
-                    }
-                    KeyCode::Right | KeyCode::Tab => {
-                        *focus = match *focus {
-                            rmc_core::app::YncFocus::Yes => rmc_core::app::YncFocus::No,
-                            rmc_core::app::YncFocus::No => rmc_core::app::YncFocus::Cancel,
-                            rmc_core::app::YncFocus::Cancel => rmc_core::app::YncFocus::Yes,
-                        };
-                    }
-                    KeyCode::Esc => {
-                        let cb = std::mem::replace(on_cancel, Box::new(|_| Ok(())));
-                        cb(app)?;
-                    }
-                    KeyCode::Enter => {
-                        match *focus {
-                            rmc_core::app::YncFocus::Yes => {
-                                let cb = std::mem::replace(on_yes, Box::new(|_| Ok(())));
-                                cb(app)?;
-                            }
-                            rmc_core::app::YncFocus::No => {
-                                let cb = std::mem::replace(on_no, Box::new(|_| Ok(())));
-                                cb(app)?;
-                            }
-                            rmc_core::app::YncFocus::Cancel => {
-                                let cb = std::mem::replace(on_cancel, Box::new(|_| Ok(())));
-                                cb(app)?;
-                            }
+                            if let Some(s) = search_input { s.push(c); }
+                            else if let Some(s) = save_as_input { s.push(c); }
+                            else { buf.insert_char(c); *pending_quit = false; }
                         }
                     }
                     _ => {}
@@ -602,6 +482,7 @@ impl TerminalApp {
                         search_input: None,
                         save_as_input: None,
                         pending_quit: false,
+                        confirm_exit: None,
                     };
                 }
                 _ => app.handle_action(action)?,

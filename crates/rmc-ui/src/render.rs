@@ -22,6 +22,25 @@ impl Renderer {
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
+        // Full-screen modes: short-circuit to avoid drawing panels underneath.
+        if let rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, confirm_exit, .. } = &app.ui_mode {
+            // Clear and draw the editor only
+            painter.out.queue(Clear(ClearType::All))?;
+            draw_editor(
+                &mut painter,
+                cols,
+                rows,
+                self.palette,
+                buf,
+                *show_menu,
+                status_msg.as_deref(),
+                search_input.as_deref(),
+                save_as_input.as_deref(),
+                confirm_exit.as_ref(),
+            );
+            painter.out.flush()?;
+            return Ok(());
+        }
         // Clear to panel background (blue)
         painter.out.queue(Clear(ClearType::All))?;
         painter.fill_line(0, cols, self.palette.core_default_bg, self.palette.core_default_fg);
@@ -92,11 +111,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
-        rmc_core::app::UiMode::DialogYesNoCancel { title, message, focus, .. } => {
-            draw_dialog_ync(p, cols, rows, pal, title, message, *focus);
-        }
-        rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, .. } => {
-            draw_editor(p, cols, rows, pal, buf, *show_menu, status_msg.as_deref(), search_input.as_deref(), save_as_input.as_deref());
+        rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, confirm_exit, .. } => {
+            draw_editor(p, cols, rows, pal, buf, *show_menu, status_msg.as_deref(), search_input.as_deref(), save_as_input.as_deref(), confirm_exit.as_ref());
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
@@ -150,6 +166,7 @@ fn draw_editor(
     status_msg: Option<&str>,
     search_input: Option<&str>,
     save_as_input: Option<&str>,
+    confirm: Option<&rmc_core::app::YncDialog>,
 ) {
     // Background (editor core colors)
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -222,6 +239,9 @@ fn draw_editor(
     }
     if let Some(q) = save_as_input {
         draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
+    }
+    if let Some(c) = confirm {
+        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus);
     }
 }
 

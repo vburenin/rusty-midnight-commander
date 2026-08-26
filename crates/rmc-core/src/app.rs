@@ -19,14 +19,7 @@ pub enum UiMode {
         search_input: Option<String>,
         save_as_input: Option<String>,
         pending_quit: bool,
-    },
-    DialogYesNoCancel {
-        title: String,
-        message: String,
-        focus: YncFocus,
-        on_yes: UiOkCb,
-        on_no: UiOkCb,
-        on_cancel: UiOkCb,
+        confirm_exit: Option<YncDialog>,
     },
     Menu {
         top_index: usize,
@@ -73,6 +66,13 @@ pub enum YncFocus {
     Yes,
     No,
     Cancel,
+}
+
+#[derive(Clone)]
+pub struct YncDialog {
+    pub title: String,
+    pub message: String,
+    pub focus: YncFocus,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CopyDialogFocus {
