@@ -1,6 +1,7 @@
 use crate::extfs::{ExtfsPath, ExtfsRegistry};
 use crate::local::LocalFs;
 use crate::pathutil::{append_anchor, parse_archive_path, ArchiveKind};
+use crate::remote;
 use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
 use std::fs;
 use std::io::{Read, Write};
@@ -30,6 +31,11 @@ impl CompositeFs {
         } else if let Some(xp) = self.extfs.parse_extfs_path(path) {
             let vfs_root = path;
             Route::Extfs { xp, vfs_root }
+        } else if remote::is_remote_url(path) {
+            match remote::parse_remote_url(path) {
+                Ok(url) => Route::Remote { url, vfs_root: path },
+                Err(_) => Route::Local { path }, // fallback: treat as local invalid path
+            }
         } else {
             Route::Local { path }
         }
@@ -52,6 +58,10 @@ enum Route<'a> {
     },
     Extfs {
         xp: ExtfsPath,
+        vfs_root: &'a Path,
+    },
+    Remote {
+        url: remote::RemoteUrl,
         vfs_root: &'a Path,
     },
 }
@@ -79,6 +89,7 @@ impl Vfs for CompositeFs {
                 vfs_root,
                 show_hidden,
             ),
+            Route::Remote { url, vfs_root: _ } => crate::remote::list_dir(&url, path, show_hidden),
         }
     }
 
@@ -86,6 +97,10 @@ impl Vfs for CompositeFs {
         // Enter on archive files by extension; disallow when already in an archive
         if parse_archive_path(path).is_some() || self.extfs.parse_extfs_path(path).is_some() {
             return None;
+        }
+        // Remote URLs are enterable as-is
+        if remote::is_remote_url(path) {
+            return Some(path.to_path_buf());
         }
         if crate::pathutil::detect_archive_kind(path).is_some() {
             // Ensure the file exists and is a regular file
@@ -113,6 +128,7 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "mkdir inside extfs is not supported".into(),
             )),
+            Route::Remote { url, .. } => crate::remote::mkdir(&url),
         }
     }
 
@@ -125,6 +141,7 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "remove inside extfs is not supported".into(),
             )),
+            Route::Remote { url, .. } => crate::remote::remove(&url, recursive),
         }
     }
 
@@ -139,6 +156,16 @@ impl Vfs for CompositeFs {
             },
             (Route::Extfs { xp, .. }, Route::Local { path: d }) => {
                 crate::extfs::copy_out(&xp.helper_cmd, &xp.archive, &xp.inner, d)
+            }
+            (Route::Remote { url, .. }, Route::Local { path: d }) => {
+                // remote -> local
+                let mut u = url.clone();
+                // If source path points to a directory, disallow copy for now
+                crate::remote::copy_out(&u, d)
+            }
+            (Route::Local { path: s }, Route::Remote { url, .. }) => {
+                // local -> remote
+                crate::remote::copy_in(s, &url)
             }
             (Route::Local { .. }, Route::Archive { .. }) => Err(FsError::Message(
                 "copy into an archive is not supported".into(),
@@ -179,6 +206,10 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "read_file inside extfs is not supported; use copy-out".into(),
             )),
+            Route::Remote { url, .. } => {
+                let f = crate::remote::read_file_to_temp(&url)?;
+                Ok(Box::new(f))
+            }
         }
     }
 
@@ -190,6 +221,10 @@ impl Vfs for CompositeFs {
             )),
             Route::Extfs { .. } => {
                 Err(FsError::Message("write into extfs is not supported".into()))
+            }
+            Route::Remote { url, .. } => {
+                let w = crate::remote::RemoteWrite::new(url)?;
+                Ok(Box::new(w))
             }
         }
     }
@@ -205,6 +240,9 @@ impl Vfs for CompositeFs {
             },
             Route::Extfs { .. } => Err(FsError::Message(
                 "stat inside extfs is not supported in this minimal implementation".into(),
+            )),
+            Route::Remote { .. } => Err(FsError::Message(
+                "stat on remote is not implemented".into(),
             )),
         }
     }

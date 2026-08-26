@@ -1397,7 +1397,16 @@ impl TerminalApp {
                 selected_index,
             } => {
                 let menus: [&[&str]; 5] = [
-                    &["Copy", "Move", "Mkdir", "Delete", "Sort order...", "Tree"],
+                    &[
+                        "Copy",
+                        "Move",
+                        "Mkdir",
+                        "Delete",
+                        "FTP link",
+                        "SFTP link",
+                        "Sort order...",
+                        "Tree",
+                    ],
                     &[
                         "View",
                         "Edit",
@@ -1419,7 +1428,16 @@ impl TerminalApp {
                         "Compare dirs",
                     ],
                     &["Layout", "Panels", "Confirmations"],
-                    &["Copy", "Move", "Mkdir", "Delete", "Sort order...", "Tree"],
+                    &[
+                        "Copy",
+                        "Move",
+                        "Mkdir",
+                        "Delete",
+                        "FTP link",
+                        "SFTP link",
+                        "Sort order...",
+                        "Tree",
+                    ],
                 ];
                 match key.code {
                     KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
@@ -1451,6 +1469,40 @@ impl TerminalApp {
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
+                            "FTP link" | "SFTP link" => {
+                                let scheme = if item == "FTP link" { "ftp" } else { "sftp" };
+                                // Prompt user for host or URL; accept "user@host" or full URL.
+                                app.ui_mode = UiMode::InputDialog {
+                                    title: format!("{} link", scheme.to_uppercase()),
+                                    prompt: format!("Enter {} host/user or URL:", scheme.to_uppercase()),
+                                    value: String::new(),
+                                    focus_ok: false,
+                                    on_submit: Box::new(move |app, input| {
+                                        let trimmed = input.trim();
+                                        if trimmed.is_empty() {
+                                            return Ok(());
+                                        }
+                                        let url_str = if trimmed.starts_with("ftp://") || trimmed.starts_with("sftp://") {
+                                            trimmed.to_string()
+                                        } else {
+                                            // Build scheme://<input> (ensure one leading slash for empty path)
+                                            format!("{scheme}://{trimmed}")
+                                        };
+                                        let path = std::path::PathBuf::from(url_str);
+                                        match app.change_dir(&path) {
+                                            Ok(()) => Ok(()),
+                                            Err(err) => {
+                                                app.ui_mode = UiMode::DialogConfirm {
+                                                    title: "Error".into(),
+                                                    message: format!("{err}"),
+                                                    on_ok: Box::new(|_| Ok(())),
+                                                };
+                                                Ok(())
+                                            }
+                                        }
+                                    }),
+                                };
+                            }
                             "Sort order..." => {
                                 let side = match *top_index {
                                     0 => rmc_core::actions::PaneSide::Left,
