@@ -20,6 +20,14 @@ pub enum UiMode {
         save_as_input: Option<String>,
         pending_quit: bool,
     },
+    DialogYesNoCancel {
+        title: String,
+        message: String,
+        focus: YncFocus,
+        on_yes: UiOkCb,
+        on_no: UiOkCb,
+        on_cancel: UiOkCb,
+    },
     Menu {
         top_index: usize,
         selected_index: usize,
@@ -60,6 +68,12 @@ pub enum UiMode {
     Help,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum YncFocus {
+    Yes,
+    No,
+    Cancel,
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CopyDialogFocus {
     Mask,

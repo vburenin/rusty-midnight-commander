@@ -92,6 +92,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
+        rmc_core::app::UiMode::DialogYesNoCancel { title, message, focus, .. } => {
+            draw_dialog_ync(p, cols, rows, pal, title, message, *focus);
+        }
         rmc_core::app::UiMode::Editor { buf, show_menu, status_msg, search_input, save_as_input, .. } => {
             draw_editor(p, cols, rows, pal, buf, *show_menu, status_msg.as_deref(), search_input.as_deref(), save_as_input.as_deref());
         }
@@ -154,8 +157,8 @@ fn draw_editor(
         p.goto(0, y);
         p.text(&" ".repeat(cols as usize));
     }
-    // Top bar (menu bar)
-    draw_menu_bar(p, cols, pal);
+    // Top bar (mcedit menu bar)
+    draw_editor_menu_bar(p, cols, pal);
     // Status line (bottom-2) and F-bar (bottom-1)
     let status_row = rows.saturating_sub(2);
     let fbar_row = rows.saturating_sub(1);
@@ -182,8 +185,17 @@ fn draw_editor(
     let cur_x = buf.col.saturating_sub(buf.view_col) as u16;
     if cur_y >= content_top && cur_y < content_top + content_h && cur_x < cols {
         p.goto(cur_x, cur_y);
+        // Get glyph under cursor from rendered view
+        let vr = (cur_y - content_top) as usize;
+        let ch = view
+            .get(vr)
+            .and_then(|s| s.chars().nth(cur_x as usize))
+            .unwrap_or(' ');
+        // Invert colors for that glyph
         p.set_fg_bg(pal.core_default_bg, pal.core_default_fg);
-        p.text(" ");
+        p.text(&ch.to_string());
+        // Restore default for safety
+        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
     }
     // Status line
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
@@ -198,18 +210,11 @@ fn draw_editor(
     if t.len() < cols as usize {
         p.text(&" ".repeat(cols as usize - t.len()));
     }
-    // Bottom F-key bar for editor: Save, Search, Menu, Quit
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    p.goto(0, fbar_row);
-    let fbar = "1 Help  2 Save  7 Find  9 Menu  10 Quit";
-    let fb = truncate(fbar, cols as usize);
-    p.text(&fb);
-    if fb.len() < cols as usize {
-        p.text(&" ".repeat(cols as usize - fb.len()));
-    }
+    // Bottom F-key bar for editor (packed MC style)
+    draw_editor_fbar(p, fbar_row, cols, pal);
     // If show_menu, draw a small stub dropdown
     if show_menu {
-        draw_menu_dropdown(p, pal, 1, 1);
+        draw_editor_menu_dropdown(p, pal);
     }
     // Inline prompts
     if let Some(q) = search_input {
@@ -217,6 +222,84 @@ fn draw_editor(
     }
     if let Some(q) = save_as_input {
         draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
+    }
+}
+
+fn draw_editor_menu_bar(p: &mut Painter, cols: u16, pal: McPalette) {
+    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+    p.goto(0, 0);
+    let items = [" File ", " Edit ", " Search ", " Command ", " Options ", " Help "];
+    let mut x = 0u16;
+    for it in items.iter() {
+        p.goto(x, 0);
+        p.text(it);
+        x += it.len() as u16;
+    }
+    // Fill rest
+    if x < cols {
+        p.goto(x, 0);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
+}
+
+fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette) {
+    // Simple stub dropdown under "File"
+    let x = 0u16;
+    let y = 1u16;
+    let items = ["Save", "Save as", "Quit"];
+    let w = (items.iter().map(|s| s.len()).max().unwrap_or(4) + 4) as u16;
+    let h = items.len() as u16 + 2;
+    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.menu_fg, pal.menu_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.menu_fg, pal.menu_bg);
+    p.vline(x + w - 1, y + 1, h - 2, '│', pal.menu_fg, pal.menu_bg);
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(x + 1, y + h - 1, w - 2, '─', pal.menu_fg, pal.menu_bg);
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    for (i, it) in items.iter().enumerate() {
+        let row = y + 1 + i as u16;
+        p.goto(x + 1, row);
+        let mut line = String::from(" ");
+        line.push_str(it);
+        while line.len() < (w - 2) as usize {
+            line.push(' ');
+        }
+        p.text(&line);
+    }
+}
+
+fn draw_editor_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    let labels = ["Help", "Save", "Mark", "Replac", "Copy", "Move", "Search", "Delete", "PullDn", "Quit"];
+    let mut x = 0u16;
+    for (i, lab) in labels.iter().enumerate() {
+        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+        // number: white on black
+        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg);
+        p.goto(x, y);
+        p.text(num);
+        x += num.len() as u16;
+        // label: black on cyan
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        p.text(lab);
+        x += lab.len() as u16;
+        if x < cols {
+            p.goto(x, y);
+            p.text(" ");
+            x += 1;
+        } else {
+            break;
+        }
+    }
+    if x < cols {
+        p.goto(x, y);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
 }
 
@@ -231,6 +314,64 @@ fn draw_inline_prompt(p: &mut Painter, pal: McPalette, rows: u16, cols: u16, tit
     }
     let t = truncate(&txt, cols as usize);
     p.text(&t);
+}
+
+fn draw_dialog_ync(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    title: &str,
+    message: &str,
+    focus: rmc_core::app::YncFocus,
+) {
+    // Centered box
+    let w = (cols as usize).min(60) as u16;
+    let h = 7u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title_str = format!(" {title} ");
+    let tx = x + (w.saturating_sub(title_str.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&title_str);
+    // Message
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 2);
+    let msg = truncate(message, (w - 4) as usize);
+    p.text(&msg);
+    // Buttons
+    let sel = |want: rmc_core::app::YncFocus, txt: &str| {
+        if want == focus {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    let btns = format!("{}  {}  {}", sel(rmc_core::app::YncFocus::Yes, "Yes"), sel(rmc_core::app::YncFocus::No, "No"), sel(rmc_core::app::YncFocus::Cancel, "Cancel"));
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(x + 1, y + h, w.saturating_sub(1), ' ', pal.shadow_fg, pal.shadow_bg);
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 fn draw_dialog_box(
     p: &mut Painter,

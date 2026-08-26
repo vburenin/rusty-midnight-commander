@@ -11,6 +11,8 @@ use rmc_core::app::{App, UiMode};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
+type OkCb = Box<dyn FnOnce(&mut App) -> anyhow::Result<()> + Send>;
+
 pub struct TerminalApp;
 
 impl TerminalApp {
@@ -303,9 +305,55 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::F(10) => {
-                        if buf.dirty && !*pending_quit {
-                            *status_msg = Some("Unsaved changes: press F10 or Esc again to discard".into());
-                            *pending_quit = true;
+                        if buf.dirty {
+                            let snapshot = buf.clone();
+                            let snap_yes = snapshot.clone();
+                            let snap_cancel = snapshot;
+                            let on_yes: OkCb = Box::new(move |app| {
+                                if let Some(path) = &snap_yes.path {
+                                    let mut w = app.vfs.write_file(path)?;
+                                    let data = snap_yes.to_bytes();
+                                    use std::io::Write;
+                                    w.write_all(&data)?;
+                                    w.flush()?;
+                                    // Exit after save
+                                    app.ui_mode = UiMode::Normal;
+                                } else {
+                                    // No name: restore editor with save-as prompt
+                                    app.ui_mode = UiMode::Editor {
+                                        buf: snap_yes,
+                                        show_menu: false,
+                                        status_msg: Some("Enter filename and press Enter".into()),
+                                        search_input: None,
+                                        save_as_input: Some(String::new()),
+                                        pending_quit: false,
+                                    };
+                                }
+                                Ok(())
+                            });
+                            let on_no: OkCb = Box::new(|app| {
+                                app.ui_mode = UiMode::Normal;
+                                Ok(())
+                            });
+                            let on_cancel: OkCb = Box::new(move |app| {
+                                app.ui_mode = UiMode::Editor {
+                                    buf: snap_cancel,
+                                    show_menu: false,
+                                    status_msg: None,
+                                    search_input: None,
+                                    save_as_input: None,
+                                    pending_quit: false,
+                                };
+                                Ok(())
+                            });
+                            app.ui_mode = UiMode::DialogYesNoCancel {
+                                title: "Confirm".into(),
+                                message: "File was modified. Save with exit?".into(),
+                                focus: rmc_core::app::YncFocus::Yes,
+                                on_yes,
+                                on_no,
+                                on_cancel,
+                            };
                         } else {
                             app.ui_mode = UiMode::Normal;
                         }
@@ -318,8 +366,53 @@ impl TerminalApp {
                         } else if *pending_quit || !buf.dirty {
                             app.ui_mode = UiMode::Normal;
                         } else {
-                            *status_msg = Some("Press Esc again to quit without saving".into());
-                            *pending_quit = true;
+                            // Show dialog like F10 with snapshot
+                            let snapshot = buf.clone();
+                            let snap_yes = snapshot.clone();
+                            let snap_cancel = snapshot;
+                            let on_yes: OkCb = Box::new(move |app| {
+                                if let Some(path) = &snap_yes.path {
+                                    let mut w = app.vfs.write_file(path)?;
+                                    let data = snap_yes.to_bytes();
+                                    use std::io::Write;
+                                    w.write_all(&data)?;
+                                    w.flush()?;
+                                    app.ui_mode = UiMode::Normal;
+                                } else {
+                                    app.ui_mode = UiMode::Editor {
+                                        buf: snap_yes,
+                                        show_menu: false,
+                                        status_msg: Some("Enter filename and press Enter".into()),
+                                        search_input: None,
+                                        save_as_input: Some(String::new()),
+                                        pending_quit: false,
+                                    };
+                                }
+                                Ok(())
+                            });
+                            let on_no: OkCb = Box::new(|app| {
+                                app.ui_mode = UiMode::Normal;
+                                Ok(())
+                            });
+                            let on_cancel: OkCb = Box::new(move |app| {
+                                app.ui_mode = UiMode::Editor {
+                                    buf: snap_cancel,
+                                    show_menu: false,
+                                    status_msg: None,
+                                    search_input: None,
+                                    save_as_input: None,
+                                    pending_quit: false,
+                                };
+                                Ok(())
+                            });
+                            app.ui_mode = UiMode::DialogYesNoCancel {
+                                title: "Confirm".into(),
+                                message: "File was modified. Save with exit?".into(),
+                                focus: rmc_core::app::YncFocus::Yes,
+                                on_yes,
+                                on_no,
+                                on_cancel,
+                            };
                         }
                     }
                     KeyCode::F(7) => {
@@ -385,6 +478,46 @@ impl TerminalApp {
                             } else {
                                 buf.insert_char(c);
                                 *pending_quit = false;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::DialogYesNoCancel { title: _, message: _, focus, on_yes, on_no, on_cancel } => {
+                match key.code {
+                    KeyCode::Left => {
+                        *focus = match *focus {
+                            rmc_core::app::YncFocus::Yes => rmc_core::app::YncFocus::Cancel,
+                            rmc_core::app::YncFocus::No => rmc_core::app::YncFocus::Yes,
+                            rmc_core::app::YncFocus::Cancel => rmc_core::app::YncFocus::No,
+                        };
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        *focus = match *focus {
+                            rmc_core::app::YncFocus::Yes => rmc_core::app::YncFocus::No,
+                            rmc_core::app::YncFocus::No => rmc_core::app::YncFocus::Cancel,
+                            rmc_core::app::YncFocus::Cancel => rmc_core::app::YncFocus::Yes,
+                        };
+                    }
+                    KeyCode::Esc => {
+                        let cb = std::mem::replace(on_cancel, Box::new(|_| Ok(())));
+                        cb(app)?;
+                    }
+                    KeyCode::Enter => {
+                        match *focus {
+                            rmc_core::app::YncFocus::Yes => {
+                                let cb = std::mem::replace(on_yes, Box::new(|_| Ok(())));
+                                cb(app)?;
+                            }
+                            rmc_core::app::YncFocus::No => {
+                                let cb = std::mem::replace(on_no, Box::new(|_| Ok(())));
+                                cb(app)?;
+                            }
+                            rmc_core::app::YncFocus::Cancel => {
+                                let cb = std::mem::replace(on_cancel, Box::new(|_| Ok(())));
+                                cb(app)?;
                             }
                         }
                     }
