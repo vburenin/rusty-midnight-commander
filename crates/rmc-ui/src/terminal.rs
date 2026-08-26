@@ -987,6 +987,128 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::FtpConnectDialog {
+                scheme,
+                host,
+                port,
+                user,
+                password,
+                directory,
+                anonymous,
+                focus_index,
+                focus_ok,
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Tab => {
+                        if *focus_ok {
+                            *focus_ok = false;
+                            *focus_index = 0;
+                        } else if *focus_index < 5 {
+                            *focus_index += 1;
+                        } else {
+                            *focus_ok = true;
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        if *focus_ok {
+                            *focus_ok = false;
+                            *focus_index = 5;
+                        } else if *focus_index > 0 {
+                            *focus_index -= 1;
+                        } else {
+                            *focus_ok = true;
+                        }
+                    }
+                    KeyCode::Backspace if !*focus_ok => match *focus_index {
+                        0 => {
+                            host.pop();
+                        }
+                        1 => {
+                            port.pop();
+                        }
+                        2 => {
+                            user.pop();
+                        }
+                        3 => {
+                            password.pop();
+                        }
+                        4 => {
+                            directory.pop();
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(' ') if !*focus_ok && *focus_index == 5 => {
+                        *anonymous = !*anonymous;
+                    }
+                    KeyCode::Char(c) if key.modifiers.is_empty() && !*focus_ok => {
+                        match *focus_index {
+                            0 => host.push(c),
+                            1 => port.push(c),
+                            2 => user.push(c),
+                            3 => password.push(c),
+                            4 => directory.push(c),
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Enter if *focus_ok => {
+                        // Build URL and attempt to change_dir; empty host => no-op.
+                        let host_val = host.trim().to_string();
+                        if host_val.is_empty() {
+                            return Ok(());
+                        }
+                        let port_val = port.trim();
+                        let user_val = user.trim();
+                        let pass_val = password.clone(); // allow empty
+                        let dir_val = {
+                            let d = directory.trim();
+                            if d.is_empty() {
+                                "/".to_string()
+                            } else if d.starts_with('/') {
+                                d.to_string()
+                            } else {
+                                format!("/{d}")
+                            }
+                        };
+                        let user_part = {
+                            let u = if *anonymous && user_val.is_empty() {
+                                "anonymous".to_string()
+                            } else {
+                                user_val.to_string()
+                            };
+                            if u.is_empty() {
+                                String::new()
+                            } else if pass_val.is_empty() {
+                                format!("{u}@")
+                            } else {
+                                format!("{u}:{pass_val}@")
+                            }
+                        };
+                        let host_part = if port_val.is_empty() {
+                            host_val
+                        } else {
+                            format!("{host_val}:{port_val}")
+                        };
+                        let url = format!("{scheme}://{user_part}{host_part}{dir_val}");
+                        app.ui_mode = UiMode::Normal;
+                        let path = std::path::PathBuf::from(url);
+                        match app.change_dir(&path) {
+                            Ok(()) => {
+                                app.reload_panels()?;
+                            }
+                            Err(err) => {
+                                app.ui_mode = UiMode::DialogConfirm {
+                                    title: "Error".into(),
+                                    message: format!("{err}"),
+                                    on_ok: Box::new(|_| Ok(())),
+                                };
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::DialogConfirm {
                 title: _,
                 message: _,
@@ -2064,62 +2186,74 @@ impl TerminalApp {
                                 };
                             }
                             "FTP link" | "SFTP link" | "Shell link" | "SMB link" => {
-                                let (scheme, title, prompt) = match item {
-                                    "FTP link" => (
-                                        "ftp",
-                                        "FTP link".to_string(),
-                                        "Enter FTP host/user or URL:".to_string(),
-                                    ),
-                                    "SFTP link" => (
-                                        "sftp",
-                                        "SFTP link".to_string(),
-                                        "Enter SFTP host/user or URL:".to_string(),
-                                    ),
-                                    "Shell link" => (
-                                        "fish",
-                                        "Shell link to machine".to_string(),
-                                        "Enter fish URL (e.g. fish://user@host/path):".to_string(),
-                                    ),
-                                    "SMB link" => (
-                                        "smb",
-                                        "SMB link to machine".to_string(),
-                                        "Enter smb URL (e.g. smb://host/share/path):".to_string(),
-                                    ),
-                                    _ => unreachable!(),
-                                };
-                                app.ui_mode = UiMode::InputDialog {
-                                    title,
-                                    prompt,
-                                    value: String::new(),
-                                    focus_ok: false,
-                                    on_submit: Box::new(move |app, input| {
-                                        let trimmed = input.trim();
-                                        if trimmed.is_empty() {
-                                            return Ok(());
-                                        }
-                                        let url_str = if trimmed.starts_with("ftp://")
-                                            || trimmed.starts_with("sftp://")
-                                            || trimmed.starts_with("fish://")
-                                            || trimmed.starts_with("smb://")
-                                        {
-                                            trimmed.to_string()
-                                        } else {
-                                            format!("{scheme}://{trimmed}")
+                                match item {
+                                    // New multi-field form for FTP/SFTP
+                                    "FTP link" | "SFTP link" => {
+                                        let scheme =
+                                            if item == "FTP link" { "ftp" } else { "sftp" };
+                                        app.ui_mode = UiMode::FtpConnectDialog {
+                                            scheme: scheme.to_string(),
+                                            host: String::new(),
+                                            port: String::new(),
+                                            user: String::new(),
+                                            password: String::new(),
+                                            directory: "/".to_string(),
+                                            anonymous: false,
+                                            focus_index: 0,
+                                            focus_ok: false,
                                         };
-                                        let path = std::path::PathBuf::from(url_str);
-                                        match app.change_dir(&path) {
-                                            Ok(()) => Ok(()),
-                                            Err(err) => {
-                                                app.ui_mode = UiMode::DialogConfirm {
-                                                    title: "Error".into(),
-                                                    message: format!("{err}"),
-                                                    on_ok: Box::new(|_| Ok(())),
+                                    }
+                                    // Keep existing URL input for Shell/SMB
+                                    "Shell link" | "SMB link" => {
+                                        let (scheme, title, prompt) = match item {
+                                            "Shell link" => (
+                                                "fish",
+                                                "Shell link to machine".to_string(),
+                                                "Enter fish URL (e.g. fish://user@host/path):"
+                                                    .to_string(),
+                                            ),
+                                            "SMB link" => (
+                                                "smb",
+                                                "SMB link to machine".to_string(),
+                                                "Enter smb URL (e.g. smb://host/share/path):"
+                                                    .to_string(),
+                                            ),
+                                            _ => unreachable!(),
+                                        };
+                                        app.ui_mode = UiMode::InputDialog {
+                                            title,
+                                            prompt,
+                                            value: String::new(),
+                                            focus_ok: false,
+                                            on_submit: Box::new(move |app, input| {
+                                                let trimmed = input.trim();
+                                                if trimmed.is_empty() {
+                                                    return Ok(());
+                                                }
+                                                let url_str = if trimmed.starts_with("fish://")
+                                                    || trimmed.starts_with("smb://")
+                                                {
+                                                    trimmed.to_string()
+                                                } else {
+                                                    format!("{scheme}://{trimmed}")
                                                 };
-                                                Ok(())
-                                            }
-                                        }
-                                    }),
-                                };
+                                                let path = std::path::PathBuf::from(url_str);
+                                                match app.change_dir(&path) {
+                                                    Ok(()) => Ok(()),
+                                                    Err(err) => {
+                                                        app.ui_mode = UiMode::DialogConfirm {
+                                                            title: "Error".into(),
+                                                            message: format!("{err}"),
+                                                            on_ok: Box::new(|_| Ok(())),
+                                                        };
+                                                        Ok(())
+                                                    }
+                                                }
+                                            }),
+                                        };
+                                    }
+                                    _ => unreachable!(),
+                                }
                             }
                             "Sort order..." => {
                                 let side = match *top_index {
