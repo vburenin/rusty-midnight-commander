@@ -17,3 +17,7 @@ crossterm.workspace = true
 
 [features]
 default = []
+
+[[bin]]
+name = "mcr"
+path = "src/main.rs"

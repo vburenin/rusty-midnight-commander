@@ -6,3 +6,4 @@ pub mod find;
 pub mod panel;
 pub mod selection;
 pub mod sorting;
+pub mod user_menu;

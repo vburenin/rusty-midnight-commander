@@ -12,6 +12,12 @@ type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 
 pub enum UiMode {
     Normal,
+    /// MC User Menu (F2) – list of user-defined commands with hotkeys
+    UserMenu {
+        title: String,
+        entries: Vec<crate::user_menu::MenuEntry>,
+        selected_index: usize,
+    },
     Viewer {
         path: PathBuf,
         hex: bool,

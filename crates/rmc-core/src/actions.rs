@@ -20,6 +20,8 @@ pub enum Action {
     Refresh,
     ToggleHidden,
     SwapPanels,
+    /// Open the MC-style User Menu (F2)
+    ShowUserMenu,
     FocusMenu,
     ShowHelp,
     // Navigation
@@ -45,8 +47,14 @@ pub enum Action {
     ViewerQuit,
     ViewerToggleHex,
     // Mouse interactions (coordinates handled by UI)
-    MouseClick { x: u16, y: u16, button: MouseButton },
-    MouseScroll { up: bool },
+    MouseClick {
+        x: u16,
+        y: u16,
+        button: MouseButton,
+    },
+    MouseScroll {
+        up: bool,
+    },
     FunctionKey(u8),
 }
 

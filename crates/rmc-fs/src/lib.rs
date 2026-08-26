@@ -56,6 +56,7 @@ pub trait Vfs: Send {
 }
 
 pub mod composite;
+pub mod extfs;
 pub mod pathutil;
 pub mod remote;
 pub mod tarfs;
