@@ -1,6 +1,7 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::find::FindDialogState;
+use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::panel::{FileEntry, PanelState, SortBy};
 use crate::subshell::Subshell;
 use anyhow::Result;
@@ -103,6 +104,10 @@ pub enum UiMode {
     Help,
     /// Command line at bottom has focus for editing/executing.
     ShellInput,
+    // Directory Hotlist
+    HotlistDialog(HotlistDialogState),
+    // Directory Hotlist
+    HotlistDialog(HotlistDialogState),
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -176,6 +181,10 @@ pub struct App {
     pub ui_mode: UiMode,
     /// Subshell / command line state and last output.
     pub subshell: Subshell,
+    pub hotlist: Hotlist,
+    pub pending_ctrl_x: bool,
+    pub hotlist: Hotlist,
+    pub pending_ctrl_x: bool,
 }
 
 impl App {
@@ -192,6 +201,10 @@ impl App {
             quit: false,
             ui_mode: UiMode::Normal,
             subshell: Subshell::new(),
+            hotlist: Hotlist::load_from_default_path(),
+            pending_ctrl_x: false,
+            hotlist: Hotlist::load_from_default_path(),
+            pending_ctrl_x: false,
         };
         app.reload_panels()?;
         Ok(app)
@@ -245,6 +258,10 @@ impl App {
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
         use Action::*;
         match action {
+            OpenHotlist => {
+                let st = HotlistDialogState::new(self.hotlist.entries.clone());
+                self.ui_mode = UiMode::HotlistDialog(st);
+            }
             Quit => self.quit = true,
             Refresh => {
                 self.reload_panels()?;

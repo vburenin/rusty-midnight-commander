@@ -13,6 +13,7 @@ use rmc_core::app::{App, UiMode};
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
 };
+use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -183,6 +184,99 @@ impl TerminalApp {
                         app.subshell.cmdline.push(c);
                         app.subshell.clear_history_nav();
                     }
+            UiMode::HotlistDialog(state) => {
+                // Estimate list rows based on current terminal size
+                let (_cols, rows) = crossterm::terminal::size()?;
+                let list_rows = rows.saturating_sub(4).clamp(12, 20).saturating_sub(4) as usize;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Tab => {
+                        state.focus = match state.focus {
+                            HDF::List => HDF::ButtonGoto,
+                            HDF::ButtonGoto => HDF::ButtonAdd,
+                            HDF::ButtonAdd => HDF::ButtonRemove,
+                            HDF::ButtonRemove => HDF::ButtonCancel,
+                            HDF::ButtonCancel => HDF::List,
+                        };
+                    }
+                    KeyCode::Up if matches!(state.focus, HDF::List) => {
+                        if state.selected_index > 0 {
+                            state.selected_index -= 1;
+                        }
+                        if state.selected_index < state.scroll_top {
+                            state.scroll_top = state.selected_index;
+                        }
+                    }
+                    KeyCode::Down if matches!(state.focus, HDF::List) => {
+                        if state.selected_index + 1 < state.entries.len() {
+                            state.selected_index += 1;
+                        }
+                        if state.selected_index >= state.scroll_top + list_rows {
+                            state.scroll_top = state
+                                .selected_index
+                                .saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Home if matches!(state.focus, HDF::List) => {
+                        state.selected_index = 0;
+                        state.scroll_top = 0;
+                    }
+                    KeyCode::End if matches!(state.focus, HDF::List) => {
+                        if !state.entries.is_empty() {
+                            state.selected_index = state.entries.len() - 1;
+                            state.scroll_top = state
+                                .selected_index
+                                .saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Enter => match state.focus {
+                        HDF::List | HDF::ButtonGoto => {
+                            if let Some(entry) = state.entries.get(state.selected_index).cloned() {
+                                let _ = app.change_dir(&entry.path);
+                                app.ui_mode = UiMode::Normal;
+                            }
+                        }
+                        HDF::ButtonAdd => {
+                            let cwd = app.active_panel().cwd.clone();
+                            let suggested = cwd
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("")
+                                .to_string();
+                            app.ui_mode = UiMode::PromptInput {
+                                title: "Add to hotlist: Label".into(),
+                                value: suggested,
+                                on_submit: Box::new(move |app, label| {
+                                    if !label.trim().is_empty() {
+                                        app.hotlist
+                                            .add_or_replace(label.trim().to_string(), cwd)?;
+                                        app.hotlist.save_to_default_path()?;
+                                    }
+                                    // Reopen dialog with updated entries
+                                    let st =
+                                        rmc_core::hotlist::HotlistDialogState::new(app.hotlist.entries.clone());
+                                    app.ui_mode = UiMode::HotlistDialog(st);
+                                    Ok(())
+                                }),
+                            };
+                        }
+                        HDF::ButtonRemove => {
+                            if state.selected_index < state.entries.len() {
+                                app.hotlist.remove_at(state.selected_index);
+                                app.hotlist.save_to_default_path()?;
+                                // refresh dialog state
+                                state.entries = app.hotlist.entries.clone();
+                                if state.selected_index >= state.entries.len()
+                                    && !state.entries.is_empty()
+                                {
+                                    state.selected_index = state.entries.len() - 1;
+                                }
+                            }
+                        }
+                        HDF::ButtonCancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    },
                     _ => {}
                 }
                 return Ok(());
@@ -631,7 +725,7 @@ impl TerminalApp {
                 let menus: [&[&str]; 5] = [
                     &["Copy", "Move", "Mkdir", "Delete"],
                     &["View", "Edit", "Copy", "Move", "Mkdir", "Delete", "Quit"],
-                    &["User menu", "Find file", "Compare files", "Compare dirs"],
+                    &["User menu", "Find file", "Directory hotlist", "Compare dirs"],
                     &["Layout", "Panels", "Confirmations"],
                     &["Copy", "Move", "Mkdir", "Delete"],
                 ];
@@ -700,6 +794,12 @@ impl TerminalApp {
                                     KeyEvent::new(KeyCode::F(2), key.modifiers),
                                     page_rows,
                                 );
+                            }
+                            "Directory hotlist" => {
+                                let st = rmc_core::hotlist::HotlistDialogState::new(
+                                    app.hotlist.entries.clone(),
+                                );
+                                app.ui_mode = UiMode::HotlistDialog(st);
                             }
                             "Find file" => {
                                 let start = app.active_panel().cwd.clone();
@@ -1316,6 +1416,7 @@ impl TerminalApp {
             _ => {}
         }
 
+<<<<<<< HEAD
         // Global Alt-Enter: append filename to command line and enter ShellInput if necessary
         if matches!(key.code, KeyCode::Enter)
             && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
@@ -1327,12 +1428,52 @@ impl TerminalApp {
             }
             return Ok(());
         }
+        // Key chord handling for C-x prefix (emulate MC prefixes)
+        if app.pending_ctrl_x {
+            app.pending_ctrl_x = false;
+            if key.modifiers.is_empty() {
+                if let KeyCode::Char('h') = key.code {
+                    // Add current dir to hotlist with label prompt
+                    let cwd = active_cwd.clone();
+                    app.ui_mode = UiMode::PromptInput {
+                        title: "Add to hotlist: Label".into(),
+                        value: cwd
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        on_submit: Box::new(move |app, label| {
+                            if !label.trim().is_empty() {
+                                app.hotlist
+                                    .add_or_replace(label.trim().to_string(), cwd)?;
+                                app.hotlist.save_to_default_path()?;
+                            }
+                            Ok(())
+                        }),
+                    };
+                    return Ok(());
+                }
+            }
+            // Unrecognized chord after C-x: fall through to normal handling
+        } else if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('x'))
+        {
+            app.pending_ctrl_x = true;
+            return Ok(());
+        }
         if let Some(action) = app.keymap.resolve(&key) {
             match action {
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::ToggleSubshell => {
                     app.handle_action(Action::ToggleSubshell)?;
+                }
+                Action::OpenHotlist => {
+                    let st =
+                        rmc_core::hotlist::HotlistDialogState::new(app.hotlist.entries.clone());
+                    app.ui_mode = UiMode::HotlistDialog(st);
                 }
                 Action::Mkdir => {
                     app.ui_mode = UiMode::MkdirDialog {

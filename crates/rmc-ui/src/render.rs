@@ -5,6 +5,7 @@ use anyhow::Result;
 use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
+use rmc_core::hotlist::HotlistDialogState;
 use rmc_core::app::App;
 use rmc_core::panel::FileEntry;
 use std::io::{stdout, Stdout};
@@ -173,6 +174,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         }
         rmc_core::app::UiMode::FindDialog(state) => {
             draw_find_dialog(p, cols, rows, pal, state);
+        }
+        rmc_core::app::UiMode::HotlistDialog(state) => {
+            crate::hotlist::draw_hotlist_dialog(p, cols, rows, pal, state);
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
