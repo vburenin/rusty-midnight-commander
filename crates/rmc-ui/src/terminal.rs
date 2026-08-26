@@ -1501,13 +1501,90 @@ impl TerminalApp {
                                     app.reload_panels()?;
                                 }
                             }
-                            F::Background | F::Cancel => {
+                            F::Background => {
+                                // Enqueue background job; do not block.
+                                if title == "Copy" {
+                                    app.jobs.spawn_copy(
+                                        src_path.clone(),
+                                        Path::new(&*to).to_path_buf(),
+                                    );
+                                } else {
+                                    app.jobs.spawn_move(
+                                        src_path.clone(),
+                                        Path::new(&*to).to_path_buf(),
+                                    );
+                                }
+                                app.ui_mode = UiMode::Normal;
+                            }
+                            F::Cancel => {
                                 app.ui_mode = UiMode::Normal;
                             }
                             _ => {}
                         }
                     }
 
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::JobsDialog {
+                selected_index,
+                focus,
+            } => {
+                use rmc_core::app::JobsDialogFocus as JF;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        *focus = match *focus {
+                            JF::List => JF::Cancel,
+                            JF::Cancel => JF::Cleanup,
+                            JF::Cleanup => JF::Ok,
+                            JF::Ok => JF::List,
+                        };
+                    }
+                    KeyCode::BackTab => {
+                        *focus = match *focus {
+                            JF::List => JF::Ok,
+                            JF::Cancel => JF::List,
+                            JF::Cleanup => JF::Cancel,
+                            JF::Ok => JF::Cleanup,
+                        };
+                    }
+                    KeyCode::Up => {
+                        if matches!(*focus, JF::List) && *selected_index > 0 {
+                            *selected_index -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if matches!(*focus, JF::List) {
+                            let total = app.jobs.snapshot().len();
+                            if *selected_index + 1 < total {
+                                *selected_index += 1;
+                            }
+                        }
+                    }
+                    KeyCode::Enter => match *focus {
+                        JF::Cancel => {
+                            let snap = app.jobs.snapshot();
+                            if !snap.is_empty() && *selected_index < snap.len() {
+                                let id = snap[*selected_index].id;
+                                let _ = app.jobs.cancel(id);
+                            }
+                        }
+                        JF::Cleanup => {
+                            app.jobs.drop_finished_jobs();
+                            let total = app.jobs.snapshot().len();
+                            if *selected_index >= total {
+                                *selected_index = total.saturating_sub(1);
+                            }
+                        }
+                        JF::Ok => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                        JF::List => { /* no-op */ }
+                    },
                     _ => {}
                 }
                 return Ok(());
@@ -2905,6 +2982,14 @@ impl TerminalApp {
                     return Ok(());
                 } else if let KeyCode::Char(c) = key.code {
                     match c {
+                        'j' => {
+                            // Open Background jobs dialog
+                            app.ui_mode = UiMode::JobsDialog {
+                                selected_index: 0,
+                                focus: rmc_core::app::JobsDialogFocus::Cancel,
+                            };
+                            return Ok(());
+                        }
                         'q' => {
                             // Toggle Quick view on the inactive panel
                             let p = app.inactive_panel_mut();
