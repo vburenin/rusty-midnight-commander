@@ -265,18 +265,44 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::Viewer { .. } => {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => app.handle_action(Action::ViewerQuit)?,
-                    KeyCode::Char('h') | KeyCode::Char('x') => app.handle_action(Action::ViewerToggleHex)?,
-                    KeyCode::F(4) => app.handle_action(Action::ViewerToggleHex)?,
-                    KeyCode::Char('w') => {
-                        if let UiMode::Viewer { hex, wrap, .. } = &mut app.ui_mode {
-                            if !*hex {
-                                *wrap = !*wrap;
+                // If viewer has an active search prompt, handle it first
+                if let UiMode::Viewer { path, offset, search, search_prompt: Some(prompt), .. } = &mut app.ui_mode {
+                    match key.code {
+                        KeyCode::Esc => {
+                            *prompt = String::new();
+                            if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
+                                *search_prompt = None;
                             }
                         }
+                        KeyCode::Enter => {
+                            let q = prompt.clone();
+                            if let Some(pos) = rmc_view::search_forward(path, *offset, &q)? {
+                                *offset = pos;
+                            }
+                            *search = if q.is_empty() { None } else { Some(q) };
+                            if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
+                                *search_prompt = None;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            prompt.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            if key.modifiers.is_empty() {
+                                prompt.push(c);
+                            }
+                        }
+                        _ => {}
                     }
-                    KeyCode::F(7) => {
+                    return Ok(());
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => app.handle_action(Action::ViewerQuit)?,
+                    KeyCode::Char('h') | KeyCode::Char('x') | KeyCode::F(4) => app.handle_action(Action::ViewerToggleHex)?,
+                    KeyCode::F(2) => {
+                        // Save — no-op stub for now
+                    }
+                    KeyCode::Char('w') => {
                         if let UiMode::Viewer { hex, wrap, .. } = &mut app.ui_mode {
                             if !*hex {
                                 *wrap = !*wrap;
@@ -344,21 +370,10 @@ impl TerminalApp {
                             }
                         }
                     }
-                    KeyCode::Char('/') | KeyCode::F(6) => {
-                        // Prompt for search term
-                        app.ui_mode = UiMode::PromptInput {
-                            title: "Search".into(),
-                            value: String::new(),
-                            on_submit: Box::new(|app, q| {
-                                if let UiMode::Viewer { path, offset, search, .. } = &mut app.ui_mode {
-                                    *search = if q.is_empty() { None } else { Some(q.clone()) };
-                                    if let Some(pos) = rmc_view::search_forward(path, *offset, &q)? {
-                                        *offset = pos;
-                                    }
-                                }
-                                Ok(())
-                            }),
-                        };
+                    KeyCode::Char('/') | KeyCode::F(7) => {
+                        if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
+                            *search_prompt = Some(String::new());
+                        }
                     }
                     KeyCode::Char('n') => {
                         if let UiMode::Viewer { path, offset, search, .. } = &mut app.ui_mode {

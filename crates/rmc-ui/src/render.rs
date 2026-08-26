@@ -54,8 +54,8 @@ impl Renderer {
             return Ok(());
         }
         // Full-screen viewer mode short-circuit: draw only viewer chrome/content/status/fbar
-        if let rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, .. } = &app.ui_mode {
-            draw_viewer(&mut painter, cols, rows, self.palette, path, *hex, *wrap, *offset)?;
+        if let rmc_core::app::UiMode::Viewer { path, hex, wrap, offset, search_prompt, .. } = &app.ui_mode {
+            draw_viewer(&mut painter, cols, rows, self.palette, path, *hex, *wrap, *offset, search_prompt)?;
             painter.out.flush()?;
             return Ok(());
         }
@@ -568,6 +568,7 @@ fn draw_viewer(
     hex: bool,
     wrap: bool,
     offset: u64,
+    search_prompt: &Option<String>,
 ) -> Result<()> {
     // MC-style viewer: blue background with frame and title
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -657,6 +658,10 @@ fn draw_viewer(
     p.text(&st);
     // Viewer F-bar (white-on-black numbers, black-on-cyan labels)
     draw_viewer_fbar(p, rows.saturating_sub(1), cols, pal);
+    // Search prompt overlay (MC-style input dialog)
+    if let Some(current) = search_prompt {
+        draw_dialog_box(p, cols, rows, pal, "Search", current, &["< OK >", "Cancel"]);
+    }
     Ok(())
 }
 
@@ -884,9 +889,8 @@ fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
 }
 
 fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = [
-        "Help", "Save", "Quit", "Hex", "Goto", "Search", "Wrap", "Raw", "Menu", "Quit",
-    ];
+    // MC-like order: Help, Save, Quit, Hex, Goto, (Raw), Search, Wrap, Menu, Quit
+    let labels = ["Help", "Save", "Quit", "Hex", "Goto", "Raw", "Search", "Wrap", "Menu", "Quit"];
     let mut x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num = if i == 9 { "10" } else { &(i + 1).to_string() };

@@ -17,6 +17,7 @@ pub enum UiMode {
         wrap: bool,
         offset: u64,
         search: Option<String>,
+        search_prompt: Option<String>,
     },
     Editor {
         buf: EditorBuffer,
@@ -254,6 +255,7 @@ impl App {
                             wrap: false,
                             offset: 0,
                             search: None,
+                            search_prompt: None,
                         };
                     }
                 }
