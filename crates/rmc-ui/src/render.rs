@@ -183,6 +183,14 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
+        rmc_core::app::UiMode::OverwriteDialog {
+            op,
+            src_path: _,
+            dst_path,
+            focus,
+        } => {
+            draw_overwrite_dialog(p, cols, rows, pal, *op, dst_path, *focus);
+        }
         rmc_core::app::UiMode::InputDialog {
             title,
             prompt,
@@ -325,6 +333,142 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         _ => {}
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_overwrite_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    op: rmc_core::app::CopyMoveOp,
+    dst: &std::path::Path,
+    focus: rmc_core::app::OverwriteFocus,
+) {
+    let w = (cols as usize).min(70) as u16;
+    let h = 9u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = match op {
+        rmc_core::app::CopyMoveOp::Copy => " Copy ",
+        rmc_core::app::CopyMoveOp::Move => " Move ",
+    };
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(ttl);
+    // Destination path
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 2);
+    let d = truncate(&dst.display().to_string(), (w - 4) as usize);
+    p.text(&d);
+    // Buttons (two rows)
+    let row1 = [
+        rmc_core::app::OverwriteFocus::Yes,
+        rmc_core::app::OverwriteFocus::No,
+        rmc_core::app::OverwriteFocus::All,
+        rmc_core::app::OverwriteFocus::Older,
+    ];
+    let row2 = [
+        rmc_core::app::OverwriteFocus::None,
+        rmc_core::app::OverwriteFocus::Smaller,
+        rmc_core::app::OverwriteFocus::SizeDiffers,
+        rmc_core::app::OverwriteFocus::Append,
+    ];
+    let label = |k: rmc_core::app::OverwriteFocus| -> &'static str {
+        match k {
+            rmc_core::app::OverwriteFocus::Yes => "Yes",
+            rmc_core::app::OverwriteFocus::No => "No",
+            rmc_core::app::OverwriteFocus::All => "All",
+            rmc_core::app::OverwriteFocus::Older => "Older",
+            rmc_core::app::OverwriteFocus::None => "None",
+            rmc_core::app::OverwriteFocus::Smaller => "Smaller",
+            rmc_core::app::OverwriteFocus::SizeDiffers => "Size differs",
+            rmc_core::app::OverwriteFocus::Append => "Append",
+        }
+    };
+    let draw_row = |p: &mut Painter,
+                    pal: McPalette,
+                    x: u16,
+                    y: u16,
+                    total_w: u16,
+                    btns: &[rmc_core::app::OverwriteFocus],
+                    focus: rmc_core::app::OverwriteFocus| {
+        // compute total width
+        let mut width = 0usize;
+        for (i, k) in btns.iter().enumerate() {
+            let t = if *k == focus {
+                format!("< {} >", label(*k))
+            } else {
+                format!("[ {} ]", label(*k))
+            };
+            width += t.len();
+            if i + 1 != btns.len() {
+                width += 2;
+            }
+        }
+        let mut cx = x + (total_w.saturating_sub(width as u16)) / 2;
+        for (i, k) in btns.iter().enumerate() {
+            let t = if *k == focus {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+                format!("< {} >", label(*k))
+            } else {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+                format!("[ {} ]", label(*k))
+            };
+            p.goto(cx, y);
+            p.text(&t);
+            cx = cx.saturating_add(t.len() as u16);
+            if i + 1 != btns.len() {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+                p.goto(cx, y);
+                p.text("  ");
+                cx += 2;
+            }
+        }
+    };
+    draw_row(p, pal, x, y + h - 3, w, &row1, focus);
+    draw_row(p, pal, x, y + h - 2, w, &row2, focus);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
 fn draw_user_menu_dialog(
