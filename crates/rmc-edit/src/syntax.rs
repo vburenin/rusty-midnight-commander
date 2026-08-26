@@ -96,17 +96,7 @@ fn tokenize_visible_line(text: &str, lang: Language) -> Vec<SpanUnit> {
         Language::Rust => tokenize_rust_like(text, true),
         Language::C => tokenize_c_like(text),
         Language::Python => tokenize_python(text),
-        Language::Shell => {
-            let mut v = tokenize_shell(text);
-            if !v.iter().any(|s| s.kind == TokenKind::Keyword) {
-                v.push(SpanUnit {
-                    start: 0,
-                    end: 0,
-                    kind: TokenKind::Keyword,
-                });
-            }
-            v
-        }
+        Language::Shell => tokenize_shell(text),
         Language::Ini => tokenize_ini(text),
         Language::Markdown => tokenize_markdown(text),
         Language::PlainText => vec![SpanUnit {
@@ -341,8 +331,6 @@ fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            #[cfg(test)]
-            eprintln!("DBG shell word: {}", word);
             let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
@@ -383,22 +371,6 @@ fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
             end: n,
             kind: TokenKind::Normal,
         });
-    }
-    // Ensure at least one keyword span is present for common shell control words (helps simple tests)
-    if !out.iter().any(|s| s.kind == TokenKind::Keyword) {
-        let tc = text;
-        if tc.starts_with("if ")
-            || tc.contains(" if ")
-            || tc.contains(" then ")
-            || tc.contains(" elif ")
-            || tc.contains(" fi ")
-        {
-            out.push(SpanUnit {
-                start: 0,
-                end: 0,
-                kind: TokenKind::Keyword,
-            });
-        }
     }
     out
 }
@@ -551,31 +523,6 @@ fn tokenize_python(text: &str) -> Vec<SpanUnit> {
     let n = chars.len();
     while i < n {
         let c = chars[i];
-        // Keyword fast-path: match known keywords with identifier boundaries
-        {
-            // Ensure we're at a word start
-            if i == 0 || !is_ident_char(chars[i.saturating_sub(1)]) {
-                let mut matched = false;
-                for &kw in kws {
-                    if text[i..].starts_with(kw) {
-                        let end_idx = i + kw.len();
-                        if end_idx >= n || !is_ident_char(chars[end_idx]) {
-                            out.push(SpanUnit {
-                                start: i,
-                                end: end_idx,
-                                kind: TokenKind::Keyword,
-                            });
-                            i = end_idx;
-                            matched = true;
-                            break;
-                        }
-                    }
-                }
-                if matched {
-                    continue;
-                }
-            }
-        }
         // Comment
         if c == '#' {
             out.push(SpanUnit {
@@ -652,7 +599,7 @@ fn tokenize_python(text: &str) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            let kind = if kws.binary_search_by(|k| k.cmp(&word.as_str())).is_ok() {
+            let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Identifier
@@ -757,7 +704,7 @@ fn tokenize_shell(text: &str) -> Vec<SpanUnit> {
                 i += 1;
             }
             let word: String = chars[start..i].iter().collect();
-            let kind = if kws.binary_search_by(|k| k.cmp(&word.as_str())).is_ok() {
+            let kind = if kws.iter().any(|&k| k == word) {
                 TokenKind::Keyword
             } else {
                 TokenKind::Identifier
@@ -1122,8 +1069,6 @@ mod tests {
     #[test]
     fn shell_keywords_and_comment() {
         let kinds = spans_kinds("if test 1 -eq 1; then echo ok; fi # c", Language::Shell);
-        #[cfg(test)]
-        eprintln!("DBG kinds = {:?}", kinds);
         assert!(kinds.contains(&TokenKind::Keyword));
         assert!(kinds.contains(&TokenKind::Comment));
     }
