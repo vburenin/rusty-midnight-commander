@@ -369,7 +369,6 @@ fn move_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use tempfile::tempdir;
 
     fn wait_for_status<F>(
@@ -408,10 +407,8 @@ mod tests {
         let dst = dir.path().join("dst.bin");
 
         // Write ~8 KiB
-        let mut f = File::create(&src).unwrap();
         let data = vec![0xABu8; 8 * 1024];
-        f.write_all(&data).unwrap();
-        drop(f);
+        fs::write(&src, &data).unwrap();
 
         let queue = JobQueue::new();
         let id = queue.spawn_copy(&src, &dst);
@@ -445,12 +442,8 @@ mod tests {
         let dst = dir.path().join("big_dst.bin");
 
         // Write ~8 MiB
-        let mut f = File::create(&src).unwrap();
-        let chunk = vec![0xCDu8; 1024];
-        for _ in 0..(8 * 1024) {
-            f.write_all(&chunk).unwrap();
-        }
-        drop(f);
+        let data = vec![0xCDu8; 8 * 1024 * 1024];
+        fs::write(&src, &data).unwrap();
 
         let queue = JobQueue::new();
         let id = queue.spawn_copy(&src, &dst);
@@ -489,9 +482,7 @@ mod tests {
         let src = dir.path().join("m_src.bin");
         let dst = dir.path().join("m_dst.bin");
 
-        let mut f = File::create(&src).unwrap();
-        f.write_all(&[1u8, 2, 3, 4, 5]).unwrap();
-        drop(f);
+        fs::write(&src, [1u8, 2, 3, 4, 5]).unwrap();
 
         let queue = JobQueue::new();
         let id = queue.spawn_move(&src, &dst);
