@@ -762,7 +762,6 @@ fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette) {
     // Simple stub dropdown under "File"
     let x = 0u16;
     let y = 1u16;
-    // GNU mcedit File menu: Save / Save as / Quit
     let items = ["Save", "Save as", "Quit"];
     let w = (items.iter().map(|s| s.len()).max().unwrap_or(4) + 4) as u16;
     let h = items.len() as u16 + 2;
