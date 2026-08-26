@@ -1,0 +1,19 @@
+[package]
+name = "rmc-fs"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+description = "VFS trait and local filesystem implementation for RMC"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+time.workspace = true
+unicode-width.workspace = true
+serde.workspace = true
+users.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"

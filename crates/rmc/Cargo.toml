@@ -1,0 +1,19 @@
+[package]
+name = "rmc"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+description = "Rusty Midnight Commander - rmc binary"
+repository = "https://github.com/vburenin/rusty-midnight-commander"
+
+[dependencies]
+anyhow.workspace = true
+rmc-core = { path = "../rmc-core" }
+rmc-fs = { path = "../rmc-fs" }
+rmc-ui = { path = "../rmc-ui" }
+rmc-view = { path = "../rmc-view" }
+crossterm.workspace = true
+
+[features]
+default = []

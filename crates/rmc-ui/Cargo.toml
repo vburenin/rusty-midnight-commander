@@ -1,0 +1,22 @@
+[package]
+name = "rmc-ui"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+description = "Exact MC-style terminal UI rendering and dialogs for RMC"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+unicode-width.workspace = true
+time.workspace = true
+rmc-core = { path = "../rmc-core" }
+rmc-fs = { path = "../rmc-fs" }
+fs2.workspace = true
+whoami.workspace = true
+hostname.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1.4"
