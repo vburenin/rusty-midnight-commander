@@ -35,3 +35,7 @@ walkdir = "2.5"
 ratatui = { version = "0.27", default-features = false, features = ["crossterm"] }
 crossterm = "0.27"
 time = { version = "0.3", features = ["formatting", "macros"] }
+users = "0.11"
+fs2 = "0.4"
+hostname = "0.4"
+whoami = "1.5"

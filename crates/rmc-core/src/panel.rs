@@ -14,6 +14,9 @@ pub struct FileEntry {
     pub is_exe: bool,
     pub size: u64,
     pub modified: SystemTime,
+    pub permissions: u32,
+    pub owner: Option<String>,
+    pub group: Option<String>,
 }
 
 impl FileEntry {
@@ -34,6 +37,7 @@ pub struct PanelState {
     pub cwd: PathBuf,
     pub entries: Vec<FileEntry>,
     pub cursor: usize,
+    pub scroll_top: usize,
     pub show_hidden: bool,
     pub sort_by: SortBy,
     pub sort_dir: SortDir,
@@ -46,6 +50,7 @@ impl PanelState {
             cwd: cwd.as_ref().to_path_buf(),
             entries: Vec::new(),
             cursor: 0,
+            scroll_top: 0,
             show_hidden: false,
             sort_by: SortBy::Name,
             sort_dir: SortDir::Asc,
@@ -122,6 +127,14 @@ impl PanelState {
             self.cursor = self.entries.len() - 1;
         }
     }
+
+    pub fn ensure_visible(&mut self, content_rows: usize) {
+        if self.cursor < self.scroll_top {
+            self.scroll_top = self.cursor;
+        } else if self.cursor >= self.scroll_top + content_rows {
+            self.scroll_top = self.cursor.saturating_sub(content_rows.saturating_sub(1));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +151,9 @@ mod tests {
             is_exe: false,
             size,
             modified,
+            permissions: 0o755,
+            owner: Some("user".into()),
+            group: Some("group".into()),
         }
     }
 

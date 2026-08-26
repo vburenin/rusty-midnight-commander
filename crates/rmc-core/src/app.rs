@@ -1,5 +1,5 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
-use crate::config::{KeyMap, Theme};
+use crate::config::KeyMap;
 use crate::panel::{FileEntry, PanelState, SortBy};
 use anyhow::Result;
 use rmc_fs::{DirEntry, Vfs};
@@ -11,6 +11,28 @@ type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
 pub enum UiMode {
     Normal,
     Viewer { path: PathBuf, hex: bool },
+    CopyDialog {
+        title: String, // "Copy" or "Move"
+        src_name: String,
+        src_path: PathBuf,
+        mask: String,
+        to: String,
+        using_shell_patterns: bool,
+        follow_links: bool,
+        preserve_attrs: bool,
+        dive_into_subdir: bool,
+        stable_symlinks: bool,
+        focus: CopyDialogFocus,
+    },
+    MkdirDialog {
+        value: String,
+        focus_ok: bool,
+    },
+    DeleteDialog {
+        name: String,
+        path: PathBuf,
+        focus_ok: bool,
+    },
     DialogConfirm {
         title: String,
         message: String,
@@ -25,9 +47,20 @@ pub enum UiMode {
     Help,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CopyDialogFocus {
+    Mask,
+    To,
+    Checkbox1,
+    Checkbox2,
+    Checkbox3,
+    Checkbox4,
+    Ok,
+    Background,
+    Cancel,
+}
 pub struct App {
     pub vfs: Box<dyn Vfs>,
-    pub theme: Theme,
     pub keymap: KeyMap,
     pub left: PanelState,
     pub right: PanelState,
@@ -38,12 +71,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(vfs: Box<dyn Vfs>, theme: Theme, keymap: KeyMap) -> Result<Self> {
+    pub fn new(vfs: Box<dyn Vfs>, keymap: KeyMap) -> Result<Self> {
         let cwd = vfs.cwd()?;
         let right_cwd = vfs.cwd()?;
         let mut app = Self {
             vfs,
-            theme,
             keymap,
             left: PanelState::new(&cwd),
             right: PanelState::new(&right_cwd),
@@ -94,6 +126,9 @@ impl App {
                 is_exe: e.meta.is_executable,
                 size: e.meta.size,
                 modified: e.meta.modified,
+                permissions: e.meta.permissions,
+                owner: e.meta.owner,
+                group: e.meta.group,
             })
             .collect()
     }
@@ -136,8 +171,7 @@ impl App {
                     if ent.is_dir {
                         self.change_dir(&ent.path)?;
                     } else {
-                        // View on Enter for now
-                        self.ui_mode = UiMode::Viewer { path: ent.path, hex: false };
+                        // No-op for files (ext associations to be added later)
                     }
                 }
             }
@@ -197,5 +231,14 @@ impl App {
         p.cwd = new_cwd;
         p.set_entries(entries);
         Ok(())
+    }
+}
+
+impl App {
+    pub fn page_up_by(&mut self, rows: usize) {
+        self.active_panel_mut().page_up(rows);
+    }
+    pub fn page_down_by(&mut self, rows: usize) {
+        self.active_panel_mut().page_down(rows);
     }
 }

@@ -70,6 +70,18 @@ pub mod local {
     fn meta_from(md: fs::Metadata) -> Metadata {
         let mode = md.permissions().mode();
         let is_exe = !md.is_dir() && (mode & 0o111 != 0);
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(unix)]
+        let (owner, group) = {
+            let uid = md.uid();
+            let gid = md.gid();
+            let uname = users::get_user_by_uid(uid).map(|u| u.name().to_string_lossy().into_owned());
+            let gname = users::get_group_by_gid(gid).map(|g| g.name().to_string_lossy().into_owned());
+            (uname, gname)
+        };
+        #[cfg(not(unix))]
+        let (owner, group) = (None, None);
         Metadata {
             is_dir: md.is_dir(),
             is_symlink: md.file_type().is_symlink(),
@@ -77,8 +89,8 @@ pub mod local {
             size: md.len(),
             modified: md.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             permissions: mode,
-            owner: None,
-            group: None,
+            owner,
+            group,
         }
     }
 

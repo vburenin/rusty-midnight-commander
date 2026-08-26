@@ -3,46 +3,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Theme {
-    pub panel_bg: (u8, u8, u8),
-    pub panel_fg: (u8, u8, u8),
-    pub active_panel_bg: (u8, u8, u8),
-    pub active_panel_fg: (u8, u8, u8),
-    pub selection_bg: (u8, u8, u8),
-    pub selection_fg: (u8, u8, u8),
-    pub header_bg: (u8, u8, u8),
-    pub header_fg: (u8, u8, u8),
-    pub status_bg: (u8, u8, u8),
-    pub status_fg: (u8, u8, u8),
-    pub dir_color: (u8, u8, u8),
-    pub exec_color: (u8, u8, u8),
-    pub symlink_color: (u8, u8, u8),
-    pub archive_color: (u8, u8, u8),
-}
-
-impl Theme {
-    pub fn default_mc() -> Self {
-        // Approximate Midnight Commander default blue theme
-        Self {
-            panel_bg: (0, 0, 128),
-            panel_fg: (200, 200, 200),
-            active_panel_bg: (0, 0, 160),
-            active_panel_fg: (255, 255, 255),
-            selection_bg: (255, 255, 0),
-            selection_fg: (0, 0, 0),
-            header_bg: (0, 0, 128),
-            header_fg: (255, 255, 255),
-            status_bg: (0, 0, 128),
-            status_fg: (255, 255, 255),
-            dir_color: (173, 216, 230),
-            exec_color: (144, 238, 144),
-            symlink_color: (255, 182, 193),
-            archive_color: (255, 215, 0),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMap {
     // Map of KeyEvent signature to Action
     #[serde(skip)]
