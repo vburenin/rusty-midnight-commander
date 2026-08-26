@@ -20,6 +20,58 @@ use std::time::{Duration, Instant};
 
 pub struct TerminalApp;
 
+// Keep the current viewer's effective bytes alive across renders and filtering.
+// Stores the original display path and the current ViewData (may reference a temp file).
+pub(crate) struct ViewerState {
+    pub display_path: std::path::PathBuf,
+    pub view: rmc_view::ViewData,
+}
+
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+pub(crate) static VIEWER_STATE: Lazy<Mutex<Option<ViewerState>>> = Lazy::new(|| Mutex::new(None));
+
+pub(crate) fn viewer_clear_state() {
+    if let Ok(mut g) = VIEWER_STATE.lock() {
+        *g = None;
+    }
+}
+
+pub(crate) fn viewer_ensure_view_for(display_path: &std::path::Path) -> std::path::PathBuf {
+    let mut g = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+    let need_new = g
+        .as_ref()
+        .map(|s| s.display_path != display_path)
+        .unwrap_or(true);
+    if need_new {
+        let view = rmc_view::ViewData::open_view(display_path)
+            .unwrap_or_else(|_| rmc_view::ViewData::from_path(display_path.to_path_buf()));
+        let p = view.path().to_path_buf();
+        *g = Some(ViewerState {
+            display_path: display_path.to_path_buf(),
+            view,
+        });
+        return p;
+    }
+    g.as_ref()
+        .map(|s| s.view.path().to_path_buf())
+        .unwrap_or_else(|| display_path.to_path_buf())
+}
+
+pub(crate) fn viewer_apply_filter_to_current(cmd: &str) -> anyhow::Result<()> {
+    let mut g = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+    if let Some(state) = g.as_mut() {
+        let filter = rmc_view::ExternalFilter::new("sh")
+            .with_args(["-c".to_string(), cmd.to_string()])
+            .with_input(rmc_view::FilterInput::Stdin);
+        let new_view = rmc_view::ViewData::from_filter(state.view.path(), &filter)?;
+        state.view = new_view;
+        Ok(())
+    } else {
+        anyhow::bail!("No active viewer");
+    }
+}
+
 impl TerminalApp {
     fn apply_sort_dialog(
         app: &mut App,
@@ -2265,14 +2317,15 @@ impl TerminalApp {
                             // - Prefix ":" or "l " => line number (1-based)
                             // - Otherwise: if hex mode => offset; else => line number
                             let lower = q.to_ascii_lowercase();
+                            let cpath = crate::terminal::viewer_ensure_view_for(path);
                             let res = if let Some(rest) = lower.strip_prefix('@') {
                                 rest.parse::<u64>()
                                     .ok()
-                                    .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                                    .and_then(|v| rmc_view::clamp_offset(&cpath, v).ok())
                             } else if let Some(rest) = lower.strip_prefix("0x") {
                                 u64::from_str_radix(rest, 16)
                                     .ok()
-                                    .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                                    .and_then(|v| rmc_view::clamp_offset(&cpath, v).ok())
                             } else if lower.starts_with(':') || lower.starts_with("l ") {
                                 let num_str = if let Some(rest) = lower.strip_prefix(':') {
                                     rest
@@ -2284,25 +2337,25 @@ impl TerminalApp {
                                     .trim()
                                     .parse::<u64>()
                                     .ok()
-                                    .and_then(|ln| rmc_view::goto_line(path, ln).ok())
+                                    .and_then(|ln| rmc_view::goto_line(&cpath, ln).ok())
                             } else if *hex {
                                 // hex mode default: treat as offset (hex if contains 0x else decimal)
                                 if let Some(rest) = lower.strip_prefix("0x") {
                                     u64::from_str_radix(rest, 16)
                                         .ok()
-                                        .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                                        .and_then(|v| rmc_view::clamp_offset(&cpath, v).ok())
                                 } else {
                                     lower
                                         .parse::<u64>()
                                         .ok()
-                                        .and_then(|v| rmc_view::clamp_offset(path, v).ok())
+                                        .and_then(|v| rmc_view::clamp_offset(&cpath, v).ok())
                                 }
                             } else {
                                 // text mode default: treat as line number
                                 lower
                                     .parse::<u64>()
                                     .ok()
-                                    .and_then(|ln| rmc_view::goto_line(path, ln).ok())
+                                    .and_then(|ln| rmc_view::goto_line(&cpath, ln).ok())
                             };
                             if let Some(new_off) = res {
                                 *offset = new_off;
@@ -2339,7 +2392,8 @@ impl TerminalApp {
                         }
                         KeyCode::Enter => {
                             let q = prompt.clone();
-                            if let Some(pos) = rmc_view::search_forward(path, *offset, &q)? {
+                            let cpath = crate::terminal::viewer_ensure_view_for(path);
+                            if let Some(pos) = rmc_view::search_forward(&cpath, *offset, &q)? {
                                 *offset = pos;
                             }
                             *search = if q.is_empty() { None } else { Some(q) };
@@ -2368,6 +2422,36 @@ impl TerminalApp {
                         if let UiMode::Viewer { goto_prompt, .. } = &mut app.ui_mode {
                             *goto_prompt = Some(String::new());
                         }
+                    }
+                    // MC viewer: open "Filter command" dialog
+                    KeyCode::Char('|') => {
+                        // Use existing generic InputDialog; on submit apply filter to current viewed bytes.
+                        app.ui_mode = UiMode::InputDialog {
+                            title: "Filter command".into(),
+                            prompt: "Apply command to viewed bytes:".into(),
+                            value: String::new(),
+                            focus_ok: false,
+                            on_submit: Box::new(|app, input| {
+                                let cmd = input.trim();
+                                if cmd.is_empty() {
+                                    return Ok(());
+                                }
+                                if let Err(e) = crate::terminal::viewer_apply_filter_to_current(cmd)
+                                {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: format!("{e}"),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                } else if let UiMode::Viewer { offset, search, .. } =
+                                    &mut app.ui_mode
+                                {
+                                    *offset = 0;
+                                    *search = None;
+                                }
+                                Ok(())
+                            }),
+                        };
                     }
                     KeyCode::F(2) => {
                         // Save — no-op stub for now
@@ -2400,7 +2484,8 @@ impl TerminalApp {
                             if *hex {
                                 *offset = offset.saturating_sub(16);
                             } else {
-                                *offset = rmc_view::nav_line_up(path, *offset)?;
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
+                                *offset = rmc_view::nav_line_up(&cpath, *offset)?;
                             }
                         }
                     }
@@ -2412,7 +2497,8 @@ impl TerminalApp {
                             if *hex {
                                 *offset = offset.saturating_add(16);
                             } else {
-                                *offset = rmc_view::nav_line_down(path, *offset)?;
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
+                                *offset = rmc_view::nav_line_down(&cpath, *offset)?;
                             }
                         }
                     }
@@ -2432,8 +2518,9 @@ impl TerminalApp {
                                 let step = 16u64 * (content_rows as u64);
                                 *offset = offset.saturating_add(step);
                             } else {
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
                                 *offset = rmc_view::nav_page_down(
-                                    path,
+                                    &cpath,
                                     *offset,
                                     cols.saturating_sub(2),
                                     content_rows,
@@ -2457,8 +2544,9 @@ impl TerminalApp {
                                 let step = 16u64 * (content_rows as u64);
                                 *offset = offset.saturating_sub(step);
                             } else {
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
                                 *offset = rmc_view::nav_page_up(
-                                    path,
+                                    &cpath,
                                     *offset,
                                     cols.saturating_sub(2),
                                     content_rows,
@@ -2484,12 +2572,14 @@ impl TerminalApp {
                             let (cols, rows) = crossterm::terminal::size()?;
                             let content_rows = rows.saturating_sub(3);
                             if *hex {
-                                let len = rmc_view::file_len(path)?;
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
+                                let len = rmc_view::file_len(&cpath)?;
                                 let page = 16u64 * (content_rows as u64);
                                 *offset = len.saturating_sub(page);
                             } else {
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
                                 *offset = rmc_view::nav_end(
-                                    path,
+                                    &cpath,
                                     cols.saturating_sub(2),
                                     content_rows,
                                     *wrap,
@@ -2511,8 +2601,9 @@ impl TerminalApp {
                         } = &mut app.ui_mode
                         {
                             if let Some(q) = search.clone() {
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
                                 if let Some(pos) =
-                                    rmc_view::search_forward(path, offset.saturating_add(1), &q)?
+                                    rmc_view::search_forward(&cpath, offset.saturating_add(1), &q)?
                                 {
                                     *offset = pos;
                                 }
@@ -2528,7 +2619,8 @@ impl TerminalApp {
                         } = &mut app.ui_mode
                         {
                             if let Some(q) = search.clone() {
-                                if let Some(pos) = rmc_view::search_backward(path, *offset, &q)? {
+                                let cpath = crate::terminal::viewer_ensure_view_for(path);
+                                if let Some(pos) = rmc_view::search_backward(&cpath, *offset, &q)? {
                                     *offset = pos;
                                 }
                             }

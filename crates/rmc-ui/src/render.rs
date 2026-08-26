@@ -93,6 +93,8 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
+        // Clear any lingering viewer state when not in viewer mode
+        crate::terminal::viewer_clear_state();
         // Full-screen diff viewer short-circuit
         if let rmc_core::app::UiMode::Diff(state) = &app.ui_mode {
             draw_diff(&mut painter, cols, rows, self.palette, state)?;
@@ -1109,7 +1111,7 @@ fn draw_viewer(
     cols: u16,
     rows: u16,
     pal: McPalette,
-    path: &std::path::Path,
+    display_path: &std::path::Path,
     hex: bool,
     wrap: bool,
     offset: u64,
@@ -1166,8 +1168,8 @@ fn draw_viewer(
     );
     p.goto(cols - 1, rows - 1);
     p.text("┘");
-    // Title
-    let title = format!(" {} ", path.display());
+    // Title (show original path selected in panels)
+    let title = format!(" {} ", display_path.display());
     let tx = (cols.saturating_sub(title.len() as u16)) / 2;
     p.goto(tx, 0);
     p.text(&title);
@@ -1179,8 +1181,10 @@ fn draw_viewer(
     // Compute line number gutter width conservatively (up to 7 digits + space)
     let ln_gutter: u16 = if ln_enabled { 8 } else { 0 };
     let content_cols = cols.saturating_sub(2 + ln_gutter);
+    // Ensure a stable view for the selected path (may be a filtered temp view)
+    let content_path = crate::terminal::viewer_ensure_view_for(display_path);
     let rr = rmc_view::render_window(
-        path,
+        &content_path,
         rmc_view::ViewOptions { hex, wrap, show_cr },
         offset,
         content_cols, // content width inside frame
@@ -1189,7 +1193,7 @@ fn draw_viewer(
     // If showing line numbers, compute starting line number at rr.offset
     let mut start_ln = 1u64;
     if ln_enabled {
-        if let Ok(n) = rmc_view::line_number_at(path, rr.offset) {
+        if let Ok(n) = rmc_view::line_number_at(&content_path, rr.offset) {
             start_ln = n;
         }
     }
@@ -1220,7 +1224,7 @@ fn draw_viewer(
     } else {
         "[TEXT]"
     };
-    let total = rmc_view::file_len(path).unwrap_or(0);
+    let total = rmc_view::file_len(&content_path).unwrap_or(0);
     let pct = rr
         .offset
         .saturating_mul(100)
@@ -1228,7 +1232,7 @@ fn draw_viewer(
         .unwrap_or(100);
     let mut status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
     if ln_enabled {
-        if let Ok(cur_ln) = rmc_view::line_number_at(path, rr.offset) {
+        if let Ok(cur_ln) = rmc_view::line_number_at(&content_path, rr.offset) {
             status.push_str(&format!("  Ln {}", cur_ln));
         }
     }
