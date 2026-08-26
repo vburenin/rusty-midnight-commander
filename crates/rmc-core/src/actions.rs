@@ -44,9 +44,17 @@ pub enum Action {
     // Viewer specific
     ViewerQuit,
     ViewerToggleHex,
+    /// Toggle full-screen subshell/output view (C-o).
+    ToggleSubshell,
     // Mouse interactions (coordinates handled by UI)
-    MouseClick { x: u16, y: u16, button: MouseButton },
-    MouseScroll { up: bool },
+    MouseClick {
+        x: u16,
+        y: u16,
+        button: MouseButton,
+    },
+    MouseScroll {
+        up: bool,
+    },
     FunctionKey(u8),
 }
 

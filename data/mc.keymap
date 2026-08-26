@@ -27,6 +27,7 @@ C-PageUp  = ParentDir
 C-h     = ToggleHidden
 C-u     = SwapPanels
 C-r     = Refresh
+C-o     = ToggleSubshell
 
 # Function keys (F-bar)
 F1  = ShowHelp

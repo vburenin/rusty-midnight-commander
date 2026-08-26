@@ -28,6 +28,12 @@ impl Renderer {
         let mut painter = Painter { out: &mut self.out };
         // Clear screen
         painter.out.queue(Clear(ClearType::All))?;
+        // Full-screen subshell/output view short-circuit
+        if app.subshell.show_output_screen {
+            draw_subshell_fullscreen(&mut painter, cols, rows, self.palette, app)?;
+            painter.out.flush()?;
+            return Ok(());
+        }
         // Full-screen modes: short-circuit to avoid drawing panels underneath.
         if let rmc_core::app::UiMode::Editor {
             buf,
@@ -861,7 +867,8 @@ fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, _pal: McPalette, app: &App) 
         .and_then(|s| s.into_string().ok())
         .unwrap_or_default();
     let cwd = app.active_panel().cwd.display().to_string();
-    let s = format!("{user}@{host}:{cwd}$ ");
+    let mut s = format!("{user}@{host}:{cwd}$ ");
+    s.push_str(&app.subshell.cmdline);
     let t = truncate(&s, cols as usize);
     p.text(&t);
     if t.len() < cols as usize {
@@ -931,6 +938,93 @@ fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.goto(x, y);
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
+}
+
+fn draw_subshell_fullscreen(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    app: &App,
+) -> Result<()> {
+    // MC-like subshell screen: just show output buffer in full screen, with a top title and bottom status.
+    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    for y in 0..rows {
+        p.goto(0, y);
+        p.text(&" ".repeat(cols as usize));
+    }
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
+    p.goto(0, 0);
+    p.text("┌");
+    p.hline(
+        1,
+        0,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.goto(cols - 1, 0);
+    p.text("┐");
+    p.vline(
+        0,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.vline(
+        cols - 1,
+        1,
+        rows.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.goto(0, rows - 1);
+    p.text("└");
+    p.hline(
+        1,
+        rows - 1,
+        cols.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.core_default_bg,
+    );
+    p.goto(cols - 1, rows - 1);
+    p.text("┘");
+    // Title showing active cwd
+    let cwd = app.active_panel().cwd.display().to_string();
+    let title = format!(" Subshell — {} ", cwd);
+    let tx = (cols.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, 0);
+    p.text(&title);
+    // Output content: fill between frame borders (rows - 2), clipped to width (cols - 2)
+    let content_rows = rows.saturating_sub(2);
+    // Reserve bottom status row? MC hides F-bar; keep a simple status line on last row inside frame top? We'll use inner area: 1..rows-1
+    let max_lines = content_rows.saturating_sub(0) as usize;
+    let mut y = 1u16;
+    for line in app.subshell.tail(max_lines) {
+        if y >= rows.saturating_sub(1) {
+            break;
+        }
+        p.goto(1, y);
+        let t = truncate(line, cols.saturating_sub(2) as usize);
+        p.text(&t);
+        y = y.saturating_add(1);
+    }
+    // Bottom status hint: show how to return
+    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
+    p.goto(0, rows.saturating_sub(1));
+    let msg = "Press C-o to return to panels";
+    let st = truncate(msg, cols as usize);
+    p.text(&st);
+    if st.len() < cols as usize {
+        p.text(&" ".repeat(cols as usize - st.len()));
+    }
+    Ok(())
 }
 
 fn format_entry_name(ent: &FileEntry) -> String {
