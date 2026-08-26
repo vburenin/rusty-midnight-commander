@@ -18,6 +18,8 @@ const LOOKBACK_BYTES: usize = 8 * 1024; // include some context before offset to
 pub struct ViewOptions {
     pub hex: bool,
     pub wrap: bool,
+    /// When true, visualize carriage return at EOL as ^M (CRLF files)
+    pub show_cr: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ pub fn render_window(
     if opts.hex {
         render_hex(&mut f, offset, cols, rows)
     } else {
-        render_text(&mut f, offset, cols, rows, opts.wrap)
+        render_text(&mut f, offset, cols, rows, opts.wrap, opts.show_cr)
     }
 }
 
@@ -111,6 +113,7 @@ fn render_text(
     cols: u16,
     rows: u16,
     wrap: bool,
+    show_cr: bool,
 ) -> Result<RenderResult> {
     let len = f.metadata()?.len();
     if len == 0 {
@@ -137,7 +140,17 @@ fn render_text(
         let line_end = find_line_end(&buf, i);
         let slice = &buf[i..line_end];
         // Lossy decode to avoid panics on binary
-        let line = String::from_utf8_lossy(slice);
+        let mut line = String::from_utf8_lossy(slice).to_string();
+        // If requested, show CR as ^M at EOL when present.
+        // Detect robustly around CRLF or lone CR:
+        // - If current newline marker is '\r' (line_end points at CR) -> show ^M
+        // - Or if current newline is '\n' but the last byte before it is '\r' -> show ^M
+        let cr_at_newline = (line_end < buf.len() && buf[line_end] == b'\r')
+            || (line_end > 0 && line_end <= buf.len() && buf[line_end.saturating_sub(1)] == b'\r');
+        if show_cr && cr_at_newline {
+            line.push('^');
+            line.push('M');
+        }
         // Render with wrapping if enabled
         if wrap {
             wrap_line(&line, cols as usize, &mut visual_lines);
@@ -163,6 +176,68 @@ fn render_text(
     })
 }
 
+/// Return the byte offset at the start of the given 1-based line number.
+/// Line 1 corresponds to offset 0. If the line is past EOF, returns EOF.
+pub fn goto_line(path: &Path, line_number: u64) -> Result<u64> {
+    if line_number <= 1 {
+        return Ok(0);
+    }
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    if len == 0 {
+        return Ok(0);
+    }
+    let mut cur_line: u64 = 1;
+    let mut pos: u64 = 0;
+    let mut buf = vec![0u8; 256 * 1024];
+    while pos < len && cur_line < line_number {
+        f.seek(SeekFrom::Start(pos))?;
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            if b == b'\n' {
+                cur_line += 1;
+                if cur_line == line_number {
+                    // Position is after this newline
+                    pos += 1;
+                    return Ok(pos);
+                }
+            }
+            pos += 1;
+            if pos >= len {
+                break;
+            }
+        }
+    }
+    Ok(len)
+}
+
+/// Compute 1-based logical line number at byte offset.
+/// Returns at least 1. Counts '\n' before offset.
+pub fn line_number_at(path: &Path, offset: u64) -> Result<u64> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    if len == 0 {
+        return Ok(1);
+    }
+    let mut count: u64 = 1;
+    let mut pos: u64 = 0;
+    let target = offset.min(len);
+    let mut buf = vec![0u8; 256 * 1024];
+    while pos < target {
+        f.seek(SeekFrom::Start(pos))?;
+        let want = (target - pos).min(buf.len() as u64) as usize;
+        let n = f.read(&mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        count += buf[..n].iter().filter(|&&b| b == b'\n').count() as u64;
+        pos += n as u64;
+    }
+    Ok(count)
+}
 fn find_prev_line_start(buf: &[u8], mut idx: usize) -> usize {
     if idx >= buf.len() {
         idx = buf.len().saturating_sub(1);
@@ -296,7 +371,17 @@ pub fn nav_line_up(path: &Path, offset: u64) -> Result<u64> {
 }
 
 pub fn nav_page_down(path: &Path, offset: u64, cols: u16, rows: u16, wrap: bool) -> Result<u64> {
-    let rr = render_window(path, ViewOptions { hex: false, wrap }, offset, cols, rows)?;
+    let rr = render_window(
+        path,
+        ViewOptions {
+            hex: false,
+            wrap,
+            show_cr: false,
+        },
+        offset,
+        cols,
+        rows,
+    )?;
     Ok(rr.next_screen_offset)
 }
 
@@ -309,7 +394,17 @@ pub fn nav_page_up(path: &Path, offset: u64, cols: u16, rows: u16, wrap: bool) -
     // Heuristic: move back by 2 windows and render forward one page
     let back = (WINDOW_BYTES as u64).saturating_mul(2);
     let start = offset.saturating_sub(back);
-    let rr = render_window(path, ViewOptions { hex: false, wrap }, start, cols, rows)?;
+    let rr = render_window(
+        path,
+        ViewOptions {
+            hex: false,
+            wrap,
+            show_cr: false,
+        },
+        start,
+        cols,
+        rows,
+    )?;
     // If our current offset is before rr.next_screen_offset, we are already on first page; else keep paging
     if offset <= rr.next_screen_offset {
         return Ok(rr.offset);
@@ -317,7 +412,17 @@ pub fn nav_page_up(path: &Path, offset: u64, cols: u16, rows: u16, wrap: bool) -
     // Otherwise, try to approximate previous page by stepping down until we are just before current offset
     let mut cur = rr.offset;
     loop {
-        let r = render_window(path, ViewOptions { hex: false, wrap }, cur, cols, rows)?;
+        let r = render_window(
+            path,
+            ViewOptions {
+                hex: false,
+                wrap,
+                show_cr: false,
+            },
+            cur,
+            cols,
+            rows,
+        )?;
         if r.next_screen_offset >= offset || r.eof {
             return Ok(cur);
         }
@@ -342,7 +447,17 @@ pub fn nav_end(path: &Path, cols: u16, rows: u16, wrap: bool) -> Result<u64> {
     let start = len.saturating_sub(WINDOW_BYTES as u64);
     let mut cur = start;
     loop {
-        let r = render_window(path, ViewOptions { hex: false, wrap }, cur, cols, rows)?;
+        let r = render_window(
+            path,
+            ViewOptions {
+                hex: false,
+                wrap,
+                show_cr: false,
+            },
+            cur,
+            cols,
+            rows,
+        )?;
         if r.eof {
             return Ok(r.offset);
         }
@@ -446,6 +561,7 @@ mod tests {
             ViewOptions {
                 hex: true,
                 wrap: false,
+                show_cr: false,
             },
             0,
             80,
@@ -468,6 +584,7 @@ mod tests {
             ViewOptions {
                 hex: false,
                 wrap: false,
+                show_cr: false,
             },
             0,
             10,
@@ -479,6 +596,7 @@ mod tests {
             ViewOptions {
                 hex: false,
                 wrap: true,
+                show_cr: false,
             },
             0,
             10,
