@@ -578,6 +578,7 @@ dependencies = [
  "rmc-core",
  "rmc-edit",
  "rmc-fs",
+ "rmc-view",
  "time",
  "unicode-width",
  "whoami",
@@ -590,6 +591,7 @@ dependencies = [
  "anyhow",
  "rmc-core",
  "rmc-fs",
+ "tempfile",
  "time",
  "unicode-width",
 ]

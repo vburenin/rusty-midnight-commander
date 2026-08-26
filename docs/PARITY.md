@@ -120,9 +120,9 @@ Mark each sub-feature internally with Foundation (Copy/Move/Delete/Mkdir) vs Lat
 ## 5) Internal viewer (mcview) — Status: Later
 
 Per mcview(1) and mc(1) “Internal File Viewer”:
-- [ ] Modes: text, hex, wrap toggle, raw/parsed, format/unformat
-- [ ] Navigation: line/page/home/end; goto (line/offset/percent)
-- [ ] Search: / ? F7, C-s (forward) / C-r (reverse), n/N, regex
+- [x] Modes: text, hex, wrap toggle (raw/parsed; format/unformat pending)
+- [x] Navigation: line/page/home/end (goto pending)
+- [x] Search: /, F7, n/N (reverse/C-s/C-r/regex pending)
 - [ ] View compressed via filters (e.g., gzip) per extension rules
 - [ ] Display options: show line numbers, underline/bold formatting, show CR as ^M
 - [ ] Selection and keybindings parity (F-keys and movement)

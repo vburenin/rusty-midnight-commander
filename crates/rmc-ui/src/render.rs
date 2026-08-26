@@ -25,6 +25,8 @@ impl Renderer {
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
+        // Clear screen
+        painter.out.queue(Clear(ClearType::All))?;
         // Full-screen modes: short-circuit to avoid drawing panels underneath.
         if let rmc_core::app::UiMode::Editor {
             buf,
@@ -36,8 +38,6 @@ impl Renderer {
             ..
         } = &app.ui_mode
         {
-            // Clear and draw the editor only
-            painter.out.queue(Clear(ClearType::All))?;
             draw_editor(
                 &mut painter,
                 cols,
@@ -53,8 +53,31 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
-        // Clear to panel background (blue)
-        painter.out.queue(Clear(ClearType::All))?;
+        // Full-screen viewer mode short-circuit: draw only viewer chrome/content/status/fbar
+        if let rmc_core::app::UiMode::Viewer {
+            path,
+            hex,
+            wrap,
+            offset,
+            search_prompt,
+            ..
+        } = &app.ui_mode
+        {
+            draw_viewer(
+                &mut painter,
+                cols,
+                rows,
+                self.palette,
+                path,
+                *hex,
+                *wrap,
+                *offset,
+                search_prompt,
+            )?;
+            painter.out.flush()?;
+            return Ok(());
+        }
+        // Otherwise draw the normal dual-pane UI
         painter.fill_line(
             0,
             cols,
@@ -100,7 +123,7 @@ impl Renderer {
         draw_hint(&mut painter, hint_row, cols, self.palette);
         draw_cmdline(&mut painter, cmd_row, cols, self.palette, app);
         draw_fbar(&mut painter, fbar_row, cols, self.palette);
-        // Overlays (dialogs/viewer)
+        // Overlays (dialogs)
         draw_overlays(&mut painter, app, cols, rows, self.palette)?;
         painter.out.flush()?;
         Ok(())
@@ -197,9 +220,6 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *stable_symlinks,
                 *focus,
             );
-        }
-        rmc_core::app::UiMode::Viewer { path, hex } => {
-            draw_viewer(p, app, cols, rows, pal, path, *hex)?;
         }
         rmc_core::app::UiMode::Menu {
             top_index,
@@ -564,14 +584,17 @@ fn draw_dialog_box(
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_viewer(
     p: &mut Painter,
-    app: &App,
     cols: u16,
     rows: u16,
     pal: McPalette,
     path: &std::path::Path,
     hex: bool,
+    wrap: bool,
+    offset: u64,
+    search_prompt: &Option<String>,
 ) -> Result<()> {
     // MC-style viewer: blue background with frame and title
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -626,53 +649,50 @@ fn draw_viewer(
     let tx = (cols.saturating_sub(title.len() as u16)) / 2;
     p.goto(tx, 0);
     p.text(&title);
-    // Read file
-    let mut reader = app.vfs.read_file(path)?;
-    let mut buf = Vec::new();
-    use std::io::Read;
-    reader.read_to_end(&mut buf)?;
-    let lines = if hex {
-        bytes_to_hex_lines(&buf)
-    } else {
-        let s = String::from_utf8_lossy(&buf);
-        s.lines().map(|l| l.to_string()).collect::<Vec<_>>()
-    };
-    let max_lines = rows.saturating_sub(2) as usize;
-    for (i, line) in lines.into_iter().take(max_lines).enumerate() {
+    // Render content window using rmc-view (windowed)
+    // Layout: full frame; content rows = rows - 3 (status + fbar)
+    let content_rows = rows.saturating_sub(3);
+    let rr = rmc_view::render_window(
+        path,
+        rmc_view::ViewOptions { hex, wrap },
+        offset,
+        cols.saturating_sub(2), // content width inside frame
+        content_rows,
+    )?;
+    for (i, line) in rr.lines.into_iter().enumerate() {
         p.goto(1, 1 + i as u16);
-        let t = truncate(&line, cols as usize);
+        let t = truncate(&line, (cols.saturating_sub(2)) as usize);
         p.text(&t);
+        if (1 + i as u16) >= rows.saturating_sub(2) {
+            break;
+        }
     }
-    // Footer/status
+    // Status line (MC-style: percent / offset / mode)
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-    p.goto(0, rows - 1);
-    let foot = format!(
-        " {}  {}  Press q to quit, h to toggle hex ",
-        path.display(),
-        if hex { "[HEX]" } else { "[TEXT]" }
-    );
-    let t = truncate(&foot, cols as usize);
-    p.text(&t);
-    Ok(())
-}
-
-fn bytes_to_hex_lines(data: &[u8]) -> Vec<String> {
-    let mut out = Vec::new();
-    for chunk in data.chunks(16).take(1024) {
-        let hexs: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
-        let text: String = chunk
-            .iter()
-            .map(|&b| {
-                if (32..=126).contains(&b) {
-                    b as char
-                } else {
-                    '.'
-                }
-            })
-            .collect();
-        out.push(format!("{:47}  {}", hexs.join(" "), text));
+    p.goto(0, rows.saturating_sub(2));
+    let mode = if hex {
+        "[HEX]"
+    } else if wrap {
+        "[TEXT WRAP]"
+    } else {
+        "[TEXT]"
+    };
+    let total = rmc_view::file_len(path).unwrap_or(0);
+    let pct = rr
+        .offset
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(100);
+    let status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
+    let st = truncate(&status, cols as usize);
+    p.text(&st);
+    // Viewer F-bar (white-on-black numbers, black-on-cyan labels)
+    draw_viewer_fbar(p, rows.saturating_sub(1), cols, pal);
+    // Search prompt overlay (MC-style input dialog)
+    if let Some(current) = search_prompt {
+        draw_dialog_box(p, cols, rows, pal, "Search", current, &["< OK >", "Cancel"]);
     }
-    out
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -878,6 +898,39 @@ fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.text(num);
         x += num.len() as u16;
         p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        p.text(lab);
+        x += lab.len() as u16;
+        if x < cols {
+            p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+            p.goto(x, y);
+            p.text(" ");
+            x += 1;
+        }
+        if x >= cols {
+            break;
+        }
+    }
+    if x < cols {
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(x, y);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
+}
+
+fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    // MC-like order: Help, Save, Quit, Hex, Goto, (Raw), Search, Wrap, Menu, Quit
+    let labels = [
+        "Help", "Save", "Quit", "Hex", "Goto", "Raw", "Search", "Wrap", "Menu", "Quit",
+    ];
+    let mut x = 0u16;
+    for (i, lab) in labels.iter().enumerate() {
+        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg); // white on black
+        p.goto(x, y);
+        p.text(num);
+        x += num.len() as u16;
+        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg); // black on cyan
         p.goto(x, y);
         p.text(lab);
         x += lab.len() as u16;
