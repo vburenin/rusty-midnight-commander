@@ -588,7 +588,25 @@ fn draw_editor(
         p.goto(0, content_top + i);
         p.text(&" ".repeat(cols as usize));
     }
-    let view = buf.render_window(cols as usize, content_h as usize);
+    // Spans for syntax coloring
+    let view_spans = buf.render_window_spans(cols as usize, content_h as usize);
+    // Map token kind to foreground using existing MC palette (no custom theme)
+    let token_fg = |kind: rmc_edit::TokenKind| -> Color {
+        use rmc_edit::TokenKind as K;
+        match kind {
+            K::Keyword => pal.source_color,     // cyan
+            K::String => pal.archive_color,     // magenta
+            K::Comment => pal.symlink_color,    // gray
+            K::Number => pal.exec_color,        // green
+            K::Type => pal.dir_color,           // white
+            K::Preproc => pal.header_fg,        // yellow
+            K::Heading => pal.dtitle_fg,        // blue
+            K::Emphasis => pal.menuhot_fg,      // yellow
+            K::Link => pal.menusel_fg,          // white
+            K::Code => pal.buttonbar_hotkey_fg, // white on black style fg
+            _ => pal.core_default_fg,
+        }
+    };
     // Compute selection spans in viewport coordinates
     let spans = buf.selection_spans_for_view(
         buf.view_row,
@@ -596,34 +614,72 @@ fn draw_editor(
         content_h as usize,
         cols as usize,
     );
-    for (i, line) in view.iter().enumerate() {
+    for (i, line_spans) in view_spans.iter().enumerate() {
         p.goto(0, content_top + i as u16);
-        let t = truncate(line, cols as usize);
-        if let Some((sa, sb)) = spans.get(i).and_then(|x| *x) {
-            // Draw left normal [0..sa)
-            if sa > 0 {
-                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
-                let left: String = t.chars().take(sa).collect();
-                p.text(&left);
+        // Selection range for this row (viewport columns)
+        let sel = spans.get(i).and_then(|x| *x);
+        // Draw tokens with selection overlay. Maintain running column count.
+        let mut drawn_cols = 0usize;
+        for tok in line_spans {
+            let kind = tok.kind;
+            let fg = token_fg(kind);
+            let t = truncate(&tok.text, cols as usize - drawn_cols);
+            let tok_len = t.chars().count();
+            if tok_len == 0 {
+                continue;
             }
-            // Draw selection [sa..sb)
-            if sb > sa {
-                p.set_fg_bg(pal.marked_fg, pal.marked_bg);
-                let sel: String = t.chars().skip(sa).take(sb - sa).collect();
-                p.text(&sel);
+            match sel {
+                None => {
+                    p.set_fg_bg(fg, pal.core_default_bg);
+                    p.text(&t);
+                    drawn_cols += tok_len;
+                }
+                Some((sa, sb)) => {
+                    // Non-overlapping entirely before selection
+                    if drawn_cols + tok_len <= sa || drawn_cols >= sb {
+                        p.set_fg_bg(fg, pal.core_default_bg);
+                        p.text(&t);
+                        drawn_cols += tok_len;
+                        continue;
+                    }
+                    // Split into left/sel/right relative to [sa,sb)
+                    let left_len = sa.saturating_sub(drawn_cols).min(tok_len);
+                    let sel_start = left_len;
+                    let sel_end = (sb.saturating_sub(drawn_cols)).min(tok_len);
+                    let right_len = tok_len.saturating_sub(sel_end);
+                    // Left part
+                    if left_len > 0 {
+                        p.set_fg_bg(fg, pal.core_default_bg);
+                        let left: String = t.chars().take(left_len).collect();
+                        p.text(&left);
+                    }
+                    // Selection part
+                    if sel_end > sel_start {
+                        p.set_fg_bg(pal.marked_fg, pal.marked_bg);
+                        let sel_txt: String = t
+                            .chars()
+                            .skip(sel_start)
+                            .take(sel_end - sel_start)
+                            .collect();
+                        p.text(&sel_txt);
+                    }
+                    // Right part
+                    if right_len > 0 {
+                        p.set_fg_bg(fg, pal.core_default_bg);
+                        let right: String = t.chars().skip(sel_end).collect();
+                        p.text(&right);
+                    }
+                    drawn_cols += tok_len;
+                }
             }
-            // Draw right [sb..width)
-            if sb < t.chars().count() {
-                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
-                let right: String = t.chars().skip(sb).collect();
-                p.text(&right);
-            }
-            // Restore default
-            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
-        } else {
-            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
-            p.text(&t);
         }
+        // If we drew less than full width, pad the rest
+        if drawn_cols < cols as usize {
+            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            p.text(&" ".repeat(cols as usize - drawn_cols));
+        }
+        // Restore default
+        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
     }
     // Cursor indicator (soft, we don't move real terminal cursor here)
     // Draw a small inverse cell where the logical cursor is on screen
@@ -632,11 +688,13 @@ fn draw_editor(
     if cur_y >= content_top && cur_y < content_top + content_h && cur_x < cols {
         p.goto(cur_x, cur_y);
         // Get glyph under cursor from rendered view
-        let vr = (cur_y - content_top) as usize;
-        let ch = view
+        let vr = (cur_y - content_top) as usize; // row index within content
+        // Reconstruct the displayed row text from spans for cursor sampling
+        let row_text: String = view_spans
             .get(vr)
-            .and_then(|s| s.chars().nth(cur_x as usize))
-            .unwrap_or(' ');
+            .map(|v| v.iter().map(|s| s.text.as_str()).collect::<String>())
+            .unwrap_or_default();
+        let ch = row_text.chars().nth(cur_x as usize).unwrap_or(' ');
         // Invert colors for that glyph
         p.set_fg_bg(pal.core_default_bg, pal.core_default_fg);
         p.text(&ch.to_string());
