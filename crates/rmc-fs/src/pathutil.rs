@@ -5,6 +5,11 @@ pub enum ArchiveKind {
     Tar,
     TarGz,
     Zip,
+    Cpio,
+    CpioGz,
+    SevenZ,
+    Iso,
+    Rar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +105,16 @@ pub fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
         Some(ArchiveKind::TarGz)
     } else if name.ends_with(".zip") {
         Some(ArchiveKind::Zip)
+    } else if name.ends_with(".cpio") {
+        Some(ArchiveKind::Cpio)
+    } else if name.ends_with(".cpio.gz") {
+        Some(ArchiveKind::CpioGz)
+    } else if name.ends_with(".7z") {
+        Some(ArchiveKind::SevenZ)
+    } else if name.ends_with(".iso") {
+        Some(ArchiveKind::Iso)
+    } else if name.ends_with(".rar") {
+        Some(ArchiveKind::Rar)
     } else {
         None
     }
