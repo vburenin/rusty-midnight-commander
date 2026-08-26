@@ -197,8 +197,13 @@ fn worker_loop(inner: Arc<(Mutex<Inner>, Condvar)>) {
             let job_arc = Arc::clone(&guard.jobs[idx]);
             {
                 let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
-                // If this job was cancelled while queued, skip it.
-                if job.job.status != JobStatus::Queued || job.cancel_flag.load(Ordering::Relaxed) {
+                // Only run queued jobs; anything else is skipped.
+                if job.job.status != JobStatus::Queued {
+                    continue;
+                }
+                // If this job was cancelled while queued, mark it cancelled to avoid re-picking it.
+                if job.cancel_flag.load(Ordering::Relaxed) {
+                    job.job.status = JobStatus::Cancelled;
                     continue;
                 }
                 job.job.status = JobStatus::Running;
@@ -367,7 +372,12 @@ mod tests {
     use std::io::Write as _;
     use tempfile::tempdir;
 
-    fn wait_for_status<F>(queue: &JobQueue, id: JobId, mut predicate: F, timeout_ms: u64) -> JobStatus
+    fn wait_for_status<F>(
+        queue: &JobQueue,
+        id: JobId,
+        mut predicate: F,
+        timeout_ms: u64,
+    ) -> JobStatus
     where
         F: FnMut(JobStatus) -> bool,
     {
@@ -405,7 +415,17 @@ mod tests {
 
         let queue = JobQueue::new();
         let id = queue.spawn_copy(&src, &dst);
-        let status = wait_for_status(&queue, id, |s| matches!(s, JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled), 5_000);
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
         assert_eq!(status, JobStatus::Done, "copy should complete successfully");
 
         let src_data = fs::read(&src).unwrap();
@@ -442,7 +462,12 @@ mod tests {
         let status = wait_for_status(
             &queue,
             id,
-            |s| matches!(s, JobStatus::Cancelled | JobStatus::Done | JobStatus::Failed),
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Cancelled | JobStatus::Done | JobStatus::Failed
+                )
+            },
             10_000,
         );
 
@@ -451,7 +476,10 @@ mod tests {
         // Destination file may exist and be partial.
         if let Ok(dst_meta) = fs::metadata(&dst) {
             let src_meta = fs::metadata(&src).unwrap();
-            assert!(dst_meta.len() < src_meta.len(), "partial destination should be smaller than source");
+            assert!(
+                dst_meta.len() < src_meta.len(),
+                "partial destination should be smaller than source"
+            );
         }
     }
 
@@ -467,7 +495,17 @@ mod tests {
 
         let queue = JobQueue::new();
         let id = queue.spawn_move(&src, &dst);
-        let status = wait_for_status(&queue, id, |s| matches!(s, JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled), 5_000);
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
         assert_eq!(status, JobStatus::Done, "move should complete successfully");
 
         assert!(!src.exists(), "source should be removed after move");
@@ -476,4 +514,3 @@ mod tests {
         assert_eq!(data, vec![1u8, 2, 3, 4, 5]);
     }
 }
-
