@@ -2851,6 +2851,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "SFTP link",
             "Sort order...",
             "Tree",
+            "Filter",
         ],
         &[
             "View",
@@ -2882,6 +2883,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "SFTP link",
             "Sort order...",
             "Tree",
+            "Filter",
         ],
     ];
     let titles = [" Left ", " File ", " Command ", " Options ", " Right "];
