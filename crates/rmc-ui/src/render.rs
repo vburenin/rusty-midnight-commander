@@ -2,6 +2,7 @@ use crate::filehighlight::{listing_name_color, name_span_in_line};
 use crate::find::draw_find_dialog;
 use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
 use crate::mc_colors::McPalette;
+use crate::panelize::draw_external_panelize_dialog;
 use crate::widgets::Painter;
 use anyhow::Result;
 use crossterm::style::Color;
@@ -414,6 +415,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         }
         rmc_core::app::UiMode::HotlistDialog(state) => {
             crate::hotlist::draw_hotlist_dialog(p, cols, rows, pal, state);
+        }
+        rmc_core::app::UiMode::ExternalPanelizeDialog(state) => {
+            draw_external_panelize_dialog(p, cols, rows, pal, state);
         }
         rmc_core::app::UiMode::HistoryDialog {
             selected_index,

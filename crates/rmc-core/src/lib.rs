@@ -9,6 +9,7 @@ pub mod jobs;
 pub mod layout;
 pub mod matchutil;
 pub mod panel;
+pub mod panelize;
 pub mod quicksearch;
 pub mod selection;
 pub mod sorting;

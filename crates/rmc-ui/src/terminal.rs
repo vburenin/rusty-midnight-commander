@@ -24,6 +24,9 @@ use rmc_core::find::{
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::compute_chrome_geom;
+use rmc_core::panelize::{
+    ExternalPanelizeDialogState, ExternalPanelizeFocus as EPF, PanelizeStore,
+};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -899,6 +902,69 @@ pub(crate) fn open_compare_dirs_dialog(app: &mut App) {
         mode: rmc_core::app::CompareDirsMode::Quick,
         focus: rmc_core::app::CompareDirsFocus::RadioQuick,
     };
+}
+
+fn open_external_panelize_dialog(app: &mut App) {
+    let commands = PanelizeStore::load_from_default_path().commands;
+    app.ui_mode = UiMode::ExternalPanelizeDialog(ExternalPanelizeDialogState::new(commands));
+}
+
+/// Run `cmd` via `sh -c` in the active panel cwd and panelize stdout paths.
+/// Empty command is a no-op (does not wipe the panel or close the dialog).
+fn run_external_panelize_command(app: &mut App, cmd: &str) -> Result<()> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return Ok(());
+    }
+    let cwd = app.active_panel().cwd.clone();
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(&cwd)
+        .output();
+    match output {
+        Ok(out) => {
+            let mut paths: Vec<std::path::PathBuf> = Vec::new();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let t = line.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                let mut p = std::path::PathBuf::from(t);
+                if !p.is_absolute() {
+                    p = cwd.join(t);
+                }
+                if app.vfs.stat(&p).is_ok() {
+                    paths.push(p);
+                }
+            }
+            if paths.is_empty() {
+                app.ui_mode = UiMode::DialogConfirm {
+                    title: "Error".into(),
+                    message: "Command failed or produced no files".into(),
+                    on_ok: Box::new(|_| Ok(())),
+                };
+                return Ok(());
+            }
+            app.panelize_paths(&paths, Some(&cwd))?;
+            app.ui_mode = UiMode::Normal;
+            Ok(())
+        }
+        Err(_e) => {
+            app.ui_mode = UiMode::DialogConfirm {
+                title: "Error".into(),
+                message: "Command failed or produced no files".into(),
+                on_ok: Box::new(|_| Ok(())),
+            };
+            Ok(())
+        }
+    }
+}
+
+fn persist_panelize_commands(commands: Vec<rmc_core::panelize::PanelizeCommand>) -> Result<()> {
+    let store = PanelizeStore { commands };
+    store.save_to_default_path()
 }
 
 fn files_differ_contents(
@@ -3114,6 +3180,177 @@ impl TerminalApp {
                         }
                     },
                     _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::ExternalPanelizeDialog(state) => {
+                if state.name_prompt.is_some() {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            state.name_prompt = None;
+                        }
+                        KeyCode::Backspace => {
+                            if let Some(n) = &mut state.name_prompt {
+                                n.pop();
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let name = state
+                                .name_prompt
+                                .take()
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                            if !name.is_empty() {
+                                let command = state.command.clone();
+                                let mut store = PanelizeStore {
+                                    commands: state.commands.clone(),
+                                };
+                                store.add_or_replace(name.clone(), command);
+                                persist_panelize_commands(store.commands.clone())?;
+                                state.commands = store.commands;
+                                if let Some(idx) =
+                                    state.commands.iter().position(|e| e.name == name)
+                                {
+                                    state.selected_index = idx;
+                                }
+                                state.clamp_selection();
+                            }
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
+                            if let Some(n) = &mut state.name_prompt {
+                                n.push(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                let (_cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+                let list_rows = rows.saturating_sub(4).clamp(12, 20).saturating_sub(6) as usize;
+                let mut close = false;
+                let mut panelize = false;
+                let mut add_new = false;
+                let mut remove = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        close = true;
+                    }
+                    KeyCode::Tab => {
+                        state.focus = state.focus.next();
+                        if matches!(state.focus, EPF::List) {
+                            state.fill_command_from_selection();
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        state.focus = state.focus.prev();
+                        if matches!(state.focus, EPF::List) {
+                            state.fill_command_from_selection();
+                        }
+                    }
+                    KeyCode::Left if state.focus.is_button() => {
+                        state.focus = state.focus.prev_button();
+                    }
+                    KeyCode::Right if state.focus.is_button() => {
+                        state.focus = state.focus.next_button();
+                    }
+                    KeyCode::Up if matches!(state.focus, EPF::List) => {
+                        if state.selected_index > 0 {
+                            state.selected_index -= 1;
+                        }
+                        if state.selected_index < state.scroll_top {
+                            state.scroll_top = state.selected_index;
+                        }
+                        state.fill_command_from_selection();
+                    }
+                    KeyCode::Down if matches!(state.focus, EPF::List) => {
+                        if state.selected_index + 1 < state.commands.len() {
+                            state.selected_index += 1;
+                        }
+                        if list_rows > 0 && state.selected_index >= state.scroll_top + list_rows {
+                            state.scroll_top = state
+                                .selected_index
+                                .saturating_sub(list_rows.saturating_sub(1));
+                        }
+                        state.fill_command_from_selection();
+                    }
+                    KeyCode::Home if matches!(state.focus, EPF::List) => {
+                        state.selected_index = 0;
+                        state.scroll_top = 0;
+                        state.fill_command_from_selection();
+                    }
+                    KeyCode::End if matches!(state.focus, EPF::List) => {
+                        if !state.commands.is_empty() {
+                            state.selected_index = state.commands.len() - 1;
+                            if list_rows > 0 {
+                                state.scroll_top = state
+                                    .selected_index
+                                    .saturating_sub(list_rows.saturating_sub(1));
+                            }
+                            state.fill_command_from_selection();
+                        }
+                    }
+                    KeyCode::Backspace if matches!(state.focus, EPF::Command) => {
+                        state.command.pop();
+                    }
+                    // Space on buttons before generic Char so the command field still
+                    // accepts spaces.
+                    KeyCode::Char(' ') if key.modifiers.is_empty() && state.focus.is_button() => {
+                        match state.focus {
+                            EPF::ButtonAddNew => add_new = true,
+                            EPF::ButtonPanelize => panelize = true,
+                            EPF::ButtonRemove => remove = true,
+                            EPF::ButtonCancel => close = true,
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Enter => match state.focus {
+                        EPF::List | EPF::Command | EPF::ButtonPanelize => {
+                            if matches!(state.focus, EPF::List) {
+                                state.fill_command_from_selection();
+                            }
+                            panelize = true;
+                        }
+                        EPF::ButtonAddNew => add_new = true,
+                        EPF::ButtonRemove => remove = true,
+                        EPF::ButtonCancel => close = true,
+                    },
+                    KeyCode::Char(c)
+                        if key.modifiers.is_empty()
+                            && matches!(state.focus, EPF::Command)
+                            && !c.is_control() =>
+                    {
+                        state.command.push(c);
+                    }
+                    _ => {}
+                }
+                if add_new {
+                    if !state.command.trim().is_empty() {
+                        state.name_prompt = Some(String::new());
+                    }
+                    return Ok(());
+                }
+                if remove {
+                    if !state.commands.is_empty() {
+                        let idx = state.selected_index;
+                        let mut store = PanelizeStore {
+                            commands: state.commands.clone(),
+                        };
+                        store.remove_at(idx);
+                        persist_panelize_commands(store.commands.clone())?;
+                        state.commands = store.commands;
+                        state.clamp_selection();
+                        state.fill_command_from_selection();
+                    }
+                    return Ok(());
+                }
+                if close {
+                    app.ui_mode = UiMode::Normal;
+                    return Ok(());
+                }
+                if panelize {
+                    let cmd = state.command.clone();
+                    return run_external_panelize_command(app, &cmd);
                 }
                 return Ok(());
             }
@@ -5521,66 +5758,7 @@ impl TerminalApp {
                                 open_compare_dirs_dialog(app);
                             }
                             "External panelize" => {
-                                let cwd = active_cwd.clone();
-                                app.ui_mode = UiMode::InputDialog {
-                                    title: "External panelize".into(),
-                                    prompt: "Enter command:".into(),
-                                    value: String::new(),
-                                    focus_ok: false,
-                                    on_submit: Box::new(move |app, input| {
-                                        let cmd = input.trim().to_string();
-                                        if cmd.is_empty() {
-                                            return Ok(());
-                                        }
-                                        // Run the command in the active panel cwd and capture stdout
-                                        let output = std::process::Command::new("sh")
-                                            .arg("-c")
-                                            .arg(&cmd)
-                                            .current_dir(&cwd)
-                                            .output();
-                                        match output {
-                                            Ok(out) => {
-                                                let mut paths: Vec<std::path::PathBuf> = Vec::new();
-                                                let stdout = String::from_utf8_lossy(&out.stdout);
-                                                for line in stdout.lines() {
-                                                    let t = line.trim();
-                                                    if t.is_empty() {
-                                                        continue;
-                                                    }
-                                                    let mut p = std::path::PathBuf::from(t);
-                                                    if !p.is_absolute() {
-                                                        p = cwd.join(t);
-                                                    }
-                                                    if app.vfs.stat(&p).is_ok() {
-                                                        paths.push(p);
-                                                    }
-                                                }
-                                                if paths.is_empty() {
-                                                    app.ui_mode = UiMode::DialogConfirm {
-                                                        title: "Error".into(),
-                                                        message:
-                                                            "Command failed or produced no files"
-                                                                .into(),
-                                                        on_ok: Box::new(|_| Ok(())),
-                                                    };
-                                                    return Ok(());
-                                                }
-                                                app.panelize_paths(&paths, Some(&cwd))?;
-                                                app.ui_mode = UiMode::Normal;
-                                                Ok(())
-                                            }
-                                            Err(_e) => {
-                                                app.ui_mode = UiMode::DialogConfirm {
-                                                    title: "Error".into(),
-                                                    message: "Command failed or produced no files"
-                                                        .into(),
-                                                    on_ok: Box::new(|_| Ok(())),
-                                                };
-                                                Ok(())
-                                            }
-                                        }
-                                    }),
-                                };
+                                open_external_panelize_dialog(app);
                             }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;
@@ -6536,62 +6714,7 @@ impl TerminalApp {
             app.pending_ctrl_x = false;
             // Special case: handle '!' even when SHIFT is pressed (C-x !)
             if matches!(key.code, KeyCode::Char('!')) {
-                let cwd = active_cwd.clone();
-                app.ui_mode = UiMode::InputDialog {
-                    title: "External panelize".into(),
-                    prompt: "Enter command:".into(),
-                    value: String::new(),
-                    focus_ok: false,
-                    on_submit: Box::new(move |app, input| {
-                        let cmd = input.trim().to_string();
-                        if cmd.is_empty() {
-                            return Ok(());
-                        }
-                        let output = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .current_dir(&cwd)
-                            .output();
-                        match output {
-                            Ok(out) => {
-                                let mut paths: Vec<std::path::PathBuf> = Vec::new();
-                                let stdout = String::from_utf8_lossy(&out.stdout);
-                                for line in stdout.lines() {
-                                    let t = line.trim();
-                                    if t.is_empty() {
-                                        continue;
-                                    }
-                                    let mut p = std::path::PathBuf::from(t);
-                                    if !p.is_absolute() {
-                                        p = cwd.join(t);
-                                    }
-                                    if app.vfs.stat(&p).is_ok() {
-                                        paths.push(p);
-                                    }
-                                }
-                                if paths.is_empty() {
-                                    app.ui_mode = UiMode::DialogConfirm {
-                                        title: "Error".into(),
-                                        message: "Command failed or produced no files".into(),
-                                        on_ok: Box::new(|_| Ok(())),
-                                    };
-                                    return Ok(());
-                                }
-                                app.panelize_paths(&paths, Some(&cwd))?;
-                                app.ui_mode = UiMode::Normal;
-                                Ok(())
-                            }
-                            Err(_e) => {
-                                app.ui_mode = UiMode::DialogConfirm {
-                                    title: "Error".into(),
-                                    message: "Command failed or produced no files".into(),
-                                    on_ok: Box::new(|_| Ok(())),
-                                };
-                                Ok(())
-                            }
-                        }
-                    }),
-                };
+                open_external_panelize_dialog(app);
                 return Ok(());
             } else if key.modifiers.is_empty() {
                 if let KeyCode::Char('h') = key.code {
@@ -8606,10 +8729,11 @@ mod drop_menus_tests {
         assert_menu(&app, 2, 4, true);
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
+            UiMode::ExternalPanelizeDialog(_) => {}
             UiMode::InputDialog { title, .. } => {
-                assert_eq!(title, "External panelize");
+                panic!("expected External panelize dialog, got InputDialog {title:?}")
             }
-            _ => panic!("expected External panelize InputDialog"),
+            _ => panic!("expected External panelize dialog"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -14480,6 +14604,360 @@ mod viewer_selection_keybindings_tests {
                 assert!(viewer_menu.is_none());
             }
             _ => panic!("Enter on Display options must open the dialog"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod external_panelize_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panelize::{ExternalPanelizeDialogState, ExternalPanelizeFocus as EPF};
+    use rmc_fs::local::LocalFs;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct IsolatedConfig {
+        dir: std::path::PathBuf,
+        _guard: MutexGuard<'static, ()>,
+        prev_xdg: Option<String>,
+        prev_home: Option<String>,
+    }
+
+    impl IsolatedConfig {
+        fn new() -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "rmc-panelize-cfg-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(dir.join("mc")).unwrap();
+            let home = dir.join("home");
+            std::fs::create_dir_all(home.join(".config")).unwrap();
+            let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+            let prev_home = std::env::var("HOME").ok();
+            std::env::set_var("XDG_CONFIG_HOME", &dir);
+            std::env::set_var("HOME", &home);
+            Self {
+                dir,
+                _guard: guard,
+                prev_xdg,
+                prev_home,
+            }
+        }
+    }
+
+    impl Drop for IsolatedConfig {
+        fn drop(&mut self) {
+            match &self.prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match &self.prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+            let _ = std::fs::remove_dir_all(self.dir.join("home"));
+        }
+    }
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-ext-panelize-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn open_via_ctrl_x_bang(app: &mut App) {
+        press_ctrl(app, 'x');
+        press(app, KeyCode::Char('!'));
+    }
+
+    fn open_via_command_menu(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+    }
+
+    fn panelize_state(app: &App) -> &ExternalPanelizeDialogState {
+        match &app.ui_mode {
+            UiMode::ExternalPanelizeDialog(st) => st,
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected ExternalPanelizeDialog, got InputDialog {title:?}")
+            }
+            _ => panic!("expected ExternalPanelizeDialog"),
+        }
+    }
+
+    fn entry_names(app: &App) -> Vec<String> {
+        app.active_panel()
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_x_bang_opens_external_panelize_dialog() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        open_via_ctrl_x_bang(&mut app);
+        let st = panelize_state(&app);
+        assert_eq!(st.focus, EPF::Command);
+        assert!(st.commands.is_empty());
+        assert!(st.command.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_opens_external_panelize_dialog() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_command_menu(&mut app);
+        let st = panelize_state(&app);
+        assert_eq!(st.focus, EPF::Command);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_closes_without_panelizing() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        let before = entry_names(&app);
+        open_via_ctrl_x_bang(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.active_panel().is_panelized());
+        assert_eq!(entry_names(&app), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f10_closes_without_panelizing() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        let before = entry_names(&app);
+        open_via_ctrl_x_bang(&mut app);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.active_panel().is_panelized());
+        assert_eq!(entry_names(&app), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panelize_command_fills_panel_with_file_and_parent() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), "hi").unwrap();
+        std::fs::write(root.join("b.txt"), "ho").unwrap();
+        let mut app = make_app(&root);
+        open_via_ctrl_x_bang(&mut app);
+        type_str(&mut app, "printf '%s\\n' a.txt");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.active_panel().is_panelized());
+        let names = entry_names(&app);
+        assert!(
+            names.iter().any(|n| n == ".."),
+            "expected .. entry: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "a.txt"),
+            "expected a.txt: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "b.txt"),
+            "b.txt should not be panelized: {names:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_command_panelize_does_not_wipe_listing() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        let before = entry_names(&app);
+        open_via_ctrl_x_bang(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::ExternalPanelizeDialog(_)),
+            "empty command should not replace the listing"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.active_panel().is_panelized());
+        assert_eq!(entry_names(&app), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn add_new_saves_named_command_and_select_fills_field() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_ctrl_x_bang(&mut app);
+        type_str(&mut app, "echo hello");
+        press(&mut app, KeyCode::Tab); // Add new
+        press(&mut app, KeyCode::Enter);
+        {
+            let st = panelize_state(&app);
+            assert!(st.name_prompt.is_some());
+        }
+        type_str(&mut app, "Hello");
+        press(&mut app, KeyCode::Enter);
+        {
+            let st = panelize_state(&app);
+            assert!(st.name_prompt.is_none());
+            assert_eq!(st.commands.len(), 1);
+            assert_eq!(st.commands[0].name, "Hello");
+            assert_eq!(st.commands[0].command, "echo hello");
+        }
+        // Clear the field, then select the saved row to refill it.
+        {
+            if let UiMode::ExternalPanelizeDialog(st) = &mut app.ui_mode {
+                st.command.clear();
+                st.focus = EPF::List;
+            }
+        }
+        press(&mut app, KeyCode::Down);
+        let st = panelize_state(&app);
+        assert_eq!(st.command, "echo hello");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remove_drops_selected_saved_command() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_ctrl_x_bang(&mut app);
+        type_str(&mut app, "echo hello");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Hello");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(panelize_state(&app).commands.len(), 1);
+        if let UiMode::ExternalPanelizeDialog(st) = &mut app.ui_mode {
+            st.focus = EPF::ButtonRemove;
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(panelize_state(&app).commands.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_inserts_in_command_field_and_activates_button() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_ctrl_x_bang(&mut app);
+        type_str(&mut app, "echo");
+        press(&mut app, KeyCode::Char(' '));
+        type_str(&mut app, "hello");
+        assert_eq!(panelize_state(&app).command, "echo hello");
+        press(&mut app, KeyCode::Tab); // Add new
+        press(&mut app, KeyCode::Tab); // Panelize
+        press(&mut app, KeyCode::Tab); // Remove
+        press(&mut app, KeyCode::Tab); // Cancel
+        assert_eq!(panelize_state(&app).focus, EPF::ButtonCancel);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn named_commands_persist_across_new_app() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        {
+            let mut app = make_app(&root);
+            open_via_ctrl_x_bang(&mut app);
+            type_str(&mut app, "echo hello");
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Enter);
+            type_str(&mut app, "Hello");
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(panelize_state(&app).commands[0].name, "Hello");
+        }
+        let mut app2 = make_app(&root);
+        open_via_ctrl_x_bang(&mut app2);
+        let st = panelize_state(&app2);
+        assert_eq!(st.commands.len(), 1);
+        assert_eq!(st.commands[0].name, "Hello");
+        assert_eq!(st.commands[0].command, "echo hello");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_command_shows_existing_error_dialog() {
+        let _cfg = IsolatedConfig::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_ctrl_x_bang(&mut app);
+        type_str(&mut app, "echo hello");
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, message, .. } => {
+                assert_eq!(title, "Error");
+                assert_eq!(message, "Command failed or produced no files");
+            }
+            _ => panic!("expected Error dialog for a command with no files"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
