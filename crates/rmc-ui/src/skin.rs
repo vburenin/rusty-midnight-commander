@@ -334,7 +334,14 @@ mod tests {
         let default_text = fs::read_to_string(dir.join("default.ini")).expect("default.ini");
         let default_keys = section_keys(&default_text);
         let listed = list_available_skins();
-        for name in ["dark", "gray-green", "sand"] {
+        for name in [
+            "dark",
+            "gray-green",
+            "sand",
+            "modarcon16",
+            "gotar",
+            "nicedark",
+        ] {
             assert!(
                 listed.iter().any(|s| s == name),
                 "Appearance list missing {name}: {listed:?}"
