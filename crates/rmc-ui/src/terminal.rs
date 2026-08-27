@@ -1,7 +1,8 @@
 use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::mc_ext::user_extension_file_path;
 use crate::render::{
-    viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS, FILE_MENU_ITEMS, LEFT_RIGHT_MENU_ITEMS,
+    panel_fbar_labels, viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS, FILE_MENU_ITEMS,
+    LEFT_RIGHT_MENU_ITEMS,
 };
 use crate::skin::load_default_palette;
 use anyhow::Result;
@@ -13,7 +14,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use rmc_core::actions::{Action, PaneSide};
+use rmc_core::actions::{esc_digit_to_function_key, keyevent_to_function_key, Action, PaneSide};
 use rmc_core::app::{
     App, ChmodDialogFocus, ChownDialogFocus, EditorGotoDialog, EditorGotoFocus, EditorMenu,
     EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog,
@@ -1479,9 +1480,7 @@ fn fbar_function_from_xy(app: &App, x: u16, y: u16, cols: u16, rows: u16) -> Opt
         return None;
     }
     // Packing from render::draw_fbar: number, label, space
-    let labels = [
-        "Help", "Menu", "View", "Edit", "Copy", "RenMov", "Mkdir", "Delete", "PullDn", "Quit",
-    ];
+    let labels = panel_fbar_labels();
     let mut cur_x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num_str = if i == 9 { "10" } else { &(i + 1).to_string() };
@@ -1692,6 +1691,8 @@ impl TerminalApp {
                 last_draw = Instant::now();
             }
 
+            // GNU mc Esc-number: idle timeout must not leave a stuck Esc prefix.
+            app.expire_esc_number_prefix();
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -7307,6 +7308,16 @@ impl TerminalApp {
             _ => {}
         }
 
+        // GNU mc(1) Esc-1..0 / Alt-1..0 emulates F1..F10 in Normal listing.
+        // Dialogs, viewer, editor (including Esc-Esc quit) already returned above.
+        if let Some(n) = take_listing_function_key(app, &key) {
+            return Self::handle_key(
+                app,
+                KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE),
+                page_rows,
+            );
+        }
+
         // (C-x handling centralized below with app.pending_ctrl_x)
 
         // Global Alt-Enter / C-Enter: append filename to command line.
@@ -7533,6 +7544,17 @@ impl TerminalApp {
                 }
             }
         }
+        // GNU mc(1) Esc-number: pending Esc then 1..9/0 is F1..F10. Listing only;
+        // Quick search Esc already returned above. Tree/QView/Info Esc restored earlier.
+        if matches!(app.ui_mode, UiMode::Normal)
+            && app.quick_search.is_none()
+            && matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing)
+            && matches!(key.code, KeyCode::Esc)
+            && key.modifiers.is_empty()
+        {
+            app.pending_esc = Some(Instant::now());
+            return Ok(());
+        }
         // Lynx-like motion (Options → Panels): Left = parent, Right = panel Enter
         // (dirs / archives / executables / mc.ext Open). Listing mode only.
         if matches!(app.ui_mode, UiMode::Normal)
@@ -7730,6 +7752,28 @@ impl TerminalApp {
             return Ok(());
         }
         Ok(())
+    }
+}
+
+/// GNU mc(1) Esc-number / Alt-digit → F1..F10. Only Normal listing; never editor Esc-Esc.
+fn take_listing_function_key(app: &mut App, key: &KeyEvent) -> Option<u8> {
+    app.expire_esc_number_prefix();
+    if app.pending_esc.take().is_some() {
+        // Prefix consumed; only a following digit becomes F1..F10.
+        return match key.code {
+            KeyCode::Char(c) if key.modifiers.is_empty() => esc_digit_to_function_key(c),
+            _ => None,
+        };
+    }
+    if !matches!(app.ui_mode, UiMode::Normal) || app.quick_search.is_some() {
+        return None;
+    }
+    if !matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing) {
+        return None;
+    }
+    match key.code {
+        KeyCode::F(_) => None,
+        _ => keyevent_to_function_key(key),
     }
 }
 
@@ -23570,6 +23614,362 @@ mod panel_cl_repaint_tests {
             !app.needs_full_clear,
             "mcview keeps its own C-l path; panel Repaint must not steal it"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_function_keys_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+    use std::time::{Duration, Instant};
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-panel-fkeys-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn press_char(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::NONE, 10);
+    }
+
+    fn seed_listing(root: &std::path::Path) {
+        std::fs::write(root.join("notes.txt"), b"hello\n").unwrap();
+        std::fs::write(root.join("other.txt"), b"world\n").unwrap();
+        std::fs::write(root.join(".mc.menu"), "a: Echo selected file\n  echo %f\n").unwrap();
+    }
+
+    fn goto_name(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn is_quit_or_confirm(app: &App) -> bool {
+        app.quit || matches!(app.ui_mode, UiMode::DialogConfirm { .. })
+    }
+
+    fn copy_title(app: &App) -> &str {
+        match &app.ui_mode {
+            UiMode::CopyDialog { title, .. } => title.as_str(),
+            _ => panic!("expected CopyDialog, got {}", mode_name(app)),
+        }
+    }
+
+    fn mode_name(app: &App) -> &'static str {
+        match &app.ui_mode {
+            UiMode::Normal => "Normal",
+            UiMode::Help { .. } => "Help",
+            UiMode::UserMenu { .. } => "UserMenu",
+            UiMode::Viewer { .. } => "Viewer",
+            UiMode::Editor { .. } => "Editor",
+            UiMode::CopyDialog { .. } => "CopyDialog",
+            UiMode::MkdirDialog { .. } => "MkdirDialog",
+            UiMode::DeleteDialog { .. } => "DeleteDialog",
+            UiMode::Menu { .. } => "Menu",
+            UiMode::DialogConfirm { .. } => "DialogConfirm",
+            _ => "other",
+        }
+    }
+
+    #[test]
+    fn f1_through_f10_enter_gnu_targets_from_listing() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(1));
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "F1 Help, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(2));
+        assert!(
+            matches!(app.ui_mode, UiMode::UserMenu { .. }),
+            "F2 User Menu, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            matches!(app.ui_mode, UiMode::Viewer { .. }),
+            "F3 View, got {}",
+            mode_name(&app)
+        );
+        assert!(!app.quit, "F3 on a file is Viewer, not Quit");
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            matches!(app.ui_mode, UiMode::Editor { .. }),
+            "F4 Edit, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(5));
+        assert_eq!(copy_title(&app), "Copy");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(6));
+        assert_eq!(copy_title(&app), "Move");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(7));
+        assert!(
+            matches!(app.ui_mode, UiMode::MkdirDialog { .. }),
+            "F7 Mkdir, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(8));
+        assert!(
+            matches!(app.ui_mode, UiMode::DeleteDialog { .. })
+                || matches!(app.ui_mode, UiMode::DialogConfirm { .. }),
+            "F8 Delete, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Menu { top_index, .. } => {
+                assert_eq!(*top_index, 0, "F9 PullDn selects Left");
+            }
+            _ => panic!("F9 PullDn, got {}", mode_name(&app)),
+        }
+        assert!(!app.quit);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit, "F9 then Esc must not quit");
+
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            is_quit_or_confirm(&app),
+            "F10 Quit, got {} quit={}",
+            mode_name(&app),
+            app.quit
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_number_emulates_f1_f5_f10() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.pending_esc.is_some(), "Esc starts the number prefix");
+        press_char(&mut app, '1');
+        assert!(app.pending_esc.is_none());
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "Esc-1 == F1 Help, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::Esc);
+        press_char(&mut app, '5');
+        assert_eq!(copy_title(&app), "Copy", "Esc-5 == F5 Copy");
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Esc);
+        press_char(&mut app, '0');
+        assert!(
+            is_quit_or_confirm(&app),
+            "Esc-0 == F10 Quit, got {} quit={}",
+            mode_name(&app),
+            app.quit
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f9_esc_leaves_normal_without_quit_and_c_l_insert_c_s_still_work() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(9));
+        assert!(matches!(app.ui_mode, UiMode::Menu { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+
+        press_ctrl(&mut app, 'l');
+        assert!(app.needs_full_clear, "C-l still repaints after F9 Esc");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        app.needs_full_clear = false;
+
+        press(&mut app, KeyCode::Insert);
+        let marked: Vec<&str> = {
+            let p = app.active_panel();
+            p.selection
+                .iter()
+                .filter_map(|i| p.entries.get(i).map(|e| e.name.as_str()))
+                .collect()
+        };
+        assert_eq!(marked, vec!["notes.txt"]);
+
+        press_ctrl(&mut app, 's');
+        assert!(app.quick_search.is_some(), "C-s still starts Quick search");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f3_on_file_is_viewer_not_quit_and_viewer_f3_f10_return_to_panels() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(3));
+        assert!(matches!(app.ui_mode, UiMode::Viewer { .. }));
+        assert!(!app.quit, "panel F3 must not quit");
+
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "viewer F3 quits the viewer, got {}",
+            mode_name(&app)
+        );
+        assert!(!app.quit);
+
+        press(&mut app, KeyCode::F(3));
+        assert!(matches!(app.ui_mode, UiMode::Viewer { .. }));
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "viewer F10 quits the viewer, got {}",
+            mode_name(&app)
+        );
+        assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_other_key_and_timeout_do_not_stick_prefix() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        app.subshell.clear_cmdline();
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.pending_esc.is_some());
+        press_char(&mut app, 'x');
+        assert!(app.pending_esc.is_none(), "other key must drop Esc prefix");
+        assert!(
+            !matches!(app.ui_mode, UiMode::Help { .. }),
+            "Esc-x must not fire F-keys"
+        );
+        assert!(
+            app.subshell.cmdline.contains('x'),
+            "Esc then x types x, got {:?}",
+            app.subshell.cmdline
+        );
+
+        app.ui_mode = UiMode::Normal;
+        app.subshell.clear_cmdline();
+        press(&mut app, KeyCode::Esc);
+        assert!(app.pending_esc.is_some());
+        app.pending_esc = Instant::now().checked_sub(Duration::from_secs(2));
+        app.expire_esc_number_prefix();
+        assert!(app.pending_esc.is_none(), "timeout must drop Esc prefix");
+        press_char(&mut app, '1');
+        assert!(
+            !matches!(app.ui_mode, UiMode::Help { .. }),
+            "digit after timeout must not be F1"
+        );
+        assert!(
+            app.subshell.cmdline.contains('1'),
+            "timed-out Esc then 1 types 1, got {:?}",
+            app.subshell.cmdline
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn editor_esc_esc_is_not_stolen_as_panel_quit() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(4));
+        assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            matches!(app.ui_mode, UiMode::Editor { .. }),
+            "Esc-Esc must not leave the editor for panel F-keys, got {}",
+            mode_name(&app)
+        );
+        assert!(!app.quit, "Esc-Esc must not quit the app");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

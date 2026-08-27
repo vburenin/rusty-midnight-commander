@@ -691,6 +691,10 @@ mod tests {
             Some(Action::MoveUp)
         ));
         assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(4))
+        ));
+        assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
             Some(Action::Copy)
         ));
