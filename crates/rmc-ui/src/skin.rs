@@ -341,6 +341,9 @@ mod tests {
             "modarcon16",
             "gotar",
             "nicedark",
+            "darkfar",
+            "mc32",
+            "xoria256",
         ] {
             assert!(
                 listed.iter().any(|s| s == name),
