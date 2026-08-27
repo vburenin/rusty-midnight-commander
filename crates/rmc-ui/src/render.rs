@@ -35,6 +35,13 @@ impl Renderer {
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
+        // After a waited external: do not clear/redraw panels so the program's
+        // output stays visible until the user presses a key.
+        if matches!(app.ui_mode, rmc_core::app::UiMode::PauseAfterRun) {
+            draw_pause_after_run_prompt(&mut painter, cols, rows, self.palette);
+            painter.out.flush()?;
+            return Ok(());
+        }
         // Clear screen
         painter.out.queue(Clear(ClearType::All))?;
         // Full-screen subshell/output view short-circuit
@@ -205,6 +212,15 @@ fn draw_menu_bar(p: &mut Painter, cols: u16, pal: McPalette) {
     p.goto(x, 0);
     let rest = " ".repeat(cols.saturating_sub(x) as usize);
     p.text(&rest);
+}
+
+fn draw_pause_after_run_prompt(p: &mut Painter, cols: u16, rows: u16, pal: McPalette) {
+    let y = rows.saturating_sub(1);
+    p.fill_line(y, cols, pal.dialog_default_bg, pal.dialog_default_fg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(0, y);
+    let msg = crate::terminal::PAUSE_AFTER_RUN_PROMPT;
+    p.text(&truncate(msg, cols as usize));
 }
 
 fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalette) -> Result<()> {

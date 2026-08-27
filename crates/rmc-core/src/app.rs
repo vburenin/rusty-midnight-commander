@@ -127,11 +127,14 @@ pub struct ConfigOptions {
     pub classic_progressbar: bool, // default true; store only
     pub use_internal_view: bool,   // default true — keep F3 internal viewer by default
     pub use_internal_edit: bool,   // default true — keep F4 internal editor by default
-    pub pause_after_run: bool,     // default false; store only
-    pub shell_patterns: bool,      // default true; store only
-    pub auto_menus: bool,          // default false; store only
-    pub drop_menus: bool,          // default false; store only
-    pub mkdir_autoname: bool,      // default false; store only
+    /// After a waited external command (Enter-execute, external F3/$PAGER), show a
+    /// "Press any key to continue..." prompt before panels redraw. Default false.
+    /// Does not apply to fire-and-forget desktop open (`xdg-open` `.spawn()`).
+    pub pause_after_run: bool,
+    pub shell_patterns: bool, // default true; store only
+    pub auto_menus: bool,     // default false; store only
+    pub drop_menus: bool,     // default false; store only
+    pub mkdir_autoname: bool, // default false; store only
 }
 
 impl Default for ConfigOptions {
@@ -469,6 +472,10 @@ pub enum UiMode {
         draft: VfsOptions,
         focus: VfsOptionsFocus,
     },
+    /// Pause after a waited external command when `config_opts.pause_after_run`.
+    /// Any key dismisses so the panels can redraw. Not used for fire-and-forget
+    /// desktop open.
+    PauseAfterRun,
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -986,6 +993,7 @@ impl App {
             UiMode::AppearanceDialog { .. } => "Panels".to_string(),
             UiMode::ConfigurationDialog { .. } => "Panels".to_string(),
             UiMode::VfsOptionsDialog { .. } => "Panels".to_string(),
+            UiMode::PauseAfterRun => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
