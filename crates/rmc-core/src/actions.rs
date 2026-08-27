@@ -21,6 +21,8 @@ pub enum Action {
     Refresh,
     ToggleHidden,
     SwapPanels,
+    /// GNU mc Left/Right → Equal panel size (Alt-=). 50/50 split; does not swap.
+    EqualizePanels,
     /// Open the MC-style User Menu (F2)
     ShowUserMenu,
     FocusMenu,

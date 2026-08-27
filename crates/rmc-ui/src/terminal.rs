@@ -1,6 +1,6 @@
 use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::mc_ext::user_extension_file_path;
-use crate::render::{viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS};
+use crate::render::{viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS, LEFT_RIGHT_MENU_ITEMS};
 use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
@@ -25,7 +25,7 @@ use rmc_core::find::{
     CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
-use rmc_core::layout::compute_chrome_geom;
+use rmc_core::layout::{compute_chrome_geom, panel_split};
 use rmc_core::panelize::{
     ExternalPanelizeDialogState, ExternalPanelizeFocus as EPF, PanelizeStore,
 };
@@ -1561,7 +1561,7 @@ impl TerminalApp {
                 ),
             ) as usize;
             // Compute per-panel visible capacity (rows * Brief columns for packed names)
-            let mid = cols / 2;
+            let mid = panel_split(cols, app.layout.panel_ratio);
             let left_w = mid;
             let right_w = cols - mid;
             let left_capacity = rmc_core::panel::listing_page_capacity(
@@ -1723,7 +1723,7 @@ impl TerminalApp {
                             continue;
                         }
                         // Panel rectangles
-                        let mid = cols / 2;
+                        let mid = panel_split(cols, app.layout.panel_ratio);
                         let left_rect = (0u16, panel_top, left_w, (content_bottom - panel_top));
                         let right_rect = (mid, panel_top, right_w, (content_bottom - panel_top));
                         let in_rect =
@@ -5696,20 +5696,7 @@ impl TerminalApp {
                 dropped,
             } => {
                 let menus: [&[&str]; 5] = [
-                    &[
-                        "Copy",
-                        "Move",
-                        "Mkdir",
-                        "Delete",
-                        "FTP link",
-                        "Shell link",
-                        "SFTP link",
-                        "SMB link",
-                        "Listing mode...",
-                        "Sort order...",
-                        "Tree",
-                        "Filter",
-                    ],
+                    LEFT_RIGHT_MENU_ITEMS,
                     &[
                         "Help",
                         "View",
@@ -5737,20 +5724,7 @@ impl TerminalApp {
                         "Learn keys",
                         "Save setup",
                     ],
-                    &[
-                        "Copy",
-                        "Move",
-                        "Mkdir",
-                        "Delete",
-                        "FTP link",
-                        "Shell link",
-                        "SFTP link",
-                        "SMB link",
-                        "Listing mode...",
-                        "Sort order...",
-                        "Tree",
-                        "Filter",
-                    ],
+                    LEFT_RIGHT_MENU_ITEMS,
                 ];
                 match key.code {
                     KeyCode::F(1) => {
@@ -5978,6 +5952,10 @@ impl TerminalApp {
                                     case_sensitive,
                                     focus: FilterDialogFocus::Pattern,
                                 };
+                            }
+                            "Equal panel size" => {
+                                app.handle_action(Action::EqualizePanels)?;
+                                app.ui_mode = UiMode::Normal;
                             }
                             "FTP link" | "SFTP link" | "Shell link" | "SMB link" => {
                                 match item {
@@ -18149,6 +18127,258 @@ mod filter_dialog_tests {
         match &app.ui_mode {
             UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
             _ => panic!("File menu Quick cd must still open after Filter"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod equalize_panels_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::ListingFormat;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-equalize-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
+        panel.entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("l.txt"), b"l").unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        (left, right)
+    }
+
+    fn seed_app(root: &std::path::Path) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let (left_dir, right_dir) = two_panel_dirs(root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        (app, left_dir, right_dir)
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn assert_equal_split(app: &App) {
+        assert!(
+            (app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON,
+            "expected equal split 0.5, got {}",
+            app.layout.panel_ratio
+        );
+    }
+
+    #[test]
+    fn left_right_menu_has_equal_panel_size_after_filter() {
+        let filter = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Filter")
+            .expect("Filter");
+        let eq = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Equal panel size")
+            .expect("Equal panel size");
+        assert_eq!(eq, filter + 1);
+        assert!(!COMMAND_MENU_ITEMS.contains(&"Equal panel size"));
+        assert!(!COMMAND_MENU_ITEMS.contains(&"Equalize"));
+    }
+
+    #[test]
+    fn left_menu_equal_panel_size_restores_equal_split() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let left_listing = names(&app.left);
+        let right_listing = names(&app.right);
+        app.layout.panel_ratio = 0.8;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_equal_split(&app);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.left), left_listing);
+        assert_eq!(names(&app.right), right_listing);
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn right_menu_equal_panel_size_restores_equal_split() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let left_listing = names(&app.left);
+        let right_listing = names(&app.right);
+        app.layout.panel_ratio = 0.2;
+        open_left_right_item(&mut app, true, "Equal panel size");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_equal_split(&app);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.left), left_listing);
+        assert_eq!(names(&app.right), right_listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_equal_equalizes_without_swapping() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let left_listing = names(&app.left);
+        app.layout.panel_ratio = 0.65;
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('='), KeyModifiers::ALT),
+            10,
+        )
+        .unwrap();
+        assert_equal_split(&app);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.left), left_listing);
+        assert_eq!(app.active, PaneSide::Left);
+        assert!(matches!(
+            KeyMap::mc_defaults().resolve(&KeyEvent::new(KeyCode::Char('='), KeyModifiers::ALT)),
+            Some(Action::EqualizePanels)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_and_f10_close_menu_without_quitting_or_equalizing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        app.layout.panel_ratio = 0.8;
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        assert!(matches!(app.ui_mode, UiMode::Menu { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+        assert!((app.layout.panel_ratio - 0.8).abs() <= f32::EPSILON);
+
+        press(&mut app, KeyCode::F(9));
+        assert!(matches!(app.ui_mode, UiMode::Menu { .. }));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+        assert!((app.layout.panel_ratio - 0.8).abs() <= f32::EPSILON);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn swap_filter_listing_file_help_quick_cd_still_work() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+
+        open_command_item(&mut app, "Swap panels");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        // Swap back so later chdir checks stay on the original left cwd.
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+
+        open_left_right_item(&mut app, false, "Filter");
+        assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::User);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Full);
+
+        open_left_right_item(&mut app, false, "Listing mode...");
+        assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right); // File
+        press(&mut app, KeyCode::Enter); // Help first
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open after Equalize"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -110,6 +110,11 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
             SwapPanels,
         );
+        // GNU mc SplitEqual (mc.keymap): Alt-=
+        m.bind(
+            KeyEvent::new(KeyCode::Char('='), KeyModifiers::ALT),
+            EqualizePanels,
+        );
         m.bind(
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
             Refresh,
@@ -291,6 +296,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "ToggleSubshell" => Some(Action::ToggleSubshell),
         "ToggleHidden" => Some(ToggleHidden),
         "SwapPanels" => Some(SwapPanels),
+        "EqualizePanels" => Some(EqualizePanels),
         "ShowUserMenu" | "UserMenu" => Some(ShowUserMenu),
         "FocusMenu" => Some(FocusMenu),
         "ShowHelp" => Some(ShowHelp),
@@ -345,6 +351,7 @@ fn format_action(a: &Action) -> String {
         Action::ToggleSubshell => "ToggleSubshell",
         ToggleHidden => "ToggleHidden",
         SwapPanels => "SwapPanels",
+        EqualizePanels => "EqualizePanels",
         ShowUserMenu => "ShowUserMenu",
         FocusMenu => "FocusMenu",
         ShowHelp => "ShowHelp",
@@ -440,6 +447,7 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "hintbar_visible={}", app.layout.hintbar_visible)?;
     writeln!(f, "xterm_title={}", app.layout.xterm_title)?;
     writeln!(f, "show_free_space={}", app.layout.show_free_space)?;
+    writeln!(f, "panel_ratio={}", app.layout.panel_ratio)?;
     // [confirm]
     writeln!(f, "\n[confirm]")?;
     writeln!(f, "delete={}", app.confirm.delete)?;
@@ -543,6 +551,11 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                     "hintbar_visible" => app.layout.hintbar_visible = vb(&v),
                     "xterm_title" => app.layout.xterm_title = vb(&v),
                     "show_free_space" => app.layout.show_free_space = vb(&v),
+                    "panel_ratio" => {
+                        if let Ok(n) = v.parse::<f32>() {
+                            app.layout.panel_ratio = n.clamp(0.2, 0.8);
+                        }
+                    }
                     _ => {}
                 },
                 "confirm" => match k.as_str() {
