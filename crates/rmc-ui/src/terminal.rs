@@ -1379,7 +1379,7 @@ impl TerminalApp {
                         *replace_dialog = None;
                         *pipe_dialog = None;
                         *status_msg = None;
-                        *goto_dialog = Some(EditorGotoDialog::from_cursor_row(buf.row));
+                        *goto_dialog = Some(Box::new(EditorGotoDialog::from_cursor_row(buf.row)));
                     }
                     // Block ops
                     KeyCode::F(3) => {
@@ -8001,7 +8001,7 @@ mod editor_goto_tests {
             UiMode::Editor {
                 goto_dialog: Some(dlg),
                 ..
-            } => dlg,
+            } => dlg.as_ref(),
             UiMode::Editor {
                 save_as_input: Some(_),
                 ..

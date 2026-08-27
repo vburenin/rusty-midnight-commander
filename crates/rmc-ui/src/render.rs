@@ -76,7 +76,7 @@ impl Renderer {
                 save_as_input.as_deref(),
                 replace_dialog.as_ref(),
                 pipe_dialog.as_ref(),
-                goto_dialog.as_ref(),
+                goto_dialog.as_deref(),
                 confirm_exit.as_ref(),
                 app.shadows,
             );

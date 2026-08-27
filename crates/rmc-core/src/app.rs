@@ -339,7 +339,7 @@ pub enum UiMode {
         /// GNU mcedit `|` Pipe dialog (None while editing).
         pipe_dialog: Option<EditorPipeDialog>,
         /// GNU mcedit Alt-l Goto line dialog (None while editing).
-        goto_dialog: Option<EditorGotoDialog>,
+        goto_dialog: Option<Box<EditorGotoDialog>>,
         pending_quit: bool,
         confirm_exit: Option<YncDialog>,
     },
