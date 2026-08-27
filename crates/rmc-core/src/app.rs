@@ -1,5 +1,6 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
+use crossterm::event::KeyEvent;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::panel::{FileEntry, PanelState, SortBy};
@@ -342,6 +343,17 @@ pub enum UiMode {
         draft: PanelOptions,
         focus: PanelOptionsFocus,
     },
+    /// GNU mc Options → Learn keys dialog
+    LearnKeysDialog {
+        /// Draft bindings for the limited set of actions we expose.
+        draft: Vec<(crate::actions::Action, KeyEvent)>,
+        /// Selected row index; when equal to draft.len(), the bottom buttons are focused.
+        selected: usize,
+        /// True while waiting for the next key press to assign to the selected row.
+        capturing: bool,
+        /// When buttons are focused, true => OK, false => Cancel.
+        focus_ok: bool,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -485,7 +497,12 @@ impl App {
             confirm: ConfirmOptions::default(),
             panel_opts: PanelOptions::default(),
         };
-        app.reload_panels()?;
+        // Overlay user setup (if available) over defaults, then refresh panels.
+        if crate::config::load_user_setup(&mut app).is_ok() {
+            app.reload_panels()?;
+        } else {
+            app.reload_panels()?;
+        }
         Ok(app)
     }
 
@@ -547,11 +564,17 @@ impl App {
                         title: "Confirmation".to_string(),
                         message: "Are you sure you want to quit?".to_string(),
                         on_ok: Box::new(|app| {
+                            if app.panel_opts.auto_save_setup {
+                                let _ = crate::config::save_setup(app);
+                            }
                             app.quit = true;
                             Ok(())
                         }),
                     };
                 } else {
+                    if self.panel_opts.auto_save_setup {
+                        let _ = crate::config::save_setup(self);
+                    }
                     self.quit = true;
                 }
             }
@@ -807,6 +830,7 @@ impl App {
             UiMode::LayoutDialog { .. } => "Panels".to_string(),
             UiMode::ConfirmationsDialog { .. } => "Panels".to_string(),
             UiMode::PanelOptionsDialog { .. } => "Panels".to_string(),
+            UiMode::LearnKeysDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
