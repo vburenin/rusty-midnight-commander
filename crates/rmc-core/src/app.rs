@@ -220,6 +220,17 @@ pub enum OverwriteFocus {
     Append,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ListingModeFocus {
+    RadioFull,
+    RadioBrief,
+    RadioLong,
+    RadioUser,
+    Input,
+    Ok,
+    Cancel,
+}
+
 pub enum UiMode {
     Normal,
     /// MC User Menu (F2) – list of user-defined commands with hotkeys
@@ -248,6 +259,13 @@ pub enum UiMode {
         by: SortBy,
         reverse: bool,
         dirs_first: bool,
+    },
+    /// GNU mc Left/Right → Listing mode dialog
+    ListingModeDialog {
+        side: PaneSide,
+        listing: crate::panel::ListingFormat,
+        user_format: String,
+        focus: ListingModeFocus,
     },
     Editor {
         buf: EditorBuffer,
@@ -671,7 +689,7 @@ impl App {
                 p.listing = match p.listing {
                     Full => Brief,
                     Brief => Long,
-                    Long => Full,
+                    Long | User => Full,
                 };
             }
             ToggleHidden => {
@@ -878,6 +896,7 @@ impl App {
             UiMode::Diff(_) => "Diff".to_string(),
             UiMode::UserMenu { .. } => "User Menu".to_string(),
             UiMode::SortDialog { .. } => "Panels".to_string(),
+            UiMode::ListingModeDialog { .. } => "Panels".to_string(),
             UiMode::Editor { .. } => "Editor".to_string(),
             UiMode::FindDialog(_) => "Find File".to_string(),
             UiMode::CopyDialog { title, .. } => {
