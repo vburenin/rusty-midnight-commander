@@ -3171,6 +3171,10 @@ impl TerminalApp {
             UiMode::ShellInput => {
                 // A pending C-x chord is completed below (including p/C-p/t/C-t).
                 if !pending_ctrl_x {
+                    // GNU mc(1) Emacs-like Input Line Keys on the shell command line.
+                    if try_cmdline_emacs_key(app, &key, true) {
+                        return Ok(());
+                    }
                     // Command line editing and execution
                     match key.code {
                         KeyCode::Esc => {
@@ -3197,10 +3201,6 @@ impl TerminalApp {
                                 app.subshell.clear_cmdline();
                                 app.ui_mode = UiMode::Normal;
                             }
-                        }
-                        KeyCode::Backspace => {
-                            app.subshell.backspace();
-                            app.subshell.clear_history_nav();
                         }
                         KeyCode::Up => {
                             if let Some(s) = app.subshell.history_prev() {
@@ -7440,6 +7440,12 @@ impl TerminalApp {
                 app.pending_quote = true;
                 return Ok(());
             }
+            // Emacs-like input-line keys: C-a/C-e always focus the line.
+            // Other unbound Emacs chords go to the line; Home/End/Left/Right/
+            // Backspace/C-h/C-u stay panel bindings here.
+            if try_cmdline_emacs_key(app, &key, false) {
+                return Ok(());
+            }
         }
         // GNU mc(1) Tree panel mode (Left/Right → Tree). Not the Command-menu
         // Directory tree dialog. Uses `page_rows`; never `terminal::size()`.
@@ -8058,6 +8064,86 @@ fn handle_completion_list_key(app: &mut App, key: &KeyEvent, page_rows: usize) -
 
 fn focus_command_line(app: &mut App) {
     app.ui_mode = UiMode::ShellInput;
+}
+
+/// GNU mc(1) Input Line Keys (Emacs-like) on the shell command line.
+///
+/// `line_has_focus` is true in `UiMode::ShellInput` (Home/End/Left/Right,
+/// Backspace/C-h, C-u apply). From panels (`Normal`), C-a/C-e still focus the
+/// line and jump; other unbound Emacs chords are sent to the line without
+/// stealing C-x, C-o, C-r, C-s, Alt-s, history, C-q, Alt-Enter, Tab, `+`/`*`/`\\`.
+#[derive(Debug, Clone, Copy)]
+enum CmdlineEmacs {
+    Home,
+    End,
+    Left,
+    Right,
+    WordLeft,
+    WordRight,
+    Backspace,
+    Delete,
+    KillToEnd,
+    KillLine,
+    Yank,
+    KillWordPrev,
+    KillWordNext,
+}
+
+fn try_cmdline_emacs_key(app: &mut App, key: &KeyEvent, line_has_focus: bool) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let none = key.modifiers.is_empty();
+    let action = match key.code {
+        KeyCode::Char('a' | 'A') if ctrl && !alt => CmdlineEmacs::Home,
+        KeyCode::Char('e' | 'E') if ctrl && !alt => CmdlineEmacs::End,
+        KeyCode::Home if none && line_has_focus => CmdlineEmacs::Home,
+        KeyCode::End if none && line_has_focus => CmdlineEmacs::End,
+        KeyCode::Char('b' | 'B') if ctrl && !alt => CmdlineEmacs::Left,
+        KeyCode::Left if none && line_has_focus => CmdlineEmacs::Left,
+        KeyCode::Char('f' | 'F') if ctrl && !alt => CmdlineEmacs::Right,
+        KeyCode::Right if none && line_has_focus => CmdlineEmacs::Right,
+        KeyCode::Char('b' | 'B') if alt && !ctrl => CmdlineEmacs::WordLeft,
+        KeyCode::Char('f' | 'F') if alt && !ctrl => CmdlineEmacs::WordRight,
+        KeyCode::Backspace if none && line_has_focus => CmdlineEmacs::Backspace,
+        KeyCode::Char('h' | 'H') if ctrl && !alt && line_has_focus => CmdlineEmacs::Backspace,
+        KeyCode::Delete if none => CmdlineEmacs::Delete,
+        KeyCode::Char('d' | 'D') if ctrl && !alt => CmdlineEmacs::Delete,
+        KeyCode::Char('k' | 'K') if ctrl && !alt => CmdlineEmacs::KillToEnd,
+        KeyCode::Char('u' | 'U') if ctrl && !alt && line_has_focus => CmdlineEmacs::KillLine,
+        KeyCode::Char('y' | 'Y') if ctrl && !alt => CmdlineEmacs::Yank,
+        KeyCode::Backspace if alt => CmdlineEmacs::KillWordPrev,
+        KeyCode::Char('d' | 'D') if alt && !ctrl => CmdlineEmacs::KillWordNext,
+        _ => return false,
+    };
+    let mutating = !matches!(
+        action,
+        CmdlineEmacs::Home
+            | CmdlineEmacs::End
+            | CmdlineEmacs::Left
+            | CmdlineEmacs::Right
+            | CmdlineEmacs::WordLeft
+            | CmdlineEmacs::WordRight
+    );
+    match action {
+        CmdlineEmacs::Home => app.subshell.move_home(),
+        CmdlineEmacs::End => app.subshell.move_end(),
+        CmdlineEmacs::Left => app.subshell.move_left(),
+        CmdlineEmacs::Right => app.subshell.move_right(),
+        CmdlineEmacs::WordLeft => app.subshell.move_word_left(),
+        CmdlineEmacs::WordRight => app.subshell.move_word_right(),
+        CmdlineEmacs::Backspace => app.subshell.backspace(),
+        CmdlineEmacs::Delete => app.subshell.delete_char(),
+        CmdlineEmacs::KillToEnd => app.subshell.kill_to_end(),
+        CmdlineEmacs::KillLine => app.subshell.kill_whole_line(),
+        CmdlineEmacs::Yank => app.subshell.yank(),
+        CmdlineEmacs::KillWordPrev => app.subshell.kill_prev_word(),
+        CmdlineEmacs::KillWordNext => app.subshell.kill_next_word(),
+    }
+    if mutating {
+        app.subshell.clear_history_nav();
+    }
+    focus_command_line(app);
+    true
 }
 
 fn insert_selected_on_cmdline(app: &mut App, full_path: bool) {
@@ -17604,6 +17690,279 @@ mod shell_cmdline_helpers_tests {
         assert!(
             matches!(app.ui_mode, UiMode::ChmodDialog { .. }),
             "C-x c still chmod"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod shell_cmdline_editing_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::subshell::shell_quote;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-shell-edit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    #[test]
+    fn ctrl_a_e_b_f_and_home_end_left_right() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "hello world");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cursor(), 11);
+
+        press_ctrl(&mut app, 'a');
+        assert_eq!(app.subshell.cursor(), 0);
+        press_ctrl(&mut app, 'e');
+        assert_eq!(app.subshell.cursor(), 11);
+        press_ctrl(&mut app, 'b');
+        assert_eq!(app.subshell.cursor(), 10);
+        press_ctrl(&mut app, 'f');
+        assert_eq!(app.subshell.cursor(), 11);
+
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.subshell.cursor(), 0);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.subshell.cursor(), 11);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.subshell.cursor(), 10);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.subshell.cursor(), 11);
+
+        // From Normal, C-a/C-e focus the line (GNU: the command line is always there).
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press_ctrl(&mut app, 'a');
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cursor(), 0);
+        press(&mut app, KeyCode::Esc);
+        press_ctrl(&mut app, 'e');
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cursor(), 11);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_b_alt_f_word_moves() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "hello world");
+        press_alt(&mut app, 'b');
+        assert_eq!(app.subshell.cursor(), 6);
+        press_alt(&mut app, 'b');
+        assert_eq!(app.subshell.cursor(), 0);
+        press_alt(&mut app, 'f');
+        assert_eq!(app.subshell.cursor(), 5);
+        press_alt(&mut app, 'f');
+        assert_eq!(app.subshell.cursor(), 11);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_k_yanks_tail_ctrl_u_clears_line() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "hello world");
+        press_ctrl(&mut app, 'a');
+        for _ in 0..5 {
+            press_ctrl(&mut app, 'f');
+        }
+        press_ctrl(&mut app, 'k');
+        assert_eq!(app.subshell.cmdline, "hello");
+        assert_eq!(app.subshell.cursor(), 5);
+        press_ctrl(&mut app, 'y');
+        assert_eq!(app.subshell.cmdline, "hello world");
+
+        press_ctrl(&mut app, 'u');
+        assert!(app.subshell.cmdline.is_empty());
+        assert_eq!(app.subshell.cursor(), 0);
+        press_ctrl(&mut app, 'y');
+        assert_eq!(app.subshell.cmdline, "hello world");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_d_delete_backspace_ctrl_h_and_does_not_quit() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "hello");
+        press_ctrl(&mut app, 'a');
+        press_ctrl(&mut app, 'd');
+        assert_eq!(app.subshell.cmdline, "ello");
+        assert!(!app.quit);
+
+        press_ctrl(&mut app, 'e');
+        press_ctrl(&mut app, 'd');
+        assert_eq!(app.subshell.cmdline, "ello");
+        assert!(!app.quit);
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(app.subshell.cmdline, "ello");
+        assert!(!app.quit);
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.subshell.cmdline, "ell");
+        press_ctrl(&mut app, 'h');
+        assert_eq!(app.subshell.cmdline, "el");
+        assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_d_and_alt_backspace_kill_words_yank_restores() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "hello world");
+        press_ctrl(&mut app, 'a');
+        press_alt(&mut app, 'd');
+        assert_eq!(app.subshell.cmdline, " world");
+        press_ctrl(&mut app, 'y');
+        assert_eq!(app.subshell.cmdline, "hello world");
+
+        press_ctrl(&mut app, 'e');
+        press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(app.subshell.cmdline, "hello ");
+        press_ctrl(&mut app, 'y');
+        assert_eq!(app.subshell.cmdline, "hello world");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn utf8_cafe_ctrl_b_backspace_does_not_panic() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "café");
+        assert_eq!(app.subshell.cursor(), 4);
+        press_ctrl(&mut app, 'b');
+        assert_eq!(app.subshell.cursor(), 3);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.subshell.cmdline, "caé");
+        press_ctrl(&mut app, 'd');
+        assert_eq!(app.subshell.cmdline, "ca");
+        type_str(&mut app, "fé");
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.subshell.cmdline, "caf");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn helpers_tab_select_chmod_still_work_after_editing() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(root.join("zzbeta.txt"), b"b").unwrap();
+        let mut app = make_app(&root);
+        let start_side = app.active;
+
+        type_str(&mut app, "hello");
+        press_ctrl(&mut app, 'a');
+        press_ctrl(&mut app, 'k');
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.subshell.cmdline.is_empty());
+
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(
+            app.active, start_side,
+            "Tab with empty cmdline switches panels"
+        );
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, start_side);
+
+        press(&mut app, KeyCode::Char('+'));
+        assert!(
+            matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }),
+            "+ Select group in Normal"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        type_str(&mut app, "zza");
+        press_mod(&mut app, KeyCode::Tab, KeyModifiers::ALT);
+        assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
+
+        app.subshell.clear_cmdline();
+        type_str(&mut app, "echo a");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "echo b");
+        press_alt(&mut app, 'p');
+        assert_eq!(app.subshell.cmdline, "echo a");
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'q');
+        press(&mut app, KeyCode::Char('+'));
+        assert_eq!(app.subshell.cmdline, "+");
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        select_named(&mut app, "zzbeta.txt");
+        press_mod(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(app.subshell.cmdline, shell_quote("zzbeta.txt"));
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('c'));
+        assert!(
+            matches!(app.ui_mode, UiMode::ChmodDialog { .. }),
+            "C-x c still Chmod after editing"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
