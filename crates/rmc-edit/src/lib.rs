@@ -62,6 +62,12 @@ pub struct EditorBuffer {
     pub last_search: Vec<u8>,
     /// Whether last search (and default find) is case-insensitive (ASCII).
     pub last_search_case_insensitive: bool,
+    /// Whether last search ran toward the start of the file.
+    pub last_search_backwards: bool,
+    /// Whether last search required ASCII word boundaries.
+    pub last_search_whole_words: bool,
+    /// Whether last search compiled the needle as a regular expression.
+    pub last_search_regexp: bool,
     /// Undo stack of snapshots; simple but reliable. Each entry is (lines, row, col).
     undo: Vec<(Vec<Vec<u8>>, usize, usize)>,
     /// Block selection start and end (row, col), normalized so (start <= end) when both present.
@@ -95,6 +101,9 @@ impl EditorBuffer {
             dirty: false,
             last_search: Vec::new(),
             last_search_case_insensitive: false,
+            last_search_backwards: false,
+            last_search_whole_words: false,
+            last_search_regexp: false,
             undo: Vec::new(),
             sel_start: None,
             sel_end: None,
@@ -131,6 +140,9 @@ impl EditorBuffer {
             dirty: false,
             last_search: Vec::new(),
             last_search_case_insensitive: false,
+            last_search_backwards: false,
+            last_search_whole_words: false,
+            last_search_regexp: false,
             undo: Vec::new(),
             sel_start: None,
             sel_end: None,
@@ -434,67 +446,36 @@ impl EditorBuffer {
     }
 
     /// Search forward with options: case-insensitive (ASCII) and wrap to start if not found.
+    /// Substring search; clears backwards / whole-words / regexp last-search flags.
     pub fn search_forward_opts(
         &mut self,
         needle: &[u8],
         case_insensitive: bool,
         wrap: bool,
     ) -> Option<(usize, usize)> {
-        if needle.is_empty() {
-            return None;
-        }
-        self.last_search = needle.to_vec();
-        self.last_search_case_insensitive = case_insensitive;
-        // First pass: from current cursor to end
-        if let Some((r, c)) = self.search_in_range(needle, case_insensitive, self.row, self.col) {
-            self.row = r;
-            self.col = c;
-            self.ensure_cursor_visible();
-            return Some((r, c));
-        }
-        if wrap {
-            // Second pass: from start to current position (inclusive)
-            if let Some((r, c)) = self.search_in_range(needle, case_insensitive, 0, 0) {
-                // Only accept results strictly before original position to avoid infinite loop
-                if r < self.row || (r == self.row && c <= self.col) {
-                    self.row = r;
-                    self.col = c;
-                    self.ensure_cursor_visible();
-                    return Some((r, c));
-                }
-            }
-        }
-        None
+        self.search_impl(needle, !case_insensitive, false, false, false, wrap, false)
     }
 
-    fn search_in_range(
-        &self,
+    /// Search with GNU mcedit Search-dialog options. Empty needle is a no-op.
+    /// Invalid regular expressions do not panic; they yield no match.
+    pub fn search_with_options(
+        &mut self,
         needle: &[u8],
-        case_insensitive: bool,
-        start_row: usize,
-        start_col: usize,
+        case_sensitive: bool,
+        backwards: bool,
+        whole_words: bool,
+        regexp: bool,
+        wrap: bool,
     ) -> Option<(usize, usize)> {
-        if needle.is_empty() {
-            return None;
-        }
-        let mut r = start_row;
-        let mut c = start_col;
-        loop {
-            if r >= self.lines.len() {
-                return None;
-            }
-            let hay = &self.lines[r];
-            let pos = if case_insensitive {
-                find_bytes_ascii_ci(hay, needle, c)
-            } else {
-                find_bytes(hay, needle, c)
-            };
-            if let Some(p) = pos {
-                return Some((r, p));
-            }
-            r += 1;
-            c = 0;
-        }
+        self.search_impl(
+            needle,
+            case_sensitive,
+            backwards,
+            whole_words,
+            regexp,
+            wrap,
+            false,
+        )
     }
 
     /// Repeat last search, if any.
@@ -502,38 +483,179 @@ impl EditorBuffer {
         self.search_next_opts(false)
     }
 
-    /// Repeat last search with optional wrap.
+    /// Repeat last search with optional wrap, honoring stored direction and options.
     pub fn search_next_opts(&mut self, wrap: bool) -> Option<(usize, usize)> {
         let needle = self.last_search.clone();
         if needle.is_empty() {
             return None;
         }
-        // Start after current cursor position to avoid finding same spot
-        let r = self.row;
-        let c = self.col.saturating_add(1);
-        // First pass on current and following lines
-        if let Some((rr, cc)) =
-            self.search_in_range(&needle, self.last_search_case_insensitive, r, c)
-        {
-            self.row = rr;
-            self.col = cc;
-            self.ensure_cursor_visible();
-            return Some((rr, cc));
+        self.search_impl(
+            &needle,
+            !self.last_search_case_insensitive,
+            self.last_search_backwards,
+            self.last_search_whole_words,
+            self.last_search_regexp,
+            wrap,
+            true,
+        )
+    }
+
+    fn search_impl(
+        &mut self,
+        needle: &[u8],
+        case_sensitive: bool,
+        backwards: bool,
+        whole_words: bool,
+        regexp: bool,
+        wrap: bool,
+        skip_current: bool,
+    ) -> Option<(usize, usize)> {
+        if needle.is_empty() {
+            return None;
+        }
+        self.last_search = needle.to_vec();
+        self.last_search_case_insensitive = !case_sensitive;
+        self.last_search_backwards = backwards;
+        self.last_search_whole_words = whole_words;
+        self.last_search_regexp = regexp;
+
+        let re = if regexp {
+            match compile_search_regex(needle, !case_sensitive, whole_words) {
+                Some(re) => Some(re),
+                None => return None,
+            }
+        } else {
+            None
+        };
+
+        let orig = (self.row, self.col);
+        let mut start_row = self.row;
+        let mut start_col = self.col;
+        let mut skip_first = false;
+        if skip_current {
+            if backwards {
+                if start_col > 0 {
+                    start_col -= 1;
+                } else if start_row > 0 {
+                    start_row -= 1;
+                    start_col = usize::MAX;
+                } else {
+                    skip_first = true;
+                }
+            } else {
+                start_col = start_col.saturating_add(1);
+            }
+        }
+
+        if !skip_first {
+            if let Some((r, c)) = self.find_from(
+                needle,
+                case_sensitive,
+                backwards,
+                whole_words,
+                re.as_ref(),
+                start_row,
+                start_col,
+            ) {
+                return Some(self.go_to_match(r, c));
+            }
         }
         if wrap {
-            // From start until (row,col)
-            if let Some((rr, cc)) =
-                self.search_in_range(&needle, self.last_search_case_insensitive, 0, 0)
-            {
-                if rr < self.row || (rr == self.row && cc <= self.col) {
-                    self.row = rr;
-                    self.col = cc;
-                    self.ensure_cursor_visible();
-                    return Some((rr, cc));
+            if backwards {
+                let last_row = self.lines.len().saturating_sub(1);
+                if let Some((r, c)) = self.find_from(
+                    needle,
+                    case_sensitive,
+                    true,
+                    whole_words,
+                    re.as_ref(),
+                    last_row,
+                    usize::MAX,
+                ) {
+                    if r > orig.0 || (r == orig.0 && c >= orig.1) {
+                        return Some(self.go_to_match(r, c));
+                    }
+                }
+            } else if let Some((r, c)) = self.find_from(
+                needle,
+                case_sensitive,
+                false,
+                whole_words,
+                re.as_ref(),
+                0,
+                0,
+            ) {
+                if r < orig.0 || (r == orig.0 && c <= orig.1) {
+                    return Some(self.go_to_match(r, c));
                 }
             }
         }
         None
+    }
+
+    fn go_to_match(&mut self, r: usize, c: usize) -> (usize, usize) {
+        self.row = r;
+        self.col = c;
+        self.ensure_cursor_visible();
+        (r, c)
+    }
+
+    fn find_from(
+        &self,
+        needle: &[u8],
+        case_sensitive: bool,
+        backwards: bool,
+        whole_words: bool,
+        re: Option<&regex::bytes::Regex>,
+        start_row: usize,
+        start_col: usize,
+    ) -> Option<(usize, usize)> {
+        if needle.is_empty() || self.lines.is_empty() {
+            return None;
+        }
+        if backwards {
+            let mut r = start_row.min(self.lines.len().saturating_sub(1));
+            let mut c = start_col;
+            loop {
+                if let Some(col) = find_on_line(
+                    &self.lines[r],
+                    needle,
+                    c,
+                    true,
+                    case_sensitive,
+                    whole_words,
+                    re,
+                ) {
+                    return Some((r, col));
+                }
+                if r == 0 {
+                    return None;
+                }
+                r -= 1;
+                c = usize::MAX;
+            }
+        } else {
+            let mut r = start_row;
+            let mut c = start_col;
+            loop {
+                if r >= self.lines.len() {
+                    return None;
+                }
+                if let Some(col) = find_on_line(
+                    &self.lines[r],
+                    needle,
+                    c,
+                    false,
+                    case_sensitive,
+                    whole_words,
+                    re,
+                ) {
+                    return Some((r, col));
+                }
+                r += 1;
+                c = 0;
+            }
+        }
     }
 
     /// Replace next occurrence of `from` with `to`. Returns replaced (row,col) start.
@@ -852,6 +974,147 @@ impl EditorBuffer {
     }
 }
 
+fn is_ascii_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_whole_word_at(hay: &[u8], start: usize, len: usize) -> bool {
+    let before_ok = start == 0 || !is_ascii_word_byte(hay[start - 1]);
+    let end = start.saturating_add(len);
+    let after_ok = end >= hay.len() || !is_ascii_word_byte(hay[end]);
+    before_ok && after_ok
+}
+
+fn compile_search_regex(
+    needle: &[u8],
+    case_insensitive: bool,
+    whole_words: bool,
+) -> Option<regex::bytes::Regex> {
+    let pat = std::str::from_utf8(needle).ok()?;
+    let wrapped = if whole_words {
+        format!(r"\b(?:{pat})\b")
+    } else {
+        pat.to_string()
+    };
+    regex::bytes::RegexBuilder::new(&wrapped)
+        .case_insensitive(case_insensitive)
+        .unicode(false)
+        .build()
+        .ok()
+}
+
+fn find_on_line(
+    hay: &[u8],
+    needle: &[u8],
+    start: usize,
+    backwards: bool,
+    case_sensitive: bool,
+    whole_words: bool,
+    re: Option<&regex::bytes::Regex>,
+) -> Option<usize> {
+    if let Some(re) = re {
+        return find_regex_on_line(re, hay, start, backwards);
+    }
+    if backwards {
+        let mut max_start = start;
+        loop {
+            let found = if case_sensitive {
+                rfind_bytes(hay, needle, max_start)
+            } else {
+                rfind_bytes_ascii_ci(hay, needle, max_start)
+            }?;
+            if !whole_words || is_whole_word_at(hay, found, needle.len()) {
+                return Some(found);
+            }
+            if found == 0 {
+                return None;
+            }
+            max_start = found - 1;
+        }
+    } else {
+        let mut pos = start;
+        loop {
+            let found = if case_sensitive {
+                find_bytes(hay, needle, pos)
+            } else {
+                find_bytes_ascii_ci(hay, needle, pos)
+            }?;
+            if !whole_words || is_whole_word_at(hay, found, needle.len()) {
+                return Some(found);
+            }
+            pos = found.saturating_add(1);
+        }
+    }
+}
+
+fn find_regex_on_line(
+    re: &regex::bytes::Regex,
+    hay: &[u8],
+    start: usize,
+    backwards: bool,
+) -> Option<usize> {
+    if backwards {
+        let mut last = None;
+        let mut pos = 0usize;
+        while pos <= hay.len() {
+            match re.find_at(hay, pos) {
+                Some(m) if m.start() <= start => {
+                    last = Some(m.start());
+                    pos = m.start().saturating_add(1);
+                    if pos == m.start() {
+                        break;
+                    }
+                }
+                Some(_) | None => break,
+            }
+        }
+        last
+    } else {
+        re.find_at(hay, start).map(|m| m.start())
+    }
+}
+
+fn rfind_bytes(hay: &[u8], needle: &[u8], max_start: usize) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let last = hay.len() - needle.len();
+    let mut i = max_start.min(last);
+    loop {
+        if &hay[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}
+
+fn rfind_bytes_ascii_ci(hay: &[u8], needle: &[u8], max_start: usize) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let last = hay.len() - needle.len();
+    let mut i = max_start.min(last);
+    loop {
+        let mut ok = true;
+        for j in 0..needle.len() {
+            if ascii_lower(hay[i + j]) != ascii_lower(needle[j]) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return Some(i);
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}
+
 fn find_bytes(hay: &[u8], needle: &[u8], start: usize) -> Option<usize> {
     if needle.is_empty() || start >= hay.len() {
         return None;
@@ -1164,6 +1427,81 @@ mod tests {
         b.last_search = b"one".to_vec();
         b.row = 2;
         b.col = 1;
+        assert_eq!(b.search_next_opts(true), Some((0, 0)));
+    }
+
+    #[test]
+    fn search_case_sensitive_off_finds_ascii_ci() {
+        let mut b = EditorBuffer::from_bytes(b"Abc", None);
+        assert_eq!(
+            b.search_with_options(b"abc", false, false, false, false, false),
+            Some((0, 0))
+        );
+    }
+
+    #[test]
+    fn search_case_sensitive_on_does_not_fold() {
+        let mut b = EditorBuffer::from_bytes(b"Abc", None);
+        assert_eq!(
+            b.search_with_options(b"abc", true, false, false, false, false),
+            None
+        );
+        assert_eq!((b.row, b.col), (0, 0));
+    }
+
+    #[test]
+    fn search_backwards_finds_earlier_match() {
+        let mut b = EditorBuffer::from_bytes(b"cat x cat", None);
+        b.row = 0;
+        b.col = 6; // at the second "cat"
+        assert_eq!(
+            b.search_with_options(b"cat", true, true, false, false, false),
+            Some((0, 6)),
+            "inclusive first search still sees the match under the cursor"
+        );
+        assert_eq!(b.search_next_opts(false), Some((0, 0)));
+    }
+
+    #[test]
+    fn search_whole_words_skips_category() {
+        let mut b = EditorBuffer::from_bytes(b"category", None);
+        assert_eq!(
+            b.search_with_options(b"cat", true, false, true, false, false),
+            None
+        );
+        let mut b = EditorBuffer::from_bytes(b"category cat", None);
+        assert_eq!(
+            b.search_with_options(b"cat", true, false, true, false, false),
+            Some((0, 9))
+        );
+    }
+
+    #[test]
+    fn search_regex_and_invalid() {
+        let mut b = EditorBuffer::from_bytes(b"aaab", None);
+        assert_eq!(
+            b.search_with_options(b"a+b", true, false, false, true, false),
+            Some((0, 0))
+        );
+        let mut b = EditorBuffer::from_bytes(b"aaab", None);
+        assert_eq!(
+            b.search_with_options(b"(", true, false, false, true, false),
+            None
+        );
+        assert_eq!((b.row, b.col), (0, 0));
+    }
+
+    #[test]
+    fn search_next_honors_stored_options() {
+        let mut b = EditorBuffer::from_bytes(b"cat category cat", None);
+        assert_eq!(
+            b.search_with_options(b"cat", true, false, true, false, true),
+            Some((0, 0))
+        );
+        assert!(b.last_search_whole_words);
+        assert!(!b.last_search_case_insensitive);
+        assert_eq!(b.search_next_opts(true), Some((0, 13)));
+        // Next wrap returns to the first standalone cat, skipping "category".
         assert_eq!(b.search_next_opts(true), Some((0, 0)));
     }
 

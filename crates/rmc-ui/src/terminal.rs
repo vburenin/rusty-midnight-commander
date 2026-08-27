@@ -13,7 +13,8 @@ use crossterm::terminal::{
 use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog,
-    EditorReplaceFocus, HistoryDialogFocus, LayoutFocus, UiMode,
+    EditorReplaceFocus, EditorSearchDialog, EditorSearchFocus, HistoryDialogFocus, LayoutFocus,
+    UiMode,
 };
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
@@ -96,6 +97,25 @@ fn editor_pipe_run(buf: &mut rmc_edit::EditorBuffer, cmd: &str) -> Option<String
     match buf.pipe_selection(cmd) {
         Ok(()) => None,
         Err(e) => Some(format!("{e}")),
+    }
+}
+
+/// Run a Search-dialog query. Empty needle is a no-op (no cursor change).
+/// On success/failure returns the GNU status line (`Found` / `Not found`).
+fn editor_search_run(buf: &mut rmc_edit::EditorBuffer, dlg: &EditorSearchDialog) -> Option<String> {
+    if dlg.search.is_empty() {
+        return None;
+    }
+    match buf.search_with_options(
+        dlg.search.as_bytes(),
+        dlg.case_sensitive,
+        dlg.backwards,
+        dlg.whole_words,
+        dlg.regular_expression,
+        true,
+    ) {
+        Some(_) => Some("Found".into()),
+        None => Some("Not found".into()),
     }
 }
 
@@ -1020,6 +1040,7 @@ impl TerminalApp {
                 status_msg,
                 search_input,
                 save_as_input,
+                search_dialog,
                 replace_dialog,
                 pipe_dialog,
                 goto_dialog,
@@ -1260,6 +1281,85 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // GNU mcedit F7 Search dialog (OK / Cancel + four checkboxes).
+                if let Some(dlg) = search_dialog {
+                    use EditorSearchFocus as F;
+                    let order = [
+                        F::Search,
+                        F::CaseSensitive,
+                        F::Backwards,
+                        F::WholeWords,
+                        F::RegularExpression,
+                        F::Ok,
+                        F::Cancel,
+                    ];
+                    let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            *search_dialog = None;
+                        }
+                        KeyCode::F(7) => {
+                            // Already open: do not nest.
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            idx = (idx + 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::BackTab | KeyCode::Up => {
+                            idx = (idx + order.len() - 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::Left | KeyCode::Right
+                            if matches!(dlg.focus, F::Ok | F::Cancel) =>
+                        {
+                            dlg.focus = if matches!(dlg.focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                        KeyCode::Backspace if matches!(dlg.focus, F::Search) => {
+                            dlg.search.pop();
+                        }
+                        // Space toggles checkboxes before generic Char so typing
+                        // still inserts a space into the search field.
+                        KeyCode::Char(' ')
+                            if key.modifiers.is_empty() && dlg.focus.is_checkbox() =>
+                        {
+                            let _ = dlg.toggle_focused_checkbox();
+                        }
+                        KeyCode::Enter if dlg.focus.is_checkbox() => {
+                            let _ = dlg.toggle_focused_checkbox();
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ')
+                            if matches!(dlg.focus, F::Ok | F::Cancel)
+                                || matches!(key.code, KeyCode::Enter) =>
+                        {
+                            match dlg.focus {
+                                F::Cancel => {
+                                    *search_dialog = None;
+                                }
+                                F::Search | F::Ok => {
+                                    if let Some(msg) = editor_search_run(buf, dlg) {
+                                        *status_msg = Some(msg);
+                                    }
+                                    *search_dialog = None;
+                                }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && matches!(dlg.focus, F::Search) =>
+                        {
+                            dlg.search.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 // Inline "Find:" overlay
                 if let Some(q) = search_input {
                     match key.code {
@@ -1322,7 +1422,14 @@ impl TerminalApp {
                 match key.code {
                     // MC: F7 search dialog
                     KeyCode::F(7) => {
-                        *search_input = Some(String::new());
+                        *search_input = None;
+                        *save_as_input = None;
+                        *replace_dialog = None;
+                        *pipe_dialog = None;
+                        *goto_dialog = None;
+                        *status_msg = None;
+                        *search_dialog =
+                            Some(EditorSearchDialog::from_last_search(&buf.last_search));
                     }
                     // GNU mcedit: Ctrl-R start/stop macro recording (toggle)
                     KeyCode::Char('r')
@@ -1358,6 +1465,7 @@ impl TerminalApp {
                     KeyCode::F(4) => {
                         *search_input = None;
                         *save_as_input = None;
+                        *search_dialog = None;
                         *pipe_dialog = None;
                         *goto_dialog = None;
                         *status_msg = None;
@@ -1368,6 +1476,7 @@ impl TerminalApp {
                     KeyCode::Char('|') => {
                         *search_input = None;
                         *save_as_input = None;
+                        *search_dialog = None;
                         *replace_dialog = None;
                         *goto_dialog = None;
                         *status_msg = None;
@@ -1377,6 +1486,7 @@ impl TerminalApp {
                     KeyCode::Char('l' | 'L') if key.modifiers.contains(KeyModifiers::ALT) => {
                         *search_input = None;
                         *save_as_input = None;
+                        *search_dialog = None;
                         *replace_dialog = None;
                         *pipe_dialog = None;
                         *status_msg = None;
@@ -5584,6 +5694,7 @@ impl TerminalApp {
                                         status_msg: None,
                                         search_input: None,
                                         save_as_input: None,
+                                        search_dialog: None,
                                         replace_dialog: None,
                                         pipe_dialog: None,
                                         goto_dialog: None,
@@ -7510,6 +7621,7 @@ mod editor_replace_tests {
             status_msg: None,
             search_input: None,
             save_as_input: None,
+            search_dialog: None,
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
@@ -7689,10 +7801,12 @@ mod editor_replace_tests {
         press(&mut app, KeyCode::F(7));
         match &app.ui_mode {
             UiMode::Editor {
-                search_input: Some(_),
+                search_dialog: Some(_),
+                search_input,
                 replace_dialog,
                 ..
             } => {
+                assert!(search_input.is_none(), "F7 must not use the Find: overlay");
                 assert!(replace_dialog.is_none(), "F7 must open Search, not Replace");
             }
             _ => panic!("F7 must open Search"),
@@ -7704,11 +7818,13 @@ mod editor_replace_tests {
         assert_eq!((buf.row, buf.col), (0, 6));
         match &app.ui_mode {
             UiMode::Editor {
+                search_dialog,
                 search_input,
                 replace_dialog,
                 status_msg,
                 ..
             } => {
+                assert!(search_dialog.is_none());
                 assert!(search_input.is_none());
                 assert!(replace_dialog.is_none());
                 assert_eq!(status_msg.as_deref(), Some("Found"));
@@ -7750,6 +7866,7 @@ mod editor_pipe_tests {
             status_msg: None,
             search_input: None,
             save_as_input: None,
+            search_dialog: None,
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
@@ -7977,6 +8094,7 @@ mod editor_goto_tests {
             status_msg: None,
             search_input: None,
             save_as_input: None,
+            search_dialog: None,
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
@@ -8254,6 +8372,427 @@ mod editor_goto_tests {
             }
             _ => panic!("| must still open the Pipe dialog"),
         }
+    }
+}
+
+#[cfg(test)]
+mod editor_search_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::EditorSearchFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, None),
+            show_menu: false,
+            status_msg: None,
+            search_input: None,
+            save_as_input: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn type_text(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn editor_buf(app: &App) -> &EditorBuffer {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn search_dialog(app: &App) -> &EditorSearchDialog {
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog: Some(dlg),
+                ..
+            } => dlg,
+            UiMode::Editor {
+                search_input: Some(_),
+                ..
+            } => panic!("expected Search dialog, got Find: overlay"),
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                ..
+            } => panic!("expected Search dialog, got Replace"),
+            UiMode::Editor {
+                pipe_dialog: Some(_),
+                ..
+            } => panic!("expected Search dialog, got Pipe"),
+            UiMode::Editor {
+                goto_dialog: Some(_),
+                ..
+            } => panic!("expected Search dialog, got Goto"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected editor Search dialog, got InputDialog {title:?}")
+            }
+            UiMode::PromptInput { title, .. } => {
+                panic!("expected editor Search dialog, got PromptInput {title:?}")
+            }
+            _ => panic!("expected Editor Search dialog"),
+        }
+    }
+
+    #[test]
+    fn f7_opens_search_dialog_defaults_stay_editor() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc");
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog: Some(dlg),
+                search_input,
+                save_as_input,
+                replace_dialog,
+                pipe_dialog,
+                goto_dialog,
+                ..
+            } => {
+                assert!(search_input.is_none(), "F7 must not use the Find: overlay");
+                assert!(save_as_input.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert!(goto_dialog.is_none());
+                assert!(dlg.search.is_empty());
+                assert!(!dlg.case_sensitive);
+                assert!(!dlg.backwards);
+                assert!(!dlg.whole_words);
+                assert!(!dlg.regular_expression);
+                assert!(matches!(dlg.focus, EditorSearchFocus::Search));
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("F7 must stay in Editor, not InputDialog {title:?}")
+            }
+            _ => panic!("F7 must open the Search dialog in Editor"),
+        }
+    }
+
+    #[test]
+    fn f7_prefills_last_search() {
+        let mut app = make_app();
+        open_editor(&mut app, b"foo bar foo");
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "foo");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(search_dialog(&app).search, "foo");
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::Search
+        ));
+        assert!(!search_dialog(&app).case_sensitive);
+        assert!(!search_dialog(&app).backwards);
+        assert!(!search_dialog(&app).whole_words);
+        assert!(!search_dialog(&app).regular_expression);
+    }
+
+    #[test]
+    fn tab_reaches_checkboxes_and_buttons_space_enter_toggle_space_inserts() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc");
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "a b");
+        assert_eq!(search_dialog(&app).search, "a b");
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::CaseSensitive
+        ));
+        assert!(!search_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::Enter);
+        assert!(!search_dialog(&app).case_sensitive);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::Backwards
+        ));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).backwards);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::WholeWords
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert!(search_dialog(&app).whole_words);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::RegularExpression
+        ));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).regular_expression);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(search_dialog(&app).focus, EditorSearchFocus::Ok));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::Cancel
+        ));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::Search
+        ));
+        // Space in the search field still inserts.
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(search_dialog(&app).search, "a b ");
+    }
+
+    #[test]
+    fn enter_ok_on_abc_moves_cursor_closes_status_found() {
+        let mut app = make_app();
+        open_editor(&mut app, b"xx abc yy");
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Enter);
+        let buf = editor_buf(&app);
+        assert_eq!((buf.row, buf.col), (0, 3));
+        assert_eq!(buf.last_search, b"abc");
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog,
+                search_input,
+                status_msg,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert!(search_input.is_none());
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("expected Editor after Search"),
+        }
+    }
+
+    #[test]
+    fn ok_button_also_runs_search() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello abc");
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab); // Case sensitive
+        press(&mut app, KeyCode::Tab); // Backwards
+        press(&mut app, KeyCode::Tab); // Whole words
+        press(&mut app, KeyCode::Tab); // Regular expression
+        press(&mut app, KeyCode::Tab); // Ok
+        assert!(matches!(search_dialog(&app).focus, EditorSearchFocus::Ok));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), (0, 6));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog,
+                status_msg,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("expected Editor after OK"),
+        }
+    }
+
+    #[test]
+    fn esc_f10_cancel_leave_cursor_unmoved() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc");
+        press(&mut app, KeyCode::Right);
+        let start = (editor_buf(&app).row, editor_buf(&app).col);
+
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), start);
+        match &app.ui_mode {
+            UiMode::Editor { search_dialog, .. } => {
+                assert!(search_dialog.is_none());
+            }
+            UiMode::Normal => panic!("Esc must stay in the editor"),
+            _ => panic!("Esc should stay in the editor"),
+        }
+
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::F(10));
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), start);
+        match &app.ui_mode {
+            UiMode::Editor { search_dialog, .. } => {
+                assert!(search_dialog.is_none());
+            }
+            _ => panic!("F10 should stay in the editor"),
+        }
+
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab); // Case sensitive
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Tab); // Cancel
+        assert!(matches!(
+            search_dialog(&app).focus,
+            EditorSearchFocus::Cancel
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), start);
+        match &app.ui_mode {
+            UiMode::Editor { search_dialog, .. } => {
+                assert!(search_dialog.is_none());
+            }
+            _ => panic!("Cancel should stay in the editor"),
+        }
+    }
+
+    #[test]
+    fn empty_ok_is_noop_close() {
+        let mut app = make_app();
+        open_editor(&mut app, b"keep me");
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_buf(&app).to_bytes(), b"keep me");
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), (0, 0));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog,
+                status_msg,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert!(status_msg.is_none());
+            }
+            _ => panic!("expected Editor after empty Search"),
+        }
+    }
+
+    #[test]
+    fn f4_pipe_goto_still_open_and_clear_search_dialog() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nabc abc");
+        press(&mut app, KeyCode::F(7));
+        assert!(matches!(
+            &app.ui_mode,
+            UiMode::Editor {
+                search_dialog: Some(_),
+                ..
+            }
+        ));
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                search_dialog,
+                pipe_dialog,
+                goto_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert!(goto_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            _ => panic!("F4 must still open the Replace dialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Char('|'));
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog: Some(_),
+                search_dialog,
+                replace_dialog,
+                goto_dialog,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(goto_dialog.is_none());
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("| must open the editor Pipe dialog, not InputDialog {title:?}")
+            }
+            _ => panic!("| must still open the Pipe dialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press_alt(&mut app, 'l');
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog: Some(_),
+                search_dialog,
+                replace_dialog,
+                pipe_dialog,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("Alt-l must open the editor Goto dialog, not InputDialog {title:?}")
+            }
+            _ => panic!("Alt-l must still open the Goto dialog"),
+        }
+    }
+
+    #[test]
+    fn opening_search_does_not_clobber_find_file_or_history() {
+        let mut app = make_app();
+        let cwd = app.active_panel().cwd.clone();
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(cwd));
+        press(&mut app, KeyCode::F(7));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "F7 in Find File must not switch to Editor Search"
+        );
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "Alt-h should open History"
+        );
+        press(&mut app, KeyCode::F(7));
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "F7 in History must not switch to Editor Search"
+        );
     }
 }
 
