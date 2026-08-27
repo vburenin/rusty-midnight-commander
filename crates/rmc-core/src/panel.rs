@@ -200,14 +200,27 @@ pub struct PanelState {
     // When panelized, entries show a virtual list; pressing `..` or leaving mode restores saved state.
     pub panelized: Option<PanelizeSaved>,
     /// Optional filename filter. `None`, empty, or "*" shows all.
-    /// Interpreted as a shell glob or regex per GNU mc Use shell patterns.
+    /// Glob vs regex and case sensitivity come from the per-panel Filter dialog
+    /// flags below (not the global Use shell patterns option).
     pub filter_glob: Option<String>,
+    /// Filter dialog **Regular expression**: pattern is a regex instead of a glob.
+    pub filter_regex: bool,
+    /// Filter dialog **Files only**: when true, directories always stay listed
+    /// (only files are matched). When false, directories must match too. `..`
+    /// is always kept.
+    pub filter_files_only: bool,
+    /// Filter dialog **Case sensitive**. Default true (GNU mc).
+    pub filter_case_sensitive: bool,
     /// Local dir mtime/ctime/nlink/size from the last listing (Fast reload).
     pub dir_reload_stamp: Option<DirReloadStamp>,
     /// `show_hidden` used for the last listing (Ctrl-H must re-list even if mtime is unchanged).
     pub dir_reload_show_hidden: Option<bool>,
     /// Filter glob used for the last listing (changing the filter must re-list).
     pub dir_reload_filter: Option<String>,
+    /// Filter flags used for the last listing (changing them must re-list).
+    pub dir_reload_filter_regex: bool,
+    pub dir_reload_filter_files_only: bool,
+    pub dir_reload_filter_case_sensitive: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -238,10 +251,36 @@ impl PanelState {
             selection: Selection::default(),
             panelized: None,
             filter_glob: None,
+            filter_regex: false,
+            filter_files_only: false,
+            filter_case_sensitive: true,
             dir_reload_stamp: None,
             dir_reload_show_hidden: None,
             dir_reload_filter: None,
+            dir_reload_filter_regex: false,
+            dir_reload_filter_files_only: false,
+            dir_reload_filter_case_sensitive: true,
         }
+    }
+
+    /// Store Left/Right Filter dialog values on this panel.
+    /// Empty / `"*"` clears the pattern (show all, still honoring `show_hidden`).
+    pub fn set_filename_filter(
+        &mut self,
+        pattern: &str,
+        regular_expression: bool,
+        files_only: bool,
+        case_sensitive: bool,
+    ) {
+        let pat = pattern.trim();
+        if pat.is_empty() || pat == "*" {
+            self.filter_glob = None;
+        } else {
+            self.filter_glob = Some(pat.to_string());
+        }
+        self.filter_regex = regular_expression;
+        self.filter_files_only = files_only;
+        self.filter_case_sensitive = case_sensitive;
     }
 
     /// Record the local-directory stamp after a successful `list_dir`.
@@ -249,6 +288,9 @@ impl PanelState {
         self.dir_reload_stamp = DirReloadStamp::from_local_dir(&self.cwd);
         self.dir_reload_show_hidden = Some(show_hidden);
         self.dir_reload_filter = self.filter_glob.clone();
+        self.dir_reload_filter_regex = self.filter_regex;
+        self.dir_reload_filter_files_only = self.filter_files_only;
+        self.dir_reload_filter_case_sensitive = self.filter_case_sensitive;
     }
 
     /// GNU mc Fast reload: reuse this panel's listing when the local dir is unchanged.
@@ -260,18 +302,16 @@ impl PanelState {
         self.dir_reload_stamp == Some(now)
             && self.dir_reload_show_hidden == Some(show_hidden)
             && self.dir_reload_filter == self.filter_glob
+            && self.dir_reload_filter_regex == self.filter_regex
+            && self.dir_reload_filter_files_only == self.filter_files_only
+            && self.dir_reload_filter_case_sensitive == self.filter_case_sensitive
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
-        self.set_entries_with(entries, true, true);
+        self.set_entries_with(entries, true);
     }
 
-    pub fn set_entries_with(
-        &mut self,
-        mut entries: Vec<FileEntry>,
-        reverse_files_only: bool,
-        shell_patterns: bool,
-    ) {
+    pub fn set_entries_with(&mut self, mut entries: Vec<FileEntry>, reverse_files_only: bool) {
         // Separate parent marker (if any) to keep it visible and first.
         let mut parent_marker: Option<FileEntry> = None;
         entries.retain(|e| {
@@ -289,7 +329,16 @@ impl PanelState {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty() && *s != "*")
         {
-            entries.retain(|e| matchutil::filename_pattern_matches(pat, &e.name, shell_patterns));
+            let glob = !self.filter_regex;
+            let case_sensitive = self.filter_case_sensitive;
+            let files_only = self.filter_files_only;
+            entries.retain(|e| {
+                if files_only && e.is_dir {
+                    true
+                } else {
+                    matchutil::filename_pattern_matches_ex(pat, &e.name, glob, case_sensitive)
+                }
+            });
         }
         // Put parent marker back on top if exists.
         if let Some(pm) = parent_marker {
@@ -414,7 +463,7 @@ impl PanelState {
     }
 
     pub fn set_panelized_entries(&mut self, cwd_for_caption: PathBuf, entries: Vec<FileEntry>) {
-        self.set_panelized_entries_with(cwd_for_caption, entries, true, true);
+        self.set_panelized_entries_with(cwd_for_caption, entries, true);
     }
 
     pub fn set_panelized_entries_with(
@@ -422,7 +471,6 @@ impl PanelState {
         cwd_for_caption: PathBuf,
         entries: Vec<FileEntry>,
         reverse_files_only: bool,
-        shell_patterns: bool,
     ) {
         // Save current state
         self.panelized = Some(PanelizeSaved {
@@ -435,7 +483,7 @@ impl PanelState {
         self.cwd = cwd_for_caption;
         self.cursor = 0;
         self.scroll_top = 0;
-        self.set_entries_with(entries, reverse_files_only, shell_patterns);
+        self.set_entries_with(entries, reverse_files_only);
     }
 
     pub fn unpanelize(&mut self) {
@@ -1133,6 +1181,32 @@ mod tests {
         assert!(line.contains("   2"), "nlink 2 line={line:?}");
         let header = format_user_listing_header(&tokens, 40);
         assert!(header.contains("Nl"), "header={header:?}");
+    }
+
+    #[test]
+    fn filter_files_only_keeps_directories() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.filter_glob = Some("*.txt".to_string());
+        p.filter_files_only = false;
+        p.set_entries(vec![
+            make_entry("..", 0, now, true),
+            make_entry("keep.txt", 1, now, false),
+            make_entry("skip.dat", 1, now, false),
+            make_entry("subdir", 0, now, true),
+        ]);
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "keep.txt"]);
+
+        p.filter_files_only = true;
+        p.set_entries(vec![
+            make_entry("..", 0, now, true),
+            make_entry("keep.txt", 1, now, false),
+            make_entry("skip.dat", 1, now, false),
+            make_entry("subdir", 0, now, true),
+        ]);
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "subdir", "keep.txt"]);
     }
 
     #[test]
