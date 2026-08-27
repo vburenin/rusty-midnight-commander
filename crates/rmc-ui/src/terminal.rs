@@ -12,8 +12,8 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
-    App, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus,
-    HistoryDialogFocus, LayoutFocus, UiMode,
+    App, EditorGotoDialog, EditorGotoFocus, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog,
+    EditorReplaceFocus, HistoryDialogFocus, LayoutFocus, UiMode,
 };
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
@@ -95,6 +95,25 @@ fn editor_pipe_run(buf: &mut rmc_edit::EditorBuffer, cmd: &str) -> Option<String
     match buf.pipe_selection(cmd) {
         Ok(()) => None,
         Err(e) => Some(format!("{e}")),
+    }
+}
+
+/// Apply a 1-based decimal line number. Empty or non-numeric is a no-op.
+/// `0` and negatives clamp to line 1; past-EOF is clamped by `goto_line`.
+fn editor_goto_apply(buf: &mut rmc_edit::EditorBuffer, line: &str) {
+    let t = line.trim();
+    if t.is_empty() {
+        return;
+    }
+    let Ok(n) = t.parse::<i64>() else {
+        return;
+    };
+    if n <= 0 {
+        buf.goto_line(1);
+    } else if let Ok(n) = usize::try_from(n) {
+        buf.goto_line(n);
+    } else {
+        buf.goto_line(usize::MAX);
     }
 }
 
@@ -1002,6 +1021,7 @@ impl TerminalApp {
                 save_as_input,
                 replace_dialog,
                 pipe_dialog,
+                goto_dialog,
                 pending_quit: _,
                 confirm_exit,
             } => {
@@ -1183,6 +1203,62 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // GNU mcedit Alt-l Goto line dialog (OK / Cancel).
+                if let Some(dlg) = goto_dialog {
+                    use EditorGotoFocus as F;
+                    let order = [F::Line, F::Ok, F::Cancel];
+                    let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            *goto_dialog = None;
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            idx = (idx + 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::BackTab | KeyCode::Up => {
+                            idx = (idx + order.len() - 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::Left | KeyCode::Right
+                            if matches!(dlg.focus, F::Ok | F::Cancel) =>
+                        {
+                            dlg.focus = if matches!(dlg.focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                        KeyCode::Backspace if matches!(dlg.focus, F::Line) => {
+                            dlg.line.pop();
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ')
+                            if matches!(dlg.focus, F::Ok | F::Cancel)
+                                || matches!(key.code, KeyCode::Enter) =>
+                        {
+                            match dlg.focus {
+                                F::Cancel => {
+                                    *goto_dialog = None;
+                                }
+                                F::Line | F::Ok => {
+                                    let line = dlg.line.clone();
+                                    *goto_dialog = None;
+                                    editor_goto_apply(buf, &line);
+                                }
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && matches!(dlg.focus, F::Line) =>
+                        {
+                            dlg.line.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 // Inline "Find:" overlay
                 if let Some(q) = search_input {
                     match key.code {
@@ -1282,6 +1358,7 @@ impl TerminalApp {
                         *search_input = None;
                         *save_as_input = None;
                         *pipe_dialog = None;
+                        *goto_dialog = None;
                         *status_msg = None;
                         *replace_dialog =
                             Some(EditorReplaceDialog::from_last_search(&buf.last_search));
@@ -1291,8 +1368,18 @@ impl TerminalApp {
                         *search_input = None;
                         *save_as_input = None;
                         *replace_dialog = None;
+                        *goto_dialog = None;
                         *status_msg = None;
                         *pipe_dialog = Some(EditorPipeDialog::default());
+                    }
+                    // GNU mcedit: Alt-l / Alt-L Goto line (stay in Editor).
+                    KeyCode::Char('l' | 'L') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        *search_input = None;
+                        *save_as_input = None;
+                        *replace_dialog = None;
+                        *pipe_dialog = None;
+                        *status_msg = None;
+                        *goto_dialog = Some(EditorGotoDialog::from_cursor_row(buf.row));
                     }
                     // Block ops
                     KeyCode::F(3) => {
@@ -5488,6 +5575,7 @@ impl TerminalApp {
                                         save_as_input: None,
                                         replace_dialog: None,
                                         pipe_dialog: None,
+                                        goto_dialog: None,
                                         pending_quit: false,
                                         confirm_exit: None,
                                     };
@@ -7413,6 +7501,7 @@ mod editor_replace_tests {
             save_as_input: None,
             replace_dialog: None,
             pipe_dialog: None,
+            goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
         };
@@ -7652,6 +7741,7 @@ mod editor_pipe_tests {
             save_as_input: None,
             replace_dialog: None,
             pipe_dialog: None,
+            goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
         };
@@ -7851,6 +7941,307 @@ mod editor_pipe_tests {
                 assert!(pipe_dialog.is_none());
             }
             _ => panic!("Cancel should stay in the editor"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod editor_goto_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::EditorGotoFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, None),
+            show_menu: false,
+            status_msg: None,
+            search_input: None,
+            save_as_input: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn type_text(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn editor_buf(app: &App) -> &EditorBuffer {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn goto_dialog(app: &App) -> &EditorGotoDialog {
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog: Some(dlg),
+                ..
+            } => dlg,
+            UiMode::Editor {
+                save_as_input: Some(_),
+                ..
+            } => panic!("expected Goto dialog, got Save-as"),
+            UiMode::Editor {
+                search_input: Some(_),
+                ..
+            } => panic!("expected Goto dialog, got Search"),
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                ..
+            } => panic!("expected Goto dialog, got Replace"),
+            UiMode::Editor {
+                pipe_dialog: Some(_),
+                ..
+            } => panic!("expected Goto dialog, got Pipe"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected editor Goto dialog, got InputDialog {title:?}")
+            }
+            _ => panic!("expected Editor Goto dialog"),
+        }
+    }
+
+    fn clear_line_field(app: &mut App) {
+        let len = goto_dialog(app).line.len();
+        for _ in 0..len {
+            press(app, KeyCode::Backspace);
+        }
+    }
+
+    #[test]
+    fn alt_l_opens_goto_not_save_as_search_replace_or_pipe() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press(&mut app, KeyCode::Down);
+        press_alt(&mut app, 'l');
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog: Some(dlg),
+                search_input,
+                save_as_input,
+                replace_dialog,
+                pipe_dialog,
+                ..
+            } => {
+                assert!(search_input.is_none(), "Alt-l must not open Search");
+                assert!(save_as_input.is_none(), "Alt-l must not open Save-as");
+                assert!(replace_dialog.is_none(), "Alt-l must not open Replace");
+                assert!(pipe_dialog.is_none(), "Alt-l must not open Pipe");
+                assert_eq!(dlg.line, "2");
+                assert!(matches!(dlg.focus, EditorGotoFocus::Line));
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("Alt-l must open the editor Goto dialog, not InputDialog {title:?}")
+            }
+            _ => panic!("Alt-l must open the Goto dialog"),
+        }
+    }
+
+    #[test]
+    fn alt_shift_l_also_opens_goto() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press_alt(&mut app, 'L');
+        assert_eq!(goto_dialog(&app).line, "1");
+        assert!(matches!(goto_dialog(&app).focus, EditorGotoFocus::Line));
+    }
+
+    #[test]
+    fn enter_moves_to_typed_line_col_zero_and_closes() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press_alt(&mut app, 'l');
+        clear_line_field(&mut app);
+        type_text(&mut app, "3");
+        press(&mut app, KeyCode::Enter);
+        let buf = editor_buf(&app);
+        assert_eq!((buf.row, buf.col), (2, 0));
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog,
+                search_input,
+                save_as_input,
+                replace_dialog,
+                pipe_dialog,
+                ..
+            } => {
+                assert!(goto_dialog.is_none());
+                assert!(search_input.is_none());
+                assert!(save_as_input.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+            }
+            UiMode::Normal => panic!("Enter must stay in the editor, not return to panels"),
+            _ => panic!("expected Editor after Goto"),
+        }
+    }
+
+    #[test]
+    fn esc_leaves_cursor_unchanged() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press(&mut app, KeyCode::Down);
+        press_alt(&mut app, 'l');
+        clear_line_field(&mut app);
+        type_text(&mut app, "3");
+        press(&mut app, KeyCode::Esc);
+        let buf = editor_buf(&app);
+        assert_eq!((buf.row, buf.col), (1, 0));
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(goto_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            UiMode::Normal => panic!("Esc must stay in the editor, not return to panels"),
+            _ => panic!("Esc should stay in the editor"),
+        }
+    }
+
+    #[test]
+    fn cancel_button_leaves_cursor_unchanged() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press(&mut app, KeyCode::Down);
+        press_alt(&mut app, 'l');
+        clear_line_field(&mut app);
+        type_text(&mut app, "3");
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Tab); // Cancel
+        assert!(matches!(goto_dialog(&app).focus, EditorGotoFocus::Cancel));
+        press(&mut app, KeyCode::Enter);
+        let buf = editor_buf(&app);
+        assert_eq!((buf.row, buf.col), (1, 0));
+        match &app.ui_mode {
+            UiMode::Editor { goto_dialog, .. } => {
+                assert!(goto_dialog.is_none());
+            }
+            _ => panic!("Cancel should stay in the editor"),
+        }
+    }
+
+    #[test]
+    fn out_of_range_clamps_to_last_line() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press_alt(&mut app, 'l');
+        clear_line_field(&mut app);
+        type_text(&mut app, "9999");
+        press(&mut app, KeyCode::Enter);
+        let buf = editor_buf(&app);
+        assert_eq!((buf.row, buf.col), (2, 0));
+        match &app.ui_mode {
+            UiMode::Editor { goto_dialog, .. } => {
+                assert!(goto_dialog.is_none());
+            }
+            _ => panic!("expected Editor after out-of-range Goto"),
+        }
+    }
+
+    #[test]
+    fn empty_field_enter_does_not_panic_stays_editor() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nccc");
+        press_alt(&mut app, 'l');
+        clear_line_field(&mut app);
+        press(&mut app, KeyCode::Enter);
+        let buf = editor_buf(&app);
+        assert_eq!((buf.row, buf.col), (0, 0));
+        match &app.ui_mode {
+            UiMode::Editor { goto_dialog, .. } => {
+                assert!(goto_dialog.is_none());
+            }
+            _ => panic!("expected Editor after empty Goto"),
+        }
+    }
+
+    #[test]
+    fn plain_l_inserts_l_and_does_not_open_goto() {
+        let mut app = make_app();
+        open_editor(&mut app, b"");
+        press(&mut app, KeyCode::Char('l'));
+        match &app.ui_mode {
+            UiMode::Editor {
+                buf,
+                goto_dialog,
+                search_input,
+                save_as_input,
+                replace_dialog,
+                pipe_dialog,
+                ..
+            } => {
+                assert!(goto_dialog.is_none());
+                assert!(search_input.is_none());
+                assert!(save_as_input.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert_eq!(buf.to_bytes(), b"l");
+            }
+            _ => panic!("plain l must stay in the editor and insert"),
+        }
+    }
+
+    #[test]
+    fn f4_replace_and_pipe_still_open() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc abc");
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                goto_dialog,
+                pipe_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(goto_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            _ => panic!("F4 must still open the Replace dialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('|'));
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog: Some(_),
+                goto_dialog,
+                replace_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(goto_dialog.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            _ => panic!("| must still open the Pipe dialog"),
         }
     }
 }

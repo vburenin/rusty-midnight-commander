@@ -323,6 +323,17 @@ impl EditorBuffer {
         self.ensure_cursor_visible();
     }
 
+    /// Move the cursor to the start of a 1-based line number.
+    /// `0` clamps to line 1; a number past EOF clamps to the last line.
+    /// Column is always 0. Updates the viewport to follow the cursor.
+    pub fn goto_line(&mut self, line_1based: usize) {
+        let last = self.lines.len().max(1);
+        let idx = line_1based.saturating_sub(1).min(last - 1);
+        self.row = idx;
+        self.col = 0;
+        self.ensure_cursor_visible();
+    }
+
     /// Ensure cursor is within bounds.
     fn clamp_cursor(&mut self) {
         if self.row >= self.lines.len() {
@@ -1239,6 +1250,24 @@ mod tests {
         // Ensure cursor moved to end of replaced region (start + output len)
         assert_eq!(b.row, 0);
         assert_eq!(b.col, 5);
+    }
+
+    #[test]
+    fn goto_line_clamps_and_sets_col_zero() {
+        let mut b = EditorBuffer::from_bytes(b"aaa\nbbb\nccc", None);
+        b.row = 0;
+        b.col = 2;
+        b.goto_line(2);
+        assert_eq!((b.row, b.col), (1, 0));
+        b.goto_line(1);
+        assert_eq!((b.row, b.col), (0, 0));
+        b.col = 1;
+        b.goto_line(0);
+        assert_eq!((b.row, b.col), (0, 0), "line 0 clamps to line 1");
+        b.goto_line(9999);
+        assert_eq!((b.row, b.col), (2, 0), "past EOF clamps to last line");
+        b.goto_line(3);
+        assert_eq!((b.row, b.col), (2, 0));
     }
 
     #[test]
