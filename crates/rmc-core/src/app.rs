@@ -334,6 +334,8 @@ pub enum UiMode {
         status_msg: Option<String>,
         search_input: Option<String>,
         save_as_input: Option<String>,
+        /// GNU mcedit F4 Replace dialog (None while editing).
+        replace_dialog: Option<EditorReplaceDialog>,
         pending_quit: bool,
         confirm_exit: Option<YncDialog>,
     },
@@ -550,6 +552,37 @@ pub struct YncDialog {
     pub title: String,
     pub message: String,
     pub focus: YncFocus,
+}
+
+/// Focus within the GNU mcedit F4 Replace dialog.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EditorReplaceFocus {
+    Search,
+    Replacement,
+    Replace,
+    All,
+    Cancel,
+}
+
+/// GNU mcedit-style Replace dialog: search + replacement fields and
+/// Replace / All / Cancel buttons. Replace next keeps the dialog open so the
+/// user can replace the following match; All closes after reporting the count.
+#[derive(Clone)]
+pub struct EditorReplaceDialog {
+    pub search: String,
+    pub replacement: String,
+    pub focus: EditorReplaceFocus,
+}
+
+impl EditorReplaceDialog {
+    /// Prefill the search field from the editor's last Search (F7) needle.
+    pub fn from_last_search(last_search: &[u8]) -> Self {
+        Self {
+            search: String::from_utf8_lossy(last_search).into_owned(),
+            replacement: String::new(),
+            focus: EditorReplaceFocus::Search,
+        }
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CopyDialogFocus {

@@ -57,6 +57,7 @@ impl Renderer {
             status_msg,
             search_input,
             save_as_input,
+            replace_dialog,
             confirm_exit,
             ..
         } = &app.ui_mode
@@ -71,6 +72,7 @@ impl Renderer {
                 status_msg.as_deref(),
                 search_input.as_deref(),
                 save_as_input.as_deref(),
+                replace_dialog.as_ref(),
                 confirm_exit.as_ref(),
                 app.shadows,
             );
@@ -1781,6 +1783,7 @@ fn draw_editor(
     status_msg: Option<&str>,
     search_input: Option<&str>,
     save_as_input: Option<&str>,
+    replace_dialog: Option<&rmc_core::app::EditorReplaceDialog>,
     confirm: Option<&rmc_core::app::YncDialog>,
     show_shadow: bool,
 ) {
@@ -1945,6 +1948,9 @@ fn draw_editor(
     if let Some(q) = save_as_input {
         draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
     }
+    if let Some(dlg) = replace_dialog {
+        draw_editor_replace_dialog(p, cols, rows, pal, dlg, show_shadow);
+    }
     if let Some(c) = confirm {
         draw_dialog_ync(
             p,
@@ -2064,6 +2070,128 @@ fn draw_inline_prompt(
     }
     let t = truncate(&txt, cols as usize);
     p.text(&t);
+}
+
+fn draw_editor_replace_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    dlg: &rmc_core::app::EditorReplaceDialog,
+    show_shadow: bool,
+) {
+    use rmc_core::app::EditorReplaceFocus as F;
+    let w = (cols as usize).min(66) as u16;
+    let h = 10u16;
+    if cols < w || rows < h {
+        return;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title — GNU mcedit wording
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title = " Replace ";
+    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(title);
+    // Inner fill
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for i in 1..h - 1 {
+        p.goto(x + 1, y + i);
+        p.text(&" ".repeat((w - 2) as usize));
+    }
+    let inner_w = (w - 4) as usize;
+    // Search field
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 1);
+    p.text(&truncate("Enter search string:", inner_w));
+    if matches!(dlg.focus, F::Search) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 2);
+    let st = truncate(&dlg.search, inner_w);
+    p.text(&format!(
+        "{st}{}",
+        " ".repeat(inner_w.saturating_sub(st.len()))
+    ));
+    // Replacement field
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 4);
+    p.text(&truncate("Enter replacement string:", inner_w));
+    if matches!(dlg.focus, F::Replacement) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 5);
+    let rt = truncate(&dlg.replacement, inner_w);
+    p.text(&format!(
+        "{rt}{}",
+        " ".repeat(inner_w.saturating_sub(rt.len()))
+    ));
+    // Buttons: Replace / All / Cancel (focused default uses < >, others [ ])
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let replace_txt = if matches!(dlg.focus, F::Replace) {
+        "< Replace >"
+    } else {
+        "  Replace  "
+    };
+    let all_txt = if matches!(dlg.focus, F::All) {
+        "[ All ]"
+    } else {
+        "  All  "
+    };
+    let cancel_txt = if matches!(dlg.focus, F::Cancel) {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{replace_txt}  {all_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -11,7 +11,9 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use rmc_core::actions::{Action, PaneSide};
-use rmc_core::app::{App, HistoryDialogFocus, LayoutFocus, UiMode};
+use rmc_core::app::{
+    App, EditorReplaceDialog, EditorReplaceFocus, HistoryDialogFocus, LayoutFocus, UiMode,
+};
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
 };
@@ -37,6 +39,49 @@ pub(crate) static VIEWER_STATE: Lazy<Mutex<Option<ViewerState>>> = Lazy::new(|| 
 // Lives in the UI crate to avoid widening App's trait bounds or Debug/Clone surface.
 pub(crate) static SUBSHELL_PTY: Lazy<Mutex<Option<rmc_core::subshell::PtySession>>> =
     Lazy::new(|| Mutex::new(None));
+
+/// Replace the next match from the cursor. Empty needle is a no-op (does not
+/// wipe the buffer). On success the cursor advances past the replacement so
+/// another Replace finds the following match. Dialog stays open.
+fn editor_replace_next(
+    buf: &mut rmc_edit::EditorBuffer,
+    search: &str,
+    replacement: &str,
+) -> Option<String> {
+    if search.is_empty() {
+        return None;
+    }
+    let repl = replacement.as_bytes();
+    match buf.replace_next(
+        search.as_bytes(),
+        repl,
+        buf.last_search_case_insensitive,
+        true,
+    ) {
+        Some((_, col)) => {
+            buf.col = col.saturating_add(repl.len());
+            Some("Replaced".into())
+        }
+        None => Some("Not found".into()),
+    }
+}
+
+/// Replace every match. Empty needle is a no-op and returns None so the caller
+/// can leave the dialog open without changing the buffer.
+fn editor_replace_all(
+    buf: &mut rmc_edit::EditorBuffer,
+    search: &str,
+    replacement: &str,
+) -> Option<usize> {
+    if search.is_empty() {
+        return None;
+    }
+    Some(buf.replace_all(
+        search.as_bytes(),
+        replacement.as_bytes(),
+        buf.last_search_case_insensitive,
+    ))
+}
 
 // Encode key events into bytes suitable for a typical xterm-compatible PTY.
 fn encode_key_for_pty(key: &KeyEvent) -> Option<Vec<u8>> {
@@ -940,6 +985,7 @@ impl TerminalApp {
                 status_msg,
                 search_input,
                 save_as_input,
+                replace_dialog,
                 pending_quit: _,
                 confirm_exit,
             } => {
@@ -984,6 +1030,85 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // GNU mcedit F4 Replace dialog (Replace / All / Cancel).
+                // Replace next keeps the dialog open for the following match;
+                // All closes after reporting how many replacements were made.
+                if let Some(dlg) = replace_dialog {
+                    use EditorReplaceFocus as F;
+                    let order = [F::Search, F::Replacement, F::Replace, F::All, F::Cancel];
+                    let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            *replace_dialog = None;
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            idx = (idx + 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::BackTab | KeyCode::Up => {
+                            idx = (idx + order.len() - 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::Left | KeyCode::Right
+                            if matches!(dlg.focus, F::Replace | F::All | F::Cancel) =>
+                        {
+                            let buttons = [F::Replace, F::All, F::Cancel];
+                            let bidx = buttons.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                            let next = if matches!(key.code, KeyCode::Right) {
+                                (bidx + 1) % buttons.len()
+                            } else {
+                                (bidx + buttons.len() - 1) % buttons.len()
+                            };
+                            dlg.focus = buttons[next];
+                        }
+                        KeyCode::Backspace => match dlg.focus {
+                            F::Search => {
+                                dlg.search.pop();
+                            }
+                            F::Replacement => {
+                                dlg.replacement.pop();
+                            }
+                            _ => {}
+                        },
+                        KeyCode::Enter | KeyCode::Char(' ')
+                            if matches!(dlg.focus, F::Replace | F::All | F::Cancel)
+                                || matches!(key.code, KeyCode::Enter) =>
+                        {
+                            match dlg.focus {
+                                F::Cancel => {
+                                    *replace_dialog = None;
+                                }
+                                F::All => {
+                                    if let Some(n) =
+                                        editor_replace_all(buf, &dlg.search, &dlg.replacement)
+                                    {
+                                        *status_msg = Some(format!("Replaced all: {n}"));
+                                        *replace_dialog = None;
+                                    }
+                                }
+                                F::Search | F::Replacement | F::Replace => {
+                                    if let Some(msg) =
+                                        editor_replace_next(buf, &dlg.search, &dlg.replacement)
+                                    {
+                                        *status_msg = Some(msg);
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if key.modifiers.is_empty()
+                                && matches!(dlg.focus, F::Search | F::Replacement) =>
+                        {
+                            match dlg.focus {
+                                F::Search => dlg.search.push(c),
+                                F::Replacement => dlg.replacement.push(c),
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 // Inline "Find:" overlay
                 if let Some(q) = search_input {
                     match key.code {
@@ -1013,78 +1138,34 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
-                // Inline "Save as:" overlay used here for Replace-with text as well
+                // Inline "Save as:" overlay
                 if let Some(val) = save_as_input {
-                    // Disambiguate by status message hint (very lightweight)
-                    let replacing = status_msg
-                        .as_deref()
-                        .is_some_and(|s| s.starts_with("Replace with"));
-                    if replacing {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::F(10) => {
-                                *save_as_input = None;
-                                *status_msg = None;
-                            }
-                            KeyCode::Enter => {
-                                let repl = val.clone();
-                                if !buf.last_search.is_empty() {
-                                    let find = buf.last_search.clone();
-                                    let ci = buf.last_search_case_insensitive;
-                                    let _ = buf.replace_next(&find, repl.as_bytes(), ci, true);
-                                    *status_msg = Some("Replaced".into());
-                                }
-                                *save_as_input = None;
-                            }
-                            KeyCode::Char('a')
-                                if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                            {
-                                let repl = val.clone();
-                                if !buf.last_search.is_empty() {
-                                    let find = buf.last_search.clone();
-                                    let ci = buf.last_search_case_insensitive;
-                                    let n = buf.replace_all(&find, repl.as_bytes(), ci);
-                                    *status_msg = Some(format!("Replaced all: {n}"));
-                                }
-                                *save_as_input = None;
-                            }
-                            KeyCode::Backspace => {
-                                val.pop();
-                            }
-                            KeyCode::Char(c) if key.modifiers.is_empty() => {
-                                val.push(c);
-                            }
-                            _ => {}
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            *save_as_input = None;
                         }
-                        return Ok(());
-                    } else {
-                        // Save-as path input
-                        match key.code {
-                            KeyCode::Esc | KeyCode::F(10) => {
-                                *save_as_input = None;
-                            }
-                            KeyCode::Enter => {
-                                let p = std::path::PathBuf::from(val.clone());
-                                let mut w = app
-                                    .vfs
-                                    .write_file(&p)
-                                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                                use std::io::Write;
-                                let _ = w.write_all(&buf.to_bytes());
-                                buf.path = Some(p);
-                                buf.dirty = false;
-                                *save_as_input = None;
-                                *status_msg = Some("Saved".into());
-                            }
-                            KeyCode::Backspace => {
-                                val.pop();
-                            }
-                            KeyCode::Char(c) if key.modifiers.is_empty() => {
-                                val.push(c);
-                            }
-                            _ => {}
+                        KeyCode::Enter => {
+                            let p = std::path::PathBuf::from(val.clone());
+                            let mut w = app
+                                .vfs
+                                .write_file(&p)
+                                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                            use std::io::Write;
+                            let _ = w.write_all(&buf.to_bytes());
+                            buf.path = Some(p);
+                            buf.dirty = false;
+                            *save_as_input = None;
+                            *status_msg = Some("Saved".into());
                         }
-                        return Ok(());
+                        KeyCode::Backspace => {
+                            val.pop();
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            val.push(c);
+                        }
+                        _ => {}
                     }
+                    return Ok(());
                 }
                 // Base editor keys
                 match key.code {
@@ -1122,15 +1203,13 @@ impl TerminalApp {
                     KeyCode::F(19) | KeyCode::Char('n') => {
                         let _ = buf.search_next_opts(true);
                     }
-                    // F4 Replace: prompt find if empty, otherwise prompt replacement
+                    // GNU mcedit: F4 opens Replace (F7 is Search). Prefill from last Search.
                     KeyCode::F(4) => {
-                        if buf.last_search.is_empty() {
-                            *search_input = Some(String::new());
-                            *status_msg = Some("Find (Enter to confirm)".into());
-                        } else {
-                            *save_as_input = Some(String::new());
-                            *status_msg = Some("Replace with (Enter=Replace, Alt-a=All)".into());
-                        }
+                        *search_input = None;
+                        *save_as_input = None;
+                        *status_msg = None;
+                        *replace_dialog =
+                            Some(EditorReplaceDialog::from_last_search(&buf.last_search));
                     }
                     // Pipe selection (or whole buffer) through external command (GNU mcedit behavior)
                     KeyCode::Char('|') => {
@@ -1150,6 +1229,7 @@ impl TerminalApp {
                                         status_msg: None,
                                         search_input: None,
                                         save_as_input: None,
+                                        replace_dialog: None,
                                         pending_quit: false,
                                         confirm_exit: None,
                                     };
@@ -1169,6 +1249,7 @@ impl TerminalApp {
                                                 status_msg: None,
                                                 search_input: None,
                                                 save_as_input: None,
+                                                replace_dialog: None,
                                                 pending_quit: false,
                                                 confirm_exit: None,
                                             };
@@ -1182,6 +1263,7 @@ impl TerminalApp {
                                         status_msg: None,
                                         search_input: None,
                                         save_as_input: None,
+                                        replace_dialog: None,
                                         pending_quit: false,
                                         confirm_exit: None,
                                     };
@@ -5382,6 +5464,7 @@ impl TerminalApp {
                                         status_msg: None,
                                         search_input: None,
                                         save_as_input: None,
+                                        replace_dialog: None,
                                         pending_quit: false,
                                         confirm_exit: None,
                                     };
@@ -7281,5 +7364,243 @@ mod command_history_tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.subshell.history_len(), 0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod editor_replace_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::EditorReplaceFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, None),
+            show_menu: false,
+            status_msg: None,
+            search_input: None,
+            save_as_input: None,
+            replace_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn type_text(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn editor_buf(app: &App) -> &EditorBuffer {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn editor_bytes(app: &App) -> Vec<u8> {
+        editor_buf(app).to_bytes()
+    }
+
+    fn replace_dialog(app: &App) -> &EditorReplaceDialog {
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(dlg),
+                ..
+            } => dlg,
+            UiMode::Editor {
+                search_input: Some(_),
+                ..
+            } => panic!("expected Replace dialog, got Search"),
+            _ => panic!("expected Editor Replace dialog"),
+        }
+    }
+
+    #[test]
+    fn f4_opens_replace_not_search() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc abc");
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(dlg),
+                search_input,
+                save_as_input,
+                ..
+            } => {
+                assert!(search_input.is_none(), "F4 must not open Search");
+                assert!(save_as_input.is_none());
+                assert!(dlg.search.is_empty());
+                assert!(dlg.replacement.is_empty());
+                assert!(matches!(dlg.focus, EditorReplaceFocus::Search));
+            }
+            _ => panic!("F4 must open the Replace dialog"),
+        }
+    }
+
+    #[test]
+    fn enter_replace_replaces_next_match() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "X");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"X abc");
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                status_msg,
+                ..
+            } => {
+                assert_eq!(status_msg.as_deref(), Some("Replaced"));
+            }
+            _ => panic!("Replace next should keep the dialog open"),
+        }
+    }
+
+    #[test]
+    fn all_replaces_every_match_and_reports_count() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc ABC abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "Y");
+        press(&mut app, KeyCode::Tab); // Replace button
+        press(&mut app, KeyCode::Tab); // All
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::All
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Y ABC Y");
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog,
+                status_msg,
+                ..
+            } => {
+                assert!(replace_dialog.is_none());
+                let msg = status_msg.as_deref().expect("status_msg after All");
+                assert!(
+                    msg.contains('2'),
+                    "status_msg must mention the replacement count, got {msg:?}"
+                );
+            }
+            _ => panic!("expected Editor after All"),
+        }
+    }
+
+    #[test]
+    fn esc_leaves_buffer_unchanged() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "hello");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "bye");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(editor_bytes(&app), b"hello");
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(replace_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            _ => panic!("Esc should stay in the editor"),
+        }
+    }
+
+    #[test]
+    fn empty_needle_does_not_clear_file() {
+        let mut app = make_app();
+        open_editor(&mut app, b"keep me");
+        press(&mut app, KeyCode::F(4));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"keep me");
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                ..
+            } => {}
+            _ => panic!("empty Replace must keep the dialog open"),
+        }
+        // All with empty needle is also a no-op
+        press(&mut app, KeyCode::Tab); // Replacement
+        press(&mut app, KeyCode::Tab); // Replace
+        press(&mut app, KeyCode::Tab); // All
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"keep me");
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                ..
+            } => {}
+            _ => panic!("empty All must not close by wiping; dialog stays"),
+        }
+    }
+
+    #[test]
+    fn f7_search_still_works() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello world");
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_input: Some(_),
+                replace_dialog,
+                ..
+            } => {
+                assert!(replace_dialog.is_none(), "F7 must open Search, not Replace");
+            }
+            _ => panic!("F7 must open Search"),
+        }
+        type_text(&mut app, "world");
+        press(&mut app, KeyCode::Enter);
+        let buf = editor_buf(&app);
+        assert_eq!(buf.last_search, b"world");
+        assert_eq!((buf.row, buf.col), (0, 6));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_input,
+                replace_dialog,
+                status_msg,
+                ..
+            } => {
+                assert!(search_input.is_none());
+                assert!(replace_dialog.is_none());
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("expected Editor after Search"),
+        }
+    }
+
+    #[test]
+    fn replace_prefills_last_search() {
+        let mut app = make_app();
+        open_editor(&mut app, b"foo bar foo");
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "foo");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::F(4));
+        assert_eq!(replace_dialog(&app).search, "foo");
     }
 }
