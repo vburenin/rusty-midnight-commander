@@ -25203,6 +25203,7 @@ mod listing_format_cycle_tests {
     }
 }
 
+#[cfg(test)]
 mod panel_listing_movement_tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
