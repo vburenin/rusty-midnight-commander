@@ -4,6 +4,7 @@ use anyhow::Result;
 use rmc_core::actions::Action;
 use rmc_core::app::{App, PanelOptions};
 use rmc_core::config::KeyMap;
+use rmc_core::panel::DirReloadStamp;
 use rmc_fs::local::LocalFs;
 use rmc_fs::{DirEntry, FsResult, Metadata, Vfs};
 use std::fs::File;
@@ -83,6 +84,24 @@ fn seed_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create `name` and ensure the directory Fast-reload stamp changes.
+/// Overlay/lazytime often keeps dir mtime/ctime/nlink/size the same after a
+/// same-second create; GNU mc Fast reload keys off that stamp, so bump mtime
+/// the way a conventional local disk would.
+fn create_file_changing_dir_stamp(dir: &Path, name: &str) -> Result<()> {
+    let before = DirReloadStamp::from_local_dir(dir);
+    File::create(dir.join(name))?;
+    if DirReloadStamp::from_local_dir(dir) == before {
+        let status = std::process::Command::new("touch").arg(dir).status()?;
+        anyhow::ensure!(status.success(), "touch {dir:?} failed: {status}");
+    }
+    anyhow::ensure!(
+        DirReloadStamp::from_local_dir(dir) != before,
+        "directory stamp must change after creating {name}"
+    );
+    Ok(())
+}
+
 #[test]
 fn default_fast_reload_is_off() {
     assert!(
@@ -110,7 +129,7 @@ fn fast_reload_on_skips_when_mtime_unchanged_and_relists_after_create() -> Resul
     );
     assert_eq!(names(&app), ["alpha.txt"]);
 
-    File::create(dir.join("beta.txt"))?;
+    create_file_changing_dir_stamp(dir, "beta.txt")?;
     lists.lock().unwrap().clear();
     app.reload_panels()?;
     assert!(
