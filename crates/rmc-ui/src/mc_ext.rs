@@ -188,6 +188,9 @@ lsarc = extfs/ls-archive
         assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
         assert_eq!(map.lookup(Path::new("a.c")), Some(OpenAction::View));
         assert_eq!(map.lookup(Path::new("a.h")), Some(OpenAction::View));
+        assert_eq!(map.lookup(Path::new("app.py")), Some(OpenAction::View));
+        assert_eq!(map.lookup(Path::new("main.cpp")), Some(OpenAction::View));
+        assert_eq!(map.lookup(Path::new("cfg.json")), Some(OpenAction::View));
         assert_eq!(
             map.lookup(Path::new("index.html")),
             Some(OpenAction::XdgOpen)
@@ -198,8 +201,11 @@ lsarc = extfs/ls-archive
         assert_eq!(map.lookup(Path::new("a.jpg")), Some(OpenAction::XdgOpen));
         assert_eq!(map.lookup(Path::new("a.jpeg")), Some(OpenAction::XdgOpen));
         assert_eq!(map.lookup(Path::new("a.gif")), Some(OpenAction::XdgOpen));
+        assert_eq!(map.lookup(Path::new("icon.svg")), Some(OpenAction::XdgOpen));
+        assert_eq!(map.lookup(Path::new("clip.mp4")), Some(OpenAction::XdgOpen));
         assert_eq!(map.lookup(Path::new("a.dat")), None);
         assert_eq!(map.lookup(Path::new("sample.lsar")), None);
+        assert_eq!(map.lookup(Path::new("foo.py.bak")), None);
     }
 
     #[test]
@@ -214,7 +220,13 @@ lsarc = extfs/ls-archive
         // Baked include_str; must not depend on cwd `data/mc.ext.ini`.
         assert_eq!(lookup_open(Path::new("x.rs")), Some(OpenAction::View));
         assert_eq!(lookup_open(Path::new("notes.txt")), Some(OpenAction::View));
+        assert_eq!(lookup_open(Path::new("app.py")), Some(OpenAction::View));
+        assert_eq!(
+            lookup_open(Path::new("icon.svg")),
+            Some(OpenAction::XdgOpen)
+        );
         assert_eq!(lookup_open(Path::new("x.bin")), None);
+        assert_eq!(lookup_open(Path::new("a.dat")), None);
     }
 
     #[test]
