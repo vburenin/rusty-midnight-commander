@@ -181,6 +181,7 @@ impl PanelState {
     /// - `reverse_files_only == true` (default): directories stay name-ascending;
     ///   only the file group is reversed.
     /// - `reverse_files_only == false`: both the directory group and the file group reverse.
+    ///
     /// When mixed (`dirs_first == false`), reverse applies to the whole list either way.
     pub fn apply_sort_with(&mut self, reverse_files_only: bool) {
         // Detach a possible parent marker at the top to keep it first
