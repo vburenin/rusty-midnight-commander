@@ -61,7 +61,8 @@ pub trait Vfs: Send {
     fn set_dir_cache_timeout_secs(&self, _secs: u32) {}
     /// Drop cached directory listings. `None` clears the whole cache;
     /// `Some(path)` drops that directory (both hidden and non-hidden variants).
-    /// Callers use this for C-r (Reload) and when changing cwd.
+    /// Callers use this for C-r (Reload). Re-entering a directory within the
+    /// timeout reuses the cache and does not invalidate.
     fn invalidate_dir_cache(&self, _path: Option<&Path>) {}
     /// Given a filesystem path, return a virtual directory path to enter if this
     /// path is an “enterable container” (e.g., an archive or remote location).

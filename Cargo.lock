@@ -1676,6 +1676,7 @@ dependencies = [
  "toml",
  "unicode-width",
  "walkdir",
+ "zip",
 ]
 
 [[package]]

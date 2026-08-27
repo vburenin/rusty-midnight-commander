@@ -65,10 +65,11 @@ fn timeout_n_reuses_archive_listing_until_refresh() {
     assert_eq!(listing_names(&vfs, &root), ["a.txt"]);
 
     write_zip(&zip_path, &[("a.txt", b"a"), ("b.txt", b"b")]);
+    // Re-entering the same VFS path (change_dir / list_dir) must hit the cache.
     assert_eq!(
         listing_names(&vfs, &root),
         ["a.txt"],
-        "TTL still valid: must reuse the cached listing"
+        "re-entering within timeout must reuse the cached listing"
     );
 
     vfs.invalidate_dir_cache(Some(&root));

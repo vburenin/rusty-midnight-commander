@@ -947,8 +947,8 @@ impl App {
         let new_cwd = path.to_path_buf();
         let reverse_files_only = self.panel_opts.reverse_files_only;
         self.sync_vfs_dir_cache_timeout();
-        // Changing cwd always re-lists (do not reuse a cached listing for the target).
-        self.vfs.invalidate_dir_cache(Some(&new_cwd));
+        // Re-entering a remote/archive/extfs dir within the timeout reuses the
+        // cached listing (GNU mc). C-r / Refresh is the force-reload.
         // Acquire listing before mutably borrowing panel to avoid aliasing
         let list = self.vfs.list_dir(&new_cwd, self.show_hidden)?;
         let entries = self.map_dir_entries(list);
