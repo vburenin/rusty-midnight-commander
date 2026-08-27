@@ -2240,6 +2240,99 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::ConfigurationDialog { draft, focus } => {
+                use rmc_core::app::ConfigOptionsFocus as F;
+                // Focus order: checkboxes then buttons
+                let order = [
+                    F::Verbose,
+                    F::ComputeTotals,
+                    F::ClassicProgressbar,
+                    F::UseInternalViewer,
+                    F::UseInternalEditor,
+                    F::PauseAfterRun,
+                    F::ShellPatterns,
+                    F::AutoMenus,
+                    F::DropMenus,
+                    F::MkdirAutoname,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Char(' ') => match *focus {
+                        F::Verbose => draft.verbose = !draft.verbose,
+                        F::ComputeTotals => draft.compute_totals = !draft.compute_totals,
+                        F::ClassicProgressbar => {
+                            draft.classic_progressbar = !draft.classic_progressbar
+                        }
+                        F::UseInternalViewer => draft.use_internal_view = !draft.use_internal_view,
+                        F::UseInternalEditor => draft.use_internal_edit = !draft.use_internal_edit,
+                        F::PauseAfterRun => draft.pause_after_run = !draft.pause_after_run,
+                        F::ShellPatterns => draft.shell_patterns = !draft.shell_patterns,
+                        F::AutoMenus => draft.auto_menus = !draft.auto_menus,
+                        F::DropMenus => draft.drop_menus = !draft.drop_menus,
+                        F::MkdirAutoname => draft.mkdir_autoname = !draft.mkdir_autoname,
+                        _ => {}
+                    },
+                    KeyCode::Enter => match *focus {
+                        F::Verbose => draft.verbose = !draft.verbose,
+                        F::ComputeTotals => draft.compute_totals = !draft.compute_totals,
+                        F::ClassicProgressbar => {
+                            draft.classic_progressbar = !draft.classic_progressbar
+                        }
+                        F::UseInternalViewer => draft.use_internal_view = !draft.use_internal_view,
+                        F::UseInternalEditor => draft.use_internal_edit = !draft.use_internal_edit,
+                        F::PauseAfterRun => draft.pause_after_run = !draft.pause_after_run,
+                        F::ShellPatterns => draft.shell_patterns = !draft.shell_patterns,
+                        F::AutoMenus => draft.auto_menus = !draft.auto_menus,
+                        F::DropMenus => draft.drop_menus = !draft.drop_menus,
+                        F::MkdirAutoname => draft.mkdir_autoname = !draft.mkdir_autoname,
+                        F::Ok => {
+                            // Apply and close
+                            let new_opts = *draft;
+                            app.ui_mode = UiMode::Normal;
+                            app.config_opts = new_opts;
+                        }
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    },
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::AppearanceDialog {
                 draft_skin,
                 draft_shadows,
@@ -3020,6 +3113,7 @@ impl TerminalApp {
                         "External panelize",
                     ],
                     &[
+                        "Configuration",
                         "Layout",
                         "Panels",
                         "Confirmations",
@@ -3071,6 +3165,13 @@ impl TerminalApp {
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
+                            "Configuration" => {
+                                let draft = app.config_opts;
+                                app.ui_mode = UiMode::ConfigurationDialog {
+                                    draft,
+                                    focus: rmc_core::app::ConfigOptionsFocus::Verbose,
+                                };
+                            }
                             "Layout" => {
                                 // Prefill dialog from current options
                                 let draft = app.layout;
@@ -4674,30 +4775,81 @@ impl TerminalApp {
                 }
             }
             match action {
+                Action::ViewFile => {
+                    // If configured to use internal viewer, delegate to core; otherwise spawn external viewer.
+                    if app.config_opts.use_internal_view {
+                        app.handle_action(Action::ViewFile)?;
+                    } else {
+                        if let Some(ent) = app.active_panel().current_entry().cloned() {
+                            if !ent.is_dir {
+                                // Prefer $PAGER; otherwise try view, then less
+                                if let Some(pager) =
+                                    std::env::var("PAGER").ok().filter(|s| !s.trim().is_empty())
+                                {
+                                    let _ = std::process::Command::new(&pager)
+                                        .arg(&ent.path)
+                                        .current_dir(&app.active_panel().cwd)
+                                        .status();
+                                } else {
+                                    let tried_view = std::process::Command::new("view")
+                                        .arg(&ent.path)
+                                        .current_dir(&app.active_panel().cwd)
+                                        .status()
+                                        .is_ok();
+                                    if !tried_view {
+                                        let _ = std::process::Command::new("less")
+                                            .arg(&ent.path)
+                                            .current_dir(&app.active_panel().cwd)
+                                            .status();
+                                    }
+                                }
+                                app.reload_panels()?;
+                            }
+                        }
+                    }
+                }
                 Action::FunctionKey(4) => {
                     // Open editor on selected file (panels Normal mode)
                     if matches!(app.ui_mode, UiMode::Normal) {
                         if let Some(ent) = app.active_panel().current_entry().cloned() {
                             if !ent.is_dir {
-                                // Read file bytes via VFS
-                                let mut data = Vec::new();
-                                if let Ok(mut r) = app.vfs.read_file(&ent.path) {
-                                    use std::io::Read;
-                                    let _ = r.read_to_end(&mut data);
+                                if app.config_opts.use_internal_edit {
+                                    // Read file bytes via VFS
+                                    let mut data = Vec::new();
+                                    if let Ok(mut r) = app.vfs.read_file(&ent.path) {
+                                        use std::io::Read;
+                                        let _ = r.read_to_end(&mut data);
+                                    }
+                                    let buf = rmc_edit::EditorBuffer::from_bytes(
+                                        &data,
+                                        Some(ent.path.clone()),
+                                    );
+                                    app.ui_mode = UiMode::Editor {
+                                        buf,
+                                        show_menu: false,
+                                        status_msg: None,
+                                        search_input: None,
+                                        save_as_input: None,
+                                        pending_quit: false,
+                                        confirm_exit: None,
+                                    };
+                                } else {
+                                    // Spawn external editor (EDITOR or VISUAL or vi)
+                                    let prog = std::env::var("EDITOR")
+                                        .ok()
+                                        .filter(|s| !s.trim().is_empty())
+                                        .or_else(|| {
+                                            std::env::var("VISUAL")
+                                                .ok()
+                                                .filter(|s| !s.trim().is_empty())
+                                        })
+                                        .unwrap_or_else(|| "vi".to_string());
+                                    let _ = std::process::Command::new(&prog)
+                                        .arg(&ent.path)
+                                        .current_dir(&app.active_panel().cwd)
+                                        .status();
+                                    app.reload_panels()?;
                                 }
-                                let buf = rmc_edit::EditorBuffer::from_bytes(
-                                    &data,
-                                    Some(ent.path.clone()),
-                                );
-                                app.ui_mode = UiMode::Editor {
-                                    buf,
-                                    show_menu: false,
-                                    status_msg: None,
-                                    search_input: None,
-                                    save_as_input: None,
-                                    pending_quit: false,
-                                    confirm_exit: None,
-                                };
                             }
                         }
                     }
