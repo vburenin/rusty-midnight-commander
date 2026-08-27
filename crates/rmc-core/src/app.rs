@@ -292,6 +292,7 @@ pub enum ListingModeFocus {
     Cancel,
 }
 
+#[allow(clippy::large_enum_variant)] // Editor owns EditorBuffer; overlays are boxed where needed
 pub enum UiMode {
     Normal,
     /// MC User Menu (F2) – list of user-defined commands with hotkeys
@@ -334,6 +335,8 @@ pub enum UiMode {
         status_msg: Option<String>,
         search_input: Option<String>,
         save_as_input: Option<String>,
+        /// GNU mcedit F7 Search dialog (None while editing).
+        search_dialog: Option<Box<EditorSearchDialog>>,
         /// GNU mcedit F4 Replace dialog (None while editing).
         replace_dialog: Option<EditorReplaceDialog>,
         /// GNU mcedit `|` Pipe dialog (None while editing).
@@ -556,6 +559,70 @@ pub struct YncDialog {
     pub title: String,
     pub message: String,
     pub focus: YncFocus,
+}
+
+/// Focus within the GNU mcedit F7 Search dialog.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorSearchFocus {
+    #[default]
+    Search,
+    CaseSensitive,
+    Backwards,
+    WholeWords,
+    RegularExpression,
+    Ok,
+    Cancel,
+}
+
+impl EditorSearchFocus {
+    /// True when focus is one of the four GNU Search checkboxes.
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Self::CaseSensitive | Self::Backwards | Self::WholeWords | Self::RegularExpression
+        )
+    }
+}
+
+/// GNU mcedit-style Search dialog: needle field, four option checkboxes,
+/// and OK / Cancel. Defaults match GNU (all checkboxes off).
+#[derive(Clone)]
+pub struct EditorSearchDialog {
+    pub search: String,
+    pub case_sensitive: bool,
+    pub backwards: bool,
+    pub whole_words: bool,
+    pub regular_expression: bool,
+    pub focus: EditorSearchFocus,
+}
+
+impl EditorSearchDialog {
+    /// Prefill the search field from the editor's last Search needle.
+    /// Checkboxes always start at GNU defaults (unchecked).
+    pub fn from_last_search(last_search: &[u8]) -> Self {
+        Self {
+            search: String::from_utf8_lossy(last_search).into_owned(),
+            case_sensitive: false,
+            backwards: false,
+            whole_words: false,
+            regular_expression: false,
+            focus: EditorSearchFocus::Search,
+        }
+    }
+
+    /// Toggle the focused checkbox. Returns false when focus is not a checkbox.
+    pub fn toggle_focused_checkbox(&mut self) -> bool {
+        match self.focus {
+            EditorSearchFocus::CaseSensitive => self.case_sensitive = !self.case_sensitive,
+            EditorSearchFocus::Backwards => self.backwards = !self.backwards,
+            EditorSearchFocus::WholeWords => self.whole_words = !self.whole_words,
+            EditorSearchFocus::RegularExpression => {
+                self.regular_expression = !self.regular_expression
+            }
+            _ => return false,
+        }
+        true
+    }
 }
 
 /// Focus within the GNU mcedit F4 Replace dialog.

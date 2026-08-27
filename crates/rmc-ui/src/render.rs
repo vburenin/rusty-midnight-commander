@@ -57,6 +57,7 @@ impl Renderer {
             status_msg,
             search_input,
             save_as_input,
+            search_dialog,
             replace_dialog,
             pipe_dialog,
             goto_dialog,
@@ -74,6 +75,7 @@ impl Renderer {
                 status_msg.as_deref(),
                 search_input.as_deref(),
                 save_as_input.as_deref(),
+                search_dialog.as_deref(),
                 replace_dialog.as_ref(),
                 pipe_dialog.as_ref(),
                 goto_dialog.as_deref(),
@@ -1785,8 +1787,9 @@ fn draw_editor(
     buf: &rmc_edit::EditorBuffer,
     show_menu: bool,
     status_msg: Option<&str>,
-    search_input: Option<&str>,
+    _search_input: Option<&str>,
     save_as_input: Option<&str>,
+    search_dialog: Option<&rmc_core::app::EditorSearchDialog>,
     replace_dialog: Option<&rmc_core::app::EditorReplaceDialog>,
     pipe_dialog: Option<&rmc_core::app::EditorPipeDialog>,
     goto_dialog: Option<&rmc_core::app::EditorGotoDialog>,
@@ -1947,12 +1950,12 @@ fn draw_editor(
     if show_menu {
         draw_editor_menu_dropdown(p, pal);
     }
-    // Inline prompts
-    if let Some(q) = search_input {
-        draw_inline_prompt(p, pal, rows, cols, "Find:", q);
-    }
+    // Inline prompts (Save as only; F7 Search is a real dialog)
     if let Some(q) = save_as_input {
         draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
+    }
+    if let Some(dlg) = search_dialog {
+        draw_editor_search_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
     if let Some(dlg) = replace_dialog {
         draw_editor_replace_dialog(p, cols, rows, pal, dlg, show_shadow);
@@ -2082,6 +2085,127 @@ fn draw_inline_prompt(
     }
     let t = truncate(&txt, cols as usize);
     p.text(&t);
+}
+
+fn draw_editor_search_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    dlg: &rmc_core::app::EditorSearchDialog,
+    show_shadow: bool,
+) {
+    use rmc_core::app::EditorSearchFocus as F;
+    let w = (cols as usize).min(66) as u16;
+    let h = 10u16;
+    if cols < w || rows < h {
+        return;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title — GNU mcedit wording
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title = " Search ";
+    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(title);
+    // Inner fill
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for i in 1..h - 1 {
+        p.goto(x + 1, y + i);
+        p.text(&" ".repeat((w - 2) as usize));
+    }
+    let inner_w = (w - 4) as usize;
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 1);
+    p.text(&truncate("Enter search string:", inner_w));
+    if matches!(dlg.focus, F::Search) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 2);
+    let st = truncate(&dlg.search, inner_w);
+    p.text(&format!(
+        "{st}{}",
+        " ".repeat(inner_w.saturating_sub(st.len()))
+    ));
+    let checks: [(F, &str, bool); 4] = [
+        (F::CaseSensitive, "Case sensitive", dlg.case_sensitive),
+        (F::Backwards, "Backwards", dlg.backwards),
+        (F::WholeWords, "Whole words", dlg.whole_words),
+        (
+            F::RegularExpression,
+            "Regular expression",
+            dlg.regular_expression,
+        ),
+    ];
+    for (i, (focus, label, on)) in checks.iter().enumerate() {
+        if dlg.focus == *focus {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, y + 3 + i as u16);
+        p.text(&truncate(
+            &format!("[{}] {}", if *on { 'x' } else { ' ' }, label),
+            inner_w,
+        ));
+    }
+    // Buttons: focused `< OK >`, unfocused `[ Cancel ]` (GNU mc / History / Replace / Pipe / Goto)
+    let focus = dlg.focus;
+    let sel_btn = |want, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 fn draw_editor_replace_dialog(

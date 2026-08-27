@@ -8,3 +8,4 @@ description = "Stub for future in-process editor API"
 
 [dependencies]
 anyhow.workspace = true
+regex = "1"
