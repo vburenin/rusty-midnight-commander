@@ -30,8 +30,23 @@ pub enum ListingFormat {
     Full,
     Brief,
     Long,
-    /// User-defined format string stored on the panel; rendered like Long for now.
+    /// User-defined format string stored on the panel (`user_format`).
     User,
+}
+
+/// GNU-ish subset of mc user-defined listing format tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserFormatToken {
+    Name,
+    Size,
+    Perm,
+    Type,
+    Mtime,
+    Nlink,
+    Owner,
+    Group,
+    /// `|` in the format string: a literal column gap.
+    Gap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,7 +123,7 @@ impl PanelState {
             sort_dir: SortDir::Asc,
             dirs_first: true,
             listing: ListingFormat::Full,
-            // GNU-ish default placeholder; parsed later if/when implemented.
+            // GNU-ish default; `half` is ignored by the subset parser.
             user_format: "half type name | size | perm".to_string(),
             selection: Selection::default(),
             panelized: None,
@@ -264,6 +279,260 @@ impl PanelState {
     }
 }
 
+/// Parse a GNU-ish user listing format string.
+///
+/// Tokens are case-insensitive and space-separated. `|` is a column gap.
+/// Unknown tokens (including `half` / `full` panel-size specifiers) are ignored.
+/// An optional `:width` suffix (e.g. `size:7`) is stripped so the field still matches.
+pub fn parse_user_listing_format(fmt: &str) -> Vec<UserFormatToken> {
+    let mut out = Vec::new();
+    for raw in fmt.split_whitespace() {
+        let mut rest = raw;
+        loop {
+            if let Some((left, right)) = rest.split_once('|') {
+                if let Some(tok) = classify_user_token(left) {
+                    out.push(tok);
+                }
+                out.push(UserFormatToken::Gap);
+                rest = right;
+            } else {
+                if let Some(tok) = classify_user_token(rest) {
+                    out.push(tok);
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn classify_user_token(raw: &str) -> Option<UserFormatToken> {
+    if raw.is_empty() {
+        return None;
+    }
+    let key = raw.split(':').next().unwrap_or(raw);
+    match key.to_ascii_lowercase().as_str() {
+        "name" => Some(UserFormatToken::Name),
+        "size" => Some(UserFormatToken::Size),
+        "perm" | "mode" => Some(UserFormatToken::Perm),
+        "type" => Some(UserFormatToken::Type),
+        "mtime" | "time" => Some(UserFormatToken::Mtime),
+        "nlink" => Some(UserFormatToken::Nlink),
+        "owner" => Some(UserFormatToken::Owner),
+        "group" => Some(UserFormatToken::Group),
+        "|" => Some(UserFormatToken::Gap),
+        _ => None,
+    }
+}
+
+fn user_token_width(tok: UserFormatToken) -> usize {
+    match tok {
+        UserFormatToken::Name => 0,
+        UserFormatToken::Size => 8,
+        UserFormatToken::Perm => 10,
+        UserFormatToken::Type => 1,
+        UserFormatToken::Mtime => 12,
+        UserFormatToken::Nlink => 4,
+        UserFormatToken::Owner => 8,
+        UserFormatToken::Group => 8,
+        UserFormatToken::Gap => 1,
+    }
+}
+
+fn fit_left(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let n = s.chars().count();
+    if n > width {
+        if width == 1 {
+            s.chars().take(1).collect()
+        } else {
+            s.chars()
+                .take(width.saturating_sub(1))
+                .chain("…".chars())
+                .collect()
+        }
+    } else {
+        let mut out = s.to_string();
+        out.push_str(&" ".repeat(width - n));
+        out
+    }
+}
+
+fn fit_right(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let n = s.chars().count();
+    if n > width {
+        s.chars().skip(n - width).collect()
+    } else {
+        let mut out = " ".repeat(width - n);
+        out.push_str(s);
+        out
+    }
+}
+
+fn user_perm_string(mode: u32, is_dir: bool) -> String {
+    let mut s = String::new();
+    s.push(if is_dir { 'd' } else { '-' });
+    let bits = [
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
+    ];
+    for (bit, ch) in bits {
+        s.push(if mode & bit != 0 { ch } else { '-' });
+    }
+    s
+}
+
+fn user_type_char(ent: &FileEntry) -> char {
+    if ent.is_dir && ent.is_symlink {
+        '~'
+    } else if ent.is_dir {
+        '/'
+    } else if ent.is_symlink {
+        '@'
+    } else if ent.is_exe {
+        '*'
+    } else {
+        ' '
+    }
+}
+
+fn user_size_string(ent: &FileEntry) -> String {
+    if ent.name == ".." {
+        "UP--DIR".to_string()
+    } else if ent.is_dir {
+        String::new()
+    } else {
+        ent.size.to_string()
+    }
+}
+
+fn user_mtime_string(ent: &FileEntry) -> String {
+    let dt: time::OffsetDateTime = ent.modified.into();
+    dt.format(&time::macros::format_description!(
+        "[month repr:short] [day padding:space] [hour]:[minute]"
+    ))
+    .unwrap_or_default()
+}
+
+fn name_column_width(tokens: &[UserFormatToken], width: usize) -> usize {
+    let name_count = tokens
+        .iter()
+        .filter(|t| matches!(t, UserFormatToken::Name))
+        .count();
+    if name_count == 0 {
+        return 0;
+    }
+    let reserved =
+        tokens.len().saturating_sub(1) + tokens.iter().map(|t| user_token_width(*t)).sum::<usize>();
+    width.saturating_sub(reserved) / name_count
+}
+
+fn render_user_token(tok: UserFormatToken, ent: Option<&FileEntry>, name_width: usize) -> String {
+    match tok {
+        UserFormatToken::Name => {
+            let name = ent.map(|e| e.name.as_str()).unwrap_or("Name");
+            fit_left(name, name_width.max(1))
+        }
+        UserFormatToken::Size => {
+            let s = match ent {
+                Some(e) => user_size_string(e),
+                None => "Size".to_string(),
+            };
+            if ent.is_none() {
+                fit_left(&s, 8)
+            } else {
+                fit_right(&s, 8)
+            }
+        }
+        UserFormatToken::Perm => match ent {
+            Some(e) => user_perm_string(e.permissions, e.is_dir),
+            None => fit_left("Perm", 10),
+        },
+        UserFormatToken::Type => match ent {
+            Some(e) => user_type_char(e).to_string(),
+            None => " ".to_string(),
+        },
+        UserFormatToken::Mtime => match ent {
+            Some(e) => fit_left(&user_mtime_string(e), 12),
+            None => fit_left("Modify time", 12),
+        },
+        UserFormatToken::Nlink => match ent {
+            Some(_) => fit_right("1", 4),
+            None => fit_left("Nl", 4),
+        },
+        UserFormatToken::Owner => {
+            let s = match ent {
+                Some(e) => e.owner.as_deref().unwrap_or("-"),
+                None => "Owner",
+            };
+            if ent.is_none() {
+                fit_left(s, 8)
+            } else {
+                fit_right(s, 8)
+            }
+        }
+        UserFormatToken::Group => {
+            let s = match ent {
+                Some(e) => e.group.as_deref().unwrap_or("-"),
+                None => "Group",
+            };
+            if ent.is_none() {
+                fit_left(s, 8)
+            } else {
+                fit_right(s, 8)
+            }
+        }
+        UserFormatToken::Gap => "|".to_string(),
+    }
+}
+
+fn join_user_parts(tokens: &[UserFormatToken], width: usize, ent: Option<&FileEntry>) -> String {
+    if tokens.is_empty() {
+        return String::new();
+    }
+    let name_width = name_column_width(tokens, width);
+    let parts: Vec<String> = tokens
+        .iter()
+        .map(|t| render_user_token(*t, ent, name_width))
+        .collect();
+    let line = parts.join(" ");
+    let n = line.chars().count();
+    if n <= width {
+        line
+    } else {
+        line.chars()
+            .take(width.saturating_sub(1))
+            .chain("…".chars())
+            .collect()
+    }
+}
+
+/// Render one user-format listing row, truncated to `width`.
+pub fn format_user_listing_line(
+    ent: &FileEntry,
+    tokens: &[UserFormatToken],
+    width: usize,
+) -> String {
+    join_user_parts(tokens, width, Some(ent))
+}
+
+/// Column header for a parsed user listing format, truncated to `width`.
+pub fn format_user_listing_header(tokens: &[UserFormatToken], width: usize) -> String {
+    join_user_parts(tokens, width, None)
+}
+
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
 // Case-sensitive, anchored to full string.
 fn glob_match(pat: &str, name: &str) -> bool {
@@ -362,5 +631,93 @@ mod tests {
         p.apply_sort();
         let names: Vec<_> = p.entries.iter().skip(1).map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["b.txt", "z.log", "c.bin", "noext", "alpha"]);
+    }
+
+    #[test]
+    fn user_format_parses_default_and_ignores_half() {
+        let t = parse_user_listing_format("half type name | size | perm");
+        assert_eq!(
+            t,
+            vec![
+                UserFormatToken::Type,
+                UserFormatToken::Name,
+                UserFormatToken::Gap,
+                UserFormatToken::Size,
+                UserFormatToken::Gap,
+                UserFormatToken::Perm,
+            ]
+        );
+        assert!(parse_user_listing_format("").is_empty());
+        assert!(parse_user_listing_format("half").is_empty());
+        assert!(parse_user_listing_format("   ").is_empty());
+    }
+
+    #[test]
+    fn user_format_case_insensitive_aliases_and_unknown() {
+        let t = parse_user_listing_format("FULL MODE TIME nlink owner group foo size:7");
+        assert_eq!(
+            t,
+            vec![
+                UserFormatToken::Perm,
+                UserFormatToken::Mtime,
+                UserFormatToken::Nlink,
+                UserFormatToken::Owner,
+                UserFormatToken::Group,
+                UserFormatToken::Size,
+            ]
+        );
+        let glued = parse_user_listing_format("name|size|perm");
+        assert_eq!(
+            glued,
+            vec![
+                UserFormatToken::Name,
+                UserFormatToken::Gap,
+                UserFormatToken::Size,
+                UserFormatToken::Gap,
+                UserFormatToken::Perm,
+            ]
+        );
+    }
+
+    #[test]
+    fn user_format_line_draws_name_size_perm() {
+        let now = SystemTime::now();
+        let ent = make_entry("readme.txt", 42, now, false);
+        let tokens = parse_user_listing_format("half type name | size | perm");
+        let line = format_user_listing_line(&ent, &tokens, 80);
+        assert!(line.contains("readme.txt"), "line={line:?}");
+        assert!(line.contains("42"), "line={line:?}");
+        assert!(line.contains("rwx"), "line={line:?}");
+        assert!(line.contains('|'), "line={line:?}");
+        let header = format_user_listing_header(&tokens, 80);
+        assert!(header.contains("Name"), "header={header:?}");
+        assert!(header.contains("Size"), "header={header:?}");
+        assert!(header.contains("Perm"), "header={header:?}");
+    }
+
+    #[test]
+    fn user_format_type_marks_and_truncation() {
+        let now = SystemTime::now();
+        let tokens = parse_user_listing_format("type name");
+        let dir = make_entry("src", 0, now, true);
+        assert!(
+            format_user_listing_line(&dir, &tokens, 40).starts_with('/'),
+            "dir type"
+        );
+        let mut exe = make_entry("a.out", 10, now, false);
+        exe.is_exe = true;
+        assert!(
+            format_user_listing_line(&exe, &tokens, 40).starts_with('*'),
+            "exe type"
+        );
+        let mut link = make_entry("link", 1, now, false);
+        link.is_symlink = true;
+        assert!(
+            format_user_listing_line(&link, &tokens, 40).starts_with('@'),
+            "symlink type"
+        );
+        let long = make_entry("very-long-filename-that-should-clip", 1, now, false);
+        let clipped = format_user_listing_line(&long, &tokens, 12);
+        assert!(clipped.chars().count() <= 12);
     }
 }
