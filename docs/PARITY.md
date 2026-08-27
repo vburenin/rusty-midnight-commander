@@ -91,8 +91,8 @@ Command line integration (filename helpers, history, completion):
 
 Misc panel actions:
 - [ ] C-l: full repaint
-- [ ] C-x c: chmod dialog; C-x o: chown dialog
-- [ ] C-x l: hardlink; C-x s: absolute symlink; C-x v: relative symlink
+- [x] C-x c: chmod dialog; C-x o: chown dialog
+- [x] C-x l: hardlink; C-x s: absolute symlink; C-x v: relative symlink
 - [x] Swap panels (Command menu; Action::SwapPanels; honors Options → Panels → Simple swap)
 - [x] Equalize panels (menu actions; include keys if assigned)
 
@@ -115,9 +115,10 @@ Dialogs and behavior per mc(1) “File Menu”, “File operations”, and repla
 - [ ] Mkdir (F7): input with optional auto-name
 - [ ] Replace/Overwrite dialog: Yes/No/All/Older/None/Smaller/Size differs/Append/Reget; “Don’t overwrite with zero length file”
 - [ ] Background jobs manager: stop/restart/kill for copy/move
-- [ ] Chmod (C-x c): recursive, perm bits UI
-- [ ] Chown (C-x o): owner/group changes
-- [ ] Links: hardlink (C-x l), absolute symlink (C-x s), relative symlink (C-x v)
+- [x] Chmod (C-x c): recursive, perm bits UI
+- [x] Chown (C-x o): owner/group changes
+- [x] Links: hardlink (C-x l), absolute symlink (C-x s), relative symlink (C-x v)
+  (Existing dest is refused with an error; overwrite/replace confirm is out of scope.)
 - [ ] Compute totals, classic progress bar direction (appearance preference)
 
 Mark each sub-feature internally with Foundation (Copy/Move/Delete/Mkdir) vs Later (chmod/chown/links/advanced options).

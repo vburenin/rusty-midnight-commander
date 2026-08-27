@@ -578,7 +578,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             sgid,
             sticky,
             recursive,
-            focus_index,
+            allow_recursive,
+            focus,
+            ..
         } => {
             draw_chmod_dialog(
                 p,
@@ -592,7 +594,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 (*or_, *ow, *ox),
                 (*suid, *sgid, *sticky),
                 *recursive,
-                *focus_index,
+                *allow_recursive,
+                *focus,
                 app.shadows,
             );
         }
@@ -600,7 +603,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             owner,
             group,
             recursive,
-            focus_index,
+            allow_recursive,
+            focus,
+            ..
         } => {
             draw_chown_dialog(
                 p,
@@ -610,9 +615,41 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 owner,
                 group,
                 *recursive,
-                *focus_index,
+                *allow_recursive,
+                *focus,
                 app.shadows,
             );
+        }
+        rmc_core::app::UiMode::LinkDialog {
+            kind, value, focus, ..
+        } => {
+            use rmc_core::app::LinkDialogFocus as F;
+            draw_input_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                kind.title(),
+                kind.prompt(),
+                value,
+                matches!(*focus, F::Ok),
+                app.shadows,
+            );
+            if matches!(*focus, F::Cancel | F::Name) {
+                let w = (cols as usize).min(66) as u16;
+                let h = 9u16;
+                let x = (cols - w) / 2;
+                let y = (rows - h) / 2;
+                p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+                let btns = if matches!(*focus, F::Cancel) {
+                    "[ OK ]  < Cancel >"
+                } else {
+                    "[ OK ]  [ Cancel ]"
+                };
+                let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+                p.goto(bx, y + h - 2);
+                p.text(btns);
+            }
         }
         rmc_core::app::UiMode::Menu {
             top_index,
@@ -5882,14 +5919,15 @@ fn draw_chmod_dialog(
     o: (bool, bool, bool),
     special: (bool, bool, bool), // suid, sgid, sticky
     recursive: bool,
-    focus_index: usize,
+    allow_recursive: bool,
+    focus: rmc_core::app::ChmodDialogFocus,
     show_shadow: bool,
 ) {
+    use rmc_core::app::ChmodDialogFocus as F;
     let w = (cols as usize).min(66) as u16;
     let h = 14u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    // Frame
     p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
@@ -5917,23 +5955,24 @@ fn draw_chmod_dialog(
     );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
-    // Title
     p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
-    let ttl = " Chmod command ";
+    let ttl = " Chmod ";
     let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
     p.goto(tx, y);
     p.text(ttl);
-    // Filename and octal
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 2);
     p.text(&truncate(&format!("File: {}", name), (w - 4) as usize));
     p.goto(x + 2, y + 3);
     p.text(&format!("Octal: {:04o}", mode & 0o7777));
-    // Checkboxes: user/group/other rwx
-    let labels = ["Read", "Write", "Exec"];
+    let labels = ["read", "write", "execute"];
     let groups = ["User", "Group", "Other"];
     let vals = [u, g, o];
-    let mut idx = 0usize;
+    let bit_focus = [
+        [F::UserRead, F::UserWrite, F::UserExec],
+        [F::GroupRead, F::GroupWrite, F::GroupExec],
+        [F::OtherRead, F::OtherWrite, F::OtherExec],
+    ];
     for (gi, gname) in groups.iter().enumerate() {
         p.goto(x + 2, y + 5 + gi as u16);
         p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -5944,7 +5983,7 @@ fn draw_chmod_dialog(
                 1 => vals[gi].1,
                 _ => vals[gi].2,
             };
-            let focused = focus_index == idx;
+            let focused = focus == bit_focus[gi][li];
             if focused {
                 p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
             } else {
@@ -5953,18 +5992,15 @@ fn draw_chmod_dialog(
             p.text(&format!("[{}] {}", if on { 'x' } else { ' ' }, lab));
             p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
             p.text("  ");
-            idx += 1;
         }
     }
-    // Special bits and recursive
     let specials = [
-        ("Set UID", special.0),
-        ("Set GID", special.1),
-        ("Sticky", special.2),
+        ("Set UID", special.0, F::SetUid),
+        ("Set GID", special.1, F::SetGid),
+        ("Sticky", special.2, F::Sticky),
     ];
-    for (i, (lab, on)) in specials.iter().enumerate() {
-        let focused = focus_index == (9 + i);
-        if focused {
+    for (i, (lab, on, f)) in specials.iter().enumerate() {
+        if *f == focus {
             p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
         } else {
             p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -5972,33 +6008,34 @@ fn draw_chmod_dialog(
         p.goto(x + 2 + (i as u16) * 20, y + 8);
         p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, lab));
     }
-    let focused_rec = focus_index == 12;
-    if focused_rec {
-        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
-    } else {
-        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    if allow_recursive {
+        if matches!(focus, F::Recursive) {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, y + 10);
+        p.text(&format!(
+            "[{}] {}",
+            if recursive { 'x' } else { ' ' },
+            "Recursive"
+        ));
     }
-    p.goto(x + 2, y + 10);
-    p.text(&format!(
-        "[{}] {}",
-        if recursive { 'x' } else { ' ' },
-        "Recursive"
-    ));
-    // Buttons
-    let ok_focus = focus_index == 13;
-    let cancel_focus = focus_index == 14;
-    let ok = if ok_focus { "< OK >" } else { "[ OK ]" };
-    let cancel = if cancel_focus {
+    let set = if matches!(focus, F::Set) {
+        "< Set >"
+    } else {
+        "[ Set ]"
+    };
+    let cancel = if matches!(focus, F::Cancel) {
         "< Cancel >"
     } else {
         "[ Cancel ]"
     };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let btns = format!("{ok}  {cancel}");
+    let btns = format!("{set}  {cancel}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);
-    // Shadow
     if show_shadow {
         p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
         p.hline(
@@ -6022,14 +6059,15 @@ fn draw_chown_dialog(
     owner: &str,
     group: &str,
     recursive: bool,
-    focus_index: usize,
+    allow_recursive: bool,
+    focus: rmc_core::app::ChownDialogFocus,
     show_shadow: bool,
 ) {
+    use rmc_core::app::ChownDialogFocus as F;
     let w = (cols as usize).min(66) as u16;
     let h = 10u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    // Frame
     p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
@@ -6057,17 +6095,15 @@ fn draw_chown_dialog(
     );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
-    // Title
     p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
     let ttl = " Chown ";
     let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
     p.goto(tx, y);
     p.text(ttl);
-    // Owner/group fields
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 2);
     p.text("Owner:");
-    let own_focus = focus_index == 0;
+    let own_focus = matches!(focus, F::Owner);
     p.set_fg_bg(
         if own_focus {
             pal.dfocus_fg
@@ -6086,7 +6122,7 @@ fn draw_chown_dialog(
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 3);
     p.text("Group:");
-    let grp_focus = focus_index == 1;
+    let grp_focus = matches!(focus, F::Group);
     p.set_fg_bg(
         if grp_focus {
             pal.dfocus_fg
@@ -6102,32 +6138,34 @@ fn draw_chown_dialog(
     p.goto(x + 10, y + 3);
     let gv = truncate(group, (w - 12) as usize);
     p.text(&format!("{gv}{}", " ".repeat((w - 12) as usize - gv.len())));
-    // Recursive
-    let rec_focus = focus_index == 2;
-    p.set_fg_bg(
-        if rec_focus {
-            pal.dfocus_fg
-        } else {
-            pal.dialog_default_fg
-        },
-        if rec_focus {
-            pal.dfocus_bg
-        } else {
-            pal.dialog_default_bg
-        },
-    );
-    p.goto(x + 2, y + 5);
-    p.text(&format!(
-        "[{}] {}",
-        if recursive { 'x' } else { ' ' },
-        "Recursive"
-    ));
-    // Buttons
-    let ok_focus = focus_index == 3;
-    let cancel_focus = focus_index == 4;
+    if allow_recursive {
+        let rec_focus = matches!(focus, F::Recursive);
+        p.set_fg_bg(
+            if rec_focus {
+                pal.dfocus_fg
+            } else {
+                pal.dialog_default_fg
+            },
+            if rec_focus {
+                pal.dfocus_bg
+            } else {
+                pal.dialog_default_bg
+            },
+        );
+        p.goto(x + 2, y + 5);
+        p.text(&format!(
+            "[{}] {}",
+            if recursive { 'x' } else { ' ' },
+            "Recursive"
+        ));
+    }
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let ok = if ok_focus { "< OK >" } else { "[ OK ]" };
-    let cancel = if cancel_focus {
+    let ok = if matches!(focus, F::Ok) {
+        "< OK >"
+    } else {
+        "[ OK ]"
+    };
+    let cancel = if matches!(focus, F::Cancel) {
         "< Cancel >"
     } else {
         "[ Cancel ]"
@@ -6136,7 +6174,6 @@ fn draw_chown_dialog(
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);
-    // Shadow
     if show_shadow {
         p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
         p.hline(
