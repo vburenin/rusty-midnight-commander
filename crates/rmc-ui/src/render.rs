@@ -223,6 +223,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::ConfirmationsDialog { draft, focus } => {
             draw_confirmations_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
         }
+        rmc_core::app::UiMode::ConfigurationDialog { draft, focus } => {
+            draw_configuration_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
+        }
         rmc_core::app::UiMode::PanelOptionsDialog { draft, focus } => {
             draw_panel_options_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
         }
@@ -807,6 +810,121 @@ fn draw_confirmations_dialog(
             F::DirectoryHotlist,
         ),
         ("History cleanup", draft.history_cleanup, F::HistoryCleanup),
+    ];
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for (i, (label, on, lf)) in items.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        if focus == *lf {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
+    }
+    // Buttons
+    let ok_sel = matches!(focus, F::Ok);
+    let cancel_sel = matches!(focus, F::Cancel);
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
+    let cancel_txt = if cancel_sel {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+fn draw_configuration_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    draft: &rmc_core::app::ConfigOptions,
+    focus: rmc_core::app::ConfigOptionsFocus,
+    show_shadow: bool,
+) {
+    let title = "Configuration";
+    // Width based on longest label; 10 options + 2 rows for buttons/title
+    let w = 60u16.min(cols.saturating_sub(2)).max(40);
+    let h = 16u16.min(rows.saturating_sub(2)).max(12);
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Options (checkboxes)
+    use rmc_core::app::ConfigOptionsFocus as F;
+    let items: [(&str, bool, F); 10] = [
+        ("Verbose operation", draft.verbose, F::Verbose),
+        ("Compute totals", draft.compute_totals, F::ComputeTotals),
+        (
+            "Classic progressbar",
+            draft.classic_progressbar,
+            F::ClassicProgressbar,
+        ),
+        (
+            "Use internal viewer",
+            draft.use_internal_view,
+            F::UseInternalViewer,
+        ),
+        (
+            "Use internal editor",
+            draft.use_internal_edit,
+            F::UseInternalEditor,
+        ),
+        ("Pause after run", draft.pause_after_run, F::PauseAfterRun),
+        ("Shell patterns", draft.shell_patterns, F::ShellPatterns),
+        ("Auto menus", draft.auto_menus, F::AutoMenus),
+        ("Drop down menus", draft.drop_menus, F::DropMenus),
+        ("Mkdir autoname", draft.mkdir_autoname, F::MkdirAutoname),
     ];
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     for (i, (label, on, lf)) in items.iter().enumerate() {
@@ -4158,6 +4276,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "External panelize",
         ],
         &[
+            "Configuration",
             "Layout",
             "Panels",
             "Confirmations",
