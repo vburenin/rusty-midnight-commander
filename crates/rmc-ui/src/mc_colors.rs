@@ -41,6 +41,10 @@ pub struct McPalette {
     pub archive_color: Color,
     pub source_color: Color,
     pub symlink_color: Color,
+    /// Viewer selection (GNU default.ini `[viewer] selected=yellow;cyan`).
+    /// Distinct from panel `selected` (black;cyan).
+    pub viewer_selected_fg: Color,
+    pub viewer_selected_bg: Color,
 }
 
 impl McPalette {
@@ -83,6 +87,8 @@ impl McPalette {
             archive_color: Color::Magenta, // brightmagenta approximation
             source_color: Color::Cyan,
             symlink_color: Color::Grey,
+            viewer_selected_fg: Color::Yellow,
+            viewer_selected_bg: Color::Cyan,
         }
     }
 }

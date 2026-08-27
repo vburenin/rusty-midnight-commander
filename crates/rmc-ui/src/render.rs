@@ -93,6 +93,11 @@ impl Renderer {
             offset,
             show_line_numbers,
             show_cr,
+            format_nroff,
+            parsed,
+            sel_anchor,
+            sel_cursor,
+            viewer_menu,
             search_dialog,
             display_dialog,
             status_msg,
@@ -111,6 +116,11 @@ impl Renderer {
                 *offset,
                 *show_line_numbers,
                 *show_cr,
+                *format_nroff,
+                *parsed,
+                *sel_anchor,
+                *sel_cursor,
+                *viewer_menu,
                 search_dialog.as_deref(),
                 display_dialog.as_deref(),
                 status_msg.as_deref(),
@@ -3039,6 +3049,11 @@ fn draw_viewer(
     offset: u64,
     show_line_numbers: bool,
     show_cr: bool,
+    format_nroff: bool,
+    parsed: bool,
+    sel_anchor: Option<u64>,
+    sel_cursor: u64,
+    viewer_menu: Option<rmc_core::app::ViewerMenu>,
     search_dialog: Option<&rmc_core::app::ViewerSearchDialog>,
     display_dialog: Option<&rmc_core::app::ViewerDisplayDialog>,
     status_msg: Option<&str>,
@@ -3110,7 +3125,12 @@ fn draw_viewer(
     let content_path = crate::terminal::viewer_ensure_view_for(display_path);
     let rr = rmc_view::render_window(
         &content_path,
-        rmc_view::ViewOptions { hex, wrap, show_cr },
+        rmc_view::ViewOptions {
+            hex,
+            wrap,
+            show_cr,
+            format: format_nroff,
+        },
         offset,
         content_cols, // content width inside frame
         content_rows,
@@ -3122,6 +3142,13 @@ fn draw_viewer(
             start_ln = n;
         }
     }
+    let sel_range = sel_anchor.map(|a| {
+        if a <= sel_cursor {
+            (a, sel_cursor)
+        } else {
+            (sel_cursor, a)
+        }
+    });
     for (i, line) in rr.lines.into_iter().enumerate() {
         let row_y = 1 + i as u16;
         p.goto(1, row_y);
@@ -3130,10 +3157,16 @@ fn draw_viewer(
             p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
             let label = format!("{:>6} ", start_ln + i as u64);
             p.text(&label);
-            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
             p.goto(1 + ln_gutter, row_y);
         }
         let t = truncate(&line, content_cols as usize);
+        let line_sel = sel_range
+            .zip(rr.line_byte_ranges.get(i).copied())
+            .is_some_and(|((sel_lo, sel_hi), (line_lo, line_hi))| {
+                sel_lo < sel_hi && sel_lo < line_hi && sel_hi > line_lo
+            });
+        let (fg, bg) = viewer_line_style(line_sel, pal);
+        p.set_fg_bg(fg, bg);
         p.text(&t);
         if (1 + i as u16) >= rows.saturating_sub(2) {
             break;
@@ -3167,15 +3200,27 @@ fn draw_viewer(
     }
     let st = truncate(&status, cols as usize);
     p.text(&st);
-    // Viewer F-bar (white-on-black numbers, black-on-cyan labels)
-    draw_viewer_fbar(p, rows.saturating_sub(1), cols, pal);
+    // Viewer F-bar (GNU mcview 10-key: Help / Wrap / Quit / Hex / Goto / … / Quit)
+    draw_viewer_fbar(
+        p,
+        rows.saturating_sub(1),
+        cols,
+        pal,
+        wrap,
+        hex,
+        parsed,
+        format_nroff,
+    );
     // GNU mcview F7 Search dialog (same chrome as mcedit Search)
     if let Some(dlg) = search_dialog {
         draw_editor_search_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
-    // mcview display-options dialog (F9 Menu; same chrome as Search)
+    // mcview display-options dialog (Options → Display options; same chrome as Search)
     if let Some(dlg) = display_dialog {
         draw_viewer_display_dialog(p, cols, rows, pal, dlg, show_shadow);
+    }
+    if let Some(menu) = viewer_menu {
+        draw_viewer_menu(p, cols, pal, menu);
     }
     // Goto prompt overlay (MC-style input dialog)
     if let Some(current) = goto_prompt {
@@ -3287,6 +3332,7 @@ fn draw_panel(
                                 hex: false,
                                 wrap: true,
                                 show_cr: false,
+                                format: false,
                             },
                             0,
                             w.saturating_sub(2),
@@ -3897,11 +3943,19 @@ fn draw_help_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
 }
-fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    // MC-like order: Help, Save, Quit, Hex, Goto, (Raw), Search, Wrap, Menu, Quit
-    let labels = [
-        "Help", "Save", "Quit", "Hex", "Goto", "Raw", "Search", "Wrap", "Menu", "Quit",
-    ];
+
+#[allow(clippy::too_many_arguments)]
+fn draw_viewer_fbar(
+    p: &mut Painter,
+    y: u16,
+    cols: u16,
+    pal: McPalette,
+    wrap: bool,
+    hex: bool,
+    parsed: bool,
+    format: bool,
+) {
+    let labels = viewer_fbar_labels(wrap, hex, parsed, format);
     let mut x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num = if i == 9 { "10" } else { &(i + 1).to_string() };
@@ -3928,6 +3982,130 @@ fn draw_viewer_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.goto(x, y);
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
+}
+
+/// GNU mcview 10-key bar. Button text is the mode you *enter* (mc(1): F8 Raw/Parsed,
+/// F9 format/unformat). Public labels: Help, Wrap/UnWrap, Quit, Hex/Ascii, Goto,
+/// Search, Parse/Raw, Format/Unform, Quit.
+pub(crate) fn viewer_fbar_labels(
+    wrap: bool,
+    hex: bool,
+    parsed: bool,
+    format: bool,
+) -> [&'static str; 10] {
+    [
+        "Help",
+        if wrap { "UnWrap" } else { "Wrap" },
+        "Quit",
+        if hex { "Ascii" } else { "Hex" },
+        "Goto",
+        "",
+        "Search",
+        if parsed { "Raw" } else { "Parse" },
+        if format { "Unform" } else { "Format" },
+        "Quit",
+    ]
+}
+
+/// Viewer selection uses `[viewer] selected` (yellow;cyan), not panel `selected`
+/// (black;cyan).
+pub(crate) fn viewer_line_style(selected: bool, pal: McPalette) -> (Color, Color) {
+    if selected {
+        (pal.viewer_selected_fg, pal.viewer_selected_bg)
+    } else {
+        (pal.core_default_fg, pal.core_default_bg)
+    }
+}
+
+/// Hit-test GNU viewer menu titles on the top line: File / Command / Options.
+pub(crate) fn viewer_menu_from_x(x: u16) -> rmc_core::app::ViewerMenu {
+    // Packed: " File  Command  Options "
+    if x < 6 {
+        rmc_core::app::ViewerMenu::File { selected: 0 }
+    } else if x < 16 {
+        rmc_core::app::ViewerMenu::Command { selected: 0 }
+    } else {
+        rmc_core::app::ViewerMenu::Options { selected: 0 }
+    }
+}
+
+fn draw_viewer_menu(p: &mut Painter, cols: u16, pal: McPalette, menu: rmc_core::app::ViewerMenu) {
+    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+    p.goto(0, 0);
+    let titles = [" File ", " Command ", " Options "];
+    let mut x = 0u16;
+    for (i, t) in titles.iter().enumerate() {
+        let active = matches!(
+            (i, menu),
+            (0, rmc_core::app::ViewerMenu::File { .. })
+                | (1, rmc_core::app::ViewerMenu::Command { .. })
+                | (2, rmc_core::app::ViewerMenu::Options { .. })
+        );
+        if active {
+            p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
+        } else {
+            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        }
+        p.goto(x, 0);
+        p.text(t);
+        x += t.len() as u16;
+    }
+    if x < cols {
+        p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        p.goto(x, 0);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
+    let items = menu.items();
+    let drop_x = match menu {
+        rmc_core::app::ViewerMenu::File { .. } => 0,
+        rmc_core::app::ViewerMenu::Command { .. } => 6,
+        rmc_core::app::ViewerMenu::Options { .. } => 16,
+    };
+    let w = (items.iter().map(|s| s.len()).max().unwrap_or(4) + 4) as u16;
+    let h = items.len() as u16 + 2;
+    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+    p.goto(drop_x, 1);
+    p.text("┌");
+    p.hline(
+        drop_x + 1,
+        1,
+        w.saturating_sub(2),
+        '─',
+        pal.menu_fg,
+        pal.menu_bg,
+    );
+    p.goto(drop_x + w.saturating_sub(1), 1);
+    p.text("┐");
+    for (i, item) in items.iter().enumerate() {
+        let y = 2 + i as u16;
+        if i == menu.selected() {
+            p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
+        } else {
+            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        }
+        p.goto(drop_x, y);
+        p.text("│");
+        p.text(&format!(" {item} "));
+        let pad = w.saturating_sub(3 + item.len() as u16);
+        if pad > 0 {
+            p.text(&" ".repeat(pad as usize));
+        }
+        p.goto(drop_x + w.saturating_sub(1), y);
+        p.text("│");
+    }
+    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+    p.goto(drop_x, 1 + h - 1);
+    p.text("└");
+    p.hline(
+        drop_x + 1,
+        1 + h - 1,
+        w.saturating_sub(2),
+        '─',
+        pal.menu_fg,
+        pal.menu_bg,
+    );
+    p.goto(drop_x + w.saturating_sub(1), 1 + h - 1);
+    p.text("┘");
 }
 
 fn draw_subshell_fullscreen(
@@ -5695,5 +5873,44 @@ fn draw_listing_mode_dialog(
             pal.shadow_bg,
         );
         p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+#[cfg(test)]
+mod viewer_fbar_and_selection_style_tests {
+    use super::{viewer_fbar_labels, viewer_line_style};
+    use crate::mc_colors::McPalette;
+    use crossterm::style::Color;
+
+    #[test]
+    fn gnu_mcview_fbar_labels_default_text_mode() {
+        assert_eq!(
+            viewer_fbar_labels(false, false, true, false),
+            ["Help", "Wrap", "Quit", "Hex", "Goto", "", "Search", "Raw", "Format", "Quit"]
+        );
+    }
+
+    #[test]
+    fn gnu_mcview_fbar_labels_toggle_modes() {
+        assert_eq!(viewer_fbar_labels(true, false, true, false)[1], "UnWrap");
+        assert_eq!(viewer_fbar_labels(false, true, true, false)[3], "Ascii");
+        assert_eq!(viewer_fbar_labels(false, false, false, false)[7], "Parse");
+        assert_eq!(viewer_fbar_labels(false, false, true, true)[8], "Unform");
+    }
+
+    #[test]
+    fn viewer_selected_is_yellow_on_cyan_not_panel_bar() {
+        let pal = McPalette::default();
+        assert_eq!(pal.selected_fg, Color::Black);
+        assert_eq!(pal.selected_bg, Color::Cyan);
+        assert_eq!(pal.viewer_selected_fg, Color::Yellow);
+        assert_eq!(pal.viewer_selected_bg, Color::Cyan);
+        let (fg, bg) = viewer_line_style(true, pal);
+        assert_eq!(fg, Color::Yellow);
+        assert_eq!(bg, Color::Cyan);
+        assert_ne!(fg, pal.selected_fg);
+        let (nfg, nbg) = viewer_line_style(false, pal);
+        assert_eq!(nfg, pal.core_default_fg);
+        assert_eq!(nbg, pal.core_default_bg);
     }
 }

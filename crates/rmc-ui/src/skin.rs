@@ -50,6 +50,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
         ButtonBar,
         StatusBar,
         FileHighlight,
+        Viewer,
     }
     let mut section = Section::None;
     let mut pal = McPalette::default();
@@ -68,6 +69,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
                 "buttonbar" => Section::ButtonBar,
                 "statusbar" => Section::StatusBar,
                 "filehighlight" => Section::FileHighlight,
+                "viewer" => Section::Viewer,
                 // Back-compat with early RMC prototype
                 "pairs" => Section::Core,
                 _ => Section::None,
@@ -96,6 +98,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
                     _ => {}
                 }
             }
+            Section::Viewer => assign_pair(&mut pal, "viewer", k, v, lineno + 1)?,
             Section::None => {
                 // ignore top-level assignments
             }
@@ -201,6 +204,11 @@ fn assign_pair(
             pal.statusbar_bg = bg;
         }
         "statusbar" => {}
+        "viewer" if k.as_str() == "selected" => {
+            pal.viewer_selected_fg = fg;
+            pal.viewer_selected_bg = bg;
+        }
+        "viewer" => {}
         _ => {}
     }
     Ok(())
@@ -307,6 +315,9 @@ mod tests {
         assert_eq!(pal.menusel_bg, Color::Black);
         assert_eq!(pal.dir_color, Color::White);
         assert_eq!(pal.exec_color, Color::Green);
+        assert_eq!(pal.viewer_selected_fg, Color::Yellow);
+        assert_eq!(pal.viewer_selected_bg, Color::Cyan);
+        assert_ne!(pal.viewer_selected_fg, pal.selected_fg);
     }
 
     fn section_keys(text: &str) -> Vec<(String, String)> {

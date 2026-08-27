@@ -26,11 +26,15 @@ pub struct ViewOptions {
     pub wrap: bool,
     /// When true, visualize carriage return at EOL as ^M (CRLF files)
     pub show_cr: bool,
+    /// GNU mcview format/unformat: interpret nroff overstrike (`c\\x08c`, `_\\x08c`).
+    pub format: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct RenderResult {
     pub lines: Vec<String>,
+    /// File byte range `[start, end)` for each visual line (selection highlight).
+    pub line_byte_ranges: Vec<(u64, u64)>,
     /// Normalized offset used for this render (may be shifted to a sane boundary)
     pub offset: u64,
     pub eof: bool,
@@ -276,6 +280,7 @@ pub fn render_window(
     if len == 0 {
         return Ok(RenderResult {
             lines: vec![],
+            line_byte_ranges: vec![],
             offset: 0,
             eof: true,
             next_screen_offset: 0,
@@ -286,7 +291,15 @@ pub fn render_window(
     if opts.hex {
         render_hex(&mut f, offset, cols, rows)
     } else {
-        render_text(&mut f, offset, cols, rows, opts.wrap, opts.show_cr)
+        render_text(
+            &mut f,
+            offset,
+            cols,
+            rows,
+            opts.wrap,
+            opts.show_cr,
+            opts.format,
+        )
     }
 }
 
@@ -318,8 +331,14 @@ fn render_hex(f: &mut File, offset: u64, _cols: u16, rows: u16) -> Result<Render
     }
     let eof = offset.saturating_add(read as u64) >= f.metadata()?.len();
     let next_screen_offset = offset.saturating_add((16 * lines.len()) as u64);
+    let mut line_byte_ranges = Vec::with_capacity(lines.len());
+    for (i, chunk) in buf.chunks(16).enumerate() {
+        let start = offset.saturating_add((i * 16) as u64);
+        line_byte_ranges.push((start, start.saturating_add(chunk.len() as u64)));
+    }
     Ok(RenderResult {
         lines,
+        line_byte_ranges,
         offset,
         eof,
         next_screen_offset,
@@ -333,11 +352,13 @@ fn render_text(
     rows: u16,
     wrap: bool,
     show_cr: bool,
+    format: bool,
 ) -> Result<RenderResult> {
     let len = f.metadata()?.len();
     if len == 0 {
         return Ok(RenderResult {
             lines: vec![],
+            line_byte_ranges: vec![],
             offset: 0,
             eof: true,
             next_screen_offset: 0,
@@ -353,13 +374,21 @@ fn render_text(
     // Find a reasonable line start at/before rel_off
     let line_start = find_prev_line_start(&buf, rel_off);
     let mut visual_lines = Vec::new();
+    let mut line_byte_ranges = Vec::new();
     let mut i = line_start;
     while i < buf.len() && (visual_lines.len() as u16) < rows {
         // Extract one physical line
         let line_end = find_line_end(&buf, i);
         let slice = &buf[i..line_end];
+        let phys_start = start + i as u64;
+        let phys_end = start + line_end as u64;
         // Lossy decode to avoid panics on binary
-        let mut line = String::from_utf8_lossy(slice).to_string();
+        let decoded = if format {
+            String::from_utf8_lossy(&apply_nroff_overstrike(slice)).to_string()
+        } else {
+            String::from_utf8_lossy(slice).to_string()
+        };
+        let mut line = decoded;
         // If requested, show CR as ^M at EOL when present.
         // Detect robustly around CRLF or lone CR:
         // - If current newline marker is '\r' (line_end points at CR) -> show ^M
@@ -372,9 +401,14 @@ fn render_text(
         }
         // Render with wrapping if enabled
         if wrap {
+            let before = visual_lines.len();
             wrap_line(&line, cols as usize, &mut visual_lines);
+            for _ in before..visual_lines.len() {
+                line_byte_ranges.push((phys_start, phys_end));
+            }
         } else {
             visual_lines.push(truncate_line(&line, cols as usize));
+            line_byte_ranges.push((phys_start, phys_end));
         }
         // Skip newline characters (\r?\n)
         i = next_line_start(&buf, line_end);
@@ -389,10 +423,35 @@ fn render_text(
     let normalized_offset = start + line_start as u64;
     Ok(RenderResult {
         lines: visual_lines,
+        line_byte_ranges,
         offset: normalized_offset,
         eof,
         next_screen_offset,
     })
+}
+
+/// GNU mcview format mode: nroff overstrike. `c\\x08c` is bold, `_\\x08c` / `c\\x08_`
+/// is underline. Public mc(1): format interprets those sequences with colors.
+fn apply_nroff_overstrike(buf: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.len());
+    let mut i = 0;
+    while i < buf.len() {
+        if i + 2 < buf.len() && buf[i + 1] == 0x08 {
+            let a = buf[i];
+            let b = buf[i + 2];
+            let glyph = if a == b'_' { b } else { a };
+            out.push(glyph);
+            i += 3;
+            continue;
+        }
+        if buf[i] == 0x08 {
+            i += 1;
+            continue;
+        }
+        out.push(buf[i]);
+        i += 1;
+    }
+    out
 }
 
 /// Return the byte offset at the start of the given 1-based line number.
@@ -596,6 +655,7 @@ pub fn nav_page_down(path: &Path, offset: u64, cols: u16, rows: u16, wrap: bool)
             hex: false,
             wrap,
             show_cr: false,
+            format: false,
         },
         offset,
         cols,
@@ -619,6 +679,7 @@ pub fn nav_page_up(path: &Path, offset: u64, cols: u16, rows: u16, wrap: bool) -
             hex: false,
             wrap,
             show_cr: false,
+            format: false,
         },
         start,
         cols,
@@ -637,6 +698,7 @@ pub fn nav_page_up(path: &Path, offset: u64, cols: u16, rows: u16, wrap: bool) -
                 hex: false,
                 wrap,
                 show_cr: false,
+                format: false,
             },
             cur,
             cols,
@@ -672,6 +734,7 @@ pub fn nav_end(path: &Path, cols: u16, rows: u16, wrap: bool) -> Result<u64> {
                 hex: false,
                 wrap,
                 show_cr: false,
+                format: false,
             },
             cur,
             cols,
@@ -1061,6 +1124,7 @@ mod tests {
                 hex: true,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             80,
@@ -1084,6 +1148,7 @@ mod tests {
                 hex: false,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             10,
@@ -1096,6 +1161,7 @@ mod tests {
                 hex: false,
                 wrap: true,
                 show_cr: false,
+                format: false,
             },
             0,
             10,
@@ -1103,6 +1169,43 @@ mod tests {
         )
         .unwrap();
         assert!(r_wrap.lines.len() >= r_nowrap.lines.len());
+    }
+
+    #[test]
+    fn format_mode_strips_nroff_overstrike() {
+        let mut f = NamedTempFile::new().unwrap();
+        // nroff bold "Hi": H\x08H i\x08i
+        f.write_all(b"H\x08Hi\x08i\n").unwrap();
+        let path = f.path().to_path_buf();
+        let raw = render_window(
+            &path,
+            ViewOptions {
+                hex: false,
+                wrap: false,
+                show_cr: false,
+                format: false,
+            },
+            0,
+            80,
+            5,
+        )
+        .unwrap();
+        assert!(raw.lines[0].contains('\u{8}') || raw.lines[0].len() > 2);
+        let fmt = render_window(
+            &path,
+            ViewOptions {
+                hex: false,
+                wrap: false,
+                show_cr: false,
+                format: true,
+            },
+            0,
+            80,
+            5,
+        )
+        .unwrap();
+        assert_eq!(fmt.lines[0], "Hi");
+        assert_eq!(fmt.line_byte_ranges[0], (0, 6));
     }
 
     #[test]
@@ -1251,6 +1354,7 @@ mod tests {
                 hex: false,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             80,
@@ -1278,6 +1382,7 @@ mod tests {
                 hex: false,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             80,
@@ -1327,6 +1432,7 @@ mod tests {
                 hex: false,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             80,
@@ -1344,6 +1450,7 @@ mod tests {
                 hex: true,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             80,
@@ -1408,6 +1515,7 @@ mod tests {
                 hex: false,
                 wrap: false,
                 show_cr: false,
+                format: false,
             },
             0,
             80,

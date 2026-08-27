@@ -312,9 +312,19 @@ pub enum UiMode {
         goto_prompt: Option<String>,
         show_line_numbers: bool,
         show_cr: bool,
+        /// GNU mcview F9 format/unformat (nroff overstrike). Off = unformat.
+        format_nroff: bool,
+        /// GNU mcview F8 Parsed vs Raw. True shows mc.ext `[view]` filter output.
+        parsed: bool,
+        /// Selection anchor byte offset (None = no highlight). Cursor is `sel_cursor`.
+        sel_anchor: Option<u64>,
+        /// Selection/cursor byte offset (Shift+arrows extend from `sel_anchor`).
+        sel_cursor: u64,
+        /// Viewer File/Command/Options pull-down (GNU: click the topmost line).
+        viewer_menu: Option<ViewerMenu>,
         /// GNU mcview F7 Search dialog (None while viewing).
         search_dialog: Option<Box<ViewerSearchDialog>>,
-        /// Viewer display-options dialog (F9 Menu). None while viewing.
+        /// Viewer display-options dialog (Options → Display options). None while viewing.
         display_dialog: Option<Box<ViewerDisplayDialog>>,
         /// Last Search-dialog flags, used by n / F17.
         search_case_sensitive: bool,
@@ -617,7 +627,44 @@ pub type ViewerSearchDialog = EditorSearchDialog;
 /// Focus order matches editor Search: field → four checkboxes → OK → Cancel.
 pub type ViewerSearchFocus = EditorSearchFocus;
 
-/// Focus within the mcview display-options dialog (F9 Menu).
+/// GNU mcview top-line menus (File / Command / Options). Opened by clicking
+/// the topmost line — the same path mc(1) documents for the menu bar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewerMenu {
+    File { selected: usize },
+    Command { selected: usize },
+    Options { selected: usize },
+}
+
+impl ViewerMenu {
+    pub fn selected(self) -> usize {
+        match self {
+            Self::File { selected } | Self::Command { selected } | Self::Options { selected } => {
+                selected
+            }
+        }
+    }
+
+    pub fn with_selected(self, selected: usize) -> Self {
+        match self {
+            Self::File { .. } => Self::File { selected },
+            Self::Command { .. } => Self::Command { selected },
+            Self::Options { .. } => Self::Options { selected },
+        }
+    }
+
+    /// Item labels for the dropped menu. Options contains Display options
+    /// (GNU mcview Options menu — F9 itself is format/unformat).
+    pub fn items(self) -> &'static [&'static str] {
+        match self {
+            Self::File { .. } => &["Quit"],
+            Self::Command { .. } => &["Search"],
+            Self::Options { .. } => &["Display options"],
+        }
+    }
+}
+
+/// Focus within the mcview display-options dialog (Options → Display options).
 /// Checkboxes first, then OK / Cancel — same cycle as Search.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum ViewerDisplayFocus {
@@ -1263,24 +1310,7 @@ impl App {
             ViewFile => {
                 if let Some(ent) = self.active_panel().current_entry() {
                     if !ent.is_dir {
-                        self.ui_mode = UiMode::Viewer {
-                            path: ent.path.clone(),
-                            hex: false,
-                            wrap: false,
-                            offset: 0,
-                            search: None,
-                            search_prompt: None,
-                            goto_prompt: None,
-                            show_line_numbers: false,
-                            show_cr: false,
-                            search_dialog: None,
-                            display_dialog: None,
-                            search_case_sensitive: false,
-                            search_backwards: false,
-                            search_whole_words: false,
-                            search_regexp: false,
-                            status_msg: None,
-                        };
+                        self.ui_mode = UiMode::new_viewer(ent.path.clone());
                     }
                 }
             }
@@ -1371,6 +1401,35 @@ impl App {
             } else {
                 panel.selection.unselect(idx);
             }
+        }
+    }
+}
+
+impl UiMode {
+    /// Internal viewer with GNU mcview defaults (parsed on, format off, no selection).
+    pub fn new_viewer(path: PathBuf) -> Self {
+        UiMode::Viewer {
+            path,
+            hex: false,
+            wrap: false,
+            offset: 0,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            show_line_numbers: false,
+            show_cr: false,
+            format_nroff: false,
+            parsed: true,
+            sel_anchor: None,
+            sel_cursor: 0,
+            viewer_menu: None,
+            search_dialog: None,
+            display_dialog: None,
+            search_case_sensitive: false,
+            search_backwards: false,
+            search_whole_words: false,
+            search_regexp: false,
+            status_msg: None,
         }
     }
 }
