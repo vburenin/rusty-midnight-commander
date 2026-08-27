@@ -164,7 +164,7 @@ pub trait Vfs: Send {
 pub mod arfs;
 pub mod composite;
 pub mod copy_local;
-pub use copy_local::CopyFlags;
+pub use copy_local::{apply_dive_into_subdir, CopyFlags};
 pub mod cpiofs;
 pub mod debfs;
 pub mod dir_cache;

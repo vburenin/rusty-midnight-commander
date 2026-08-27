@@ -227,6 +227,7 @@ impl ConfigOptions {
         rmc_fs::CopyFlags {
             preallocate_space: self.preallocate_space,
             use_cow_file_cloning: self.use_cow_file_cloning,
+            ..rmc_fs::CopyFlags::default()
         }
     }
 }
@@ -1498,6 +1499,10 @@ pub struct App {
     /// GNU replace-dialog "Don't overwrite with zero length file" for the
     /// current Copy/Move (`file_op_context`). Reset when F5/F6 opens a new dialog.
     pub dont_overwrite_with_zero: bool,
+    /// Copy/Move dialog flags for the current operation (Follow links, Preserve
+    /// attributes, Dive into subdir, Stable symlinks, plus Configuration
+    /// Preallocate/COW). Used by OK, Background, and the overwrite path.
+    pub copy_op_flags: rmc_fs::CopyFlags,
     /// Selected skin name (e.g., "default")
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
@@ -1552,6 +1557,7 @@ impl App {
             completion_home: None,
             select_group_last: None,
             dont_overwrite_with_zero: false,
+            copy_op_flags: rmc_fs::CopyFlags::default(),
         };
         // Overlay user setup (if available) over defaults, then refresh panels.
         let _ = crate::config::load_user_setup(&mut app);
@@ -2648,15 +2654,14 @@ impl App {
             &dst,
             &self.config_opts,
         )?;
+        let mut flags = self.config_opts.copy_flags();
+        flags.follow_links = self.copy_op_flags.follow_links;
+        flags.preserve_attrs = self.copy_op_flags.preserve_attrs;
+        flags.dive_into_subdir = self.copy_op_flags.dive_into_subdir;
+        flags.stable_symlinks = self.copy_op_flags.stable_symlinks;
         let job_id = match op {
-            CopyMoveOp::Copy => {
-                self.jobs
-                    .spawn_copy_with_flags(&src, &dst, self.config_opts.copy_flags())
-            }
-            CopyMoveOp::Move => {
-                self.jobs
-                    .spawn_move_with_flags(&src, &dst, self.config_opts.copy_flags())
-            }
+            CopyMoveOp::Copy => self.jobs.spawn_copy_with_flags(&src, &dst, flags),
+            CopyMoveOp::Move => self.jobs.spawn_move_with_flags(&src, &dst, flags),
         };
         self.ui_mode = UiMode::FileOpProgress {
             op,
