@@ -61,6 +61,11 @@ impl ListingFormat {
     }
 }
 
+/// Default User listing format (Listing Format dialog prefills this; Alt-t User
+/// reuses it when the panel has no configured string). GNU-ish subset; `half`
+/// is ignored by the parser. Do not invent a second field language.
+pub const DEFAULT_USER_LISTING_FORMAT: &str = "half type name | size | perm";
+
 /// GNU brief listing packs names into 1–9 side-by-side columns (mc(1) default is 2).
 pub const BRIEF_COLUMNS_DEFAULT: u8 = 2;
 pub const BRIEF_COLUMNS_MAX: u8 = 9;
@@ -275,8 +280,7 @@ impl PanelState {
             sort_dir: SortDir::Asc,
             dirs_first: true,
             listing: ListingFormat::Full,
-            // GNU-ish default; `half` is ignored by the subset parser.
-            user_format: "half type name | size | perm".to_string(),
+            user_format: DEFAULT_USER_LISTING_FORMAT.to_string(),
             brief_columns: BRIEF_COLUMNS_DEFAULT,
             selection: Selection::default(),
             panelized: None,

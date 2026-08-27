@@ -205,7 +205,7 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
             Sort(SortBy::Name),
         );
-        // Alt-t cycles listing format per MC
+        // GNU mc(1) Alt-t: cycle listing format Full → Brief → Long → User → Full
         m.bind(
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
             Action::CycleListingFormat,
@@ -760,6 +760,10 @@ mod tests {
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT)),
             Some(Action::PanelJumpBottom)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+            Some(Action::CycleListingFormat)
         ));
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),

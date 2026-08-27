@@ -73,7 +73,7 @@ Directory panels (selection, navigation, layout):
 - [ ] Up/Down, PageUp/PageDown, Home/End movement
 - [x] Insert / C-t: toggle mark; “Mark moves down” option
 - [x] Alt-g / Alt-r / Alt-j: jump to top/middle/bottom item
-- [ ] Alt-t: cycle listing format (Brief/Long/User/Full)
+- [x] Alt-t: cycle listing format (Brief/Long/User/Full)
 - [x] C-\\ (Ctrl-Backslash): Directory hotlist dialog
 - [x] ‘+’ Select group; ‘\\’ Unselect group; ‘*’ Invert selection
 - [x] Quick search: C-s / Alt-s starts; C-s repeats; wildcards * ?

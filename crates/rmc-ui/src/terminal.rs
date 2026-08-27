@@ -3209,12 +3209,17 @@ impl TerminalApp {
                     }
                     // GNU mc(1) Alt-g/r/j go to the directory panel, not the input line.
                     // Tab / C-i still switch panels (not completion; Alt-Tab is completion).
+                    // Alt-t cycles listing format (not an Emacs input-line key).
                     if let Some(action) = app.keymap.resolve(&key) {
                         if apply_panel_visible_jump(app, &action, page_rows) {
                             return Ok(());
                         }
                         if matches!(action, Action::SwitchPanel) {
                             app.handle_action(Action::SwitchPanel)?;
+                            return Ok(());
+                        }
+                        if matches!(action, Action::CycleListingFormat) {
+                            app.cycle_listing_format_by(page_rows);
                             return Ok(());
                         }
                     }
@@ -7620,6 +7625,9 @@ impl TerminalApp {
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::PanelJumpTop | Action::PanelJumpMiddle | Action::PanelJumpBottom => {
                     apply_panel_visible_jump(app, &action, page_rows);
+                }
+                Action::CycleListingFormat => {
+                    app.cycle_listing_format_by(page_rows);
                 }
                 Action::ToggleSubshell => {
                     app.handle_action(Action::ToggleSubshell)?;
@@ -24699,6 +24707,257 @@ mod panel_switch_tests {
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.active, PaneSide::Left);
         assert!(app.layout.horizontal_split);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod listing_format_cycle_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{ListingFormat, DEFAULT_USER_LISTING_FORMAT};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-alt-t-cycle-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn make_split_app(left: &std::path::Path, right: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(left).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(right).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::ALT, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn press_alt_tab(app: &mut App) {
+        press_rows(app, KeyCode::Tab, KeyModifiers::ALT, 10);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn keymap_binds_alt_t_to_cycle_listing_format() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+            Some(Action::CycleListingFormat)
+        ));
+        assert!(
+            !matches!(
+                km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+                Some(Action::CycleListingFormat)
+            ),
+            "C-t must stay ToggleSelect, not CycleListingFormat"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
+        let file_km = KeyMap::load_from_file(&path).expect("load data/mc.keymap");
+        assert!(matches!(
+            file_km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+            Some(Action::CycleListingFormat)
+        ));
+    }
+
+    #[test]
+    fn alt_t_cycles_full_brief_long_user_on_active_panel_only() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        let want = [
+            ListingFormat::Brief,
+            ListingFormat::Long,
+            ListingFormat::User,
+            ListingFormat::Full,
+        ];
+        for next in want {
+            press_alt(&mut app, 't');
+            assert_eq!(app.left.listing, next);
+            assert_eq!(
+                app.right.listing,
+                ListingFormat::Full,
+                "inactive panel listing must stay Full"
+            );
+            assert!(matches!(app.ui_mode, UiMode::Normal));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_t_cycles_right_panel_and_survives_tab_switch() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("l.txt"), b"L").unwrap();
+        std::fs::write(right.join("r.txt"), b"R").unwrap();
+        let mut app = make_split_app(&left, &right);
+
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press_alt(&mut app, 't');
+        assert_eq!(app.right.listing, ListingFormat::Brief);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.right.listing, ListingFormat::Brief);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_t_on_horizontal_split_cycles_active_above_below() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        app.layout.horizontal_split = true;
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        press(&mut app, KeyCode::Tab);
+        press_alt(&mut app, 't');
+        assert_eq!(app.right.listing, ListingFormat::Brief);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert!(app.layout.horizontal_split);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_t_empty_user_format_enters_user_with_dialog_default() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        app.left.user_format.clear();
+        app.left.listing = ListingFormat::Long;
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::User);
+        assert_eq!(app.left.user_format, DEFAULT_USER_LISTING_FORMAT);
+        assert_eq!(app.right.user_format, DEFAULT_USER_LISTING_FORMAT);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_alt_t_tab_insert_c_t_alt_tab_alt_g_still_work() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"z").unwrap();
+        std::fs::write(root.join("notes.txt"), b"n").unwrap();
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right, "Tab still switches panels");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+
+        press_ctrl(&mut app, 'i');
+        assert_eq!(app.active, PaneSide::Right, "C-i still switches panels");
+        press_ctrl(&mut app, 'i');
+        assert_eq!(app.active, PaneSide::Left);
+
+        let idx = app
+            .left
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt")
+            .expect("notes.txt");
+        app.left.cursor = idx;
+        press(&mut app, KeyCode::Insert);
+        assert!(app.left.selection.is_selected(idx), "Insert still marks");
+        press_ctrl(&mut app, 't');
+        assert!(
+            !app.left.selection.is_selected(idx),
+            "C-t still toggles mark, not listing format"
+        );
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+
+        type_str(&mut app, "echo ");
+        press_alt_tab(&mut app);
+        assert!(
+            matches!(app.ui_mode, UiMode::CompletionList { .. })
+                || app.subshell.cmdline.starts_with("echo"),
+            "Alt-Tab must stay completion"
+        );
+        if matches!(app.ui_mode, UiMode::CompletionList { .. }) {
+            press(&mut app, KeyCode::Esc);
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press_alt(&mut app, 'g');
+        assert_eq!(app.active_panel().cursor, 0);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_t_from_shell_input_still_cycles_panel() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "ls");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        assert_eq!(
+            app.subshell.cmdline, "ls",
+            "Alt-t is not an Emacs cmdline key"
+        );
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
