@@ -589,7 +589,11 @@ fn draw_confirmations_dialog(
         ("Overwrite", draft.overwrite, F::Overwrite),
         ("Execute", draft.execute, F::Execute),
         ("Exit", draft.exit, F::Exit),
-        ("Directory hotlist", draft.directory_hotlist, F::DirectoryHotlist),
+        (
+            "Directory hotlist",
+            draft.directory_hotlist,
+            F::DirectoryHotlist,
+        ),
         ("History cleanup", draft.history_cleanup, F::HistoryCleanup),
     ];
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -608,7 +612,11 @@ fn draw_confirmations_dialog(
     let cancel_sel = matches!(focus, F::Cancel);
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
-    let cancel_txt = if cancel_sel { "[ Cancel ]" } else { "  Cancel  " };
+    let cancel_txt = if cancel_sel {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
     let btns = format!("{ok_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);

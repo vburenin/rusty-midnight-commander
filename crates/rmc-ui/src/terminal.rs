@@ -2008,9 +2008,7 @@ impl TerminalApp {
                         F::Overwrite => draft.overwrite = !draft.overwrite,
                         F::Execute => draft.execute = !draft.execute,
                         F::Exit => draft.exit = !draft.exit,
-                        F::DirectoryHotlist => {
-                            draft.directory_hotlist = !draft.directory_hotlist
-                        }
+                        F::DirectoryHotlist => draft.directory_hotlist = !draft.directory_hotlist,
                         F::HistoryCleanup => draft.history_cleanup = !draft.history_cleanup,
                         _ => {}
                     },
@@ -2019,9 +2017,7 @@ impl TerminalApp {
                         F::Overwrite => draft.overwrite = !draft.overwrite,
                         F::Execute => draft.execute = !draft.execute,
                         F::Exit => draft.exit = !draft.exit,
-                        F::DirectoryHotlist => {
-                            draft.directory_hotlist = !draft.directory_hotlist
-                        }
+                        F::DirectoryHotlist => draft.directory_hotlist = !draft.directory_hotlist,
                         F::HistoryCleanup => draft.history_cleanup = !draft.history_cleanup,
                         F::Ok => {
                             app.confirm = *draft;
@@ -2204,40 +2200,40 @@ impl TerminalApp {
                                 let dst = Path::new(&*to).to_path_buf();
                                 let exists = app.vfs.stat(&dst).is_ok();
                                 if exists {
-                                        if app.confirm.overwrite {
-                                            let op = if title == "Copy" {
-                                                rmc_core::app::CopyMoveOp::Copy
-                                            } else {
-                                                rmc_core::app::CopyMoveOp::Move
-                                            };
-                                            app.ui_mode = UiMode::OverwriteDialog {
-                                                op,
-                                                src_path: src_path.clone(),
-                                                dst_path: dst,
-                                                focus: rmc_core::app::OverwriteFocus::Yes,
-                                            };
+                                    if app.confirm.overwrite {
+                                        let op = if title == "Copy" {
+                                            rmc_core::app::CopyMoveOp::Copy
                                         } else {
-                                            // Perform "Yes" path: remove destination then copy/move
-                                            let _ = app.vfs.remove(&dst, false);
-                                            let res = if title == "Copy" {
-                                                app.vfs.copy(src_path, &dst)
-                                            } else {
-                                                app.vfs.move_path(src_path, &dst)
-                                            };
-                                            match res {
-                                                Ok(()) => {
-                                                    app.ui_mode = UiMode::Normal;
-                                                    app.reload_panels()?;
-                                                }
-                                                Err(err) => {
-                                                    app.ui_mode = UiMode::DialogConfirm {
-                                                        title: "Error".into(),
-                                                        message: format!("{err}"),
-                                                        on_ok: Box::new(|_| Ok(())),
-                                                    };
-                                                }
+                                            rmc_core::app::CopyMoveOp::Move
+                                        };
+                                        app.ui_mode = UiMode::OverwriteDialog {
+                                            op,
+                                            src_path: src_path.clone(),
+                                            dst_path: dst,
+                                            focus: rmc_core::app::OverwriteFocus::Yes,
+                                        };
+                                    } else {
+                                        // Perform "Yes" path: remove destination then copy/move
+                                        let _ = app.vfs.remove(&dst, false);
+                                        let res = if title == "Copy" {
+                                            app.vfs.copy(src_path, &dst)
+                                        } else {
+                                            app.vfs.move_path(src_path, &dst)
+                                        };
+                                        match res {
+                                            Ok(()) => {
+                                                app.ui_mode = UiMode::Normal;
+                                                app.reload_panels()?;
+                                            }
+                                            Err(err) => {
+                                                app.ui_mode = UiMode::DialogConfirm {
+                                                    title: "Error".into(),
+                                                    message: format!("{err}"),
+                                                    on_ok: Box::new(|_| Ok(())),
+                                                };
                                             }
                                         }
+                                    }
                                 } else {
                                     if title == "Copy" {
                                         app.vfs.copy(src_path, Path::new(&*to))?;
