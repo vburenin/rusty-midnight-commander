@@ -120,6 +120,37 @@ impl Default for PanelOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigOptions {
+    pub verbose: bool,             // default true; store only unless wired later
+    pub compute_totals: bool,      // default true; store only
+    pub classic_progressbar: bool, // default true; store only
+    pub use_internal_view: bool,   // default true — keep F3 internal viewer by default
+    pub use_internal_edit: bool,   // default true — keep F4 internal editor by default
+    pub pause_after_run: bool,     // default false; store only
+    pub shell_patterns: bool,      // default true; store only
+    pub auto_menus: bool,          // default false; store only
+    pub drop_menus: bool,          // default false; store only
+    pub mkdir_autoname: bool,      // default false; store only
+}
+
+impl Default for ConfigOptions {
+    fn default() -> Self {
+        Self {
+            verbose: true,
+            compute_totals: true,
+            classic_progressbar: true,
+            use_internal_view: true,
+            use_internal_edit: true,
+            pause_after_run: false,
+            shell_patterns: true,
+            auto_menus: false,
+            drop_menus: false,
+            mkdir_autoname: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LayoutFocus {
     MenuBar,
@@ -128,6 +159,22 @@ pub enum LayoutFocus {
     HintBar,
     XtermTitle,
     ShowFreeSpace,
+    Ok,
+    Cancel,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ConfigOptionsFocus {
+    Verbose,
+    ComputeTotals,
+    ClassicProgressbar,
+    UseInternalViewer,
+    UseInternalEditor,
+    PauseAfterRun,
+    ShellPatterns,
+    AutoMenus,
+    DropMenus,
+    MkdirAutoname,
     Ok,
     Cancel,
 }
@@ -367,6 +414,11 @@ pub enum UiMode {
         /// Which UI element is focused
         focus: AppearanceFocus,
     },
+    /// GNU mc Options → Configuration dialog
+    ConfigurationDialog {
+        draft: ConfigOptions,
+        focus: ConfigOptionsFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -493,6 +545,8 @@ pub struct App {
     pub confirm: ConfirmOptions,
     /// GNU mc-style Options → Panels
     pub panel_opts: PanelOptions,
+    /// GNU mc-style Options → Configuration
+    pub config_opts: ConfigOptions,
     /// Selected skin name (e.g., "default")
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
@@ -520,6 +574,7 @@ impl App {
             layout: LayoutOptions::default(),
             confirm: ConfirmOptions::default(),
             panel_opts: PanelOptions::default(),
+            config_opts: ConfigOptions::default(),
             skin_name: "default".to_string(),
             shadows: true,
         };
@@ -855,6 +910,7 @@ impl App {
             UiMode::PanelOptionsDialog { .. } => "Panels".to_string(),
             UiMode::LearnKeysDialog { .. } => "Panels".to_string(),
             UiMode::AppearanceDialog { .. } => "Panels".to_string(),
+            UiMode::ConfigurationDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {

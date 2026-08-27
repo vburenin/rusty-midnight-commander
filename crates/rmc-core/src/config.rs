@@ -468,6 +468,22 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "\n[appearance]")?;
     writeln!(f, "skin={}", app.skin_name)?;
     writeln!(f, "shadows={}", app.shadows)?;
+    // [configuration]
+    writeln!(f, "\n[configuration]")?;
+    writeln!(f, "verbose={}", app.config_opts.verbose)?;
+    writeln!(f, "compute_totals={}", app.config_opts.compute_totals)?;
+    writeln!(
+        f,
+        "classic_progressbar={}",
+        app.config_opts.classic_progressbar
+    )?;
+    writeln!(f, "use_internal_view={}", app.config_opts.use_internal_view)?;
+    writeln!(f, "use_internal_edit={}", app.config_opts.use_internal_edit)?;
+    writeln!(f, "pause_after_run={}", app.config_opts.pause_after_run)?;
+    writeln!(f, "shell_patterns={}", app.config_opts.shell_patterns)?;
+    writeln!(f, "auto_menus={}", app.config_opts.auto_menus)?;
+    writeln!(f, "drop_menus={}", app.config_opts.drop_menus)?;
+    writeln!(f, "mkdir_autoname={}", app.config_opts.mkdir_autoname)?;
     // Save keymap
     let keymap_path = dir.join("keymap");
     app.keymap.save_to_file(&keymap_path)?;
@@ -539,6 +555,19 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                 "appearance" => match k.as_str() {
                     "skin" => app.skin_name = v,
                     "shadows" => app.shadows = vb(&v),
+                    _ => {}
+                },
+                "configuration" => match k.as_str() {
+                    "verbose" => app.config_opts.verbose = vb(&v),
+                    "compute_totals" => app.config_opts.compute_totals = vb(&v),
+                    "classic_progressbar" => app.config_opts.classic_progressbar = vb(&v),
+                    "use_internal_view" => app.config_opts.use_internal_view = vb(&v),
+                    "use_internal_edit" => app.config_opts.use_internal_edit = vb(&v),
+                    "pause_after_run" => app.config_opts.pause_after_run = vb(&v),
+                    "shell_patterns" => app.config_opts.shell_patterns = vb(&v),
+                    "auto_menus" => app.config_opts.auto_menus = vb(&v),
+                    "drop_menus" => app.config_opts.drop_menus = vb(&v),
+                    "mkdir_autoname" => app.config_opts.mkdir_autoname = vb(&v),
                     _ => {}
                 },
                 _ => {}
