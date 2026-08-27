@@ -1,5 +1,6 @@
 use crate::help::{apply_help_key, global_index, HelpAction};
-use crate::render::{viewer_menu_from_x, Renderer};
+use crate::mc_ext::user_extension_file_path;
+use crate::render::{viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS};
 use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
@@ -583,6 +584,19 @@ pub fn open_editor_files(app: &mut App, paths: &[PathBuf]) {
         let buf = rmc_edit::EditorBuffer::from_bytes(&data, Some(path.clone()));
         push_internal_screen(app, editor_ui_mode(buf, None));
     }
+}
+
+/// GNU Command menu “Edit extension file” / “Edit menu file”: internal editor
+/// on the user config path. Missing files open an empty buffer at that path.
+fn open_user_config_in_editor(app: &mut App, path: PathBuf) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let data = std::fs::read(&path).unwrap_or_default();
+    let buf = rmc_edit::EditorBuffer::from_bytes(&data, Some(path));
+    // Leave the pull-down so push_screen does not park Menu as a module.
+    app.ui_mode = UiMode::Normal;
+    push_internal_screen(app, editor_ui_mode(buf, None));
 }
 
 /// Startup flags: `--diff file1 file2`, `-e`/`--edit` files.
@@ -5598,15 +5612,7 @@ impl TerminalApp {
                         "Relative symlink",
                         "Quit",
                     ],
-                    &[
-                        "User menu",
-                        "Directory tree",
-                        "Find file",
-                        "Directory hotlist",
-                        "Compare dirs",
-                        "External panelize",
-                        "Screen list",
-                    ],
+                    COMMAND_MENU_ITEMS,
                     &[
                         "Configuration",
                         "Layout",
@@ -6070,11 +6076,30 @@ impl TerminalApp {
                                 let start = app.active_panel().cwd.clone();
                                 app.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
                             }
+                            "Swap panels" => {
+                                app.handle_action(Action::SwapPanels)?;
+                                app.ui_mode = UiMode::Normal;
+                            }
+                            "Switch panels on/off" => {
+                                app.handle_action(Action::ToggleSubshell)?;
+                            }
                             "Compare dirs" => {
                                 open_compare_dirs_dialog(app);
                             }
                             "External panelize" => {
                                 open_external_panelize_dialog(app);
+                            }
+                            "Command history" => {
+                                open_command_history(app);
+                            }
+                            "Edit extension file" => {
+                                open_user_config_in_editor(app, user_extension_file_path());
+                            }
+                            "Edit menu file" => {
+                                open_user_config_in_editor(
+                                    app,
+                                    rmc_core::user_menu::user_menu_file_path(),
+                                );
                             }
                             "Screen list" => {
                                 open_screen_list(app);
@@ -9567,14 +9592,15 @@ mod drop_menus_tests {
         press(&mut app, KeyCode::Right);
         press(&mut app, KeyCode::Right);
         assert_menu(&app, 2, 0, true);
-        // Command menu: User menu, Directory tree, Find file, Directory hotlist,
-        // Compare dirs, External panelize (index 5).
+        // Command menu: User menu, Directory tree, Find file, Swap panels,
+        // Switch panels on/off, Compare dirs, External panelize (index 6).
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
-        assert_menu(&app, 2, 5, true);
+        press(&mut app, KeyCode::Down);
+        assert_menu(&app, 2, 6, true);
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
             UiMode::ExternalPanelizeDialog(_) => {}
@@ -15717,11 +15743,10 @@ mod external_panelize_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        press(app, KeyCode::Down);
-        press(app, KeyCode::Down);
-        press(app, KeyCode::Down);
-        press(app, KeyCode::Down);
-        press(app, KeyCode::Down);
+        // User menu → … → External panelize (index 6).
+        for _ in 0..6 {
+            press(app, KeyCode::Down);
+        }
         press(app, KeyCode::Enter);
     }
 
@@ -16372,7 +16397,7 @@ mod screen_selector_tests {
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
         press(&mut app, KeyCode::Right);
-        for _ in 0..6 {
+        for _ in 0..11 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -17063,6 +17088,371 @@ mod shell_cmdline_helpers_tests {
             matches!(app.ui_mode, UiMode::ChmodDialog { .. }),
             "C-x c still chmod"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod command_menu_remaining_items_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct IsolatedHome {
+        dir: std::path::PathBuf,
+        _guard: MutexGuard<'static, ()>,
+        prev_home: Option<String>,
+    }
+
+    impl IsolatedHome {
+        fn new() -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!(
+                "rmc-cmd-menu-home-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let prev_home = std::env::var("HOME").ok();
+            std::env::set_var("HOME", &dir);
+            Self {
+                dir,
+                _guard: guard,
+                prev_home,
+            }
+        }
+    }
+
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            match &self.prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-cmd-menu-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn editor_path(app: &App) -> std::path::PathBuf {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf.path.clone().expect("editor buffer path"),
+            UiMode::Menu { .. } => panic!("expected Editor, still on Menu"),
+            UiMode::Normal => panic!("expected Editor, got Normal"),
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        (left, right)
+    }
+
+    #[test]
+    fn command_menu_gnu_order() {
+        assert_eq!(
+            COMMAND_MENU_ITEMS,
+            &[
+                "User menu",
+                "Directory tree",
+                "Find file",
+                "Swap panels",
+                "Switch panels on/off",
+                "Compare dirs",
+                "External panelize",
+                "Command history",
+                "Directory hotlist",
+                "Edit extension file",
+                "Edit menu file",
+                "Screen list",
+            ]
+        );
+    }
+
+    #[test]
+    fn command_menu_swap_panels_swaps_cwds_and_flips_active() {
+        let root = temp_workspace();
+        let (left_dir, right_dir) = two_panel_dirs(&root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        app.panel_opts.simple_swap = false;
+        open_command_item(&mut app, "Swap panels");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        assert_eq!(app.active, PaneSide::Right);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_swap_panels_simple_swap_keeps_active() {
+        let root = temp_workspace();
+        let (left_dir, right_dir) = two_panel_dirs(&root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        app.panel_opts.simple_swap = true;
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_switch_panels_on_off_toggles_like_c_o() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(!app.subshell.show_output_screen);
+        open_command_item(&mut app, "Switch panels on/off");
+        assert!(
+            app.subshell.show_output_screen,
+            "Command item must use Action::ToggleSubshell like C-o"
+        );
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        // Output screen swallows F9; restore with the same Action C-o uses.
+        app.handle_action(Action::ToggleSubshell).unwrap();
+        assert!(!app.subshell.show_output_screen);
+        open_command_item(&mut app, "Switch panels on/off");
+        assert!(app.subshell.show_output_screen);
+        app.handle_action(Action::ToggleSubshell).unwrap();
+        assert!(!app.subshell.show_output_screen);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_command_history_opens_same_as_alt_h() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(matches!(app.ui_mode, UiMode::HistoryDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "Alt-h Esc closes to the command line"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        open_command_item(&mut app, "Command history");
+        assert!(matches!(app.ui_mode, UiMode::HistoryDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "Command history Esc must close like Alt-h"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_edit_extension_file_opens_editor_and_screen_list() {
+        let _home = IsolatedHome::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        let expected = user_extension_file_path();
+        assert!(!expected.exists(), "missing file must stay missing");
+        open_command_item(&mut app, "Edit extension file");
+        let path = editor_path(&app);
+        assert!(
+            path.ends_with("mc.ext.ini"),
+            "editor path must be the user extension file, got {path:?}"
+        );
+        assert_eq!(path, expected);
+        assert!(
+            expected.parent().map(|p| p.is_dir()).unwrap_or(false),
+            "parent config dir must be created"
+        );
+        assert!(!expected.exists(), "empty buffer must not create the file");
+        press_alt(&mut app, '`');
+        match &app.ui_mode {
+            UiMode::ScreenList { .. } => {}
+            UiMode::Editor { .. } => panic!("Alt-` must open Screen list"),
+            _ => panic!("Alt-` must open Screen list"),
+        }
+        let labels = app.screen_list_labels();
+        assert!(
+            labels.iter().any(|s| s.contains("mc.ext.ini")),
+            "Screen list must include the extension editor: {labels:?}"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "F10 must quit the clean editor"
+        );
+        assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_edit_menu_file_opens_editor_at_user_menu_path() {
+        let _home = IsolatedHome::new();
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        let expected = rmc_core::user_menu::user_menu_file_path();
+        open_command_item(&mut app, "Edit menu file");
+        let path = editor_path(&app);
+        assert!(
+            path.ends_with("menu"),
+            "editor path must be the user menu file, got {path:?}"
+        );
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("menu"),
+            "must be ~/.config/mc/menu, not .mc.menu"
+        );
+        assert_eq!(path, expected);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_existing_items_still_work() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_command_item(&mut app, "Find file");
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "Find file must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        open_command_item(&mut app, "Directory tree");
+        assert!(
+            matches!(app.ui_mode, UiMode::DirectoryTree(_)),
+            "Directory tree must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        open_command_item(&mut app, "External panelize");
+        assert!(
+            matches!(app.ui_mode, UiMode::ExternalPanelizeDialog(_)),
+            "External panelize must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        open_command_item(&mut app, "Screen list");
+        assert!(
+            matches!(app.ui_mode, UiMode::ScreenList { .. }),
+            "Screen list must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_esc_and_f10_close_without_quit() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        assert!(matches!(app.ui_mode, UiMode::Menu { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_menu_help_first_and_quick_cd_after_delete() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right); // File
+        press(&mut app, KeyCode::Enter); // Help is first
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            matches!(app.ui_mode, UiMode::Menu { .. }),
+            "leaving File→Help restores the File menu"
+        );
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => {
+                assert_eq!(title, QUICK_CD_TITLE);
+            }
+            UiMode::Help { .. } => panic!("File Quick cd must not open Help"),
+            UiMode::Menu { .. } => panic!("File Quick cd must open the dialog"),
+            _ => panic!("File menu Quick cd must stay after Delete"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
