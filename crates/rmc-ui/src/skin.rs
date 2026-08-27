@@ -38,6 +38,7 @@ pub fn load_from_file(path: &Path) -> Result<McPalette> {
 
 /// Parse an MC-like skin INI format:
 /// Sections: [core], [dialog], [menu], [buttonbar], [statusbar], [filehighlight]
+/// [viewer], [editor].
 /// Keys in UI sections are color pairs "fg;bg" (extra attributes after a third ';' are ignored).
 /// [filehighlight] values are single colors.
 pub fn parse_skin(text: &str) -> Result<McPalette> {
@@ -51,6 +52,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
         StatusBar,
         FileHighlight,
         Viewer,
+        Editor,
     }
     let mut section = Section::None;
     let mut pal = McPalette::default();
@@ -70,6 +72,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
                 "statusbar" => Section::StatusBar,
                 "filehighlight" => Section::FileHighlight,
                 "viewer" => Section::Viewer,
+                "editor" => Section::Editor,
                 // Back-compat with early RMC prototype
                 "pairs" => Section::Core,
                 _ => Section::None,
@@ -99,6 +102,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
                 }
             }
             Section::Viewer => assign_pair(&mut pal, "viewer", k, v, lineno + 1)?,
+            Section::Editor => assign_pair(&mut pal, "editor", k, v, lineno + 1)?,
             Section::None => {
                 // ignore top-level assignments
             }
@@ -209,6 +213,29 @@ fn assign_pair(
             pal.viewer_selected_bg = bg;
         }
         "viewer" => {}
+        "editor" => match k.as_str() {
+            "_default_" | "editnormal" => {
+                pal.edit_normal_fg = fg;
+                pal.edit_normal_bg = bg;
+            }
+            "editbold" => {
+                pal.edit_bold_fg = fg;
+                pal.edit_bold_bg = bg;
+            }
+            "editmarked" => {
+                pal.edit_marked_fg = fg;
+                pal.edit_marked_bg = bg;
+            }
+            "editwhitespace" => {
+                pal.edit_whitespace_fg = fg;
+                pal.edit_whitespace_bg = bg;
+            }
+            "editlinestate" => {
+                pal.edit_linestate_fg = fg;
+                pal.edit_linestate_bg = bg;
+            }
+            _ => {}
+        },
         _ => {}
     }
     Ok(())
@@ -228,6 +255,8 @@ fn parse_color_name(name: &str) -> Option<Color> {
         "darkgray" | "darkgrey" => Some(Color::DarkGrey),
         "brightgreen" => Some(Color::Green),
         "brightmagenta" => Some(Color::Magenta),
+        // Distinct from `blue` (already Color::Blue) so editwhitespace stays visible.
+        "brightblue" => Some(Color::Cyan),
         "darkblue" => Some(Color::DarkBlue),
         "darkcyan" => Some(Color::DarkCyan),
         "darkred" => Some(Color::DarkRed),
@@ -318,6 +347,17 @@ mod tests {
         assert_eq!(pal.viewer_selected_fg, Color::Yellow);
         assert_eq!(pal.viewer_selected_bg, Color::Cyan);
         assert_ne!(pal.viewer_selected_fg, pal.selected_fg);
+        assert_eq!(pal.edit_normal_fg, Color::Grey);
+        assert_eq!(pal.edit_normal_bg, Color::Blue);
+        assert_eq!(pal.edit_bold_fg, Color::Yellow);
+        assert_eq!(pal.edit_bold_bg, Color::Green);
+        assert_eq!(pal.edit_marked_fg, Color::Black);
+        assert_eq!(pal.edit_marked_bg, Color::Cyan);
+        assert_eq!(pal.edit_whitespace_fg, Color::Cyan);
+        assert_eq!(pal.edit_linestate_fg, Color::White);
+        assert_eq!(pal.edit_linestate_bg, Color::Cyan);
+        assert_ne!(pal.edit_marked_fg, pal.edit_bold_fg);
+        assert_ne!(pal.edit_marked_bg, pal.marked_bg);
     }
 
     fn section_keys(text: &str) -> Vec<(String, String)> {

@@ -45,6 +45,17 @@ pub struct McPalette {
     /// Distinct from panel `selected` (black;cyan).
     pub viewer_selected_fg: Color,
     pub viewer_selected_bg: Color,
+    /// Editor pairs from public default.ini `[editor]`.
+    pub edit_normal_fg: Color,
+    pub edit_normal_bg: Color,
+    pub edit_bold_fg: Color,
+    pub edit_bold_bg: Color,
+    pub edit_marked_fg: Color,
+    pub edit_marked_bg: Color,
+    pub edit_whitespace_fg: Color,
+    pub edit_whitespace_bg: Color,
+    pub edit_linestate_fg: Color,
+    pub edit_linestate_bg: Color,
 }
 
 impl McPalette {
@@ -89,6 +100,18 @@ impl McPalette {
             symlink_color: Color::Grey,
             viewer_selected_fg: Color::Yellow,
             viewer_selected_bg: Color::Cyan,
+            edit_normal_fg: Color::Grey,
+            edit_normal_bg: Color::Blue,
+            edit_bold_fg: Color::Yellow,
+            edit_bold_bg: Color::Green,
+            edit_marked_fg: Color::Black,
+            edit_marked_bg: Color::Cyan,
+            // Public `brightblue;blue`. Crossterm binds `blue` to Color::Blue already,
+            // so brightblue uses Cyan to stay visible on the editor background.
+            edit_whitespace_fg: Color::Cyan,
+            edit_whitespace_bg: Color::Blue,
+            edit_linestate_fg: Color::White,
+            edit_linestate_bg: Color::Cyan,
         }
     }
 }

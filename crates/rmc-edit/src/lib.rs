@@ -16,7 +16,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 pub mod syntax;
-pub use syntax::{guess_language, tokenize_for_render, Language, Span, TokenKind};
+pub use syntax::{
+    guess_language, guess_language_for_buffer, tokenize_for_render, Language, Span, TokenKind,
+};
 
 /// A single high-level editor operation suitable for macro recording/replay.
 /// These mirror existing `EditorBuffer` methods and are intentionally coarse-grained
@@ -418,7 +420,10 @@ impl EditorBuffer {
     /// but returns `(text, kind)` spans clipped to the current viewport.
     pub fn render_window_spans(&self, width: usize, height: usize) -> Vec<Vec<Span>> {
         let mut out: Vec<Vec<Span>> = Vec::new();
-        let lang = guess_language(self.path.as_deref());
+        let lang = guess_language_for_buffer(
+            self.path.as_deref(),
+            self.lines.first().map(|l| l.as_slice()),
+        );
         for i in 0..height {
             let li = self.view_row + i;
             if let Some(line) = self.lines.get(li) {
@@ -1934,5 +1939,61 @@ mod tests {
         // We consider an empty recorded macro as present; replay returns true but does nothing.
         assert!(b.replay_macro());
         assert_eq!(b.to_bytes(), before);
+    }
+
+    #[test]
+    fn rs_buffer_keywords_differ_from_identifiers_txt_unhighlighted() {
+        let rs = EditorBuffer::from_bytes(b"fn let name", Some(PathBuf::from("main.rs")));
+        let kinds: Vec<(String, TokenKind)> = rs.render_window_spans(40, 1)[0]
+            .iter()
+            .map(|s| (s.text.clone(), s.kind))
+            .collect();
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| t == "fn" && *k == TokenKind::Keyword),
+            "{kinds:?}"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| t == "let" && *k == TokenKind::Keyword),
+            "{kinds:?}"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(t, k)| t == "name" && *k == TokenKind::Identifier),
+            "{kinds:?}"
+        );
+
+        let txt = EditorBuffer::from_bytes(b"fn let name", Some(PathBuf::from("notes.txt")));
+        let txt_kinds: Vec<TokenKind> = txt.render_window_spans(40, 1)[0]
+            .iter()
+            .map(|s| s.kind)
+            .collect();
+        assert!(
+            !txt_kinds.contains(&TokenKind::Keyword),
+            "plain .txt must stay unhighlighted: {txt_kinds:?}"
+        );
+        assert!(txt_kinds
+            .iter()
+            .all(|k| *k == TokenKind::Normal || *k == TokenKind::Whitespace));
+    }
+
+    #[test]
+    fn shebang_python_without_extension() {
+        let buf = EditorBuffer::from_bytes(
+            b"#!/usr/bin/env python3\ndef main():\n    pass\n",
+            Some(PathBuf::from("tool")),
+        );
+        let kinds: Vec<TokenKind> = buf.render_window_spans(40, 3)[1]
+            .iter()
+            .map(|s| s.kind)
+            .collect();
+        assert!(
+            kinds.contains(&TokenKind::Keyword),
+            "shebang python should highlight def: {kinds:?}"
+        );
     }
 }
