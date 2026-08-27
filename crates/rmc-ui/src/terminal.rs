@@ -249,6 +249,16 @@ fn menu_top_index_from_x(x: u16) -> Option<usize> {
     None
 }
 
+/// Virtual FS "Always use ftp proxy": honor a non-empty host when the flag is on.
+fn ftp_proxy_for_vfs_opts(always: bool, proxy_host: &str) -> Option<&str> {
+    let host = proxy_host.trim();
+    if always && !host.is_empty() {
+        Some(host)
+    } else {
+        None
+    }
+}
+
 // Minimal ~/.netrc parser: searches for `machine <host> login <user> password <pass>`
 fn netrc_lookup(host: &str) -> Option<(String, String)> {
     let home = std::env::var("HOME").ok()?;
@@ -1662,6 +1672,12 @@ impl TerminalApp {
                             format!("{host_val}:{port_val}")
                         };
                         let url = format!("{scheme}://{user_part}{host_part}{dir_val}");
+                        if scheme == "ftp" {
+                            rmc_fs::remote::set_ftp_proxy(ftp_proxy_for_vfs_opts(
+                                app.vfs_opts.always_use_ftp_proxy,
+                                &app.vfs_opts.ftp_proxy_host,
+                            ));
+                        }
                         app.ui_mode = UiMode::Normal;
                         let path = std::path::PathBuf::from(url);
                         match app.change_dir(&path) {
@@ -5742,5 +5758,27 @@ mod enter_executable_tests {
         assert!(!app.active_panel().current_entry().unwrap().is_exe);
         assert!(!try_enter_executable(&mut app).unwrap());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod ftp_proxy_opts_tests {
+    use super::ftp_proxy_for_vfs_opts;
+
+    #[test]
+    fn flag_off_or_empty_host_is_direct() {
+        assert_eq!(ftp_proxy_for_vfs_opts(false, "proxy.example.net"), None);
+        assert_eq!(ftp_proxy_for_vfs_opts(true, ""), None);
+        assert_eq!(ftp_proxy_for_vfs_opts(true, "   "), None);
+        assert_eq!(ftp_proxy_for_vfs_opts(false, ""), None);
+    }
+
+    #[test]
+    fn flag_on_with_host_returns_trimmed_proxy() {
+        assert_eq!(
+            ftp_proxy_for_vfs_opts(true, "proxy.example.net"),
+            Some("proxy.example.net")
+        );
+        assert_eq!(ftp_proxy_for_vfs_opts(true, "  gw:3128  "), Some("gw:3128"));
     }
 }
