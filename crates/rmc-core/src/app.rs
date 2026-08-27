@@ -354,6 +354,19 @@ pub enum UiMode {
         /// When buttons are focused, true => OK, false => Cancel.
         focus_ok: bool,
     },
+    /// GNU mc Options → Appearance dialog
+    AppearanceDialog {
+        /// Working copy of selected skin name
+        draft_skin: String,
+        /// Working copy of shadow toggle
+        draft_shadows: bool,
+        /// Available skin names without .ini extension (always contains "default")
+        skins: Vec<String>,
+        /// Selected row in the skin list
+        selected: usize,
+        /// Which UI element is focused
+        focus: AppearanceFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -450,6 +463,13 @@ pub enum PanelOptionsFocus {
     Ok,
     Cancel,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AppearanceFocus {
+    SkinList,
+    Shadows,
+    Ok,
+    Cancel,
+}
 pub struct App {
     pub vfs: Box<dyn Vfs>,
     pub keymap: KeyMap,
@@ -473,6 +493,10 @@ pub struct App {
     pub confirm: ConfirmOptions,
     /// GNU mc-style Options → Panels
     pub panel_opts: PanelOptions,
+    /// Selected skin name (e.g., "default")
+    pub skin_name: String,
+    /// Whether to draw drop shadows for dialogs/menus
+    pub shadows: bool,
 }
 
 impl App {
@@ -496,6 +520,8 @@ impl App {
             layout: LayoutOptions::default(),
             confirm: ConfirmOptions::default(),
             panel_opts: PanelOptions::default(),
+            skin_name: "default".to_string(),
+            shadows: true,
         };
         // Overlay user setup (if available) over defaults, then refresh panels.
         let _ = crate::config::load_user_setup(&mut app);
@@ -828,6 +854,7 @@ impl App {
             UiMode::ConfirmationsDialog { .. } => "Panels".to_string(),
             UiMode::PanelOptionsDialog { .. } => "Panels".to_string(),
             UiMode::LearnKeysDialog { .. } => "Panels".to_string(),
+            UiMode::AppearanceDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
