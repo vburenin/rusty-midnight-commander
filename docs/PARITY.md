@@ -74,14 +74,14 @@ Directory panels (selection, navigation, layout):
 - [ ] Refresh/rescan directory: C-r (when enabled)
 
 Command line integration (filename helpers, history, completion):
-- [ ] Alt-Enter / C-Enter: copy selected filename to command line
-- [ ] C-S-Enter: copy full path
+- [x] Alt-Enter / C-Enter: copy selected filename to command line
+- [x] C-S-Enter: copy full path
 - [ ] Alt-Tab: completion (var/user/host/cmd/filename), popup list as configured
-- [ ] Alt-p / Alt-n: command history prev/next; Alt-h: history list
-- [ ] C-x t / C-x C-t: copy tagged/selected filenames to command line (from current/other panel)
-- [ ] C-x p / C-x C-p: copy current/other panel path
-- [ ] C-q: quote next char literally into command line
-- [ ] Quick cd: Alt-c
+- [x] Alt-p / Alt-n: command history prev/next; Alt-h: history list
+- [x] C-x t / C-x C-t: copy tagged/selected filenames to command line (from current/other panel)
+- [x] C-x p / C-x C-p: copy current/other panel path
+- [x] C-q: quote next char literally into command line
+- [x] Quick cd: Alt-c
 
 Misc panel actions:
 - [ ] C-l: full repaint

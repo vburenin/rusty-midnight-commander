@@ -5967,6 +5967,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Move",
             "Mkdir",
             "Delete",
+            "Quick cd",
             "Chmod",
             "Chown",
             "Hard link",

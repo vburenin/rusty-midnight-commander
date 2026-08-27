@@ -1995,6 +1995,7 @@ impl TerminalApp {
 
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
         let active_cwd = app.active_panel().cwd.clone();
+        let pending_ctrl_x = app.pending_ctrl_x;
         // Subshell full-screen mode: C-o toggles back; support PgUp/PgDn/Up/Down scrolling.
         if app.subshell.show_output_screen {
             match key.code {
@@ -2047,6 +2048,17 @@ impl TerminalApp {
                     app.abort_file_op()?;
                 }
                 _ => {}
+            }
+            return Ok(());
+        }
+        // C-q: the next character is inserted literally into the command line
+        // (even if it is otherwise a binding). Panels and ShellInput only.
+        if app.pending_quote && matches!(app.ui_mode, UiMode::Normal | UiMode::ShellInput) {
+            app.pending_quote = false;
+            if let KeyCode::Char(c) = key.code {
+                app.subshell.insert_char(c);
+                app.subshell.clear_history_nav();
+                app.ui_mode = UiMode::ShellInput;
             }
             return Ok(());
         }
@@ -3099,82 +3111,109 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::ShellInput => {
-                // Command line editing and execution
-                match key.code {
-                    KeyCode::Esc => {
-                        app.ui_mode = UiMode::Normal;
-                    }
-                    KeyCode::Enter if key.modifiers.is_empty() => {
-                        if app.subshell.cmdline.trim().is_empty() {
-                            // Empty command: use panel Enter behavior
-                            app.ui_mode = UiMode::Normal;
-                            handle_panel_enter(app)?;
-                        } else {
-                            // Prefer executing inside a live PTY session when available.
-                            let outcome = {
-                                if let Ok(mut guard) = SUBSHELL_PTY.lock() {
-                                    let pty_opt = guard.as_mut();
-                                    app.subshell.execute_in_pty(&active_cwd, pty_opt)?
-                                } else {
-                                    app.subshell.execute_current(&active_cwd)?
-                                }
-                            };
-                            let _ = outcome;
-                            // Always rescan panels after a command (local VFS only here).
-                            app.reload_panels()?;
-                            app.subshell.clear_cmdline();
+                // A pending C-x chord is completed below (including p/C-p/t/C-t).
+                if !pending_ctrl_x {
+                    // Command line editing and execution
+                    match key.code {
+                        KeyCode::Esc => {
                             app.ui_mode = UiMode::Normal;
                         }
-                    }
-                    KeyCode::Backspace => {
-                        app.subshell.cmdline.pop();
-                        app.subshell.clear_history_nav();
-                    }
-                    KeyCode::Up => {
-                        if let Some(s) = app.subshell.history_prev() {
-                            app.subshell.cmdline = s;
+                        KeyCode::Enter if key.modifiers.is_empty() => {
+                            if app.subshell.cmdline.trim().is_empty() {
+                                // Empty command: use panel Enter behavior
+                                app.ui_mode = UiMode::Normal;
+                                handle_panel_enter(app)?;
+                            } else {
+                                // Prefer executing inside a live PTY session when available.
+                                let outcome = {
+                                    if let Ok(mut guard) = SUBSHELL_PTY.lock() {
+                                        let pty_opt = guard.as_mut();
+                                        app.subshell.execute_in_pty(&active_cwd, pty_opt)?
+                                    } else {
+                                        app.subshell.execute_current(&active_cwd)?
+                                    }
+                                };
+                                let _ = outcome;
+                                // Always rescan panels after a command (local VFS only here).
+                                app.reload_panels()?;
+                                app.subshell.clear_cmdline();
+                                app.ui_mode = UiMode::Normal;
+                            }
                         }
-                    }
-                    KeyCode::Down => {
-                        if let Some(s) = app.subshell.history_next() {
-                            app.subshell.cmdline = s;
+                        KeyCode::Backspace => {
+                            app.subshell.backspace();
+                            app.subshell.clear_history_nav();
                         }
-                    }
-                    KeyCode::Char('p')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                    {
-                        if let Some(s) = app.subshell.history_prev() {
-                            app.subshell.cmdline = s;
+                        KeyCode::Up => {
+                            if let Some(s) = app.subshell.history_prev() {
+                                app.subshell.replace_cmdline(s);
+                            }
                         }
-                    }
-                    KeyCode::Char('n')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                    {
-                        if let Some(s) = app.subshell.history_next() {
-                            app.subshell.cmdline = s;
+                        KeyCode::Down => {
+                            if let Some(s) = app.subshell.history_next() {
+                                app.subshell.replace_cmdline(s);
+                            }
                         }
-                    }
-                    KeyCode::Char('h') | KeyCode::Char('H')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                    {
-                        open_command_history(app);
-                    }
-                    KeyCode::Enter
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                    {
-                        // Alt-Enter: copy current filename into command line
-                        if let Some(ent) = app.active_panel().current_entry() {
-                            let name = ent.name.clone();
-                            app.subshell.append_filename(&name);
+                        KeyCode::Char('p') | KeyCode::Char('P')
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            apply_cmdline_history(app, true);
                         }
+                        KeyCode::Char('n') | KeyCode::Char('N')
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            apply_cmdline_history(app, false);
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('H')
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            open_command_history(app);
+                        }
+                        KeyCode::Char('c') | KeyCode::Char('C')
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            open_quick_cd(app);
+                        }
+                        KeyCode::Char('q') | KeyCode::Char('Q')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            app.pending_quote = true;
+                        }
+                        KeyCode::Char('x') | KeyCode::Char('X')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            app.pending_ctrl_x = true;
+                        }
+                        KeyCode::Enter
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                                && key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::SHIFT) =>
+                        {
+                            insert_selected_on_cmdline(app, true);
+                        }
+                        KeyCode::Enter
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                                || key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            insert_selected_on_cmdline(app, false);
+                        }
+                        KeyCode::Char(c) if key.modifiers.is_empty() => {
+                            app.subshell.insert_char(c);
+                            app.subshell.clear_history_nav();
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char(c) if key.modifiers.is_empty() => {
-                        app.subshell.cmdline.push(c);
-                        app.subshell.clear_history_nav();
-                    }
-                    _ => {}
+                    return Ok(());
                 }
-                return Ok(());
             }
             UiMode::HistoryDialog {
                 selected_index,
@@ -3276,7 +3315,7 @@ impl TerminalApp {
                         HF::List | HF::Ok => {
                             let idx = *selected_index;
                             if let Some(s) = app.subshell.history().get(idx).cloned() {
-                                app.subshell.cmdline = s;
+                                app.subshell.replace_cmdline(s);
                                 app.subshell.clear_history_nav();
                                 app.ui_mode = UiMode::ShellInput;
                             }
@@ -3628,7 +3667,7 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::InputDialog {
-                title: _,
+                title,
                 prompt: _,
                 value,
                 on_submit,
@@ -3642,14 +3681,15 @@ impl TerminalApp {
                         *focus_ok = !*focus_ok;
                     }
                     KeyCode::Enter => {
-                        if *focus_ok {
+                        // GNU Quick cd: Enter on the input applies the path
+                        // without requiring Tab to the OK button.
+                        let submit = *focus_ok || title == QUICK_CD_TITLE;
+                        if submit {
                             let cb = std::mem::replace(on_submit, Box::new(|_, _| Ok(())));
                             let val = value.clone();
                             app.ui_mode = UiMode::Normal;
                             cb(app, val)?;
                             app.reload_panels()?;
-                        } else {
-                            // stay, user can toggle to OK
                         }
                     }
                     KeyCode::Backspace => {
@@ -5550,6 +5590,7 @@ impl TerminalApp {
                         "Move",
                         "Mkdir",
                         "Delete",
+                        "Quick cd",
                         "Chmod",
                         "Chown",
                         "Hard link",
@@ -5964,6 +6005,9 @@ impl TerminalApp {
                                     KeyEvent::new(KeyCode::F(8), key.modifiers),
                                     page_rows,
                                 );
+                            }
+                            "Quick cd" => {
+                                open_quick_cd(app);
                             }
                             "Chmod" => {
                                 // Simulate C-x c chord
@@ -6955,15 +6999,26 @@ impl TerminalApp {
 
         // (C-x handling centralized below with app.pending_ctrl_x)
 
-        // Global Alt-Enter: append filename to command line and enter ShellInput if necessary
+        // Global Alt-Enter / C-Enter: append filename to command line.
+        // C-S-Enter: full path of the selected file.
         if matches!(key.code, KeyCode::Enter)
-            && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT)
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
         {
-            if let Some(ent) = app.active_panel().current_entry() {
-                let name = ent.name.clone();
-                app.subshell.append_filename(&name);
-                app.ui_mode = UiMode::ShellInput;
-            }
+            insert_selected_on_cmdline(app, true);
+            return Ok(());
+        }
+        if matches!(key.code, KeyCode::Enter)
+            && (key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                || key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL))
+        {
+            insert_selected_on_cmdline(app, false);
             return Ok(());
         }
         // If UI is Normal and Esc is pressed, exit QuickView/Info/Tree modes on panels back to Listing.
@@ -6993,6 +7048,18 @@ impl TerminalApp {
             // Special case: handle '!' even when SHIFT is pressed (C-x !)
             if matches!(key.code, KeyCode::Char('!')) {
                 open_external_panelize_dialog(app);
+                return Ok(());
+            } else if matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P')) {
+                let other = key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL);
+                insert_panel_cwd_on_cmdline(app, other);
+                return Ok(());
+            } else if matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T')) {
+                let other = key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL);
+                insert_tagged_names_on_cmdline(app, other);
                 return Ok(());
             } else if key.modifiers.is_empty() {
                 if let KeyCode::Char('h') = key.code {
@@ -7187,6 +7254,35 @@ impl TerminalApp {
         {
             app.pending_ctrl_x = true;
             return Ok(());
+        }
+        // GNU mc(1) Shell Command Line helpers from the panels.
+        if matches!(app.ui_mode, UiMode::Normal) {
+            if matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            {
+                open_quick_cd(app);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P'))
+                && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            {
+                apply_cmdline_history(app, true);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
+                && key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            {
+                apply_cmdline_history(app, false);
+                return Ok(());
+            }
+            if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                app.pending_quote = true;
+                return Ok(());
+            }
         }
         // Panel quick search handling (only in UiMode::Normal), placed after C-x handling.
         if matches!(app.ui_mode, UiMode::Normal) {
@@ -7720,7 +7816,7 @@ impl TerminalApp {
             // Only if not a mapped action, treat plain char as command-line typing.
             if let KeyCode::Char(c) = key.code {
                 if key.modifiers.is_empty() {
-                    app.subshell.cmdline.push(c);
+                    app.subshell.insert_char(c);
                     app.subshell.clear_history_nav();
                     app.ui_mode = UiMode::ShellInput;
                     return Ok(());
@@ -7752,6 +7848,106 @@ impl TerminalApp {
 pub(crate) const HISTORY_DIALOG_TITLE: &str = "History";
 pub(crate) const HISTORY_CLEAN_TITLE: &str = "History cleaning";
 pub(crate) const HISTORY_CLEAN_MESSAGE: &str = "Do you want to clean this history?";
+pub(crate) const QUICK_CD_TITLE: &str = "Quick cd";
+pub(crate) const QUICK_CD_PROMPT: &str = "Enter directory";
+
+fn focus_command_line(app: &mut App) {
+    app.ui_mode = UiMode::ShellInput;
+}
+
+fn insert_selected_on_cmdline(app: &mut App, full_path: bool) {
+    if let Some(ent) = app.active_panel().current_entry() {
+        let text = if full_path {
+            ent.path.to_string_lossy().into_owned()
+        } else {
+            ent.name.clone()
+        };
+        app.subshell.append_filename(&text);
+        focus_command_line(app);
+    }
+}
+
+fn insert_panel_cwd_on_cmdline(app: &mut App, other: bool) {
+    let path = if other {
+        app.inactive_panel().cwd.clone()
+    } else {
+        app.active_panel().cwd.clone()
+    };
+    app.subshell.append_filename(&path.to_string_lossy());
+    focus_command_line(app);
+}
+
+fn insert_tagged_names_on_cmdline(app: &mut App, other: bool) {
+    let names: Vec<String> = {
+        let panel = if other {
+            app.inactive_panel()
+        } else {
+            app.active_panel()
+        };
+        if panel.selection.is_empty() {
+            panel
+                .current_entry()
+                .map(|e| vec![e.name.clone()])
+                .unwrap_or_default()
+        } else {
+            panel
+                .selection
+                .iter()
+                .filter_map(|i| panel.entries.get(i))
+                .filter(|e| !e.is_parent_marker())
+                .map(|e| e.name.clone())
+                .collect()
+        }
+    };
+    for name in names {
+        app.subshell.append_filename(&name);
+    }
+    focus_command_line(app);
+}
+
+fn apply_cmdline_history(app: &mut App, prev: bool) {
+    let next = if prev {
+        app.subshell.history_prev()
+    } else {
+        app.subshell.history_next()
+    };
+    if let Some(s) = next {
+        app.subshell.replace_cmdline(s);
+    }
+    focus_command_line(app);
+}
+
+fn open_quick_cd(app: &mut App) {
+    app.ui_mode = UiMode::InputDialog {
+        title: QUICK_CD_TITLE.into(),
+        prompt: QUICK_CD_PROMPT.into(),
+        value: String::new(),
+        focus_ok: false,
+        on_submit: Box::new(|app, input| {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                return Ok(());
+            }
+            let typed = std::path::PathBuf::from(trimmed);
+            let path = if typed.is_absolute() {
+                typed
+            } else {
+                app.active_panel().cwd.join(trimmed)
+            };
+            match app.change_dir(&path) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    app.ui_mode = UiMode::DialogConfirm {
+                        title: "Error".into(),
+                        message: format!("{err}"),
+                        on_ok: Box::new(|_| Ok(())),
+                    };
+                    Ok(())
+                }
+            }
+        }),
+    };
+}
 
 fn open_command_history(app: &mut App) {
     let selected_index = app.subshell.history_len().saturating_sub(1);
@@ -16505,6 +16701,368 @@ mod help_viewer_tests {
         }
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod shell_cmdline_helpers_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::subshell::shell_quote;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-shell-helpers-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn mark_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        app.active_panel_mut().selection.select(idx);
+    }
+
+    fn seed_files(root: &std::path::Path) {
+        std::fs::write(root.join("hello world.txt"), "hi").unwrap();
+        std::fs::write(root.join("second.txt"), "x").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        std::fs::write(root.join("subdir").join("other.txt"), "y").unwrap();
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn alt_enter_and_ctrl_enter_insert_quoted_filename() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        select_named(&mut app, "hello world.txt");
+
+        press_mod(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, shell_quote("hello world.txt"));
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_mod(&mut app, KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, shell_quote("hello world.txt"));
+
+        // Same helpers while the command line already has focus.
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::ShellInput;
+        press_mod(&mut app, KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(app.subshell.cmdline, shell_quote("hello world.txt"));
+        app.subshell.clear_cmdline();
+        press_mod(&mut app, KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(app.subshell.cmdline, shell_quote("hello world.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_shift_enter_inserts_full_path() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        select_named(&mut app, "hello world.txt");
+        let full = app.active_panel().current_entry().unwrap().path.clone();
+        press_mod(
+            &mut app,
+            KeyCode::Enter,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, shell_quote(&full.to_string_lossy()));
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::ShellInput;
+        press_mod(
+            &mut app,
+            KeyCode::Enter,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.subshell.cmdline, shell_quote(&full.to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_p_and_ctrl_p_insert_panel_paths() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        let left_cwd = app.active_panel().cwd.clone();
+        app.active = PaneSide::Right;
+        app.change_dir(&root.join("subdir")).unwrap();
+        let right_cwd = app.active_panel().cwd.clone();
+        app.active = PaneSide::Left;
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('p'));
+        assert!(!app.pending_ctrl_x, "C-x p must clear pending_ctrl_x");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(
+            app.subshell.cmdline,
+            shell_quote(&left_cwd.to_string_lossy())
+        );
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'x');
+        press_ctrl(&mut app, 'p');
+        assert!(!app.pending_ctrl_x);
+        assert_eq!(
+            app.subshell.cmdline,
+            shell_quote(&right_cwd.to_string_lossy())
+        );
+
+        // From ShellInput
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::ShellInput;
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('p'));
+        assert!(!app.pending_ctrl_x);
+        assert_eq!(
+            app.subshell.cmdline,
+            shell_quote(&left_cwd.to_string_lossy())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_t_inserts_tagged_names_from_current_and_other() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        mark_named(&mut app, "hello world.txt");
+        mark_named(&mut app, "second.txt");
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('t'));
+        assert!(!app.pending_ctrl_x);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let cmd = app.subshell.cmdline.clone();
+        assert!(
+            cmd.contains(&shell_quote("hello world.txt")),
+            "tagged current names: {cmd}"
+        );
+        assert!(cmd.contains("second.txt"), "tagged current names: {cmd}");
+
+        app.subshell.clear_cmdline();
+        app.active_panel_mut().selection.clear();
+        app.active = PaneSide::Right;
+        app.change_dir(&root.join("subdir")).unwrap();
+        mark_named(&mut app, "other.txt");
+        app.active = PaneSide::Left;
+        app.ui_mode = UiMode::Normal;
+
+        press_ctrl(&mut app, 'x');
+        press_ctrl(&mut app, 't');
+        assert!(!app.pending_ctrl_x);
+        assert_eq!(app.subshell.cmdline, shell_quote("other.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_p_alt_n_cycle_same_history_as_alt_h() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        type_str(&mut app, "echo a");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "echo b");
+        press_alt(&mut app, 'p');
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "echo a");
+        press_alt(&mut app, 'n');
+        assert_eq!(app.subshell.cmdline, "echo b");
+
+        // Alt-h still opens the History dialog on the same store.
+        press_alt(&mut app, 'h');
+        match &app.ui_mode {
+            UiMode::HistoryDialog { .. } => {}
+            _ => panic!("Alt-h should open History"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_q_inserts_next_char_literally() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press_ctrl(&mut app, 'q');
+        press(&mut app, KeyCode::Char('x'));
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "x");
+        assert!(!app.pending_quote);
+
+        // '+' is otherwise Select group; quoting inserts it.
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'q');
+        press(&mut app, KeyCode::Char('+'));
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "+");
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::ShellInput;
+        press_ctrl(&mut app, 'q');
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.subshell.cmdline, "x");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_c_quick_cd_enter_chdirs_esc_f10_cancel() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        let start = app.active_panel().cwd.clone();
+        press_alt(&mut app, 'c');
+        match &app.ui_mode {
+            UiMode::InputDialog { title, prompt, .. } => {
+                assert_eq!(title, QUICK_CD_TITLE);
+                assert_eq!(prompt, QUICK_CD_PROMPT);
+            }
+            UiMode::FindDialog(_) => panic!("Alt-c must not open Find File"),
+            _ => panic!("Alt-c must open Quick cd"),
+        }
+        type_str(&mut app, "subdir");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.active_panel().cwd, start.join("subdir"));
+
+        app.active = PaneSide::Left;
+        app.change_dir(&start).unwrap();
+        press_alt(&mut app, 'c');
+        type_str(&mut app, "subdir");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.active_panel().cwd, start);
+
+        press_alt(&mut app, 'c');
+        type_str(&mut app, "subdir");
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(app.active_panel().cwd, start);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_menu_quick_cd_opens_same_dialog() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right); // File
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, prompt, .. } => {
+                assert_eq!(title, QUICK_CD_TITLE);
+                assert_eq!(prompt, QUICK_CD_PROMPT);
+            }
+            UiMode::FindDialog(_) => panic!("File menu Quick cd must not open Find File"),
+            UiMode::Menu { .. } => panic!("File menu Quick cd must open the dialog"),
+            _ => panic!("File menu Quick cd must open Quick cd"),
+        }
+        type_str(&mut app, "subdir");
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.active_panel().cwd.ends_with("subdir"),
+            "File menu Quick cd Enter must chdir, got {:?}",
+            app.active_panel().cwd
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn existing_helpers_still_work() {
+        let root = temp_workspace();
+        seed_files(&root);
+        let mut app = make_app(&root);
+        select_named(&mut app, "second.txt");
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "Alt-h should open History"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('!'));
+        assert!(
+            matches!(app.ui_mode, UiMode::ExternalPanelizeDialog(_)),
+            "C-x ! still External panelize"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(1));
+        assert!(matches!(app.ui_mode, UiMode::Help { .. }), "F1 still Help");
+        press(&mut app, KeyCode::Esc);
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('c'));
+        assert!(
+            matches!(app.ui_mode, UiMode::ChmodDialog { .. }),
+            "C-x c still chmod"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
