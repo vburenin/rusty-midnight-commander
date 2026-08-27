@@ -18,6 +18,7 @@ use rmc_core::app::{
     HistoryDialogFocus, LayoutFocus, UiMode, ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu,
     ViewerSearchDialog, ViewerSearchFocus,
 };
+use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, search_files_streaming,
     CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
@@ -3354,6 +3355,10 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::DirectoryTree(_) => {
+                handle_directory_tree_key(app, key, page_rows)?;
+                return Ok(());
+            }
             UiMode::PromptInput {
                 title: _,
                 value,
@@ -5304,6 +5309,7 @@ impl TerminalApp {
                     ],
                     &[
                         "User menu",
+                        "Directory tree",
                         "Find file",
                         "Directory hotlist",
                         "Compare dirs",
@@ -5754,6 +5760,9 @@ impl TerminalApp {
                                     app.hotlist.entries.clone(),
                                 );
                                 app.ui_mode = UiMode::HotlistDialog(st);
+                            }
+                            "Directory tree" => {
+                                open_directory_tree(app);
                             }
                             "Find file" => {
                                 let start = app.active_panel().cwd.clone();
@@ -7775,6 +7784,250 @@ fn build_tree_flat(
     }
 }
 
+fn tree_push_unique(
+    out: &mut Vec<rmc_core::panel::TreeEntry>,
+    path: std::path::PathBuf,
+    depth: usize,
+    max_entries: usize,
+) {
+    if out.len() >= max_entries {
+        return;
+    }
+    if out.iter().any(|e| e.path == path) {
+        return;
+    }
+    out.push(rmc_core::panel::TreeEntry { path, depth });
+}
+
+/// One listing of real child directories (skips VFS `..`). Does not recurse.
+fn add_immediate_child_dirs(
+    vfs: &dyn rmc_fs::Vfs,
+    parent: &std::path::Path,
+    parent_depth: usize,
+    max_entries: usize,
+    out: &mut Vec<rmc_core::panel::TreeEntry>,
+) {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = vfs.list_dir(parent, false) {
+        for e in entries {
+            if e.meta.is_dir && e.name != ".." {
+                dirs.push(e.path);
+            }
+        }
+    }
+    dirs.sort();
+    for p in dirs {
+        tree_push_unique(out, p, parent_depth + 1, max_entries);
+    }
+}
+
+/// Command-menu Directory tree figure. Does not switch panel Tree mode.
+fn open_directory_tree(app: &mut App) {
+    let start = app.active_panel().cwd.clone();
+    let start = if start.as_os_str().is_empty() {
+        std::path::PathBuf::from("/")
+    } else {
+        start
+    };
+    let chain = rmc_core::find::find_tree_ancestor_chain(&start);
+    let mut known: Vec<rmc_core::panel::TreeEntry> = Vec::new();
+    for (i, p) in chain.iter().enumerate() {
+        tree_push_unique(&mut known, p.clone(), i, DIRECTORY_TREE_MAX_ENTRIES);
+    }
+    // Siblings along the ancestor chain (not the start dir itself).
+    if chain.len() > 1 {
+        for (i, p) in chain.iter().enumerate().take(chain.len() - 1) {
+            add_immediate_child_dirs(&*app.vfs, p, i, DIRECTORY_TREE_MAX_ENTRIES, &mut known);
+        }
+    }
+    let start_depth = chain.len().saturating_sub(1);
+    build_tree_flat(
+        &*app.vfs,
+        &start,
+        start_depth,
+        DIRECTORY_TREE_MAX_ENTRIES,
+        &mut known,
+    );
+    app.ui_mode = UiMode::DirectoryTree(DirectoryTreeState::new(known, &start));
+}
+
+/// Keys from mc(1) Directory Tree. Uses `page_rows` from `handle_key` so tests/CI
+/// without a TTY never call `crossterm::terminal::size()`.
+fn handle_directory_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
+    let list_rows = page_rows.max(1);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc | KeyCode::F(10) => {
+            app.ui_mode = UiMode::Normal;
+        }
+        KeyCode::Enter => {
+            let dest = match &app.ui_mode {
+                UiMode::DirectoryTree(st) => Some(st.selected_path()),
+                _ => None,
+            };
+            if let Some(path) = dest {
+                let _ = app.change_dir(&path);
+            }
+            app.ui_mode = UiMode::Normal;
+        }
+        KeyCode::Up => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.move_up();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::Down => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.move_down();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::Left => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.move_parent();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::Right => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.move_child();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::PageUp => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.page_up(list_rows);
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::PageDown => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.page_down(list_rows);
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::Home => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.move_home();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::End => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.move_end();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::F(2) => rescan_directory_tree(app, list_rows),
+        KeyCode::Char('r') if ctrl => rescan_directory_tree(app, list_rows),
+        KeyCode::F(3) => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.forget_selected();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::F(4) => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.toggle_mode();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::F(5) => directory_tree_copy_move(app, true),
+        KeyCode::F(6) => directory_tree_copy_move(app, false),
+        KeyCode::F(8) => directory_tree_delete(app),
+        KeyCode::Char('s') if ctrl || alt => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.search_next();
+                st.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::Backspace => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.search.pop();
+            }
+        }
+        KeyCode::Char('h') if ctrl => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.search.pop();
+            }
+        }
+        KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
+            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                st.search.push(c);
+                st.search_next();
+                st.ensure_visible(list_rows);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn rescan_directory_tree(app: &mut App, list_rows: usize) {
+    let (path, depth) = match &app.ui_mode {
+        UiMode::DirectoryTree(st) => (st.selected_path(), st.selected_depth()),
+        _ => return,
+    };
+    let mut kids: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = app.vfs.list_dir(&path, false) {
+        for e in entries {
+            if e.meta.is_dir && e.name != ".." {
+                kids.push(e.path);
+            }
+        }
+    }
+    kids.sort();
+    if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+        st.apply_rescan(kids, depth);
+        st.ensure_visible(list_rows);
+    }
+}
+
+fn directory_tree_copy_move(app: &mut App, copy: bool) {
+    let src = match &app.ui_mode {
+        UiMode::DirectoryTree(st) => st.selected_path(),
+        _ => return,
+    };
+    let name = src
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let dst_dir = app.inactive_panel_mut().cwd.clone();
+    let default_to = dst_dir.join(&name).display().to_string();
+    app.ui_mode = UiMode::CopyDialog {
+        title: if copy { "Copy".into() } else { "Move".into() },
+        src_name: name,
+        src_path: src,
+        mask: "*".into(),
+        to: default_to,
+        using_shell_patterns: true,
+        follow_links: false,
+        preserve_attrs: true,
+        dive_into_subdir: false,
+        stable_symlinks: false,
+        focus: rmc_core::app::CopyDialogFocus::To,
+    };
+}
+
+fn directory_tree_delete(app: &mut App) {
+    let path = match &app.ui_mode {
+        UiMode::DirectoryTree(st) => st.selected_path(),
+        _ => return,
+    };
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    app.ui_mode = UiMode::DeleteDialog {
+        name,
+        path,
+        focus_ok: true,
+    };
+}
+
 const FIND_TREE_MAX_ENTRIES: usize = 2048;
 
 /// Open the Find File directory-tree figure. Idempotent: a second open does not nest.
@@ -8847,12 +9100,14 @@ mod drop_menus_tests {
         press(&mut app, KeyCode::Right);
         press(&mut app, KeyCode::Right);
         assert_menu(&app, 2, 0, true);
-        // Command menu still includes External panelize (index 4).
+        // Command menu: User menu, Directory tree, Find file, Directory hotlist,
+        // Compare dirs, External panelize (index 5).
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
-        assert_menu(&app, 2, 4, true);
+        press(&mut app, KeyCode::Down);
+        assert_menu(&app, 2, 5, true);
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
             UiMode::ExternalPanelizeDialog(_) => {}
@@ -12551,7 +12806,8 @@ mod find_file_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        press(app, KeyCode::Down);
+        press(app, KeyCode::Down); // User menu -> Directory tree
+        press(app, KeyCode::Down); // Directory tree -> Find file
         press(app, KeyCode::Enter);
     }
 
@@ -14998,6 +15254,7 @@ mod external_panelize_dialog_tests {
         press(app, KeyCode::Down);
         press(app, KeyCode::Down);
         press(app, KeyCode::Down);
+        press(app, KeyCode::Down);
         press(app, KeyCode::Enter);
     }
 
@@ -15235,6 +15492,248 @@ mod external_panelize_dialog_tests {
             }
             _ => panic!("expected Error dialog for a command with no files"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod directory_tree_command_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_core::dirtree::DirectoryTreeState;
+    use rmc_core::panel::PanelMode;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-dirtree-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
+    fn tree_state(app: &App) -> &DirectoryTreeState {
+        match &app.ui_mode {
+            UiMode::DirectoryTree(st) => st,
+            UiMode::FindDialog(_) => panic!("expected DirectoryTree, got FindDialog"),
+            _ => panic!("expected DirectoryTree"),
+        }
+    }
+
+    fn open_via_command_menu(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Down); // User menu -> Directory tree
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn command_menu_opens_directory_tree_not_find_or_panel_tree() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_command_menu(&mut app);
+        assert!(
+            matches!(app.ui_mode, UiMode::DirectoryTree(_)),
+            "Command menu Directory tree must open the dedicated figure"
+        );
+        assert!(
+            !matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "must not drop to Find File"
+        );
+        assert!(
+            !matches!(app.active_panel().mode, PanelMode::Tree),
+            "must not switch the panel to Tree mode"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_chdirs_current_panel_and_closes() {
+        let root = temp_workspace();
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        std::fs::create_dir_all(alpha.join("a_child")).unwrap();
+        std::fs::create_dir_all(beta.join("b_child")).unwrap();
+        let mut app = make_app(&alpha);
+        open_via_command_menu(&mut app);
+        let start_cwd = app.active_panel().cwd.clone();
+        assert_eq!(start_cwd, alpha);
+        // Dynamic: siblings of alpha include beta. Down selects beta.
+        press(&mut app, KeyCode::Down);
+        let dest = tree_state(&app).selected_path();
+        assert_eq!(dest, beta);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active_panel().cwd, beta);
+        assert!(!matches!(app.active_panel().mode, PanelMode::Tree));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_and_f10_close_without_changing_cwd() {
+        let root = temp_workspace();
+        let alpha = root.join("alpha");
+        std::fs::create_dir_all(&alpha).unwrap();
+        let mut app = make_app(&alpha);
+        open_via_command_menu(&mut app);
+        let cwd = app.active_panel().cwd.clone();
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active_panel().cwd, cwd);
+
+        open_via_command_menu(&mut app);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active_panel().cwd, cwd);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_r_and_f2_rescan_do_not_panic() {
+        let root = temp_workspace();
+        let alpha = root.join("alpha");
+        std::fs::create_dir_all(&alpha).unwrap();
+        let mut app = make_app(&alpha);
+        open_via_command_menu(&mut app);
+        std::fs::create_dir_all(alpha.join("new_child")).unwrap();
+        press_ctrl(&mut app, 'r');
+        assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
+        assert!(
+            tree_state(&app)
+                .known
+                .iter()
+                .any(|e| e.path == alpha.join("new_child")),
+            "C-r rescan should pick up a new child"
+        );
+        press(&mut app, KeyCode::F(2));
+        assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f4_toggles_static_vs_dynamic() {
+        let root = temp_workspace();
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        std::fs::create_dir_all(alpha.join("a_child")).unwrap();
+        std::fs::create_dir_all(beta.join("b_child")).unwrap();
+        let mut app = make_app(&alpha);
+        open_via_command_menu(&mut app);
+        assert!(tree_state(&app).is_dynamic(), "dynamic is the default");
+        let dynamic_len = tree_state(&app).entries.len();
+        // Dynamic Down is sibling (beta), not child (a_child).
+        press(&mut app, KeyCode::Down);
+        assert_eq!(tree_state(&app).selected_path(), beta);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(tree_state(&app).selected_path(), alpha);
+
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            !tree_state(&app).is_dynamic(),
+            "F4 switches to static navigation"
+        );
+        let static_len = tree_state(&app).entries.len();
+        assert!(
+            static_len >= dynamic_len,
+            "static shows all known dirs ({static_len}) vs neighborhood ({dynamic_len})"
+        );
+        if tree_state(&app).selected_path() != alpha {
+            let idx = tree_state(&app)
+                .entries
+                .iter()
+                .position(|e| e.path == alpha)
+                .expect("alpha in static list");
+            match &mut app.ui_mode {
+                UiMode::DirectoryTree(st) => st.selected_index = idx,
+                _ => panic!("expected DirectoryTree"),
+            }
+        }
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            tree_state(&app).selected_path(),
+            alpha.join("a_child"),
+            "static Up/Down walk all known dirs"
+        );
+        press(&mut app, KeyCode::F(4));
+        assert!(tree_state(&app).is_dynamic());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn page_keys_use_page_rows_without_tty() {
+        let root = temp_workspace();
+        let alpha = root.join("alpha");
+        std::fs::create_dir_all(&alpha).unwrap();
+        let mut app = make_app(&alpha);
+        open_via_command_menu(&mut app);
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        TerminalApp::handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), 2)
+            .unwrap();
+        assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f3_forget_drops_selected_from_figure() {
+        let root = temp_workspace();
+        let alpha = root.join("alpha");
+        let child = alpha.join("gone");
+        std::fs::create_dir_all(&child).unwrap();
+        let mut app = make_app(&alpha);
+        open_via_command_menu(&mut app);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(tree_state(&app).selected_path(), child);
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            !tree_state(&app).known.iter().any(|e| e.path == child),
+            "F3 Forget removes the directory from the figure"
+        );
+        assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

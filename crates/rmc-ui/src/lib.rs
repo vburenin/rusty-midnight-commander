@@ -1,3 +1,4 @@
+mod dirtree;
 mod filehighlight;
 pub mod find;
 pub mod help;

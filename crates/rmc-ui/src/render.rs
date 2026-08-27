@@ -1,3 +1,4 @@
+use crate::dirtree::draw_directory_tree_dialog;
 use crate::filehighlight::{listing_name_color, name_span_in_line};
 use crate::find::draw_find_dialog;
 use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
@@ -418,6 +419,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         }
         rmc_core::app::UiMode::ExternalPanelizeDialog(state) => {
             draw_external_panelize_dialog(p, cols, rows, pal, state);
+        }
+        rmc_core::app::UiMode::DirectoryTree(state) => {
+            draw_directory_tree_dialog(p, cols, rows, pal, state);
         }
         rmc_core::app::UiMode::HistoryDialog {
             selected_index,
@@ -5834,6 +5838,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
         ],
         &[
             "User menu",
+            "Directory tree",
             "Find file",
             "Directory hotlist",
             "Compare dirs",

@@ -1,5 +1,6 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
+use crate::dirtree::DirectoryTreeState;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::panel::{FileEntry, PanelState, SortBy};
@@ -502,6 +503,8 @@ pub enum UiMode {
     HotlistDialog(HotlistDialogState),
     /// GNU External panelize: named commands + run/panelize.
     ExternalPanelizeDialog(ExternalPanelizeDialogState),
+    /// GNU mc(1) Command menu Directory tree figure (not panel Tree mode).
+    DirectoryTree(DirectoryTreeState),
     /// Background jobs list dialog (C-x j).
     JobsDialog {
         /// Selected row in the jobs list.
@@ -1612,6 +1615,7 @@ impl App {
             UiMode::HistoryDialog { .. } => "Panels".to_string(),
             UiMode::HotlistDialog(_) => "Panels".to_string(),
             UiMode::ExternalPanelizeDialog(_) => "External panelize".to_string(),
+            UiMode::DirectoryTree(_) => "Directory Tree".to_string(),
             UiMode::JobsDialog { .. } => "Panels".to_string(),
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
             UiMode::LayoutDialog { .. } => "Panels".to_string(),
