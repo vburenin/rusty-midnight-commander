@@ -14,8 +14,8 @@ use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog,
     EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus, EditorSearchDialog,
-    EditorSearchFocus, HistoryDialogFocus, LayoutFocus, UiMode, ViewerSearchDialog,
-    ViewerSearchFocus,
+    EditorSearchFocus, HistoryDialogFocus, LayoutFocus, UiMode, ViewerDisplayDialog,
+    ViewerDisplayFocus, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
@@ -5122,6 +5122,36 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::Viewer { .. } => {
+                // F9 Menu opens Display options unless Search is already open
+                // (same isolation as other modes). Leftover search/goto prompts
+                // are cleared; an already-open Search dialog is not stolen.
+                if matches!(key.code, KeyCode::F(9)) {
+                    if let UiMode::Viewer {
+                        hex,
+                        wrap,
+                        show_line_numbers,
+                        show_cr,
+                        search_dialog: None,
+                        display_dialog,
+                        search_prompt,
+                        goto_prompt,
+                        ..
+                    } = &mut app.ui_mode
+                    {
+                        if display_dialog.is_none() {
+                            let ln = *show_line_numbers;
+                            let cr = *show_cr;
+                            let wrap = *wrap;
+                            let hex = *hex;
+                            *search_prompt = None;
+                            *goto_prompt = None;
+                            *display_dialog = Some(Box::new(ViewerDisplayDialog::from_viewer(
+                                ln, cr, wrap, hex,
+                            )));
+                            return Ok(());
+                        }
+                    }
+                }
                 // If viewer has an active goto or search prompt, handle overlay first
                 if let UiMode::Viewer {
                     path,
@@ -5299,6 +5329,84 @@ impl TerminalApp {
                                     && matches!(dlg.focus, F::Search) =>
                             {
                                 dlg.search.push(c);
+                            }
+                            _ => {}
+                        }
+                        return Ok(());
+                    }
+                }
+                // mcview display-options dialog (F9 Menu). Stays in Viewer.
+                if let UiMode::Viewer {
+                    hex,
+                    wrap,
+                    show_line_numbers,
+                    show_cr,
+                    display_dialog,
+                    ..
+                } = &mut app.ui_mode
+                {
+                    if let Some(dlg) = display_dialog {
+                        use ViewerDisplayFocus as F;
+                        let order = [
+                            F::ShowLineNumbers,
+                            F::ShowCr,
+                            F::WrapMode,
+                            F::HexMode,
+                            F::Ok,
+                            F::Cancel,
+                        ];
+                        let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                        match key.code {
+                            KeyCode::Esc | KeyCode::F(10) => {
+                                *display_dialog = None;
+                            }
+                            KeyCode::F(9) => {
+                                // Already open: do not nest.
+                            }
+                            KeyCode::Tab | KeyCode::Down => {
+                                idx = (idx + 1) % order.len();
+                                dlg.focus = order[idx];
+                            }
+                            KeyCode::BackTab | KeyCode::Up => {
+                                idx = (idx + order.len() - 1) % order.len();
+                                dlg.focus = order[idx];
+                            }
+                            KeyCode::Left | KeyCode::Right
+                                if matches!(dlg.focus, F::Ok | F::Cancel) =>
+                            {
+                                dlg.focus = if matches!(dlg.focus, F::Ok) {
+                                    F::Cancel
+                                } else {
+                                    F::Ok
+                                };
+                            }
+                            // Space / Enter toggle checkboxes before generic Char
+                            // (same as Search).
+                            KeyCode::Char(' ')
+                                if key.modifiers.is_empty() && dlg.focus.is_checkbox() =>
+                            {
+                                let _ = dlg.toggle_focused_checkbox();
+                            }
+                            KeyCode::Enter if dlg.focus.is_checkbox() => {
+                                let _ = dlg.toggle_focused_checkbox();
+                            }
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if matches!(dlg.focus, F::Ok | F::Cancel)
+                                    || matches!(key.code, KeyCode::Enter) =>
+                            {
+                                match dlg.focus {
+                                    F::Cancel => {
+                                        *display_dialog = None;
+                                    }
+                                    F::Ok => {
+                                        *show_line_numbers = dlg.show_line_numbers;
+                                        *show_cr = dlg.show_cr;
+                                        *wrap = dlg.wrap;
+                                        *hex = dlg.hex;
+                                        *display_dialog = None;
+                                    }
+                                    _ => {}
+                                }
                             }
                             _ => {}
                         }
@@ -10397,6 +10505,7 @@ mod viewer_search_tests {
             show_line_numbers: false,
             show_cr: false,
             search_dialog: None,
+            display_dialog: None,
             search_case_sensitive: false,
             search_backwards: false,
             search_whole_words: false,
@@ -10925,6 +11034,477 @@ mod viewer_search_tests {
                 assert!(*offset > 0, "goto line 2 should move off start");
             }
             _ => panic!("expected Viewer after Goto"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod viewer_display_options_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ViewerDisplayFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-viewer-display-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn open_viewer(app: &mut App, path: std::path::PathBuf) {
+        app.ui_mode = UiMode::Viewer {
+            path,
+            hex: false,
+            wrap: false,
+            offset: 0,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            show_line_numbers: false,
+            show_cr: false,
+            search_dialog: None,
+            display_dialog: None,
+            search_case_sensitive: false,
+            search_backwards: false,
+            search_whole_words: false,
+            search_regexp: false,
+            status_msg: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn display_dialog(app: &App) -> &ViewerDisplayDialog {
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog: Some(dlg),
+                ..
+            } => dlg,
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected viewer Display options dialog, got InputDialog {title:?}")
+            }
+            _ => panic!("expected Viewer display-options dialog"),
+        }
+    }
+
+    #[test]
+    fn f9_opens_display_dialog_defaults_match_viewer_state() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        match &mut app.ui_mode {
+            UiMode::Viewer {
+                show_line_numbers,
+                show_cr,
+                wrap,
+                hex,
+                ..
+            } => {
+                *show_line_numbers = true;
+                *show_cr = true;
+                *wrap = true;
+                *hex = false;
+            }
+            _ => panic!("expected Viewer"),
+        }
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog: Some(dlg),
+                search_prompt,
+                goto_prompt,
+                search_dialog,
+                ..
+            } => {
+                assert!(search_prompt.is_none());
+                assert!(goto_prompt.is_none());
+                assert!(search_dialog.is_none());
+                assert!(dlg.show_line_numbers);
+                assert!(dlg.show_cr);
+                assert!(dlg.wrap);
+                assert!(!dlg.hex);
+                assert_eq!(dlg.focus, ViewerDisplayFocus::ShowLineNumbers);
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("F9 must stay in Viewer, not InputDialog {title:?}")
+            }
+            _ => panic!("F9 must open the Display options dialog in Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_reaches_every_checkbox_then_ok_cancel_space_enter_toggle() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(9));
+        assert_eq!(
+            display_dialog(&app).focus,
+            ViewerDisplayFocus::ShowLineNumbers
+        );
+        assert!(!display_dialog(&app).show_line_numbers);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(display_dialog(&app).show_line_numbers);
+        press(&mut app, KeyCode::Enter);
+        assert!(!display_dialog(&app).show_line_numbers);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::ShowCr);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(display_dialog(&app).show_cr);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::WrapMode);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(display_dialog(&app).wrap);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::HexMode);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(display_dialog(&app).hex);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::Ok);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::Cancel);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::Ok);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::Cancel);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            display_dialog(&app).focus,
+            ViewerDisplayFocus::ShowLineNumbers
+        );
+        // Space on a checkbox toggles; it must not insert junk or leave Viewer.
+        press(&mut app, KeyCode::Char(' '));
+        assert!(display_dialog(&app).show_line_numbers);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog: Some(_),
+                ..
+            } => {}
+            _ => panic!("Space must stay in the display-options dialog"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_f10_cancel_leave_flags_unchanged() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Char(' ')); // line numbers
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' ')); // CR
+        press(&mut app, KeyCode::Esc);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog,
+                show_line_numbers,
+                show_cr,
+                wrap,
+                hex,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+                assert!(!*show_line_numbers);
+                assert!(!*show_cr);
+                assert!(!*wrap);
+                assert!(!*hex);
+            }
+            UiMode::Normal => panic!("Esc must stay in the viewer"),
+            _ => panic!("Esc should stay in the viewer"),
+        }
+
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::F(10));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog,
+                show_line_numbers,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+                assert!(!*show_line_numbers);
+            }
+            _ => panic!("F10 should stay in the viewer"),
+        }
+
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Tab); // Cancel
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::Cancel);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog,
+                show_line_numbers,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+                assert!(!*show_line_numbers);
+            }
+            _ => panic!("Cancel should stay in the viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ok_applies_toggled_flags() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\r\nworld\n").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Char(' ')); // line numbers
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' ')); // CR
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' ')); // wrap
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // skip hex, to Ok
+        assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::Ok);
+        press(&mut app, KeyCode::Char(' '));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog,
+                show_line_numbers,
+                show_cr,
+                wrap,
+                hex,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+                assert!(*show_line_numbers);
+                assert!(*show_cr);
+                assert!(*wrap);
+                assert!(!*hex);
+            }
+            _ => panic!("expected Viewer after OK"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dialog_while_open_does_not_nest() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::F(9));
+        assert!(display_dialog(&app).show_line_numbers);
+        assert_eq!(
+            display_dialog(&app).focus,
+            ViewerDisplayFocus::ShowLineNumbers
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f7_search_f5_goto_f4_hex_w_wrap_still_work_when_closed() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\nworld\n").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog: Some(_),
+                display_dialog,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+            }
+            _ => panic!("F7 must still open Search"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(5));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                goto_prompt: Some(_),
+                display_dialog,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+            }
+            _ => panic!("F5 must still open Goto"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex,
+                display_dialog,
+                ..
+            } => {
+                assert!(*hex);
+                assert!(display_dialog.is_none());
+            }
+            _ => panic!("F4 must still toggle hex"),
+        }
+        press(&mut app, KeyCode::F(4));
+
+        press(&mut app, KeyCode::Char('w'));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                wrap,
+                hex,
+                display_dialog,
+                ..
+            } => {
+                assert!(*wrap);
+                assert!(!*hex);
+                assert!(display_dialog.is_none());
+            }
+            _ => panic!("w must still toggle wrap"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f9_does_not_steal_open_search() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog: Some(dlg),
+                display_dialog,
+                ..
+            } => {
+                assert!(display_dialog.is_none(), "F9 must not steal Search");
+                assert_eq!(dlg.search, "a");
+            }
+            _ => panic!("expected Search dialog still open"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f9_in_find_file_history_editor_does_not_open_display_dialog() {
+        let mut app = make_app();
+        let cwd = app.active_panel().cwd.clone();
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(cwd));
+        press(&mut app, KeyCode::F(9));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "F9 in Find File must not open viewer Display options"
+        );
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "Alt-h should open History"
+        );
+        press(&mut app, KeyCode::F(9));
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "F9 in History must not open viewer Display options"
+        );
+
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(b"abc", None),
+            show_menu: false,
+            status_msg: None,
+            search_input: None,
+            save_as_dialog: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+        };
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Editor { .. } => {}
+            UiMode::Viewer { .. } => panic!("F9 in Editor must not switch to Viewer"),
+            _ => panic!("F9 in Editor must not open viewer Display options"),
+        }
+    }
+
+    #[test]
+    fn f9_clears_leftover_search_and_goto_prompts() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        match &mut app.ui_mode {
+            UiMode::Viewer {
+                search_prompt,
+                goto_prompt,
+                ..
+            } => {
+                *search_prompt = Some("leftover".into());
+                *goto_prompt = Some("12".into());
+            }
+            _ => panic!("expected Viewer"),
+        }
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog: Some(_),
+                search_prompt,
+                goto_prompt,
+                ..
+            } => {
+                assert!(search_prompt.is_none());
+                assert!(goto_prompt.is_none());
+            }
+            _ => panic!("F9 must open Display options and clear leftover prompts"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }

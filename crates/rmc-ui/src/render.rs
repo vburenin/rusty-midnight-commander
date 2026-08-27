@@ -94,6 +94,7 @@ impl Renderer {
             show_line_numbers,
             show_cr,
             search_dialog,
+            display_dialog,
             status_msg,
             goto_prompt,
             ..
@@ -111,6 +112,7 @@ impl Renderer {
                 *show_line_numbers,
                 *show_cr,
                 search_dialog.as_deref(),
+                display_dialog.as_deref(),
                 status_msg.as_deref(),
                 goto_prompt,
                 app.shadows,
@@ -2189,6 +2191,114 @@ fn draw_editor_search_dialog(
     }
 }
 
+fn draw_viewer_display_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    dlg: &rmc_core::app::ViewerDisplayDialog,
+    show_shadow: bool,
+) {
+    use rmc_core::app::ViewerDisplayFocus as F;
+    let w = (cols as usize).min(66) as u16;
+    let h = 8u16;
+    if cols < w || rows < h {
+        return;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame — same chrome as editor Search / Save as
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title — PARITY.md / mc(1) Internal File Viewer display options
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title = " Display options ";
+    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(title);
+    // Inner fill
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for i in 1..h - 1 {
+        p.goto(x + 1, y + i);
+        p.text(&" ".repeat((w - 2) as usize));
+    }
+    let inner_w = (w - 4) as usize;
+    // Labels from mc(1) Internal File Viewer (wrap/hex) and PARITY display options
+    let checks: [(F, &str, bool); 4] = [
+        (
+            F::ShowLineNumbers,
+            "Show line numbers",
+            dlg.show_line_numbers,
+        ),
+        (F::ShowCr, "Show CR as ^M", dlg.show_cr),
+        (F::WrapMode, "Wrap mode", dlg.wrap),
+        (F::HexMode, "Hex mode", dlg.hex),
+    ];
+    for (i, (focus, label, on)) in checks.iter().enumerate() {
+        if dlg.focus == *focus {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, y + 1 + i as u16);
+        p.text(&truncate(
+            &format!("[{}] {}", if *on { 'x' } else { ' ' }, label),
+            inner_w,
+        ));
+    }
+    // Buttons: focused `< OK >`, unfocused `[ Cancel ]` (GNU mc / History / Search / Save as)
+    let focus = dlg.focus;
+    let sel_btn = |want, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
 fn draw_editor_replace_dialog(
     p: &mut Painter,
     cols: u16,
@@ -2930,6 +3040,7 @@ fn draw_viewer(
     show_line_numbers: bool,
     show_cr: bool,
     search_dialog: Option<&rmc_core::app::ViewerSearchDialog>,
+    display_dialog: Option<&rmc_core::app::ViewerDisplayDialog>,
     status_msg: Option<&str>,
     goto_prompt: &Option<String>,
     show_shadow: bool,
@@ -3061,6 +3172,10 @@ fn draw_viewer(
     // GNU mcview F7 Search dialog (same chrome as mcedit Search)
     if let Some(dlg) = search_dialog {
         draw_editor_search_dialog(p, cols, rows, pal, dlg, show_shadow);
+    }
+    // mcview display-options dialog (F9 Menu; same chrome as Search)
+    if let Some(dlg) = display_dialog {
+        draw_viewer_display_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
     // Goto prompt overlay (MC-style input dialog)
     if let Some(current) = goto_prompt {
