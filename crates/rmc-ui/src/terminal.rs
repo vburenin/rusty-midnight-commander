@@ -12,10 +12,10 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
-    App, EditorGotoDialog, EditorGotoFocus, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog,
-    EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus, EditorSearchDialog,
-    EditorSearchFocus, HistoryDialogFocus, LayoutFocus, UiMode, ViewerDisplayDialog,
-    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
+    App, EditorGotoDialog, EditorGotoFocus, EditorMenu, EditorPipeDialog, EditorPipeFocus,
+    EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus,
+    EditorSearchDialog, EditorSearchFocus, HistoryDialogFocus, LayoutFocus, UiMode,
+    ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
@@ -261,7 +261,7 @@ fn editor_save_to_path(
 fn editor_ui_mode(buf: rmc_edit::EditorBuffer, return_to: Option<Box<UiMode>>) -> UiMode {
     UiMode::Editor {
         buf,
-        show_menu: false,
+        show_menu: None,
         status_msg: None,
         search_input: None,
         save_as_dialog: None,
@@ -402,6 +402,7 @@ fn editor_open_save_as_dialog(
     pipe_dialog: &mut Option<EditorPipeDialog>,
     goto_dialog: &mut Option<Box<EditorGotoDialog>>,
     status_msg: &mut Option<String>,
+    show_menu: &mut Option<EditorMenu>,
 ) {
     if save_as_dialog.is_some() {
         return;
@@ -412,6 +413,7 @@ fn editor_open_save_as_dialog(
     *pipe_dialog = None;
     *goto_dialog = None;
     *status_msg = None;
+    *show_menu = None;
     *save_as_dialog = Some(Box::new(EditorSaveAsDialog::from_buffer_path(
         buf.path.as_deref(),
     )));
@@ -1765,7 +1767,7 @@ impl TerminalApp {
             }
             UiMode::Editor {
                 buf,
-                show_menu: _,
+                show_menu,
                 status_msg,
                 search_input,
                 save_as_dialog,
@@ -1832,6 +1834,7 @@ impl TerminalApp {
                             pipe_dialog,
                             goto_dialog,
                             status_msg,
+                            show_menu,
                         );
                     }
                     return Ok(());
@@ -2271,8 +2274,162 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // GNU mcedit F9 pull-down. Search/Replace/Pipe/Goto/Save as overlays
+                // above take keys first so the menu cannot steal those dialogs.
+                if let Some(menu) = *show_menu {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
+                            *show_menu = None;
+                        }
+                        KeyCode::Left => {
+                            *show_menu = Some(menu.left());
+                        }
+                        KeyCode::Right => {
+                            *show_menu = Some(menu.right());
+                        }
+                        KeyCode::Up => {
+                            *show_menu = Some(menu.up());
+                        }
+                        KeyCode::Down => {
+                            *show_menu = Some(menu.down());
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            let item = menu.current_item();
+                            *show_menu = None;
+                            match item {
+                                Some("Save") => {
+                                    if let Some(path) = buf.path.clone() {
+                                        match editor_save_to_path(app.vfs.as_ref(), buf, &path) {
+                                            Ok(()) => *status_msg = Some("Saved".into()),
+                                            Err(e) => *status_msg = Some(e),
+                                        }
+                                    } else {
+                                        editor_open_save_as_dialog(
+                                            buf,
+                                            search_input,
+                                            save_as_dialog,
+                                            search_dialog,
+                                            replace_dialog,
+                                            pipe_dialog,
+                                            goto_dialog,
+                                            status_msg,
+                                            show_menu,
+                                        );
+                                    }
+                                }
+                                Some("Save as") => {
+                                    editor_open_save_as_dialog(
+                                        buf,
+                                        search_input,
+                                        save_as_dialog,
+                                        search_dialog,
+                                        replace_dialog,
+                                        pipe_dialog,
+                                        goto_dialog,
+                                        status_msg,
+                                        show_menu,
+                                    );
+                                }
+                                Some("Quit") => {
+                                    if buf.dirty {
+                                        *confirm_exit = Some(rmc_core::app::YncDialog {
+                                            title: "Save modified file?".into(),
+                                            message: "The file has unsaved changes. Save before leaving the editor?"
+                                                .into(),
+                                            focus: rmc_core::app::YncFocus::Yes,
+                                        });
+                                    } else {
+                                        leave_editor(app);
+                                    }
+                                }
+                                Some("Undo") => {
+                                    if buf.undo() {
+                                        *status_msg = Some("Undo".into());
+                                    }
+                                }
+                                Some("Copy") => {
+                                    if buf.copy_block_here() {
+                                        *status_msg = Some("Copied block".into());
+                                    }
+                                }
+                                Some("Move") => {
+                                    if buf.move_block_here() {
+                                        *status_msg = Some("Moved block".into());
+                                    }
+                                }
+                                Some("Delete") => {
+                                    if buf.delete_selection() {
+                                        *status_msg = Some("Deleted block".into());
+                                    }
+                                }
+                                Some("Mark") => {
+                                    if buf.selection_bounds().is_none() {
+                                        buf.mark_start();
+                                        *status_msg = Some("Mark start".into());
+                                    } else if buf.selection_bounds().is_some()
+                                        && buf.last_search.is_empty()
+                                    {
+                                        buf.mark_end();
+                                        *status_msg = Some("Mark end".into());
+                                    } else {
+                                        buf.clear_selection();
+                                        *status_msg = Some("Unmark".into());
+                                    }
+                                }
+                                Some("Search") => {
+                                    *search_input = None;
+                                    *save_as_dialog = None;
+                                    *replace_dialog = None;
+                                    *pipe_dialog = None;
+                                    *goto_dialog = None;
+                                    *status_msg = None;
+                                    *search_dialog = Some(Box::new(
+                                        EditorSearchDialog::from_last_search(&buf.last_search),
+                                    ));
+                                }
+                                Some("Replace") => {
+                                    *search_input = None;
+                                    *save_as_dialog = None;
+                                    *search_dialog = None;
+                                    *pipe_dialog = None;
+                                    *goto_dialog = None;
+                                    *status_msg = None;
+                                    *replace_dialog = Some(Box::new(
+                                        EditorReplaceDialog::from_last_search(&buf.last_search),
+                                    ));
+                                }
+                                Some("Go to line") => {
+                                    *search_input = None;
+                                    *save_as_dialog = None;
+                                    *search_dialog = None;
+                                    *replace_dialog = None;
+                                    *pipe_dialog = None;
+                                    *status_msg = None;
+                                    *goto_dialog =
+                                        Some(Box::new(EditorGotoDialog::from_cursor_row(buf.row)));
+                                }
+                                Some("Pipe") => {
+                                    *search_input = None;
+                                    *save_as_dialog = None;
+                                    *search_dialog = None;
+                                    *replace_dialog = None;
+                                    *goto_dialog = None;
+                                    *status_msg = None;
+                                    *pipe_dialog = Some(EditorPipeDialog::default());
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 // Base editor keys
                 match key.code {
+                    // GNU mcedit F9: drop File / Edit / Search / Command / Options
+                    KeyCode::F(9) => {
+                        *show_menu = Some(EditorMenu::default_open());
+                    }
                     // MC: F7 search dialog
                     KeyCode::F(7) => {
                         *search_input = None;
@@ -2393,6 +2550,7 @@ impl TerminalApp {
                                 pipe_dialog,
                                 goto_dialog,
                                 status_msg,
+                                show_menu,
                             );
                         }
                     }
@@ -8745,7 +8903,7 @@ mod editor_replace_tests {
     fn open_editor(app: &mut App, text: &[u8]) {
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(text, None),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -9400,7 +9558,7 @@ mod editor_pipe_tests {
     fn open_editor(app: &mut App, text: &[u8]) {
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(text, None),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -9629,7 +9787,7 @@ mod editor_goto_tests {
     fn open_editor(app: &mut App, text: &[u8]) {
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(text, None),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -9933,7 +10091,7 @@ mod editor_search_tests {
     fn open_editor(app: &mut App, text: &[u8]) {
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(text, None),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -10369,7 +10527,7 @@ mod editor_save_as_tests {
     fn open_editor(app: &mut App, text: &[u8], path: Option<PathBuf>) {
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(text, path),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -10895,6 +11053,367 @@ mod editor_save_as_tests {
             matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
             "F12 in History must not switch to Editor Save as"
         );
+    }
+}
+
+#[cfg(test)]
+mod editor_f9_menu_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::{DiffState, EditorMenu};
+    use rmc_core::config::KeyMap;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-editor-f9-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_edit = true;
+        app.config_opts.use_internal_view = true;
+        app
+    }
+
+    fn make_app_at(cwd: &std::path::Path) -> App {
+        let mut app = make_app();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, None),
+            show_menu: None,
+            status_msg: None,
+            search_input: None,
+            save_as_dialog: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+            return_to: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn assert_editor_menu(app: &App, expected: EditorMenu) {
+        match &app.ui_mode {
+            UiMode::Editor { show_menu, .. } => {
+                assert_eq!(*show_menu, Some(expected));
+            }
+            UiMode::Viewer { .. } => panic!("expected Editor menu, got Viewer"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected Editor menu, got InputDialog {title:?}")
+            }
+            _ => panic!("expected Editor menu"),
+        }
+    }
+
+    #[test]
+    fn f9_opens_file_menu_and_stays_in_editor() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                search_dialog,
+                save_as_dialog,
+                replace_dialog,
+                pipe_dialog,
+                goto_dialog,
+                ..
+            } => {
+                assert_eq!(*show_menu, Some(EditorMenu::File { selected: 0 }));
+                assert!(search_dialog.is_none());
+                assert!(save_as_dialog.is_none());
+                assert!(replace_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert!(goto_dialog.is_none());
+            }
+            UiMode::Viewer { .. } => panic!("F9 must stay in Editor, not Viewer"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("F9 must stay in Editor, not InputDialog {title:?}")
+            }
+            _ => panic!("F9 must stay in Editor"),
+        }
+    }
+
+    #[test]
+    fn enter_file_save_as_opens_dialog_esc_closes_menu() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        assert_editor_menu(&app, EditorMenu::File { selected: 0 });
+        press(&mut app, KeyCode::Down);
+        assert_editor_menu(&app, EditorMenu::File { selected: 1 });
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                save_as_dialog: Some(_),
+                search_dialog,
+                ..
+            } => {
+                assert!(show_menu.is_none(), "Save as closes the menu");
+                assert!(search_dialog.is_none());
+            }
+            UiMode::Editor {
+                save_as_dialog: None,
+                ..
+            } => panic!("File→Save as must open the Save as dialog"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("Save as must use EditorSaveAsDialog, not InputDialog {title:?}")
+            }
+            _ => panic!("expected Editor Save as dialog"),
+        }
+
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Esc);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                save_as_dialog,
+                search_dialog,
+                confirm_exit,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(save_as_dialog.is_none());
+                assert!(search_dialog.is_none());
+                assert!(confirm_exit.is_none(), "Esc must not quit the editor");
+            }
+            _ => panic!("Esc on the menu must return to editing"),
+        }
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::F(10));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                confirm_exit,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(confirm_exit.is_none(), "F10 on the menu must not quit");
+            }
+            UiMode::Normal => panic!("F10 on the menu must not quit the editor"),
+            _ => panic!("F10 on the menu must stay in Editor"),
+        }
+    }
+
+    #[test]
+    fn f7_search_still_opens_while_menu_closed() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                search_dialog: Some(_),
+                ..
+            } => {
+                assert!(show_menu.is_none());
+            }
+            _ => panic!("F7 must open Search while the menu is closed"),
+        }
+    }
+
+    #[test]
+    fn search_overlay_keeps_keys_while_open() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                search_dialog: Some(_),
+                ..
+            } => {
+                assert!(show_menu.is_none(), "F9 must not steal the Search dialog");
+            }
+            _ => panic!("Search dialog must keep keys"),
+        }
+    }
+
+    #[test]
+    fn space_on_file_save_as_matches_enter() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        match &app.ui_mode {
+            UiMode::Editor {
+                save_as_dialog: Some(_),
+                show_menu,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+            }
+            _ => panic!("Space on File→Save as must open Save as"),
+        }
+    }
+
+    #[test]
+    fn left_right_switch_menus_up_down_move_items() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        assert_editor_menu(&app, EditorMenu::Edit { selected: 0 });
+        press(&mut app, KeyCode::Right);
+        assert_editor_menu(&app, EditorMenu::Search { selected: 0 });
+        press(&mut app, KeyCode::Down);
+        assert_editor_menu(&app, EditorMenu::Search { selected: 1 });
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                replace_dialog: Some(_),
+                ..
+            } => {
+                assert!(show_menu.is_none());
+            }
+            _ => panic!("Search→Replace must open Replace"),
+        }
+    }
+
+    #[test]
+    fn command_go_to_line_and_pipe_open_existing_dialogs() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        assert_editor_menu(&app, EditorMenu::Command { selected: 0 });
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog: Some(_),
+                show_menu,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+            }
+            _ => panic!("Command→Go to line must open Goto"),
+        }
+
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog: Some(_),
+                show_menu,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+            }
+            _ => panic!("Command→Pipe must open Pipe"),
+        }
+    }
+
+    #[test]
+    fn viewer_f9_format_panel_pulldn_diff_f4_unchanged() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+        let other = root.join("other.txt");
+        std::fs::write(&other, "world\n").unwrap();
+
+        let mut app = make_app_at(&root);
+        app.ui_mode = UiMode::new_viewer(file.clone());
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                format_nroff,
+                display_dialog,
+                viewer_menu,
+                ..
+            } => {
+                assert!(*format_nroff, "Viewer F9 still toggles format");
+                assert!(display_dialog.is_none());
+                assert!(viewer_menu.is_none());
+            }
+            UiMode::Editor { .. } => panic!("Viewer F9 must not open Editor"),
+            _ => panic!("Viewer F9 must stay in Viewer"),
+        }
+
+        app.ui_mode = UiMode::Normal;
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Menu { .. } => {}
+            UiMode::Editor { .. } => panic!("panel F9 must stay PullDn, not Editor"),
+            _ => panic!("panel F9 must open PullDn"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        let ltxt = "hello\n";
+        let rtxt = "world\n";
+        app.ui_mode = UiMode::Diff(DiffState {
+            left_path: file,
+            right_path: other,
+            left_lines: rmc_diff::split_lines(ltxt),
+            right_lines: rmc_diff::split_lines(rtxt),
+            hunks: rmc_diff::compute_diff(ltxt, rtxt).hunks,
+            current_hunk: 0,
+            left_modified: false,
+            right_modified: false,
+            show_line_numbers: true,
+            show_hunk_status: true,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
+            left_scroll: 0,
+            right_scroll: 0,
+            panel_ratio: 0.6,
+            tab_width: 4,
+            merge_target_right: true,
+        });
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                return_to,
+                replace_dialog,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(replace_dialog.is_none(), "Diff F4 must not open Replace");
+                assert!(
+                    matches!(return_to.as_deref(), Some(UiMode::Diff(_))),
+                    "Diff F4 still nests editor"
+                );
+            }
+            _ => panic!("Diff F4 must nest editor"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
@@ -11484,7 +12003,7 @@ mod viewer_search_tests {
 
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(b"abc", None),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -11593,7 +12112,7 @@ mod viewer_display_options_tests {
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
-    use rmc_core::app::ViewerDisplayFocus;
+    use rmc_core::app::{EditorMenu, ViewerDisplayFocus};
     use rmc_core::config::KeyMap;
     use rmc_core::find::FindDialogState;
     use rmc_edit::EditorBuffer;
@@ -12009,7 +12528,7 @@ mod viewer_display_options_tests {
 
         app.ui_mode = UiMode::Editor {
             buf: EditorBuffer::from_bytes(b"abc", None),
-            show_menu: false,
+            show_menu: None,
             status_msg: None,
             search_input: None,
             save_as_dialog: None,
@@ -12023,8 +12542,16 @@ mod viewer_display_options_tests {
         };
         press(&mut app, KeyCode::F(9));
         match &app.ui_mode {
-            UiMode::Editor { .. } => {}
+            UiMode::Editor { show_menu, .. } => {
+                assert!(
+                    matches!(show_menu, Some(EditorMenu::File { selected: 0 })),
+                    "F9 in Editor opens the mcedit File menu, not viewer Display options"
+                );
+            }
             UiMode::Viewer { .. } => panic!("F9 in Editor must not switch to Viewer"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("F9 in Editor must not open InputDialog {title:?}")
+            }
             _ => panic!("F9 in Editor must not open viewer Display options"),
         }
     }

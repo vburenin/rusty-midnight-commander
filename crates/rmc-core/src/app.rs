@@ -351,7 +351,8 @@ pub enum UiMode {
     },
     Editor {
         buf: EditorBuffer,
-        show_menu: bool,
+        /// GNU mcedit F9 pull-down. `None` while editing; `Some` drops File/Edit/Search/Command/Options.
+        show_menu: Option<EditorMenu>,
         status_msg: Option<String>,
         search_input: Option<String>,
         /// GNU mcedit Save as dialog (F12 / Shift-F2). None while editing.
@@ -661,6 +662,111 @@ impl ViewerMenu {
             Self::Command { .. } => &["Search"],
             Self::Options { .. } => &["Display options"],
         }
+    }
+}
+
+/// GNU mcedit F9 pull-down titles (mcedit(1) / mc(1) Internal File Editor).
+/// Items are only those with existing editor actions — no stub labels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditorMenu {
+    File { selected: usize },
+    Edit { selected: usize },
+    Search { selected: usize },
+    Command { selected: usize },
+    Options { selected: usize },
+}
+
+impl EditorMenu {
+    /// Packed ` File  Edit  Search  Command  Options ` (GNU mcedit menu bar).
+    pub const TITLES: [&'static str; 5] =
+        [" File ", " Edit ", " Search ", " Command ", " Options "];
+
+    /// F9 drops the File menu with Save selected (first item).
+    pub fn default_open() -> Self {
+        Self::File { selected: 0 }
+    }
+
+    pub fn selected(self) -> usize {
+        match self {
+            Self::File { selected }
+            | Self::Edit { selected }
+            | Self::Search { selected }
+            | Self::Command { selected }
+            | Self::Options { selected } => selected,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::File { .. } => 0,
+            Self::Edit { .. } => 1,
+            Self::Search { .. } => 2,
+            Self::Command { .. } => 3,
+            Self::Options { .. } => 4,
+        }
+    }
+
+    pub fn from_index(index: usize, selected: usize) -> Self {
+        match index % 5 {
+            0 => Self::File { selected },
+            1 => Self::Edit { selected },
+            2 => Self::Search { selected },
+            3 => Self::Command { selected },
+            _ => Self::Options { selected },
+        }
+    }
+
+    pub fn with_selected(self, selected: usize) -> Self {
+        let n = self.items().len();
+        let selected = if n == 0 { 0 } else { selected.min(n - 1) };
+        match self {
+            Self::File { .. } => Self::File { selected },
+            Self::Edit { .. } => Self::Edit { selected },
+            Self::Search { .. } => Self::Search { selected },
+            Self::Command { .. } => Self::Command { selected },
+            Self::Options { .. } => Self::Options { selected },
+        }
+    }
+
+    /// Item labels under the current title. Options is empty: no editor Options
+    /// dialogs are wired yet (mcedit(1) General / Save mode / Learn keys / Syntax).
+    pub fn items(self) -> &'static [&'static str] {
+        match self {
+            Self::File { .. } => &["Save", "Save as", "Quit"],
+            Self::Edit { .. } => &["Undo", "Copy", "Move", "Delete", "Mark"],
+            Self::Search { .. } => &["Search", "Replace"],
+            Self::Command { .. } => &["Go to line", "Pipe"],
+            Self::Options { .. } => &[],
+        }
+    }
+
+    pub fn left(self) -> Self {
+        Self::from_index(self.index() + 4, 0)
+    }
+
+    pub fn right(self) -> Self {
+        Self::from_index(self.index() + 1, 0)
+    }
+
+    pub fn up(self) -> Self {
+        let n = self.items().len();
+        if n == 0 {
+            return self;
+        }
+        self.with_selected((self.selected() + n - 1) % n)
+    }
+
+    pub fn down(self) -> Self {
+        let n = self.items().len();
+        if n == 0 {
+            return self;
+        }
+        self.with_selected((self.selected() + 1) % n)
+    }
+
+    /// Label of the highlighted item, if this menu has any.
+    pub fn current_item(self) -> Option<&'static str> {
+        self.items().get(self.selected()).copied()
     }
 }
 
@@ -1931,5 +2037,42 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn editor_menu_gnu_titles_and_wired_items() {
+        assert_eq!(
+            EditorMenu::TITLES,
+            [" File ", " Edit ", " Search ", " Command ", " Options "]
+        );
+        let file = EditorMenu::default_open();
+        assert_eq!(file.items(), &["Save", "Save as", "Quit"][..]);
+        assert_eq!(file.current_item(), Some("Save"));
+        assert_eq!(
+            file.down().current_item(),
+            Some("Save as"),
+            "Down from Save lands on Save as"
+        );
+        assert_eq!(EditorMenu::Edit { selected: 0 }.items()[0], "Undo");
+        assert_eq!(
+            EditorMenu::Search { selected: 0 }.items(),
+            ["Search", "Replace"][..]
+        );
+        assert_eq!(
+            EditorMenu::Command { selected: 0 }.items(),
+            ["Go to line", "Pipe"][..]
+        );
+        assert!(
+            EditorMenu::Options { selected: 0 }.items().is_empty(),
+            "Options has no stub items"
+        );
+        let search = file.right().right();
+        assert!(matches!(search, EditorMenu::Search { selected: 0 }));
+        let options = search.right().right();
+        assert!(matches!(options, EditorMenu::Options { selected: 0 }));
+        assert!(matches!(options.right(), EditorMenu::File { selected: 0 }));
+        assert!(matches!(file.left(), EditorMenu::Options { selected: 0 }));
+        let opts = EditorMenu::Options { selected: 0 };
+        assert_eq!(opts.down(), opts, "empty Options Up/Down is a no-op");
     }
 }
