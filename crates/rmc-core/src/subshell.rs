@@ -12,6 +12,8 @@ pub struct Subshell {
     pub cmdline: String,
     /// Insertion point in `cmdline` as a Unicode scalar count (0..=char len).
     cursor: usize,
+    /// Last killed text (process lifetime; last non-empty kill wins).
+    kill_buffer: String,
     /// History of previously executed commands (most recent last).
     history: Vec<String>,
     /// When navigating history, this is Some(index into history). None when not navigating.
@@ -39,6 +41,7 @@ impl Subshell {
         Self {
             cmdline: String::new(),
             cursor: 0,
+            kill_buffer: String::new(),
             history: Vec::new(),
             history_index: None,
             history_draft: None,
@@ -55,12 +58,148 @@ impl Subshell {
         self.cursor = self.cmdline.chars().count();
     }
 
-    fn byte_index_at_cursor(&self) -> usize {
+    /// Insertion point as a Unicode scalar count (`0..=cmdline.chars().count()`).
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn char_len(&self) -> usize {
+        self.cmdline.chars().count()
+    }
+
+    fn byte_index_of(&self, char_idx: usize) -> usize {
         self.cmdline
             .chars()
-            .take(self.cursor)
+            .take(char_idx)
             .map(|c| c.len_utf8())
             .sum()
+    }
+
+    fn byte_index_at_cursor(&self) -> usize {
+        self.byte_index_of(self.cursor)
+    }
+
+    /// Move the insertion point to the start of the line.
+    pub fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Move the insertion point to the end of the line.
+    pub fn move_end(&mut self) {
+        self.cursor = self.char_len();
+    }
+
+    /// Move back one Unicode scalar (no-op at the start).
+    pub fn move_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    /// Move forward one Unicode scalar (no-op at the end).
+    pub fn move_right(&mut self) {
+        let n = self.char_len();
+        if self.cursor < n {
+            self.cursor += 1;
+        }
+    }
+
+    /// Move to the start of the previous non-whitespace run.
+    pub fn move_word_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let chars: Vec<char> = self.cmdline.chars().collect();
+        let mut i = self.cursor.min(chars.len());
+        while i > 0 && chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+        self.cursor = i;
+    }
+
+    /// Move to the end of the next non-whitespace run.
+    pub fn move_word_right(&mut self) {
+        let chars: Vec<char> = self.cmdline.chars().collect();
+        let n = chars.len();
+        let mut i = self.cursor.min(n);
+        while i < n && chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < n && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        self.cursor = i;
+    }
+
+    /// Delete the Unicode scalar under the cursor (no-op at end of line).
+    pub fn delete_char(&mut self) {
+        if self.cursor >= self.char_len() {
+            return;
+        }
+        let start = self.byte_index_at_cursor().min(self.cmdline.len());
+        let Some(ch) = self.cmdline[start..].chars().next() else {
+            return;
+        };
+        let end = start + ch.len_utf8();
+        self.cmdline.replace_range(start..end, "");
+    }
+
+    fn kill_char_range(&mut self, from_char: usize, to_char: usize) {
+        let n = self.char_len();
+        let from = from_char.min(to_char).min(n);
+        let to = from_char.max(to_char).min(n);
+        if from == to {
+            return;
+        }
+        let a = self.byte_index_of(from);
+        let b = self.byte_index_of(to);
+        if a >= b
+            || b > self.cmdline.len()
+            || !self.cmdline.is_char_boundary(a)
+            || !self.cmdline.is_char_boundary(b)
+        {
+            return;
+        }
+        self.kill_buffer = self.cmdline[a..b].to_string();
+        self.cmdline.replace_range(a..b, "");
+        self.cursor = from;
+    }
+
+    /// Kill from the cursor to the end of the line into the kill buffer.
+    pub fn kill_to_end(&mut self) {
+        let end = self.char_len();
+        self.kill_char_range(self.cursor, end);
+    }
+
+    /// Kill the whole command line into the kill buffer.
+    pub fn kill_whole_line(&mut self) {
+        let end = self.char_len();
+        self.kill_char_range(0, end);
+    }
+
+    /// Kill the previous word into the kill buffer.
+    pub fn kill_prev_word(&mut self) {
+        let end = self.cursor;
+        self.move_word_left();
+        let start = self.cursor;
+        self.kill_char_range(start, end);
+    }
+
+    /// Kill the next word into the kill buffer.
+    pub fn kill_next_word(&mut self) {
+        let start = self.cursor;
+        self.move_word_right();
+        let end = self.cursor;
+        self.kill_char_range(start, end);
+    }
+
+    /// Insert the kill buffer at the cursor.
+    pub fn yank(&mut self) {
+        let buf = self.kill_buffer.clone();
+        self.insert_str(&buf);
     }
 
     /// Text to the left of the insertion point (completion looks at this).
@@ -675,5 +814,70 @@ mod tests {
             ss.history(),
             &["echo same".to_string(), "echo other".into()]
         );
+    }
+
+    #[test]
+    fn emacs_moves_and_kills_ascii_and_utf8() {
+        let mut ss = Subshell::new();
+        for c in "hello world".chars() {
+            ss.insert_char(c);
+        }
+        assert_eq!(ss.cursor(), 11);
+        ss.move_home();
+        assert_eq!(ss.cursor(), 0);
+        ss.move_end();
+        assert_eq!(ss.cursor(), 11);
+        ss.move_left();
+        assert_eq!(ss.cursor(), 10);
+        ss.move_right();
+        assert_eq!(ss.cursor(), 11);
+
+        ss.move_word_left();
+        assert_eq!(ss.cursor(), 6);
+        ss.move_word_left();
+        assert_eq!(ss.cursor(), 0);
+        ss.move_word_right();
+        assert_eq!(ss.cursor(), 5);
+        ss.move_word_right();
+        assert_eq!(ss.cursor(), 11);
+
+        ss.move_home();
+        for _ in 0..5 {
+            ss.move_right();
+        }
+        ss.kill_to_end();
+        assert_eq!(ss.cmdline, "hello");
+        assert_eq!(ss.kill_buffer, " world");
+        ss.yank();
+        assert_eq!(ss.cmdline, "hello world");
+
+        ss.kill_whole_line();
+        assert!(ss.cmdline.is_empty());
+        assert_eq!(ss.cursor(), 0);
+        assert_eq!(ss.kill_buffer, "hello world");
+        ss.yank();
+        assert_eq!(ss.cmdline, "hello world");
+
+        ss.move_home();
+        ss.move_word_right(); // after "hello"
+        ss.kill_next_word();
+        assert_eq!(ss.cmdline, "hello");
+        assert_eq!(ss.kill_buffer, " world");
+        ss.yank();
+        ss.kill_prev_word();
+        assert_eq!(ss.cmdline, "hello ");
+        assert_eq!(ss.kill_buffer, "world");
+
+        ss.replace_cmdline("café".into());
+        ss.move_left();
+        assert_eq!(ss.cursor(), 3);
+        ss.delete_char();
+        assert_eq!(ss.cmdline, "caf");
+        ss.insert_char('é');
+        ss.backspace();
+        assert_eq!(ss.cmdline, "caf");
+        ss.delete_char();
+        assert_eq!(ss.cmdline, "caf");
+        assert_eq!(ss.cursor(), 3);
     }
 }
