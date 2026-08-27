@@ -308,4 +308,41 @@ mod tests {
         assert_eq!(pal.dir_color, Color::White);
         assert_eq!(pal.exec_color, Color::Green);
     }
+
+    fn section_keys(text: &str) -> Vec<(String, String)> {
+        let mut section = String::new();
+        let mut keys = Vec::new();
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                section = line[1..line.len() - 1].to_ascii_lowercase();
+                continue;
+            }
+            if let Some((k, _)) = line.split_once('=') {
+                keys.push((section.clone(), k.trim().to_ascii_lowercase()));
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn extra_skins_parse_and_match_default_keys() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/skins");
+        let default_text = fs::read_to_string(dir.join("default.ini")).expect("default.ini");
+        let default_keys = section_keys(&default_text);
+        let listed = list_available_skins();
+        for name in ["dark", "gray-green", "sand"] {
+            assert!(
+                listed.iter().any(|s| s == name),
+                "Appearance list missing {name}: {listed:?}"
+            );
+            let path = dir.join(format!("{name}.ini"));
+            let text = fs::read_to_string(&path).unwrap_or_else(|_| panic!("read {name}.ini"));
+            load_from_file(&path).unwrap_or_else(|e| panic!("parse {name}.ini: {e}"));
+            assert_eq!(section_keys(&text), default_keys, "{name}.ini keys");
+        }
+    }
 }
