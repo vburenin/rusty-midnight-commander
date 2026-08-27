@@ -33,6 +33,14 @@ pub struct BackgroundJob {
     pub dst: PathBuf,
     pub bytes_done: u64,
     pub bytes_total: u64,
+    /// Bytes copied of the file currently being written.
+    pub file_done: u64,
+    /// Size of the file currently being written.
+    pub file_total: u64,
+    /// Files fully copied so far (not including the file in progress).
+    pub files_done: u64,
+    /// Basename of the file currently being written.
+    pub current_name: String,
     pub status: JobStatus,
     pub error: Option<String>,
 }
@@ -91,6 +99,10 @@ impl JobQueue {
                 dst,
                 bytes_done: 0,
                 bytes_total: 0,
+                file_done: 0,
+                file_total: 0,
+                files_done: 0,
+                current_name: String::new(),
                 status: JobStatus::Queued,
                 error: None,
             },
@@ -139,6 +151,11 @@ impl JobQueue {
                 JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
             )
         });
+    }
+
+    /// Snapshot one job by id.
+    pub fn get(&self, id: JobId) -> Option<BackgroundJob> {
+        self.snapshot().into_iter().find(|j| j.id == id)
     }
 
     /// Return a snapshot of all jobs.
@@ -284,16 +301,63 @@ fn copy_streaming(
     dst: &Path,
     cancel_flag: &AtomicBool,
 ) -> io::Result<()> {
-    // Prepare target directory when present.
+    let mut overall: u64 = 0;
+    copy_any(job_arc, src, dst, cancel_flag, &mut overall)
+}
+
+fn copy_any(
+    job_arc: &Arc<Mutex<JobEntry>>,
+    src: &Path,
+    dst: &Path,
+    cancel_flag: &AtomicBool,
+    overall: &mut u64,
+) -> io::Result<()> {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    let md = fs::symlink_metadata(src)?;
+    if md.file_type().is_dir() {
+        fs::create_dir_all(dst)?;
+        for ent in fs::read_dir(src)? {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let ent = ent?;
+            let name = ent.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            copy_any(job_arc, &ent.path(), &dst.join(name), cancel_flag, overall)?;
+        }
+        return Ok(());
+    }
+    copy_file_chunks(job_arc, src, dst, cancel_flag, overall)
+}
+
+fn copy_file_chunks(
+    job_arc: &Arc<Mutex<JobEntry>>,
+    src: &Path,
+    dst: &Path,
+    cancel_flag: &AtomicBool,
+    overall: &mut u64,
+) -> io::Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
     let meta = fs::metadata(src)?;
     let total = meta.len();
+    let current_name = src
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     {
         let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
-        job.job.bytes_total = total;
-        job.job.bytes_done = 0;
+        job.job.file_total = total;
+        job.job.file_done = 0;
+        job.job.current_name = current_name;
+        if job.job.bytes_total == 0 {
+            job.job.bytes_total = total;
+        }
     }
 
     let mut src_f = File::open(src)?;
@@ -316,9 +380,11 @@ fn copy_streaming(
         }
         dst_f.write_all(&buf[..read_n])?;
         done = done.saturating_add(read_n as u64);
+        *overall = overall.saturating_add(read_n as u64);
         {
             let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
-            job.job.bytes_done = done;
+            job.job.file_done = done;
+            job.job.bytes_done = *overall;
         }
         // Give other threads a chance (useful for tests to trigger cancel).
         if cfg!(test) {
@@ -326,8 +392,13 @@ fn copy_streaming(
             thread::sleep(Duration::from_millis(1));
         }
     }
-    // Ensure data is flushed to disk.
     dst_f.flush()?;
+    {
+        let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+        job.job.files_done = job.job.files_done.saturating_add(1);
+        job.job.file_done = done;
+        job.job.bytes_done = *overall;
+    }
     Ok(())
 }
 
@@ -361,7 +432,12 @@ fn move_with_fallback(
     copy_streaming(job_arc, src, dst, cancel_flag)?;
     if !cancel_flag.load(Ordering::Relaxed) {
         // Remove original only if not cancelled.
-        fs::remove_file(src)?;
+        let md = fs::symlink_metadata(src)?;
+        if md.file_type().is_dir() {
+            fs::remove_dir_all(src)?;
+        } else {
+            fs::remove_file(src)?;
+        }
     }
     Ok(())
 }

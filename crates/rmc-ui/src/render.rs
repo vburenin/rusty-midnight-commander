@@ -450,6 +450,13 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 app.shadows,
             );
         }
+        rmc_core::app::UiMode::FileOpProgress { state, .. } => {
+            let si = app.panel_opts.kilobyte_si;
+            let w = (cols as usize).min(74);
+            let bar_width = w.saturating_sub(6).max(16);
+            let view = state.view(bar_width, si);
+            draw_file_op_progress_dialog(p, cols, rows, pal, &view, app.shadows);
+        }
         rmc_core::app::UiMode::ChmodDialog {
             name,
             mode,
@@ -4221,6 +4228,110 @@ fn draw_copy_move_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+fn draw_file_op_progress_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    view: &rmc_core::fileop::FileOpProgressView,
+    show_shadow: bool,
+) {
+    let mut body: Vec<String> = Vec::new();
+    if let Some(name) = &view.source_name {
+        body.push("Source".to_string());
+        body.push(name.clone());
+    }
+    body.push("Target".to_string());
+    body.push(view.target_path.clone());
+    if let Some(bar) = &view.classic_bar {
+        body.push(String::new());
+        body.push(bar.clone());
+    }
+    if let Some(bar) = &view.file_bar {
+        body.push("File".to_string());
+        body.push(bar.clone());
+    }
+    if let Some(bar) = &view.total_bar {
+        body.push("Total".to_string());
+        body.push(bar.clone());
+    }
+    body.push(view.files_processed.clone());
+    if let Some(t) = &view.total_bytes {
+        body.push(t.clone());
+    }
+
+    let w = (cols as usize).min(74) as u16;
+    let h = (body.len() as u16)
+        .saturating_add(4)
+        .min(rows.saturating_sub(2))
+        .max(7);
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {} ", view.title);
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Body
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let inner = (w - 4) as usize;
+    for (i, line) in body.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        if row_y >= y + h - 2 {
+            break;
+        }
+        p.goto(x + 2, row_y);
+        p.text(&truncate(line, inner));
+    }
+    // Abort (GNU mc file-operations dialog)
+    p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    let abort = "< Abort >";
+    let bx = x + (w.saturating_sub(abort.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(abort);
     if show_shadow {
         p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
         p.hline(

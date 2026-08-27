@@ -492,7 +492,15 @@ impl TerminalApp {
                     current_skin = app.skin_name.clone();
                 }
             }
-            if last_draw.elapsed() > Duration::from_millis(33) {
+            // Poll the jobs worker without blocking the copy. Redraw the GNU mc
+            // progress dialog on every tick so File/Total bars fill, and redraw
+            // immediately when Abort or completion returns to Normal.
+            let file_op = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
+            app.drive_pending_file_op()?;
+            if last_draw.elapsed() > Duration::from_millis(33)
+                || file_op
+                || matches!(app.ui_mode, UiMode::FileOpProgress { .. })
+            {
                 renderer.draw(app)?;
                 last_draw = Instant::now();
             }
@@ -745,6 +753,37 @@ impl TerminalApp {
         Ok(())
     }
 
+    fn file_op_progress_mode(
+        vfs: &dyn rmc_fs::Vfs,
+        jobs: &rmc_core::jobs::JobQueue,
+        opts: &rmc_core::app::ConfigOptions,
+        op: rmc_core::app::CopyMoveOp,
+        src: std::path::PathBuf,
+        dst: std::path::PathBuf,
+    ) -> UiMode {
+        match rmc_core::fileop::FileOpProgressState::prepare(vfs, op, &src, &dst, opts) {
+            Ok(state) => {
+                let job_id = match op {
+                    rmc_core::app::CopyMoveOp::Copy => jobs.spawn_copy(&src, &dst),
+                    rmc_core::app::CopyMoveOp::Move => jobs.spawn_move(&src, &dst),
+                };
+                UiMode::FileOpProgress {
+                    op,
+                    src,
+                    dst,
+                    state,
+                    started: true,
+                    job_id,
+                }
+            }
+            Err(err) => UiMode::DialogConfirm {
+                title: "Error".into(),
+                message: format!("{err}"),
+                on_ok: Box::new(|_| Ok(())),
+            },
+        }
+    }
+
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
         let active_cwd = app.active_panel().cwd.clone();
         // Subshell full-screen mode: C-o toggles back; support PgUp/PgDn/Up/Down scrolling.
@@ -785,6 +824,21 @@ impl TerminalApp {
         // After a waited external: any key dismisses so panels can redraw.
         if matches!(app.ui_mode, UiMode::PauseAfterRun) {
             app.ui_mode = UiMode::Normal;
+            return Ok(());
+        }
+        // GNU mc Abort: honor Esc/F10/A/[ Abort ] while the transfer is in-flight.
+        // Handled before the ui_mode match so we can call App::abort_file_op.
+        if matches!(app.ui_mode, UiMode::FileOpProgress { .. }) {
+            match key.code {
+                KeyCode::Esc
+                | KeyCode::F(10)
+                | KeyCode::Enter
+                | KeyCode::Char('a')
+                | KeyCode::Char('A') => {
+                    app.abort_file_op()?;
+                }
+                _ => {}
+            }
             return Ok(());
         }
         // Dialog handling first
@@ -2915,52 +2969,43 @@ impl TerminalApp {
                             F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
                             F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
                             F::Ok => {
-                                // If destination exists, open overwrite dialog; else perform action
+                                // If destination exists, open overwrite dialog; else start progress.
                                 let dst = Path::new(&*to).to_path_buf();
+                                let src = src_path.clone();
+                                let op = if title == "Copy" {
+                                    rmc_core::app::CopyMoveOp::Copy
+                                } else {
+                                    rmc_core::app::CopyMoveOp::Move
+                                };
                                 let exists = app.vfs.stat(&dst).is_ok();
                                 if exists {
                                     if app.confirm.overwrite {
-                                        let op = if title == "Copy" {
-                                            rmc_core::app::CopyMoveOp::Copy
-                                        } else {
-                                            rmc_core::app::CopyMoveOp::Move
-                                        };
                                         app.ui_mode = UiMode::OverwriteDialog {
                                             op,
-                                            src_path: src_path.clone(),
+                                            src_path: src,
                                             dst_path: dst,
                                             focus: rmc_core::app::OverwriteFocus::Yes,
                                         };
                                     } else {
-                                        // Perform "Yes" path: remove destination then copy/move
                                         let _ = app.vfs.remove(&dst, false);
-                                        let res = if title == "Copy" {
-                                            app.vfs.copy(src_path, &dst)
-                                        } else {
-                                            app.vfs.move_path(src_path, &dst)
-                                        };
-                                        match res {
-                                            Ok(()) => {
-                                                app.ui_mode = UiMode::Normal;
-                                                app.reload_panels()?;
-                                            }
-                                            Err(err) => {
-                                                app.ui_mode = UiMode::DialogConfirm {
-                                                    title: "Error".into(),
-                                                    message: format!("{err}"),
-                                                    on_ok: Box::new(|_| Ok(())),
-                                                };
-                                            }
-                                        }
+                                        app.ui_mode = Self::file_op_progress_mode(
+                                            app.vfs.as_ref(),
+                                            &app.jobs,
+                                            &app.config_opts,
+                                            op,
+                                            src,
+                                            dst,
+                                        );
                                     }
                                 } else {
-                                    if title == "Copy" {
-                                        app.vfs.copy(src_path, Path::new(&*to))?;
-                                    } else {
-                                        app.vfs.move_path(src_path, Path::new(&*to))?;
-                                    }
-                                    app.ui_mode = UiMode::Normal;
-                                    app.reload_panels()?;
+                                    app.ui_mode = Self::file_op_progress_mode(
+                                        app.vfs.as_ref(),
+                                        &app.jobs,
+                                        &app.config_opts,
+                                        op,
+                                        src,
+                                        dst,
+                                    );
                                 }
                             }
                             F::Background => {
@@ -3148,26 +3193,18 @@ impl TerminalApp {
                                 }
                             }
                         } else if act_yes {
-                            let _ = app.vfs.remove(dst_path, false);
-                            let res = match *op {
-                                rmc_core::app::CopyMoveOp::Copy => app.vfs.copy(src_path, dst_path),
-                                rmc_core::app::CopyMoveOp::Move => {
-                                    app.vfs.move_path(src_path, dst_path)
-                                }
-                            };
-                            match res {
-                                Ok(()) => {
-                                    app.ui_mode = UiMode::Normal;
-                                    app.reload_panels()?;
-                                }
-                                Err(err) => {
-                                    app.ui_mode = UiMode::DialogConfirm {
-                                        title: "Error".into(),
-                                        message: format!("{err}"),
-                                        on_ok: Box::new(|_| Ok(())),
-                                    };
-                                }
-                            }
+                            let op = *op;
+                            let src = src_path.clone();
+                            let dst = dst_path.clone();
+                            let _ = app.vfs.remove(&dst, false);
+                            app.ui_mode = Self::file_op_progress_mode(
+                                app.vfs.as_ref(),
+                                &app.jobs,
+                                &app.config_opts,
+                                op,
+                                src,
+                                dst,
+                            );
                         } else {
                             app.ui_mode = UiMode::Normal;
                         }
@@ -6673,5 +6710,123 @@ mod drop_menus_tests {
             _ => panic!("expected External panelize InputDialog"),
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod file_op_abort_keys_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::CopyMoveOp;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-fileop-abort-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn wait_until_running_with_progress(app: &App, job_id: rmc_core::jobs::JobId) {
+        let start = Instant::now();
+        loop {
+            if let Some(j) = app.jobs.get(job_id) {
+                if j.status == rmc_core::jobs::JobStatus::Running && j.bytes_done > 0 {
+                    return;
+                }
+                if matches!(
+                    j.status,
+                    rmc_core::jobs::JobStatus::Done
+                        | rmc_core::jobs::JobStatus::Failed
+                        | rmc_core::jobs::JobStatus::Cancelled
+                ) {
+                    panic!("job finished before abort key: {:?}", j.status);
+                }
+            }
+            if start.elapsed() > Duration::from_millis(5_000) {
+                panic!("job never started running");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn abort_keys_cancel_in_flight_started_copy() {
+        let root = temp_workspace();
+        let src = root.join("big.bin");
+        let dst = root.join("big.dst");
+        std::fs::write(&src, vec![0xABu8; 4 * 1024 * 1024]).unwrap();
+        let mut app = make_app(&root);
+        app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+        let job_id = match &app.ui_mode {
+            UiMode::FileOpProgress {
+                started, job_id, ..
+            } => {
+                assert!(*started, "Abort must work after the transfer has started");
+                *job_id
+            }
+            _ => panic!("expected FileOpProgress"),
+        };
+        wait_until_running_with_progress(&app, job_id);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        let start = Instant::now();
+        loop {
+            if let Some(j) = app.jobs.get(job_id) {
+                if j.status != rmc_core::jobs::JobStatus::Running
+                    && j.status != rmc_core::jobs::JobStatus::Queued
+                {
+                    assert_eq!(j.status, rmc_core::jobs::JobStatus::Cancelled);
+                    break;
+                }
+            }
+            if start.elapsed() > Duration::from_millis(5_000) {
+                panic!("Esc did not cancel in-flight copy");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn abort_letter_and_f10_cancel_started_copy() {
+        for code in [KeyCode::Char('A'), KeyCode::F(10)] {
+            let root = temp_workspace();
+            let src = root.join("big.bin");
+            let dst = root.join("big.dst");
+            std::fs::write(&src, vec![0xABu8; 4 * 1024 * 1024]).unwrap();
+            let mut app = make_app(&root);
+            app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+            match &app.ui_mode {
+                UiMode::FileOpProgress { started: true, .. } => {}
+                _ => panic!("expected started FileOpProgress"),
+            }
+            press(&mut app, code);
+            assert!(
+                matches!(app.ui_mode, UiMode::Normal),
+                "{code:?} must Abort while started=true"
+            );
+            drop(app);
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }
