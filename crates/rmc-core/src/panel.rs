@@ -131,7 +131,11 @@ impl PanelState {
         }
     }
 
-    pub fn set_entries(&mut self, mut entries: Vec<FileEntry>) {
+    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.set_entries_with(entries, true);
+    }
+
+    pub fn set_entries_with(&mut self, mut entries: Vec<FileEntry>, reverse_files_only: bool) {
         // Separate parent marker (if any) to keep it visible and first.
         let mut parent_marker: Option<FileEntry> = None;
         entries.retain(|e| {
@@ -160,13 +164,25 @@ impl PanelState {
         } else {
             self.entries = entries;
         }
-        self.apply_sort();
+        self.apply_sort_with(reverse_files_only);
         if self.cursor >= self.entries.len() {
             self.cursor = self.entries.len().saturating_sub(1);
         }
     }
 
+    /// Default-true wrapper: GNU mc `reverse_files_only` defaults on.
     pub fn apply_sort(&mut self) {
+        self.apply_sort_with(true);
+    }
+
+    /// Sort panel entries, honoring GNU mc `reverse_files_only`.
+    ///
+    /// When `dirs_first` and the panel sort is reverse:
+    /// - `reverse_files_only == true` (default): directories stay name-ascending;
+    ///   only the file group is reversed.
+    /// - `reverse_files_only == false`: both the directory group and the file group reverse.
+    /// When mixed (`dirs_first == false`), reverse applies to the whole list either way.
+    pub fn apply_sort_with(&mut self, reverse_files_only: bool) {
         // Detach a possible parent marker at the top to keep it first
         let mut items = std::mem::take(&mut self.entries);
         let mut parent_marker: Option<FileEntry> = None;
@@ -176,21 +192,27 @@ impl PanelState {
 
         if self.dirs_first {
             let (mut dirs, mut rest): (Vec<_>, Vec<_>) = items.into_iter().partition(|e| e.is_dir);
+            // Directories always sort by name; optionally ignore reverse.
+            let dir_dir = if reverse_files_only {
+                SortDir::Asc
+            } else {
+                self.sort_dir
+            };
             match self.sort_by {
                 SortBy::Name => {
-                    sorting::sort_by_name(&mut dirs, self.sort_dir);
+                    sorting::sort_by_name(&mut dirs, dir_dir);
                     sorting::sort_by_name(&mut rest, self.sort_dir);
                 }
                 SortBy::Ext => {
-                    sorting::sort_by_name(&mut dirs, self.sort_dir); // dirs by name
+                    sorting::sort_by_name(&mut dirs, dir_dir); // dirs by name
                     sorting::sort_by_ext(&mut rest, self.sort_dir);
                 }
                 SortBy::Size => {
-                    sorting::sort_by_name(&mut dirs, self.sort_dir); // dirs by name
+                    sorting::sort_by_name(&mut dirs, dir_dir); // dirs by name
                     sorting::sort_by_size(&mut rest, self.sort_dir);
                 }
                 SortBy::Time => {
-                    sorting::sort_by_name(&mut dirs, self.sort_dir); // dirs by name
+                    sorting::sort_by_name(&mut dirs, dir_dir); // dirs by name
                     sorting::sort_by_time(&mut rest, self.sort_dir);
                 }
             }
@@ -255,6 +277,15 @@ impl PanelState {
     }
 
     pub fn set_panelized_entries(&mut self, cwd_for_caption: PathBuf, entries: Vec<FileEntry>) {
+        self.set_panelized_entries_with(cwd_for_caption, entries, true);
+    }
+
+    pub fn set_panelized_entries_with(
+        &mut self,
+        cwd_for_caption: PathBuf,
+        entries: Vec<FileEntry>,
+        reverse_files_only: bool,
+    ) {
         // Save current state
         self.panelized = Some(PanelizeSaved {
             cwd: self.cwd.clone(),
@@ -266,7 +297,7 @@ impl PanelState {
         self.cwd = cwd_for_caption;
         self.cursor = 0;
         self.scroll_top = 0;
-        self.set_entries(entries);
+        self.set_entries_with(entries, reverse_files_only);
     }
 
     pub fn unpanelize(&mut self) {
@@ -665,6 +696,29 @@ mod tests {
         p.apply_sort();
         let names: Vec<_> = p.entries.iter().skip(1).map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["b.txt", "z.log", "c.bin", "noext", "alpha"]);
+    }
+
+    #[test]
+    fn reverse_files_only_dirs_first() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.dirs_first = true;
+        p.sort_by = SortBy::Name;
+        p.sort_dir = sorting::SortDir::Desc;
+        p.set_entries(vec![
+            make_entry("..", 0, now, true),
+            make_entry("b", 0, now, true),
+            make_entry("a", 0, now, true),
+            make_entry("z", 1, now, false),
+            make_entry("y", 1, now, false),
+        ]);
+        // Default reverse_files_only=true: dirs stay a,b (asc); files reverse z,y
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "a", "b", "z", "y"]);
+        // Flag false: both groups reverse
+        p.apply_sort_with(false);
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "b", "a", "z", "y"]);
     }
 
     #[test]

@@ -97,7 +97,7 @@ pub struct PanelOptions {
     pub show_mini_status: bool,   // default true; store only
     pub kilobyte_si: bool,        // default false; store only
     pub fast_reload: bool,        // default false; store only
-    pub reverse_files_only: bool, // default true; store only
+    pub reverse_files_only: bool, // default true — dirs-first reverse: files only (dirs stay name-asc)
     pub simple_swap: bool,        // default false — swap panes without flipping active
     pub auto_save_setup: bool,    // default false; store only
     pub lynx_like: bool,          // default false — Left=parent, Right=enter in listing
@@ -668,10 +668,13 @@ impl App {
     }
 
     pub fn reload_panels(&mut self) -> Result<()> {
+        let reverse_files_only = self.panel_opts.reverse_files_only;
         let left = self.vfs.list_dir(&self.left.cwd, self.show_hidden)?;
         let right = self.vfs.list_dir(&self.right.cwd, self.show_hidden)?;
-        self.left.set_entries(self.map_dir_entries(left));
-        self.right.set_entries(self.map_dir_entries(right));
+        self.left
+            .set_entries_with(self.map_dir_entries(left), reverse_files_only);
+        self.right
+            .set_entries_with(self.map_dir_entries(right), reverse_files_only);
         Ok(())
     }
 
@@ -890,9 +893,10 @@ impl App {
                     SortByAction::Size => (SortBy::Size, self.active_panel().sort_dir),
                     SortByAction::Time => (SortBy::Time, self.active_panel().sort_dir),
                 };
+                let reverse_files_only = self.panel_opts.reverse_files_only;
                 let p = self.active_panel_mut();
                 p.sort_by = by;
-                p.apply_sort();
+                p.apply_sort_with(reverse_files_only);
             }
             ViewFile => {
                 if let Some(ent) = self.active_panel().current_entry() {
@@ -927,12 +931,13 @@ impl App {
 
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
         let new_cwd = path.to_path_buf();
+        let reverse_files_only = self.panel_opts.reverse_files_only;
         // Acquire listing before mutably borrowing panel to avoid aliasing
         let list = self.vfs.list_dir(&new_cwd, self.show_hidden)?;
         let entries = self.map_dir_entries(list);
         let p = self.active_panel_mut();
         p.cwd = new_cwd;
-        p.set_entries(entries);
+        p.set_entries_with(entries, reverse_files_only);
         Ok(())
     }
 }
@@ -1030,8 +1035,9 @@ impl App {
             });
         }
         let caption = self.active_panel().cwd.clone();
+        let reverse_files_only = self.panel_opts.reverse_files_only;
         self.active_panel_mut()
-            .set_panelized_entries(caption, entries);
+            .set_panelized_entries_with(caption, entries, reverse_files_only);
         Ok(())
     }
 }
