@@ -135,7 +135,7 @@ From mcedit(1):
 - [ ] Basics: open multiple files (up to size limits), binary-safe
 - [x] Editing: block copy/move/delete/cut/paste; undo; insert/overwrite; autoindent; tab width
 - [x] Syntax highlighting for common types
-- [ ] Macros; external filters (pipe regions to commands)
+- [x] Macros; external filters (pipe regions to commands)
 - [ ] Search/replace with regex
 - [x] Menu via F9
 - [x] F2 save; F10 quit (and Esc Esc)
