@@ -88,6 +88,37 @@ impl Default for ConfirmOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PanelOptions {
+    pub show_hidden: bool,        // default false — match current App.show_hidden
+    pub mix_all_files: bool,      // default false — match current dirs_first=true
+    pub mark_moves_down: bool,    // default true — GNU mc Insert-mark then cursor down
+    pub show_mini_status: bool,   // default true; store only
+    pub kilobyte_si: bool,        // default false; store only
+    pub fast_reload: bool,        // default false; store only
+    pub reverse_files_only: bool, // default true; store only
+    pub simple_swap: bool,        // default false; store only
+    pub auto_save_setup: bool,    // default false; store only
+    pub lynx_like: bool,          // default false; store only
+}
+
+impl Default for PanelOptions {
+    fn default() -> Self {
+        Self {
+            show_hidden: false,
+            mix_all_files: false,
+            mark_moves_down: true,
+            show_mini_status: true,
+            kilobyte_si: false,
+            fast_reload: false,
+            reverse_files_only: true,
+            simple_swap: false,
+            auto_save_setup: false,
+            lynx_like: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LayoutFocus {
     MenuBar,
@@ -306,6 +337,11 @@ pub enum UiMode {
         draft: ConfirmOptions,
         focus: ConfirmationsFocus,
     },
+    /// GNU mc Options → Panel options dialog
+    PanelOptionsDialog {
+        draft: PanelOptions,
+        focus: PanelOptionsFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -387,6 +423,21 @@ pub enum ConfirmationsFocus {
     Ok,
     Cancel,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PanelOptionsFocus {
+    ShowHidden,
+    MixAllFiles,
+    MarkMovesDown,
+    ShowMiniStatus,
+    UseSiUnits,
+    FastReload,
+    ReverseFilesOnly,
+    SimpleSwap,
+    AutoSaveSetup,
+    LynxLikeMotion,
+    Ok,
+    Cancel,
+}
 pub struct App {
     pub vfs: Box<dyn Vfs>,
     pub keymap: KeyMap,
@@ -408,6 +459,8 @@ pub struct App {
     pub layout: LayoutOptions,
     /// Options controlling confirmation prompts (GNU mc-style).
     pub confirm: ConfirmOptions,
+    /// GNU mc-style Options → Panels
+    pub panel_opts: PanelOptions,
 }
 
 impl App {
@@ -430,6 +483,7 @@ impl App {
             jobs: crate::jobs::JobQueue::new(),
             layout: LayoutOptions::default(),
             confirm: ConfirmOptions::default(),
+            panel_opts: PanelOptions::default(),
         };
         app.reload_panels()?;
         Ok(app)
@@ -521,6 +575,8 @@ impl App {
             }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
+                // Keep Options → Panels in sync with Ctrl-H
+                self.panel_opts.show_hidden = self.show_hidden;
                 self.reload_panels()?;
             }
             InvertSelection => {
@@ -654,6 +710,10 @@ impl App {
             ToggleSelect => {
                 let idx = self.active_panel().cursor;
                 self.active_panel_mut().selection.toggle(idx);
+                // GNU mc: when enabled, marking moves the cursor down
+                if self.panel_opts.mark_moves_down {
+                    self.active_panel_mut().move_down();
+                }
             }
             Sort(sb) => {
                 let (by, _dir) = match sb {
@@ -746,6 +806,7 @@ impl App {
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
             UiMode::LayoutDialog { .. } => "Panels".to_string(),
             UiMode::ConfirmationsDialog { .. } => "Panels".to_string(),
+            UiMode::PanelOptionsDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
