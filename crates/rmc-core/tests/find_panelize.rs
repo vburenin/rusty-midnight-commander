@@ -157,7 +157,7 @@ fn listing_and_panelize_copy_nlink() -> Result<()> {
         assert_eq!(parent.nlink, 1);
     }
 
-    app.panelize_paths(&[f1.clone()], Some(&root))?;
+    app.panelize_paths(std::slice::from_ref(&f1), Some(&root))?;
     let panelized = app
         .active_panel()
         .entries
@@ -184,7 +184,7 @@ fn listing_and_panelize_copy_nlink() -> Result<()> {
                 .entries
                 .iter()
                 .find(|e| e.name == name)
-                .unwrap_or_else(|| panic!("{name}"));
+                .unwrap_or_else(|| panic!("missing panelized {name}"));
             assert_eq!(e.nlink, 2, "panelized {name}");
         }
         app.reload_panels()?;
@@ -194,7 +194,7 @@ fn listing_and_panelize_copy_nlink() -> Result<()> {
                 .entries
                 .iter()
                 .find(|e| e.name == name)
-                .unwrap_or_else(|| panic!("{name}"));
+                .unwrap_or_else(|| panic!("missing listed {name}"));
             assert_eq!(e.nlink, 2, "listed {name}");
         }
     }
