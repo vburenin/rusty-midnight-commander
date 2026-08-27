@@ -53,6 +53,9 @@ pub struct LayoutOptions {
     // Optional extras; default ON to match GNU mc
     pub xterm_title: bool,
     pub show_free_space: bool,
+    /// First panel share of the dual-pane split (left when vertical, top if
+    /// a horizontal split is added later). 0.5 is equal. Clamped to [0.2, 0.8].
+    pub panel_ratio: f32,
 }
 
 impl Default for LayoutOptions {
@@ -64,6 +67,7 @@ impl Default for LayoutOptions {
             hintbar_visible: true,
             xterm_title: true,
             show_free_space: true,
+            panel_ratio: 0.5,
         }
     }
 }
@@ -1411,6 +1415,10 @@ impl App {
                     };
                 }
             }
+            EqualizePanels => {
+                // GNU mc Left/Right → Equal panel size: 50/50. Does not swap or chdir.
+                self.layout.panel_ratio = 0.5;
+            }
             FocusMenu => {
                 self.ui_mode = UiMode::Menu {
                     top_index: 0,
@@ -2025,6 +2033,23 @@ mod tests {
         assert_eq!(app.left.cwd, right_dir);
         assert_eq!(app.right.cwd, left_dir);
         assert_eq!(app.active, PaneSide::Left);
+    }
+
+    #[test]
+    fn equalize_panels_restores_equal_split_without_swapping() {
+        let (mut app, _tmp, left_dir, right_dir) = app_with_distinct_panes();
+        let left_names: Vec<_> = app.left.entries.iter().map(|e| e.name.clone()).collect();
+        let right_names: Vec<_> = app.right.entries.iter().map(|e| e.name.clone()).collect();
+        app.layout.panel_ratio = 0.8;
+        app.handle_action(Action::EqualizePanels).unwrap();
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(app.active, PaneSide::Left);
+        let left_after: Vec<_> = app.left.entries.iter().map(|e| e.name.clone()).collect();
+        let right_after: Vec<_> = app.right.entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(left_after, left_names);
+        assert_eq!(right_after, right_names);
     }
 
     fn assert_menu(app: &App, top: usize, sel: usize, dropped: bool) {

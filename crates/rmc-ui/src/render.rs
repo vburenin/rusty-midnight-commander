@@ -10,7 +10,7 @@ use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::{App, EditorMenu, LayoutFocus, LayoutOptions};
-use rmc_core::layout::compute_chrome_geom;
+use rmc_core::layout::{compute_chrome_geom, panel_split};
 use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
@@ -184,8 +184,8 @@ impl Renderer {
         let geom = compute_chrome_geom(cols, rows, &app.layout);
         let panel_top = geom.panel_top;
         let content_bottom = geom.content_bottom;
-        // Split columns
-        let mid = cols / 2;
+        // Split columns from layout.panel_ratio (0.5 = equal / GNU Equal panel size).
+        let mid = panel_split(cols, app.layout.panel_ratio);
         draw_panel(
             &mut painter,
             0,
@@ -5973,23 +5973,27 @@ pub(crate) const COMMAND_MENU_ITEMS: &[&str] = &[
     "Screen list",
 ];
 
+/// GNU mc(1) Left/Right menu labels. Shared with `terminal.rs`.
+pub(crate) const LEFT_RIGHT_MENU_ITEMS: &[&str] = &[
+    "Copy",
+    "Move",
+    "Mkdir",
+    "Delete",
+    "FTP link",
+    "Shell link",
+    "SFTP link",
+    "SMB link",
+    "Listing mode...",
+    "Sort order...",
+    "Tree",
+    "Filter",
+    "Equal panel size",
+];
+
 fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selected: usize) {
     // Real top menus and stub items
     let menus: [&[&str]; 5] = [
-        &[
-            "Copy",
-            "Move",
-            "Mkdir",
-            "Delete",
-            "FTP link",
-            "Shell link",
-            "SFTP link",
-            "SMB link",
-            "Listing mode...",
-            "Sort order...",
-            "Tree",
-            "Filter",
-        ],
+        LEFT_RIGHT_MENU_ITEMS,
         &[
             "Help",
             "View",
@@ -6017,20 +6021,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Learn keys",
             "Save setup",
         ],
-        &[
-            "Copy",
-            "Move",
-            "Mkdir",
-            "Delete",
-            "FTP link",
-            "Shell link",
-            "SFTP link",
-            "SMB link",
-            "Listing mode...",
-            "Sort order...",
-            "Tree",
-            "Filter",
-        ],
+        LEFT_RIGHT_MENU_ITEMS,
     ];
     let titles = [" Left ", " File ", " Command ", " Options ", " Right "];
     // Compute x position under the selected top title

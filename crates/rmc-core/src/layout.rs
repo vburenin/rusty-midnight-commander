@@ -10,8 +10,22 @@ pub struct ChromeGeom {
 
 impl ChromeGeom {
     pub fn mid_col(cols: u16) -> u16 {
-        cols / 2
+        panel_split(cols, 0.5)
     }
+}
+
+/// First-panel size in columns (vertical split) or rows (horizontal split).
+/// `ratio` is the first panel's share; 0.5 is equal (`total / 2`).
+pub fn panel_split(total: u16, ratio: f32) -> u16 {
+    if total <= 1 {
+        return 0;
+    }
+    if (ratio - 0.5).abs() <= f32::EPSILON {
+        return total / 2;
+    }
+    let ratio = ratio.clamp(0.2, 0.8);
+    let split = ((total as f32) * ratio).round() as u16;
+    split.clamp(1, total.saturating_sub(1))
 }
 
 /// Compute positions of UI chrome rows based on terminal size and LayoutOptions.
@@ -71,5 +85,22 @@ pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions
         hint_row,
         cmd_row,
         fbar_row,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panel_split;
+
+    #[test]
+    fn equal_ratio_matches_integer_half() {
+        assert_eq!(panel_split(80, 0.5), 40);
+        assert_eq!(panel_split(81, 0.5), 40);
+    }
+
+    #[test]
+    fn unequal_ratio_moves_the_split() {
+        assert_eq!(panel_split(80, 0.8), 64);
+        assert_eq!(panel_split(80, 0.2), 16);
     }
 }
