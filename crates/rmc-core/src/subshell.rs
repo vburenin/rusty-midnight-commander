@@ -10,10 +10,14 @@ use std::thread;
 pub struct Subshell {
     /// Current editable command line.
     pub cmdline: String,
+    /// Insertion point in `cmdline` as a Unicode scalar count (0..=char len).
+    cursor: usize,
     /// History of previously executed commands (most recent last).
     history: Vec<String>,
     /// When navigating history, this is Some(index into history). None when not navigating.
     history_index: Option<usize>,
+    /// Uncommitted command line saved when M-p starts history walking.
+    history_draft: Option<String>,
     /// Combined stdout/stderr output of the last executed command(s), capped in size.
     pub output_lines: Vec<String>,
     /// Whether the subshell/output full-screen view is currently shown (C-o toggle).
@@ -34,8 +38,10 @@ impl Subshell {
     pub fn new() -> Self {
         Self {
             cmdline: String::new(),
+            cursor: 0,
             history: Vec::new(),
             history_index: None,
+            history_draft: None,
             output_lines: Vec::new(),
             show_output_screen: false,
             output_scroll: 0,
@@ -43,12 +49,58 @@ impl Subshell {
         }
     }
 
-    /// Append a filename into the cmdline, adding a separating space if needed and quoting if necessary.
-    pub fn append_filename(&mut self, name: &str) {
-        if !self.cmdline.is_empty() && !self.cmdline.ends_with(' ') {
-            self.cmdline.push(' ');
+    /// Replace the command line and put the cursor at the end.
+    pub fn replace_cmdline(&mut self, s: String) {
+        self.cmdline = s;
+        self.cursor = self.cmdline.chars().count();
+    }
+
+    fn byte_index_at_cursor(&self) -> usize {
+        self.cmdline
+            .chars()
+            .take(self.cursor)
+            .map(|c| c.len_utf8())
+            .sum()
+    }
+
+    /// Insert `s` at the cursor.
+    pub fn insert_str(&mut self, s: &str) {
+        let i = self.byte_index_at_cursor().min(self.cmdline.len());
+        self.cmdline.insert_str(i, s);
+        self.cursor += s.chars().count();
+    }
+
+    /// Insert one character at the cursor.
+    pub fn insert_char(&mut self, c: char) {
+        let mut buf = [0u8; 4];
+        self.insert_str(c.encode_utf8(&mut buf));
+    }
+
+    /// Delete the character before the cursor.
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
         }
-        self.cmdline.push_str(&shell_quote(name));
+        self.cursor -= 1;
+        let start = self.byte_index_at_cursor();
+        let ch_len = self.cmdline[start..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(0);
+        self.cmdline.replace_range(start..start + ch_len, "");
+    }
+
+    /// Insert a filename (or path) at the cursor, adding a separating space if needed
+    /// and quoting when the name contains spaces or other specials.
+    pub fn append_filename(&mut self, name: &str) {
+        if self.cursor > 0 {
+            let prev = self.cmdline.chars().nth(self.cursor.saturating_sub(1));
+            if prev != Some(' ') {
+                self.insert_str(" ");
+            }
+        }
+        self.insert_str(&shell_quote(name));
     }
 
     /// Move to previous history entry (older). Returns the new cmdline to show.
@@ -57,7 +109,10 @@ impl Subshell {
             return None;
         }
         let new_index = match self.history_index {
-            None => self.history.len().saturating_sub(1),
+            None => {
+                self.history_draft = Some(self.cmdline.clone());
+                self.history.len().saturating_sub(1)
+            }
             Some(0) => 0,
             Some(i) => i.saturating_sub(1),
         };
@@ -73,9 +128,9 @@ impl Subshell {
         let new_index = match self.history_index {
             None => return None,
             Some(i) if i + 1 >= self.history.len() => {
-                // Past newest: clear nav and return empty to allow editing a fresh command
+                // Past newest: restore the uncommitted line (or empty).
                 self.history_index = None;
-                return Some(String::new());
+                return Some(self.history_draft.take().unwrap_or_default());
             }
             Some(i) => i + 1,
         };
@@ -86,6 +141,7 @@ impl Subshell {
     /// Clear history navigation state (called when editing/typing).
     pub fn clear_history_nav(&mut self) {
         self.history_index = None;
+        self.history_draft = None;
     }
 
     /// Previously executed commands, oldest first (most recent last).
@@ -102,6 +158,7 @@ impl Subshell {
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.history_index = None;
+        self.history_draft = None;
     }
 
     /// Record `cmd` in history, skipping empty lines and consecutive duplicates.
@@ -113,6 +170,7 @@ impl Subshell {
             self.history.push(cmd.to_string());
         }
         self.history_index = None;
+        self.history_draft = None;
     }
 
     /// Execute the current command line using the user's shell.
@@ -182,7 +240,9 @@ impl Subshell {
     /// Clear the current command line (after execution or cancel).
     pub fn clear_cmdline(&mut self) {
         self.cmdline.clear();
+        self.cursor = 0;
         self.history_index = None;
+        self.history_draft = None;
     }
 
     /// Toggle the output full-screen flag.
@@ -285,7 +345,8 @@ pub struct ExecOutcome {
     pub output_collected: bool,
 }
 
-fn shell_quote(name: &str) -> String {
+/// POSIX-ish single-quote quoting for command-line filename helpers.
+pub fn shell_quote(name: &str) -> String {
     // Simple POSIX-ish single-quote quoting.
     // Replace each single quote with '\'' sequence.
     if name.is_empty() {
@@ -568,6 +629,26 @@ mod tests {
         // At the only entry; next past newest yields a fresh empty line.
         assert_eq!(ss.history_next().as_deref(), Some(""));
         assert!(ss.history_next().is_none());
+    }
+
+    #[test]
+    fn history_prev_saves_draft_and_next_restores_it() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let mut ss = Subshell::new();
+        seed_history(&mut ss, cwd, &["echo a"]);
+        ss.cmdline = "echo b".to_string();
+        assert_eq!(ss.history_prev().as_deref(), Some("echo a"));
+        assert_eq!(ss.history_next().as_deref(), Some("echo b"));
+    }
+
+    #[test]
+    fn append_filename_quotes_spaces() {
+        let mut ss = Subshell::new();
+        ss.append_filename("hello world.txt");
+        assert_eq!(ss.cmdline, "'hello world.txt'");
+        ss.append_filename("plain");
+        assert_eq!(ss.cmdline, "'hello world.txt' plain");
     }
 
     #[test]

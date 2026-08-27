@@ -1160,6 +1160,8 @@ pub struct App {
     pub subshell: Subshell,
     pub hotlist: Hotlist,
     pub pending_ctrl_x: bool,
+    /// C-q: insert the next key literally into the command line.
+    pub pending_quote: bool,
     /// MC-style incremental quick search state for the active panel.
     pub quick_search: Option<crate::quicksearch::QuickSearchState>,
     /// Background job queue (copy/move on worker thread).
@@ -1198,6 +1200,7 @@ impl App {
             subshell: Subshell::new(),
             hotlist: Hotlist::load_from_default_path(),
             pending_ctrl_x: false,
+            pending_quote: false,
             quick_search: None,
             jobs: crate::jobs::JobQueue::new(),
             layout: LayoutOptions::default(),
@@ -1224,6 +1227,12 @@ impl App {
         match self.active {
             PaneSide::Left => &mut self.right,
             PaneSide::Right => &mut self.left,
+        }
+    }
+    pub fn inactive_panel(&self) -> &PanelState {
+        match self.active {
+            PaneSide::Left => &self.right,
+            PaneSide::Right => &self.left,
         }
     }
     pub fn active_panel(&self) -> &PanelState {
