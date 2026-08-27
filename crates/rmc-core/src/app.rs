@@ -338,6 +338,8 @@ pub enum UiMode {
         replace_dialog: Option<EditorReplaceDialog>,
         /// GNU mcedit `|` Pipe dialog (None while editing).
         pipe_dialog: Option<EditorPipeDialog>,
+        /// GNU mcedit Alt-l Goto line dialog (None while editing).
+        goto_dialog: Option<Box<EditorGotoDialog>>,
         pending_quit: bool,
         confirm_exit: Option<YncDialog>,
     },
@@ -602,6 +604,33 @@ pub struct EditorPipeDialog {
     pub command: String,
     pub focus: EditorPipeFocus,
 }
+
+/// Focus within the GNU mcedit Alt-l Goto line dialog.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorGotoFocus {
+    #[default]
+    Line,
+    Ok,
+    Cancel,
+}
+
+/// GNU mcedit-style Goto line dialog: 1-based line field and OK / Cancel.
+#[derive(Clone)]
+pub struct EditorGotoDialog {
+    pub line: String,
+    pub focus: EditorGotoFocus,
+}
+
+impl EditorGotoDialog {
+    /// Prefill the line field from the buffer's current 0-based cursor row.
+    pub fn from_cursor_row(row: usize) -> Self {
+        Self {
+            line: (row + 1).to_string(),
+            focus: EditorGotoFocus::Line,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CopyDialogFocus {
     Mask,
