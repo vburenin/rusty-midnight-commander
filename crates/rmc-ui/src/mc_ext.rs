@@ -2,6 +2,8 @@
 //!
 //! This is not GNU Midnight Commander's GPL `mc.ext.ini`. Only the `[open]`
 //! section is used here; `[extfs]` / `[extensions]` stay with the VFS helper.
+//! Shipped rules cover GNU-like Open *behavior* (view text, desktop-open
+//! media/docs, VFS-enter archives) using replica handlers only.
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -18,6 +20,8 @@ pub(crate) enum OpenAction {
     View,
     /// Desktop opener: `$MC_OPEN` if set, otherwise `xdg-open`.
     XdgOpen,
+    /// Archive / extfs: same as panel Enter VFS `enter_path`.
+    Enter,
 }
 
 /// Extension → Open mapping (keys are lowercase including the leading dot).
@@ -110,6 +114,7 @@ fn parse_open_action(v: &str) -> Option<OpenAction> {
     match v.to_ascii_lowercase().as_str() {
         "view" => Some(OpenAction::View),
         "xdg-open" | "open" => Some(OpenAction::XdgOpen),
+        "enter" | "vfs" => Some(OpenAction::Enter),
         _ => None,
     }
 }
@@ -158,6 +163,14 @@ lsarc = extfs/ls-archive
     }
 
     #[test]
+    fn parse_enter_and_vfs_aliases() {
+        let map = OpenMap::parse("[open]\n.tar = enter\n.zip = VFS\n.7z = Enter\n");
+        assert_eq!(map.lookup(Path::new("a.tar")), Some(OpenAction::Enter));
+        assert_eq!(map.lookup(Path::new("a.ZIP")), Some(OpenAction::Enter));
+        assert_eq!(map.lookup(Path::new("a.7z")), Some(OpenAction::Enter));
+    }
+
+    #[test]
     fn lookup_is_case_insensitive_and_accepts_dotless_keys() {
         let map = OpenMap::parse("[open]\nTXT = View\nmd = VIEW\n");
         assert_eq!(map.lookup(Path::new("A.Txt")), Some(OpenAction::View));
@@ -180,39 +193,97 @@ lsarc = extfs/ls-archive
         assert_eq!(map.lookup(Path::new("a.txt")), Some(OpenAction::View));
     }
 
-    #[test]
-    fn shipped_ini_open_section() {
-        let map = OpenMap::parse(SHIPPED_INI);
-        assert_eq!(map.lookup(Path::new("notes.txt")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("README.md")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("a.c")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("a.h")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("app.py")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("main.cpp")), Some(OpenAction::View));
-        assert_eq!(map.lookup(Path::new("cfg.json")), Some(OpenAction::View));
-        assert_eq!(
-            map.lookup(Path::new("index.html")),
-            Some(OpenAction::XdgOpen)
-        );
-        assert_eq!(map.lookup(Path::new("x.htm")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("a.pdf")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("a.png")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("a.jpg")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("a.jpeg")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("a.gif")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("icon.svg")), Some(OpenAction::XdgOpen));
-        assert_eq!(map.lookup(Path::new("clip.mp4")), Some(OpenAction::XdgOpen));
+    fn assert_shipped_common_open_actions(map: &OpenMap) {
+        let view = [
+            "notes.txt",
+            "README.md",
+            "readme.markdown",
+            "lib.rs",
+            "a.c",
+            "a.h",
+            "app.py",
+            "main.cpp",
+            "cfg.json",
+            "nginx.conf",
+            "app.cfg",
+            "data.csv",
+            "query.sql",
+            "script.pl",
+            "App.tsx",
+            "readme.gz",
+            "notes.bz2",
+            "blob.xz",
+            "blob.zst",
+        ];
+        for name in view {
+            assert_eq!(
+                map.lookup(Path::new(name)),
+                Some(OpenAction::View),
+                "{name}"
+            );
+        }
+        let xdg = [
+            "index.html",
+            "x.htm",
+            "a.pdf",
+            "a.png",
+            "a.jpg",
+            "a.jpeg",
+            "a.gif",
+            "icon.svg",
+            "clip.mp4",
+            "app.ico",
+            "film.mkv",
+            "song.flac",
+        ];
+        for name in xdg {
+            assert_eq!(
+                map.lookup(Path::new(name)),
+                Some(OpenAction::XdgOpen),
+                "{name}"
+            );
+        }
+        let enter = [
+            "src.tar",
+            "pkg.zip",
+            "a.tgz",
+            "a.7z",
+            "disk.iso",
+            "sample.lsar",
+        ];
+        for name in enter {
+            assert_eq!(
+                map.lookup(Path::new(name)),
+                Some(OpenAction::Enter),
+                "{name}"
+            );
+        }
         assert_eq!(map.lookup(Path::new("a.dat")), None);
-        assert_eq!(map.lookup(Path::new("sample.lsar")), None);
+        assert_eq!(map.lookup(Path::new("x.bin")), None);
         assert_eq!(map.lookup(Path::new("foo.py.bak")), None);
     }
 
     #[test]
-    fn load_default_finds_repo_ini() {
+    fn shipped_ini_open_section() {
+        let map = OpenMap::parse(SHIPPED_INI);
+        assert!(
+            !map.by_ext.is_empty(),
+            "baked [open] must parse to a non-empty map"
+        );
+        assert_shipped_common_open_actions(&map);
+    }
+
+    #[test]
+    fn load_default_bakes_non_empty_open_map() {
         let map = OpenMap::load_default();
+        assert!(
+            !map.by_ext.is_empty(),
+            "OpenMap::load_default() must keep baked [open] non-empty"
+        );
         assert_eq!(map.lookup(Path::new("notes.txt")), Some(OpenAction::View));
         assert_eq!(map.lookup(Path::new("a.png")), Some(OpenAction::XdgOpen));
+        assert_eq!(map.lookup(Path::new("pkg.zip")), Some(OpenAction::Enter));
+        assert_shipped_common_open_actions(&map);
     }
 
     #[test]
@@ -221,10 +292,13 @@ lsarc = extfs/ls-archive
         assert_eq!(lookup_open(Path::new("x.rs")), Some(OpenAction::View));
         assert_eq!(lookup_open(Path::new("notes.txt")), Some(OpenAction::View));
         assert_eq!(lookup_open(Path::new("app.py")), Some(OpenAction::View));
+        assert_eq!(lookup_open(Path::new("data.csv")), Some(OpenAction::View));
         assert_eq!(
             lookup_open(Path::new("icon.svg")),
             Some(OpenAction::XdgOpen)
         );
+        assert_eq!(lookup_open(Path::new("src.tar")), Some(OpenAction::Enter));
+        assert_eq!(lookup_open(Path::new("pkg.zip")), Some(OpenAction::Enter));
         assert_eq!(lookup_open(Path::new("x.bin")), None);
         assert_eq!(lookup_open(Path::new("a.dat")), None);
     }
@@ -232,11 +306,19 @@ lsarc = extfs/ls-archive
     #[test]
     fn empty_overlay_does_not_wipe_shipped_map() {
         let mut map = OpenMap::parse(SHIPPED_INI);
+        let baked_len = map.by_ext.len();
+        assert!(baked_len > 0);
         map.apply_overlay("[extfs]\nlsarc = extfs/ls-archive\n[open]\n");
+        assert_eq!(map.by_ext.len(), baked_len);
         assert_eq!(map.lookup(Path::new("notes.txt")), Some(OpenAction::View));
         assert_eq!(map.lookup(Path::new("a.png")), Some(OpenAction::XdgOpen));
+        assert_eq!(map.lookup(Path::new("src.tar")), Some(OpenAction::Enter));
         map.apply_overlay("");
+        assert_eq!(map.by_ext.len(), baked_len);
         assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
+        map.apply_overlay("[open]\n# comments only\n; still empty\n");
+        assert_eq!(map.by_ext.len(), baked_len);
+        assert!(!map.by_ext.is_empty());
     }
 
     #[test]
