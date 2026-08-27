@@ -2285,12 +2285,11 @@ impl TerminalApp {
                             };
                         }
                     }
-                    KeyCode::Char(' ') => match *focus {
-                        F::Shadows => {
+                    KeyCode::Char(' ') => {
+                        if *focus == F::Shadows {
                             *draft_shadows = !*draft_shadows;
                         }
-                        _ => {}
-                    },
+                    }
                     KeyCode::Enter => match *focus {
                         F::SkinList => {
                             if let Some(name) = skins.get(*selected) {

@@ -1313,6 +1313,7 @@ fn draw_layout_dialog(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_appearance_dialog(
     p: &mut Painter,
     cols: u16,
@@ -1730,6 +1731,7 @@ fn draw_inline_prompt(
     p.text(&t);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_dialog_ync(
     p: &mut Painter,
     cols: u16,
@@ -1816,6 +1818,7 @@ fn draw_dialog_ync(
         p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn draw_dialog_box(
     p: &mut Painter,
     cols: u16,
@@ -3525,6 +3528,7 @@ fn draw_ftp_connect_dialog(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_jobs_dialog(
     p: &mut Painter,
     cols: u16,

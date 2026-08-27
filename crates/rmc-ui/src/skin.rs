@@ -287,12 +287,7 @@ pub fn find_skin_path_by_name(name: &str) -> Option<PathBuf> {
         PathBuf::from("data/skins").join(format!("{name}.ini")),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../data/skins/{name}.ini")),
     ];
-    for p in candidates {
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 #[cfg(test)]
