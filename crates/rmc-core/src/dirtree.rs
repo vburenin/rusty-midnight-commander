@@ -1,8 +1,9 @@
-//! GNU mc(1) Command-menu Directory Tree figure.
+//! GNU mc(1) directory-tree figure engine.
 //!
-//! Dedicated dialog state (not panel [`crate::panel::PanelMode::Tree`] and not
-//! the Find File Tree picker). Dynamic mode shows parent/siblings/children;
-//! static mode shows every known directory.
+//! Shared by the Command-menu Directory tree dialog (`UiMode::DirectoryTree`)
+//! and Left/Right panel [`crate::panel::PanelMode::Tree`]. Not the Find File
+//! Tree picker. Dynamic mode shows parent/siblings/children; static mode shows
+//! every known directory.
 
 use crate::panel::TreeEntry;
 use std::path::{Path, PathBuf};
