@@ -17876,6 +17876,7 @@ mod shell_cmdline_editing_tests {
         press_ctrl(&mut app, 'y');
         assert_eq!(app.subshell.cmdline, "hello world");
 
+        press_ctrl(&mut app, 'e');
         press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
         assert_eq!(app.subshell.cmdline, "hello ");
         press_ctrl(&mut app, 'y');
