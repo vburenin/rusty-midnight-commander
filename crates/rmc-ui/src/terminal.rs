@@ -2921,7 +2921,13 @@ impl TerminalApp {
                         "Compare dirs",
                         "External panelize",
                     ],
-                    &["Layout", "Panels", "Confirmations", "Learn keys", "Save setup"],
+                    &[
+                        "Layout",
+                        "Panels",
+                        "Confirmations",
+                        "Learn keys",
+                        "Save setup",
+                    ],
                     &[
                         "Copy",
                         "Move",
@@ -3000,7 +3006,13 @@ impl TerminalApp {
                                         draft.push((act.clone(), k));
                                     } else {
                                         // Fallback: keep row but use a dummy Enter; renderer will show it
-                                        draft.push((act.clone(), crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('?'), crossterm::event::KeyModifiers::NONE)));
+                                        draft.push((
+                                            act.clone(),
+                                            crossterm::event::KeyEvent::new(
+                                                crossterm::event::KeyCode::Char('?'),
+                                                crossterm::event::KeyModifiers::NONE,
+                                            ),
+                                        ));
                                     }
                                 }
                                 app.ui_mode = UiMode::LearnKeysDialog {

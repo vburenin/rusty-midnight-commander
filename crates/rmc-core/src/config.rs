@@ -357,7 +357,7 @@ fn format_action(a: &Action) -> String {
         Action::Sort(SortBy::Time) => "SortTime",
         Action::OpenHotlist => "OpenHotlist",
         Action::FunctionKey(n) => return format!("FunctionKey{}", n),
-        Action::MouseClick { .. } | Action::MouseScroll { .. } => "Mouse".to_string(),
+        Action::MouseClick { .. } | Action::MouseScroll { .. } => "Mouse",
     }
     .to_string()
 }
@@ -433,7 +433,11 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "show_mini_status={}", app.panel_opts.show_mini_status)?;
     writeln!(f, "kilobyte_si={}", app.panel_opts.kilobyte_si)?;
     writeln!(f, "fast_reload={}", app.panel_opts.fast_reload)?;
-    writeln!(f, "reverse_files_only={}", app.panel_opts.reverse_files_only)?;
+    writeln!(
+        f,
+        "reverse_files_only={}",
+        app.panel_opts.reverse_files_only
+    )?;
     writeln!(f, "simple_swap={}", app.panel_opts.simple_swap)?;
     writeln!(f, "auto_save_setup={}", app.panel_opts.auto_save_setup)?;
     writeln!(f, "lynx_like={}", app.panel_opts.lynx_like)?;
@@ -551,13 +555,13 @@ mod tests {
     fn keymap_save_and_load_roundtrip_overrides_binding() {
         // Create a temporary file path
         let mut p = std::env::temp_dir();
-        p.push(format!(
-            "rmc_keymap_test_{}.keymap",
-            std::process::id()
-        ));
+        p.push(format!("rmc_keymap_test_{}.keymap", std::process::id()));
         // Start from defaults, override F5 to Move (instead of Copy)
         let mut km = KeyMap::mc_defaults();
-        km.set_binding(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), Action::Move);
+        km.set_binding(
+            KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
+            Action::Move,
+        );
         km.save_to_file(&p).expect("save keymap");
         // Load from file and ensure F5 resolves to Move
         let lm = KeyMap::load_from_file(&p).expect("load keymap");

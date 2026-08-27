@@ -403,9 +403,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             capturing,
             focus_ok,
         } => {
-            draw_learn_keys_dialog(
-                p, cols, rows, pal, draft, *selected, *capturing, *focus_ok,
-            );
+            draw_learn_keys_dialog(p, cols, rows, pal, draft, *selected, *capturing, *focus_ok);
         }
         _ => {}
     }
@@ -759,7 +757,7 @@ fn draw_learn_keys_dialog(
     cols: u16,
     rows: u16,
     pal: McPalette,
-    draft: &Vec<(rmc_core::actions::Action, crossterm::event::KeyEvent)>,
+    draft: &[(rmc_core::actions::Action, crossterm::event::KeyEvent)],
     selected: usize,
     capturing: bool,
     focus_ok: bool,
@@ -809,7 +807,7 @@ fn draw_learn_keys_dialog(
             KeyCode::Char(' ') => out.push_str("Space"),
             KeyCode::Char(ch) => out.push(ch),
             KeyCode::F(n) => out.push_str(&format!("F{n}")),
-            _ => out.push_str("?"),
+            _ => out.push('?'),
         }
         out
     };
@@ -3848,7 +3846,13 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Directory hotlist",
             "Compare dirs",
         ],
-        &["Layout", "Panels", "Confirmations", "Learn keys", "Save setup"],
+        &[
+            "Layout",
+            "Panels",
+            "Confirmations",
+            "Learn keys",
+            "Save setup",
+        ],
         &[
             "Copy",
             "Move",

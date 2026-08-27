@@ -1,11 +1,11 @@
 use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
-use crossterm::event::KeyEvent;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::panel::{FileEntry, PanelState, SortBy};
 use crate::subshell::Subshell;
 use anyhow::Result;
+use crossterm::event::KeyEvent;
 use rmc_diff;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
@@ -498,11 +498,8 @@ impl App {
             panel_opts: PanelOptions::default(),
         };
         // Overlay user setup (if available) over defaults, then refresh panels.
-        if crate::config::load_user_setup(&mut app).is_ok() {
-            app.reload_panels()?;
-        } else {
-            app.reload_panels()?;
-        }
+        let _ = crate::config::load_user_setup(&mut app);
+        app.reload_panels()?;
         Ok(app)
     }
 
