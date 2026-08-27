@@ -58,7 +58,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [x] Filter dialog: glob/regex, files only toggle, case sensitivity
 - [x] Show hidden files toggle (dotfiles)
 - [x] Fast directory reload; manual rescan C-r
-- [ ] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection
+- [x] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection
 - [x] `-d`/`--nomouse`: disable mouse capture and mouse event handling for this run
 
 ---

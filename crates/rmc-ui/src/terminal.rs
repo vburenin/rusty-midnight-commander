@@ -1650,6 +1650,13 @@ fn fbar_function_from_xy(app: &App, x: u16, y: u16, cols: u16, rows: u16) -> Opt
     None
 }
 
+/// GNU mc(1): with mouse support on, holding Shift restores default terminal
+/// mouse behavior (cutting and pasting text). Shift may be combined with other
+/// modifiers; any event that includes SHIFT is a passthrough no-op for MC.
+fn mouse_is_shift_passthrough(mev: &MouseEvent) -> bool {
+    mev.modifiers.contains(KeyModifiers::SHIFT)
+}
+
 /// GNU mc(1) eight sort-order radios, then Reverse, Directories first, OK, Cancel.
 const SORT_DIALOG_LEN: usize = 12;
 const SORT_FOCUS_REVERSE: usize = 8;
@@ -1841,231 +1848,14 @@ impl TerminalApp {
                         Self::handle_key(app, key, active_page_rows)?;
                     }
                     Event::Mouse(mev) => {
-                        // GNU `-d`/`--nomouse`: never process mouse events.
-                        if !app.mouse_enabled {
-                            continue;
-                        }
-                        // Ignore mouse while subshell full-screen
-                        if app.subshell.show_output_screen {
-                            continue;
-                        }
-                        if matches!(app.ui_mode, UiMode::Viewer { .. }) {
-                            let active_page_rows = match app.active {
-                                rmc_core::actions::PaneSide::Left => left_rows,
-                                rmc_core::actions::PaneSide::Right => right_rows,
-                            };
-                            let _ = Self::handle_mouse(app, mev, active_page_rows);
-                            continue;
-                        }
-                        if !matches!(app.ui_mode, UiMode::Normal) {
-                            continue;
-                        }
-                        // Coordinates
-                        let mx = mev.column;
-                        let my = mev.row;
-                        // Top menu bar click: open the corresponding top menu
-                        if app.layout.menubar_visible && my == 0 {
-                            if let Some(top_idx) =
-                                menu_top_index_from_x(mx, app.layout.horizontal_split)
-                            {
-                                if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
-                                    app.ui_mode = UiMode::Menu {
-                                        top_index: top_idx,
-                                        selected_index: 0,
-                                        dropped: true,
-                                    };
-                                }
-                            }
-                            continue;
-                        }
-                        // Bottom function bar: dispatch F1..F10
-                        if let Some(n) = fbar_function_from_xy(app, mx, my, cols, rows) {
-                            if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
-                                let key = KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE);
-                                // Panel body rows; handle_key applies listing_page_capacity.
-                                let active_page_rows = match app.active {
-                                    PaneSide::Left => left_rows,
-                                    PaneSide::Right => right_rows,
-                                };
-                                let _ = Self::handle_key(app, key, active_page_rows);
-                            }
-                            continue;
-                        }
-                        // Panel rectangles (same geometry as render.rs)
-                        let left_rect = (left_pr.x, left_pr.y, left_pr.w, left_pr.h);
-                        let right_rect = (right_pr.x, right_pr.y, right_pr.w, right_pr.h);
-                        let in_rect =
-                            |x: u16, y: u16, rx: u16, ry: u16, rw: u16, rh: u16| -> bool {
-                                x >= rx
-                                    && x < rx.saturating_add(rw)
-                                    && y >= ry
-                                    && y < ry.saturating_add(rh)
-                            };
-                        let mut target_side: Option<PaneSide> = None;
-                        if in_rect(mx, my, left_rect.0, left_rect.1, left_rect.2, left_rect.3) {
-                            target_side = Some(PaneSide::Left);
-                        } else if in_rect(
-                            mx,
-                            my,
-                            right_rect.0,
-                            right_rect.1,
-                            right_rect.2,
-                            right_rect.3,
-                        ) {
-                            target_side = Some(PaneSide::Right);
-                        }
-                        // Scroll wheel over a panel: move cursor and activate that panel
-                        if matches!(
-                            mev.kind,
-                            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                        ) {
-                            if let Some(side) = target_side {
-                                app.active = side;
-                                let up = matches!(mev.kind, MouseEventKind::ScrollUp);
-                                if up {
-                                    app.handle_action(Action::MoveUp)?;
-                                } else {
-                                    app.handle_action(Action::MoveDown)?;
-                                }
-                                // Best-effort ensure visible now (renderer will also fix up)
-                                if matches!(side, PaneSide::Left) {
-                                    app.left.ensure_visible(left_capacity);
-                                } else {
-                                    app.right.ensure_visible(right_capacity);
-                                }
-                            }
-                            continue;
-                        }
-                        // Left/right click inside listing content: hit test row/column
-                        if let Some(side) = target_side {
-                            // Activate the clicked panel
-                            app.active = side;
-                            // Panel geometry
-                            let (px, _py, pw, ph) = if matches!(side, PaneSide::Left) {
-                                left_rect
-                            } else {
-                                right_rect
-                            };
-                            // Listing content area
-                            let content_top = _py + 2;
-                            let content_h = rmc_core::panel::panel_listing_content_rows(
-                                ph,
-                                rmc_core::panel::reserve_panel_mini_status(
-                                    app.panel_opts.show_mini_status,
-                                    true,
-                                    app.quick_search.is_some(),
-                                ),
-                            );
-                            // Only rows within listing body move the cursor / toggle / enter
-                            if my >= content_top && my < content_top.saturating_add(content_h) {
-                                let row_i = (my - content_top) as usize;
-                                // Decide column for Brief packed names (1–9 columns)
-                                let (brief_cols, per_col_width) = {
-                                    let listing = if matches!(side, PaneSide::Left) {
-                                        app.left.listing
-                                    } else {
-                                        app.right.listing
-                                    };
-                                    let brief_n = if matches!(side, PaneSide::Left) {
-                                        app.left.brief_columns
-                                    } else {
-                                        app.right.brief_columns
-                                    };
-                                    if matches!(listing, rmc_core::panel::ListingFormat::Brief) {
-                                        let n = rmc_core::panel::clamp_brief_columns(brief_n);
-                                        (n, rmc_core::panel::brief_column_width(pw, n))
-                                    } else {
-                                        (1, pw.saturating_sub(2))
-                                    }
-                                };
-                                // Compute target index
-                                let (scroll_top, entries_len) = if matches!(side, PaneSide::Left) {
-                                    (app.left.scroll_top, app.left.entries.len())
-                                } else {
-                                    (app.right.scroll_top, app.right.entries.len())
-                                };
-                                let mut idx: Option<usize> = None;
-                                if brief_cols > 1 {
-                                    let inner_x = mx.saturating_sub(px);
-                                    let col = rmc_core::panel::brief_column_at_x(
-                                        inner_x,
-                                        per_col_width,
-                                        brief_cols,
-                                    );
-                                    let base = rmc_core::panel::brief_entry_index(
-                                        scroll_top,
-                                        row_i,
-                                        col,
-                                        content_h as usize,
-                                    );
-                                    if base < entries_len {
-                                        idx = Some(base);
-                                    }
-                                } else {
-                                    let base = scroll_top + row_i;
-                                    if base < entries_len {
-                                        idx = Some(base);
-                                    }
-                                }
-                                // Apply left/right button semantics
-                                if let Some(sel_idx) = idx {
-                                    // Move cursor to clicked row
-                                    if matches!(side, PaneSide::Left) {
-                                        app.left.cursor = sel_idx;
-                                        app.left.ensure_visible(left_capacity);
-                                    } else {
-                                        app.right.cursor = sel_idx;
-                                        app.right.ensure_visible(right_capacity);
-                                    }
-                                    match mev.kind {
-                                        MouseEventKind::Down(MouseButton::Left) => {
-                                            let now = Instant::now();
-                                            let is_double = if let (Some(t0), Some((s0, i0))) =
-                                                (last_click_time, last_click_target)
-                                            {
-                                                now.duration_since(t0) <= Duration::from_millis(400)
-                                                    && s0 == side
-                                                    && i0 == sel_idx
-                                            } else {
-                                                false
-                                            };
-                                            last_click_time = Some(now);
-                                            last_click_target = Some((side, sel_idx));
-                                            if is_double {
-                                                let key = KeyEvent::new(
-                                                    KeyCode::Enter,
-                                                    KeyModifiers::NONE,
-                                                );
-                                                let page = if matches!(side, PaneSide::Left) {
-                                                    left_rows
-                                                } else {
-                                                    right_rows
-                                                };
-                                                let _ = Self::handle_key(app, key, page);
-                                            }
-                                        }
-                                        MouseEventKind::Down(MouseButton::Right) => {
-                                            // Toggle mark (Insert) without entering
-                                            let key =
-                                                KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE);
-                                            let page = if matches!(side, PaneSide::Left) {
-                                                left_rows
-                                            } else {
-                                                right_rows
-                                            };
-                                            let _ = Self::handle_key(app, key, page);
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                continue;
-                            } else {
-                                // Click within panel but outside listing body: just activate
-                                continue;
-                            }
-                        }
-                        // Otherwise ignore
-                        // nothing
+                        Self::dispatch_mouse(
+                            app,
+                            mev,
+                            cols,
+                            rows,
+                            &mut last_click_time,
+                            &mut last_click_target,
+                        )?;
                     }
                     Event::Resize(c, r) => {
                         // Resize PTY if alive; redraw next loop
@@ -2136,7 +1926,266 @@ impl TerminalApp {
         }
     }
 
+    /// Mouse entry used by the event loop and unit tests. GNU `-d`/`--nomouse`
+    /// never handles events. Shift+mouse is a passthrough so the terminal can
+    /// select/paste. Editor/dialog modes do not consume clicks.
+    fn dispatch_mouse(
+        app: &mut App,
+        mev: MouseEvent,
+        cols: u16,
+        rows: u16,
+        last_click_time: &mut Option<Instant>,
+        last_click_target: &mut Option<(PaneSide, usize)>,
+    ) -> Result<()> {
+        if !app.mouse_enabled {
+            return Ok(());
+        }
+        if mouse_is_shift_passthrough(&mev) {
+            return Ok(());
+        }
+        if app.subshell.show_output_screen {
+            return Ok(());
+        }
+        if matches!(app.ui_mode, UiMode::Viewer { .. }) {
+            let (left_rows, right_rows, _, _) = Self::panel_mouse_geom(app, cols, rows);
+            let active_page_rows = match app.active {
+                PaneSide::Left => left_rows,
+                PaneSide::Right => right_rows,
+            };
+            return Self::handle_mouse(app, mev, active_page_rows);
+        }
+        if !matches!(app.ui_mode, UiMode::Normal) {
+            return Ok(());
+        }
+        Self::handle_panel_mouse(app, mev, cols, rows, last_click_time, last_click_target)
+    }
+
+    fn panel_mouse_geom(app: &App, cols: u16, rows: u16) -> (usize, usize, usize, usize) {
+        let geom = compute_chrome_geom(cols, rows, &app.layout);
+        let (left_pr, right_pr) = dual_panel_rects(cols, &geom, &app.layout);
+        let qs_active = app.quick_search.is_some();
+        let left_rows = rmc_core::panel::panel_listing_content_rows(
+            left_pr.h,
+            rmc_core::panel::reserve_panel_mini_status(
+                app.panel_opts.show_mini_status,
+                matches!(app.active, PaneSide::Left),
+                qs_active,
+            ),
+        ) as usize;
+        let right_rows = rmc_core::panel::panel_listing_content_rows(
+            right_pr.h,
+            rmc_core::panel::reserve_panel_mini_status(
+                app.panel_opts.show_mini_status,
+                matches!(app.active, PaneSide::Right),
+                qs_active,
+            ),
+        ) as usize;
+        let left_capacity = rmc_core::panel::listing_page_capacity(
+            app.left.listing,
+            app.left.brief_columns,
+            left_rows,
+        );
+        let right_capacity = rmc_core::panel::listing_page_capacity(
+            app.right.listing,
+            app.right.brief_columns,
+            right_rows,
+        );
+        (left_rows, right_rows, left_capacity, right_capacity)
+    }
+
+    fn handle_panel_mouse(
+        app: &mut App,
+        mev: MouseEvent,
+        cols: u16,
+        rows: u16,
+        last_click_time: &mut Option<Instant>,
+        last_click_target: &mut Option<(PaneSide, usize)>,
+    ) -> Result<()> {
+        let geom = compute_chrome_geom(cols, rows, &app.layout);
+        let (left_pr, right_pr) = dual_panel_rects(cols, &geom, &app.layout);
+        let (left_rows, right_rows, left_capacity, right_capacity) =
+            Self::panel_mouse_geom(app, cols, rows);
+        let mx = mev.column;
+        let my = mev.row;
+        // Top menu bar click: open the corresponding top menu
+        if app.layout.menubar_visible && my == 0 {
+            if let Some(top_idx) = menu_top_index_from_x(mx, app.layout.horizontal_split) {
+                if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    app.ui_mode = UiMode::Menu {
+                        top_index: top_idx,
+                        selected_index: 0,
+                        dropped: true,
+                    };
+                }
+            }
+            return Ok(());
+        }
+        // Bottom function bar: dispatch F1..F10
+        if let Some(n) = fbar_function_from_xy(app, mx, my, cols, rows) {
+            if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                let key = KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE);
+                let active_page_rows = match app.active {
+                    PaneSide::Left => left_rows,
+                    PaneSide::Right => right_rows,
+                };
+                let _ = Self::handle_key(app, key, active_page_rows);
+            }
+            return Ok(());
+        }
+        let left_rect = (left_pr.x, left_pr.y, left_pr.w, left_pr.h);
+        let right_rect = (right_pr.x, right_pr.y, right_pr.w, right_pr.h);
+        let in_rect = |x: u16, y: u16, rx: u16, ry: u16, rw: u16, rh: u16| -> bool {
+            x >= rx && x < rx.saturating_add(rw) && y >= ry && y < ry.saturating_add(rh)
+        };
+        let mut target_side: Option<PaneSide> = None;
+        if in_rect(mx, my, left_rect.0, left_rect.1, left_rect.2, left_rect.3) {
+            target_side = Some(PaneSide::Left);
+        } else if in_rect(
+            mx,
+            my,
+            right_rect.0,
+            right_rect.1,
+            right_rect.2,
+            right_rect.3,
+        ) {
+            target_side = Some(PaneSide::Right);
+        }
+        // Scroll wheel over a panel: move cursor and activate that panel
+        if matches!(
+            mev.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            if let Some(side) = target_side {
+                app.active = side;
+                let up = matches!(mev.kind, MouseEventKind::ScrollUp);
+                if up {
+                    app.handle_action(Action::MoveUp)?;
+                } else {
+                    app.handle_action(Action::MoveDown)?;
+                }
+                if matches!(side, PaneSide::Left) {
+                    app.left.ensure_visible(left_capacity);
+                } else {
+                    app.right.ensure_visible(right_capacity);
+                }
+            }
+            return Ok(());
+        }
+        // Left/right click inside listing content: hit test row/column
+        if let Some(side) = target_side {
+            app.active = side;
+            let (px, _py, pw, ph) = if matches!(side, PaneSide::Left) {
+                left_rect
+            } else {
+                right_rect
+            };
+            let content_top = _py + 2;
+            let content_h = rmc_core::panel::panel_listing_content_rows(
+                ph,
+                rmc_core::panel::reserve_panel_mini_status(
+                    app.panel_opts.show_mini_status,
+                    true,
+                    app.quick_search.is_some(),
+                ),
+            );
+            if my >= content_top && my < content_top.saturating_add(content_h) {
+                let row_i = (my - content_top) as usize;
+                let (brief_cols, per_col_width) = {
+                    let listing = if matches!(side, PaneSide::Left) {
+                        app.left.listing
+                    } else {
+                        app.right.listing
+                    };
+                    let brief_n = if matches!(side, PaneSide::Left) {
+                        app.left.brief_columns
+                    } else {
+                        app.right.brief_columns
+                    };
+                    if matches!(listing, rmc_core::panel::ListingFormat::Brief) {
+                        let n = rmc_core::panel::clamp_brief_columns(brief_n);
+                        (n, rmc_core::panel::brief_column_width(pw, n))
+                    } else {
+                        (1, pw.saturating_sub(2))
+                    }
+                };
+                let (scroll_top, entries_len) = if matches!(side, PaneSide::Left) {
+                    (app.left.scroll_top, app.left.entries.len())
+                } else {
+                    (app.right.scroll_top, app.right.entries.len())
+                };
+                let mut idx: Option<usize> = None;
+                if brief_cols > 1 {
+                    let inner_x = mx.saturating_sub(px);
+                    let col =
+                        rmc_core::panel::brief_column_at_x(inner_x, per_col_width, brief_cols);
+                    let base = rmc_core::panel::brief_entry_index(
+                        scroll_top,
+                        row_i,
+                        col,
+                        content_h as usize,
+                    );
+                    if base < entries_len {
+                        idx = Some(base);
+                    }
+                } else {
+                    let base = scroll_top + row_i;
+                    if base < entries_len {
+                        idx = Some(base);
+                    }
+                }
+                if let Some(sel_idx) = idx {
+                    if matches!(side, PaneSide::Left) {
+                        app.left.cursor = sel_idx;
+                        app.left.ensure_visible(left_capacity);
+                    } else {
+                        app.right.cursor = sel_idx;
+                        app.right.ensure_visible(right_capacity);
+                    }
+                    match mev.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let now = Instant::now();
+                            let is_double = if let (Some(t0), Some((s0, i0))) =
+                                (*last_click_time, *last_click_target)
+                            {
+                                now.duration_since(t0) <= Duration::from_millis(400)
+                                    && s0 == side
+                                    && i0 == sel_idx
+                            } else {
+                                false
+                            };
+                            *last_click_time = Some(now);
+                            *last_click_target = Some((side, sel_idx));
+                            if is_double {
+                                let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                                let page = if matches!(side, PaneSide::Left) {
+                                    left_rows
+                                } else {
+                                    right_rows
+                                };
+                                let _ = Self::handle_key(app, key, page);
+                            }
+                        }
+                        MouseEventKind::Down(MouseButton::Right) => {
+                            let key = KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE);
+                            let page = if matches!(side, PaneSide::Left) {
+                                left_rows
+                            } else {
+                                right_rows
+                            };
+                            let _ = Self::handle_key(app, key, page);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn handle_mouse(app: &mut App, mev: MouseEvent, page_rows: usize) -> Result<()> {
+        if !app.mouse_enabled || mouse_is_shift_passthrough(&mev) {
+            return Ok(());
+        }
         if !matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
             return Ok(());
         }
@@ -27000,6 +27049,379 @@ mod panel_listing_movement_tests {
         press_alt(&mut app, 'p');
         // No history recorded yet: Alt-p is still the history binding.
         assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod mouse_shift_passthrough_tests {
+    use super::*;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, LayoutOptions, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    const COLS: u16 = 80;
+    const ROWS: u16 = 24;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-mouse-shift-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.layout = LayoutOptions::default();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn seed_listing(root: &std::path::Path) {
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        std::fs::write(root.join("bbb.txt"), b"b").unwrap();
+        std::fs::write(root.join("ccc.txt"), b"c").unwrap();
+    }
+
+    fn idx_of(app: &App, name: &str) -> usize {
+        app.active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+    }
+
+    fn listing_xy(app: &App, name: &str) -> (u16, u16) {
+        let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
+        let (left_pr, _) = dual_panel_rects(COLS, &geom, &app.layout);
+        let idx = idx_of(app, name);
+        let content_top = left_pr.y + 2;
+        let row = content_top + (idx - app.left.scroll_top) as u16;
+        (left_pr.x + 2, row)
+    }
+
+    fn send(app: &mut App, kind: MouseEventKind, column: u16, row: u16, modifiers: KeyModifiers) {
+        let mut last_click_time = None;
+        let mut last_click_target = None;
+        TerminalApp::dispatch_mouse(
+            app,
+            MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers,
+            },
+            COLS,
+            ROWS,
+            &mut last_click_time,
+            &mut last_click_target,
+        )
+        .unwrap();
+    }
+
+    fn left_down(column: u16, row: u16, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn shift_alone_or_with_other_mods_is_passthrough() {
+        let click = left_down(2, 4, KeyModifiers::SHIFT);
+        assert!(mouse_is_shift_passthrough(&click));
+        let mixed = left_down(2, 4, KeyModifiers::SHIFT | KeyModifiers::CONTROL);
+        assert!(mouse_is_shift_passthrough(&mixed));
+        let alt_shift = left_down(2, 4, KeyModifiers::SHIFT | KeyModifiers::ALT);
+        assert!(mouse_is_shift_passthrough(&alt_shift));
+        assert!(!mouse_is_shift_passthrough(&left_down(
+            2,
+            4,
+            KeyModifiers::NONE
+        )));
+        assert!(!mouse_is_shift_passthrough(&left_down(
+            2,
+            4,
+            KeyModifiers::CONTROL
+        )));
+    }
+
+    #[test]
+    fn shift_left_click_on_listing_does_not_move_cursor_or_mode() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let start_cursor = app.left.cursor;
+        let (x, y) = listing_xy(&app, "bbb.txt");
+        let want_idx = idx_of(&app, "bbb.txt");
+        assert_ne!(
+            start_cursor, want_idx,
+            "precondition: cursor not already on bbb"
+        );
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.left.cursor, start_cursor);
+        assert_eq!(app.active, PaneSide::Left);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shift_right_click_does_not_toggle_mark() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let (x, y) = listing_xy(&app, "aaa.txt");
+        let idx = idx_of(&app, "aaa.txt");
+        assert!(!app.left.selection.is_selected(idx));
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Right),
+            x,
+            y,
+            KeyModifiers::SHIFT,
+        );
+        assert!(!app.left.selection.is_selected(idx));
+        assert_eq!(app.left.cursor, 0);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shift_scroll_does_not_move_cursor() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.left.cursor = idx_of(&app, "bbb.txt");
+        let start = app.left.cursor;
+        let (x, y) = listing_xy(&app, "bbb.txt");
+        send(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            x,
+            y,
+            KeyModifiers::SHIFT,
+        );
+        assert_eq!(app.left.cursor, start);
+        send(
+            &mut app,
+            MouseEventKind::ScrollUp,
+            x,
+            y,
+            KeyModifiers::SHIFT | KeyModifiers::ALT,
+        );
+        assert_eq!(app.left.cursor, start);
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shift_click_menu_bar_and_fbar_are_noops() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            1,
+            0,
+            KeyModifiers::SHIFT,
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Shift+menu-bar must not open a menu"
+        );
+
+        let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
+        let fbar_y = geom.fbar_row.expect("default layout shows the F-bar");
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            fbar_y,
+            KeyModifiers::SHIFT,
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Shift+F-bar must not dispatch F-keys, got other mode"
+        );
+        assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plain_left_click_still_selects() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let start = app.left.cursor;
+        let (x, y) = listing_xy(&app, "bbb.txt");
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            KeyModifiers::NONE,
+        );
+        assert_eq!(app.left.cursor, idx_of(&app, "bbb.txt"));
+        assert_ne!(app.left.cursor, start);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plain_right_click_marks_and_menu_fbar_still_work() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let (x, y) = listing_xy(&app, "aaa.txt");
+        let idx = idx_of(&app, "aaa.txt");
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Right),
+            x,
+            y,
+            KeyModifiers::NONE,
+        );
+        assert!(app.left.selection.is_selected(idx));
+        // GNU Insert-mark then cursor down.
+
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            1,
+            0,
+            KeyModifiers::NONE,
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::Menu { top_index: 0, .. }),
+            "plain menu-bar click still opens Left menu"
+        );
+        app.ui_mode = UiMode::Normal;
+
+        let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
+        let fbar_y = geom.fbar_row.expect("F-bar");
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            0,
+            fbar_y,
+            KeyModifiers::NONE,
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "plain F1 F-bar click still opens Help"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nomouse_shift_and_plain_clicks_are_noops() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.mouse_enabled = false;
+        let start = app.left.cursor;
+        let (x, y) = listing_xy(&app, "ccc.txt");
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            KeyModifiers::NONE,
+        );
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Right),
+            x,
+            y,
+            KeyModifiers::NONE,
+        );
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            y,
+            KeyModifiers::SHIFT,
+        );
+        send(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            x,
+            y,
+            KeyModifiers::NONE,
+        );
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            1,
+            0,
+            KeyModifiers::NONE,
+        );
+        assert_eq!(app.left.cursor, start);
+        assert!(app.left.selection.is_empty());
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn viewer_shift_click_does_not_open_menu() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let file = root.join("aaa.txt");
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::new_viewer(file);
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            18,
+            0,
+            KeyModifiers::SHIFT,
+        );
+        match &app.ui_mode {
+            UiMode::Viewer { viewer_menu, .. } => {
+                assert!(
+                    viewer_menu.is_none(),
+                    "Shift+click must not drop the viewer menu"
+                );
+            }
+            _ => panic!("expected Viewer"),
+        }
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            18,
+            0,
+            KeyModifiers::NONE,
+        );
+        match &app.ui_mode {
+            UiMode::Viewer {
+                viewer_menu: Some(_),
+                ..
+            } => {}
+            _ => panic!("plain viewer menu-bar click still opens a menu"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
