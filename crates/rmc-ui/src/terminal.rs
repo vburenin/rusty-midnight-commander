@@ -757,11 +757,12 @@ impl TerminalApp {
                                     rmc_core::actions::Action,
                                     crossterm::event::KeyEvent,
                                 )> = draft.clone();
+                                // Close the dialog first.
+                                app.ui_mode = UiMode::Normal;
                                 for (act, keyev) in pairs {
                                     app.keymap.remove_action_bindings(&act);
                                     app.keymap.set_binding(keyev, act);
                                 }
-                                app.ui_mode = UiMode::Normal;
                             } else {
                                 // Cancel
                                 app.ui_mode = UiMode::Normal;

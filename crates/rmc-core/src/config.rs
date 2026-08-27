@@ -619,4 +619,18 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&p);
     }
+
+    #[test]
+    fn keymap_roundtrip_preserves_f4_edit() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("rmc_keymap_f4_{}.keymap", std::process::id()));
+        let km = KeyMap::mc_defaults();
+        km.save_to_file(&p).expect("save");
+        let lm = KeyMap::load_from_file(&p).expect("load");
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(4))
+        ));
+        let _ = std::fs::remove_file(&p);
+    }
 }
