@@ -56,7 +56,7 @@ impl Renderer {
             show_menu,
             status_msg,
             search_input,
-            save_as_input,
+            save_as_dialog,
             search_dialog,
             replace_dialog,
             pipe_dialog,
@@ -74,7 +74,7 @@ impl Renderer {
                 *show_menu,
                 status_msg.as_deref(),
                 search_input.as_deref(),
-                save_as_input.as_deref(),
+                save_as_dialog.as_deref(),
                 search_dialog.as_deref(),
                 replace_dialog.as_deref(),
                 pipe_dialog.as_ref(),
@@ -1790,7 +1790,7 @@ fn draw_editor(
     show_menu: bool,
     status_msg: Option<&str>,
     _search_input: Option<&str>,
-    save_as_input: Option<&str>,
+    save_as_dialog: Option<&rmc_core::app::EditorSaveAsDialog>,
     search_dialog: Option<&rmc_core::app::EditorSearchDialog>,
     replace_dialog: Option<&rmc_core::app::EditorReplaceDialog>,
     pipe_dialog: Option<&rmc_core::app::EditorPipeDialog>,
@@ -1952,9 +1952,8 @@ fn draw_editor(
     if show_menu {
         draw_editor_menu_dropdown(p, pal);
     }
-    // Inline prompts (Save as only; F7 Search is a real dialog)
-    if let Some(q) = save_as_input {
-        draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
+    if let Some(dlg) = save_as_dialog {
+        draw_editor_save_as_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
     if let Some(dlg) = search_dialog {
         draw_editor_search_dialog(p, cols, rows, pal, dlg, show_shadow);
@@ -2067,26 +2066,6 @@ fn draw_editor_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.goto(x, y);
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
-}
-
-fn draw_inline_prompt(
-    p: &mut Painter,
-    pal: McPalette,
-    rows: u16,
-    cols: u16,
-    title: &str,
-    val: &str,
-) {
-    // Use dialog style bar on last row
-    let y = rows.saturating_sub(1);
-    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(0, y);
-    let mut txt = format!(" {title} {val}");
-    if txt.len() < cols as usize {
-        txt.push_str(&" ".repeat(cols as usize - txt.len()));
-    }
-    let t = truncate(&txt, cols as usize);
-    p.text(&t);
 }
 
 fn draw_editor_search_dialog(
@@ -2524,6 +2503,118 @@ fn draw_editor_goto_dialog(
         " ".repeat(inner_w.saturating_sub(lt.len()))
     ));
     // Buttons: focused `< OK >`, unfocused `[ Cancel ]` (GNU mc / History / Replace / Pipe)
+    let focus = dlg.focus;
+    let sel_btn = |want, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+fn draw_editor_save_as_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    dlg: &rmc_core::app::EditorSaveAsDialog,
+    show_shadow: bool,
+) {
+    if let Some(c) = &dlg.overwrite {
+        draw_dialog_ync(
+            p,
+            cols,
+            rows,
+            pal,
+            &c.title,
+            &c.message,
+            c.focus,
+            show_shadow,
+        );
+        return;
+    }
+    use rmc_core::app::EditorSaveAsFocus as F;
+    let w = (cols as usize).min(66) as u16;
+    let h = 8u16;
+    if cols < w || rows < h {
+        return;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title — GNU mcedit File menu Save as
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title = " Save as ";
+    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(title);
+    // Inner fill
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for i in 1..h - 1 {
+        p.goto(x + 1, y + i);
+        p.text(&" ".repeat((w - 2) as usize));
+    }
+    let inner_w = (w - 4) as usize;
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 1);
+    p.text(&truncate("Enter file name:", inner_w));
+    if matches!(dlg.focus, F::Filename) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 2);
+    let ft = truncate(&dlg.filename, inner_w);
+    p.text(&format!(
+        "{ft}{}",
+        " ".repeat(inner_w.saturating_sub(ft.len()))
+    ));
+    // Buttons: focused `< OK >`, unfocused `[ Cancel ]` (GNU mc / History / Search / Goto)
     let focus = dlg.focus;
     let sel_btn = |want, txt: &str| {
         if focus == want {
