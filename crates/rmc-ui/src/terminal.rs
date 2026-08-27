@@ -7449,7 +7449,11 @@ impl TerminalApp {
             // Emacs-like input-line keys: C-a/C-e always focus the line.
             // Other unbound Emacs chords go to the line; Home/End/Left/Right/
             // Backspace/C-h/C-u stay panel bindings here.
-            if try_cmdline_emacs_key(app, &key, false) {
+            // GNU Delete edits an active listing Quick search pattern (not the cmdline).
+            let qs_owns_delete = app.quick_search.is_some()
+                && matches!(key.code, KeyCode::Delete)
+                && key.modifiers.is_empty();
+            if !qs_owns_delete && try_cmdline_emacs_key(app, &key, false) {
                 return Ok(());
             }
         }
@@ -7458,102 +7462,45 @@ impl TerminalApp {
         if handle_panel_tree_key(app, key, page_rows) {
             return Ok(());
         }
-        // Panel quick search handling (only in UiMode::Normal), placed after C-x handling.
+        // Panel listing Quick search (UiMode::Normal). Tree C-s is handled above.
+        // Inactive C-s / Alt-s start via Action::QuickSearch on the keymap path.
         if matches!(app.ui_mode, UiMode::Normal) {
-            // Next-match helper with wrap-around
-            let find_next =
-                |app_ref: &App, pattern: &str, start_after: Option<usize>| -> Option<usize> {
-                    if pattern.is_empty() {
-                        return None;
-                    }
-                    let entries = &app_ref.active_panel().entries;
-                    if entries.is_empty() {
-                        return None;
-                    }
-                    let mut start = start_after
-                        .map(|i| i.saturating_add(1))
-                        .unwrap_or_else(|| app_ref.active_panel().cursor);
-                    if start >= entries.len() {
-                        start = 0;
-                    }
-                    let total = entries.len();
-                    for pass in 0..2 {
-                        let (begin, end) = if pass == 0 {
-                            (start, total)
-                        } else {
-                            (0, start.min(total))
-                        };
-                        for (i, e) in entries
-                            .iter()
-                            .enumerate()
-                            .skip(begin)
-                            .take(end.saturating_sub(begin))
-                        {
-                            if e.name == ".." {
-                                continue;
-                            }
-                            if rmc_core::matchutil::name_matches(pattern, &e.name) {
-                                return Some(i);
-                            }
-                        }
-                    }
-                    None
-                };
-            if app.quick_search.is_some() {
-                let mut qs = app.quick_search.take().unwrap();
+            if let Some(mut qs) = app.quick_search.take() {
                 match key.code {
                     KeyCode::Esc | KeyCode::Enter => {
-                        app.quick_search = None;
+                        remember_quick_search_pattern(app, &qs.pattern);
                         return Ok(());
                     }
-                    KeyCode::Backspace => {
+                    KeyCode::Backspace | KeyCode::Delete => {
                         qs.pattern.pop();
-                        if let Some(idx) = find_next(app, &qs.pattern, Some(usize::MAX)) {
-                            app.active_panel_mut().cursor = idx;
-                            app.active_panel_mut().ensure_visible(page_rows);
-                        }
+                        seek_quick_search(app, &qs.pattern, Some(usize::MAX), page_rows);
                         app.quick_search = Some(qs);
                         return Ok(());
                     }
                     KeyCode::Char(c) if key.modifiers.is_empty() => {
                         if !c.is_control() {
                             qs.pattern.push(c);
-                            if let Some(idx) = find_next(app, &qs.pattern, Some(usize::MAX)) {
-                                app.active_panel_mut().cursor = idx;
-                                app.active_panel_mut().ensure_visible(page_rows);
-                            }
+                            seek_quick_search(app, &qs.pattern, Some(usize::MAX), page_rows);
                         }
                         app.quick_search = Some(qs);
                         return Ok(());
                     }
                     _ => {
-                        // C-s / Alt-s repeats next match
-                        if (matches!(key.code, KeyCode::Char('s'))
-                            && (key
-                                .modifiers
-                                .contains(crossterm::event::KeyModifiers::CONTROL)
-                                || key.modifiers.contains(crossterm::event::KeyModifiers::ALT)))
-                        {
-                            let cur = app.active_panel().cursor;
-                            if let Some(idx) = find_next(app, &qs.pattern, Some(cur)) {
-                                app.active_panel_mut().cursor = idx;
-                                app.active_panel_mut().ensure_visible(page_rows);
+                        // C-s / Alt-s (Action::QuickSearch): next match, or restore
+                        // the previous pattern when this start is still empty (double C-s).
+                        if matches!(app.keymap.resolve(&key), Some(Action::QuickSearch)) {
+                            if qs.pattern.is_empty() {
+                                qs.pattern = app.quick_search_prev.clone();
                             }
+                            let cur = app.active_panel().cursor;
+                            seek_quick_search(app, &qs.pattern, Some(cur), page_rows);
                             app.quick_search = Some(qs);
                             return Ok(());
                         }
                         // Not a search key: exit search and fall through (do not swallow C-x etc.)
-                        app.quick_search = None;
+                        remember_quick_search_pattern(app, &qs.pattern);
                     }
                 }
-            } else if matches!(key.code, KeyCode::Char('s'))
-                && (key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL)
-                    || key.modifiers.contains(crossterm::event::KeyModifiers::ALT))
-            {
-                app.quick_search = Some(rmc_core::quicksearch::QuickSearchState::new());
-                return Ok(());
             }
         }
         // Lynx-like motion (Options → Panels): Left = parent, Right = panel Enter
@@ -8165,6 +8112,28 @@ fn apply_panel_visible_jump(app: &mut App, action: &Action, page_rows: usize) ->
         _ => return false,
     }
     true
+}
+
+fn remember_quick_search_pattern(app: &mut App, pattern: &str) {
+    if !pattern.is_empty() {
+        app.quick_search_prev = pattern.to_string();
+    }
+}
+
+/// Seek a listing Quick search match. Uses `page_rows` from `handle_key` (never TTY size).
+fn seek_quick_search(app: &mut App, pattern: &str, start_after: Option<usize>, page_rows: usize) {
+    if !matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing) {
+        return;
+    }
+    let idx = rmc_core::quicksearch::find_next_match(
+        app.active_panel().entries.iter().map(|e| e.name.as_str()),
+        pattern,
+        start_after,
+    );
+    if let Some(idx) = idx {
+        app.active_panel_mut().cursor = idx;
+        app.active_panel_mut().ensure_visible(page_rows);
+    }
 }
 
 fn insert_selected_on_cmdline(app: &mut App, full_path: bool) {
@@ -22550,6 +22519,358 @@ mod panel_jump_visible_tests {
         press_alt_rows(&mut app, 'g', 10);
         assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
         assert_eq!(app.active_panel().cursor, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_quick_search_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide, SortBy as SortByAction};
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{panel_mini_status_line, SortBy};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-quick-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::ALT, 10);
+    }
+
+    fn press_alt_tab(app: &mut App) {
+        press_rows(app, KeyCode::Tab, KeyModifiers::ALT, 10);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn seed_listing(root: &std::path::Path) {
+        std::fs::write(root.join("abc.txt"), b"a").unwrap();
+        std::fs::write(root.join("abcdef.txt"), b"ab").unwrap();
+        std::fs::write(root.join("file1.rs"), b"rs").unwrap();
+        std::fs::write(root.join("file2.txt"), b"two").unwrap();
+        std::fs::write(root.join("xxabc.txt"), b"mid").unwrap();
+        std::fs::write(root.join("zzalpha.txt"), b"z").unwrap();
+    }
+
+    fn cursor_name(app: &App) -> &str {
+        app.active_panel()
+            .current_entry()
+            .map(|e| e.name.as_str())
+            .unwrap_or("")
+    }
+
+    fn idx_of(app: &App, name: &str) -> usize {
+        app.active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+    }
+
+    #[test]
+    fn keymap_binds_c_s_and_alt_s_to_quick_search_not_sort_size() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Some(Action::QuickSearch)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),
+            Some(Action::QuickSearch)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),
+            Some(Action::Sort(SortByAction::Name))
+        ));
+    }
+
+    #[test]
+    fn c_s_then_typing_moves_to_prefix_not_mid_name() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let start = app.active_panel().cursor;
+        press_ctrl(&mut app, 's');
+        assert!(app.quick_search.is_some());
+        assert_eq!(
+            app.active_panel().cursor,
+            start,
+            "empty start does not move"
+        );
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("")
+        );
+        type_str(&mut app, "abc");
+        assert_eq!(cursor_name(&app), "abc.txt");
+        assert_ne!(cursor_name(&app), "xxabc.txt");
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("abc")
+        );
+        let line = panel_mini_status_line(
+            app.panel_opts.show_mini_status,
+            true,
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            app.active_panel().current_entry(),
+            false,
+        )
+        .expect("mini-status shows the search string");
+        assert!(line.contains("Search: abc"), "{line:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn c_s_and_alt_s_repeat_next_match_and_wrap() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        press_ctrl(&mut app, 's');
+        type_str(&mut app, "abc");
+        assert_eq!(cursor_name(&app), "abc.txt");
+        press_ctrl(&mut app, 's');
+        assert_eq!(cursor_name(&app), "abcdef.txt");
+        press_alt(&mut app, 's');
+        assert_eq!(
+            cursor_name(&app),
+            "abc.txt",
+            "wrap back to the first prefix"
+        );
+        assert!(app.quick_search.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn double_c_s_restores_previous_pattern_and_seeks() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        press_ctrl(&mut app, 's');
+        type_str(&mut app, "abc");
+        assert_eq!(cursor_name(&app), "abc.txt");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+        assert_eq!(app.quick_search_prev, "abc");
+
+        app.active_panel_mut().cursor = idx_of(&app, "file2.txt");
+        press_ctrl(&mut app, 's');
+        assert!(app.quick_search.is_some());
+        assert_eq!(
+            app.quick_search.as_ref().unwrap().pattern,
+            "",
+            "single C-s starts empty"
+        );
+        assert_eq!(cursor_name(&app), "file2.txt");
+        press_ctrl(&mut app, 's');
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("abc")
+        );
+        assert_eq!(cursor_name(&app), "abc.txt");
+        assert_ne!(cursor_name(&app), "file2.txt");
+
+        // Empty previous behaves like a single C-s (no move).
+        app.quick_search = None;
+        app.quick_search_prev.clear();
+        let stay = idx_of(&app, "zzalpha.txt");
+        app.active_panel_mut().cursor = stay;
+        press_ctrl(&mut app, 's');
+        press_ctrl(&mut app, 's');
+        assert_eq!(app.active_panel().cursor, stay);
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn backspace_delete_edit_pattern_esc_keeps_cursor_and_prev() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        press_ctrl(&mut app, 's');
+        type_str(&mut app, "abcd");
+        assert_eq!(cursor_name(&app), "abcdef.txt");
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("abc")
+        );
+        assert_eq!(cursor_name(&app), "abc.txt");
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("ab")
+        );
+        let at = app.active_panel().cursor;
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+        assert_eq!(app.active_panel().cursor, at, "Esc keeps the cursor");
+        assert_eq!(app.quick_search_prev, "ab");
+
+        app.active_panel_mut().cursor = idx_of(&app, "file1.rs");
+        press_ctrl(&mut app, 's');
+        press_ctrl(&mut app, 's');
+        assert_eq!(
+            app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
+            Some("ab")
+        );
+        assert_eq!(cursor_name(&app), "abc.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wildcards_star_and_qmark_still_match() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        press_ctrl(&mut app, 's');
+        type_str(&mut app, "file?.rs");
+        assert_eq!(cursor_name(&app), "file1.rs");
+        press(&mut app, KeyCode::Esc);
+
+        press_ctrl(&mut app, 's');
+        type_str(&mut app, "*.txt");
+        assert_eq!(cursor_name(&app), "abc.txt");
+        press_ctrl(&mut app, 's');
+        assert_eq!(cursor_name(&app), "abcdef.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_s_does_not_sort_by_size_sort_action_still_works() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), vec![b'x'; 8]).unwrap();
+        std::fs::write(root.join("zzz.bin"), vec![b'y'; 64]).unwrap();
+        std::fs::write(root.join("mid.log"), vec![b'z'; 32]).unwrap();
+        let mut app = make_app(&root);
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        let before: Vec<String> = app.left.entries.iter().map(|e| e.name.clone()).collect();
+        press_alt(&mut app, 's');
+        assert!(app.quick_search.is_some(), "Alt-s starts Quick search");
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        assert_eq!(
+            app.left
+                .entries
+                .iter()
+                .map(|e| e.name.clone())
+                .collect::<Vec<_>>(),
+            before,
+            "Alt-s must not sort by size"
+        );
+        press(&mut app, KeyCode::Esc);
+        app.handle_action(Action::Sort(SortByAction::Size)).unwrap();
+        assert_eq!(app.left.sort_by, SortBy::Size);
+        let files: Vec<&str> = app
+            .left
+            .entries
+            .iter()
+            .filter(|e| e.name != "..")
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(files, vec!["aaa.txt", "mid.log", "zzz.bin"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_quick_search_alt_grj_emacs_chmod_select_tab_and_complete_still_work() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let page = 5;
+        press_ctrl(&mut app, 's');
+        type_str(&mut app, "zz");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+
+        app.active_panel_mut().scroll_top = 0;
+        press_rows(&mut app, KeyCode::Char('g'), KeyModifiers::ALT, page);
+        assert_eq!(cursor_name(&app), "..");
+        press_rows(&mut app, KeyCode::Char('j'), KeyModifiers::ALT, page);
+        assert_eq!(
+            app.active_panel().cursor,
+            page.min(app.active_panel().entries.len()) - 1
+        );
+        press_rows(&mut app, KeyCode::Char('r'), KeyModifiers::ALT, page);
+        assert_eq!(
+            app.active_panel().cursor,
+            page.min(app.active_panel().entries.len()) / 2
+        );
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'a');
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "C-a Emacs start must still focus the command line"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('c'));
+        assert!(
+            matches!(app.ui_mode, UiMode::ChmodDialog { .. }),
+            "C-x c Chmod must still open after quick search"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::Char('+'));
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.subshell.clear_cmdline();
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+
+        app.subshell.clear_cmdline();
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

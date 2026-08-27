@@ -158,14 +158,19 @@ impl KeyMap {
         m.bind(new_event(KeyCode::Char('+')), Action::SelectGroup);
         m.bind(new_event(KeyCode::Char('\\')), Action::UnselectGroup);
         m.bind(new_event(KeyCode::Char('*')), Action::InvertSelection);
+        // GNU mc(1) Quick search: C-s / Alt-s. Sort by size stays on the Sort order dialog.
+        m.bind(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            QuickSearch,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+            QuickSearch,
+        );
         // Sorting shortcuts (stub: Shift+N/S/T)
         m.bind(
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
             Sort(SortBy::Name),
-        );
-        m.bind(
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
-            Sort(SortBy::Size),
         );
         // Alt-t cycles listing format per MC
         m.bind(
@@ -329,6 +334,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "PanelJumpTop" => Some(PanelJumpTop),
         "PanelJumpMiddle" => Some(PanelJumpMiddle),
         "PanelJumpBottom" => Some(PanelJumpBottom),
+        "QuickSearch" | "StartOrNextQuickSearch" => Some(QuickSearch),
         "Enter" => Some(Enter),
         "ParentDir" => Some(ParentDir),
         "SwitchPanel" => Some(SwitchPanel),
@@ -388,6 +394,7 @@ fn format_action(a: &Action) -> String {
         PanelJumpTop => "PanelJumpTop",
         PanelJumpMiddle => "PanelJumpMiddle",
         PanelJumpBottom => "PanelJumpBottom",
+        QuickSearch => "QuickSearch",
         Enter => "Enter",
         ParentDir => "ParentDir",
         SwitchPanel => "SwitchPanel",
@@ -699,6 +706,18 @@ mod tests {
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT)),
             Some(Action::PanelJumpBottom)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Some(Action::QuickSearch)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),
+            Some(Action::QuickSearch)
+        ));
+        assert!(!matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),
+            Some(Action::Sort(SortBy::Size))
         ));
     }
 

@@ -42,6 +42,8 @@ pub enum Action {
     PanelJumpMiddle,
     /// GNU mc(1) Alt-j: select the bottom currently visible listing entry.
     PanelJumpBottom,
+    /// GNU mc(1) Quick search: C-s / Alt-s starts; C-s / Alt-s again finds the next match.
+    QuickSearch,
     Enter,
     ParentDir,
     SwitchPanel,
