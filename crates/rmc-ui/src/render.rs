@@ -2687,7 +2687,18 @@ fn draw_panel(
 
     // Content rows
     let content_top = y + 2;
-    let content_h = h.saturating_sub(4);
+    // Mini-status occupies the row above the bottom frame. When it is off, listing
+    // uses that row so the frame stays closed (no empty gap). Quick search still
+    // borrows the same row on the active panel.
+    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
+        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+    let reserve_status =
+        app.panel_opts.show_mini_status || (is_active_panel && app.quick_search.is_some());
+    let content_h = if reserve_status {
+        h.saturating_sub(4)
+    } else {
+        h.saturating_sub(3)
+    };
     let _panel = if is_left { &app.left } else { &app.right };
     // Viewport uses panel.scroll_top, updated by the event loop per visible capacity
     let panel = if is_left { &app.left } else { &app.right };
@@ -2727,7 +2738,7 @@ fn draw_panel(
                     p.text(&name_trunc);
                     // Size
                     p.goto(size_col, row_y);
-                    p.text(&format_size(ent));
+                    p.text(&format_size(ent, app.panel_opts.kilobyte_si));
                     // Time
                     p.goto(x + w - 15, row_y);
                     p.text(&format_time(ent));
@@ -2807,11 +2818,14 @@ fn draw_panel(
                     let owner = ent.owner.as_deref().unwrap_or("-");
                     let group = ent.group.as_deref().unwrap_or("-");
                     let size = if ent.is_dir { 0 } else { ent.size };
+                    let size_s = if app.panel_opts.kilobyte_si {
+                        format!("{:>8}", rmc_core::panel::format_si_size(size))
+                    } else {
+                        format!("{:>8}", size)
+                    };
                     let tm = format_time(ent);
-                    let mut line = format!(
-                        "{perms}  {owner:>8} {group:>8} {size:>8} {tm}  {}",
-                        ent.name
-                    );
+                    let mut line =
+                        format!("{perms}  {owner:>8} {group:>8} {size_s} {tm}  {}", ent.name);
                     line = truncate(&line, (w - 2) as usize);
                     p.goto(x + 1, row_y);
                     p.text(&line);
@@ -2845,6 +2859,7 @@ fn draw_panel(
                         ent,
                         &user_tokens,
                         (w - 2) as usize,
+                        app.panel_opts.kilobyte_si,
                     );
                     line = truncate(&line, (w - 2) as usize);
                     p.goto(x + 1, row_y);
@@ -2854,20 +2869,29 @@ fn draw_panel(
         }
     }
     // Mini status
-    let status_y = y + h - 2;
-    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-    p.goto(x + 1, status_y);
-    // If quick search is active and this is the active panel, draw mini prompt instead
-    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
-        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
-    if is_active_panel {
-        if let Some(qs) = &app.quick_search {
-            let mut prompt = String::from(" Search: ");
-            prompt.push_str(&qs.pattern);
-            let s = truncate(&prompt, (w - 2) as usize);
-            p.text(&s);
-            if s.len() < (w - 2) as usize {
-                p.text(&" ".repeat((w - 2) as usize - s.len()));
+    if reserve_status {
+        let status_y = y + h - 2;
+        p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
+        p.goto(x + 1, status_y);
+        // If quick search is active and this is the active panel, draw mini prompt instead
+        let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
+            || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+        if is_active_panel {
+            if let Some(qs) = &app.quick_search {
+                let mut prompt = String::from(" Search: ");
+                prompt.push_str(&qs.pattern);
+                let s = truncate(&prompt, (w - 2) as usize);
+                p.text(&s);
+                if s.len() < (w - 2) as usize {
+                    p.text(&" ".repeat((w - 2) as usize - s.len()));
+                }
+            } else if let Some(cur) = panel.current_entry() {
+                let s = format_mini_status(cur);
+                let s = truncate(&s, (w - 2) as usize);
+                p.text(&s);
+            } else {
+                let s = " ".repeat((w - 2) as usize);
+                p.text(&s);
             }
         } else if let Some(cur) = panel.current_entry() {
             let s = format_mini_status(cur);
@@ -2877,13 +2901,6 @@ fn draw_panel(
             let s = " ".repeat((w - 2) as usize);
             p.text(&s);
         }
-    } else if let Some(cur) = panel.current_entry() {
-        let s = format_mini_status(cur);
-        let s = truncate(&s, (w - 2) as usize);
-        p.text(&s);
-    } else {
-        let s = " ".repeat((w - 2) as usize);
-        p.text(&s);
     }
     Ok(())
 }
@@ -3455,11 +3472,13 @@ fn format_entry_name(ent: &FileEntry) -> String {
     }
 }
 
-fn format_size(ent: &FileEntry) -> String {
+fn format_size(ent: &FileEntry, si: bool) -> String {
     if ent.name == ".." {
         "UP--DIR".to_string()
     } else if ent.is_dir {
         "        ".to_string()
+    } else if si {
+        format!("{:>8}", rmc_core::panel::format_si_size(ent.size))
     } else {
         format!("{:>8}", ent.size)
     }

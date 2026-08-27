@@ -408,11 +408,33 @@ fn user_type_char(ent: &FileEntry) -> char {
     }
 }
 
-fn user_size_string(ent: &FileEntry) -> String {
+/// GNU-ish SI (base 1000) size: 1.2k, 3.4M, 5.6G. Used when Panel `kilobyte_si` is on.
+pub fn format_si_size(size: u64) -> String {
+    const K: f64 = 1_000.0;
+    const M: f64 = 1_000_000.0;
+    const G: f64 = 1_000_000_000.0;
+    const T: f64 = 1_000_000_000_000.0;
+    let s = size as f64;
+    if s >= T {
+        format!("{:.1}T", s / T)
+    } else if s >= G {
+        format!("{:.1}G", s / G)
+    } else if s >= M {
+        format!("{:.1}M", s / M)
+    } else if s >= K {
+        format!("{:.1}k", s / K)
+    } else {
+        size.to_string()
+    }
+}
+
+fn user_size_string(ent: &FileEntry, si: bool) -> String {
     if ent.name == ".." {
         "UP--DIR".to_string()
     } else if ent.is_dir {
         String::new()
+    } else if si {
+        format_si_size(ent.size)
     } else {
         ent.size.to_string()
     }
@@ -439,7 +461,12 @@ fn name_column_width(tokens: &[UserFormatToken], width: usize) -> usize {
     width.saturating_sub(reserved) / name_count
 }
 
-fn render_user_token(tok: UserFormatToken, ent: Option<&FileEntry>, name_width: usize) -> String {
+fn render_user_token(
+    tok: UserFormatToken,
+    ent: Option<&FileEntry>,
+    name_width: usize,
+    si: bool,
+) -> String {
     match tok {
         UserFormatToken::Name => {
             let name = ent.map(|e| e.name.as_str()).unwrap_or("Name");
@@ -447,7 +474,7 @@ fn render_user_token(tok: UserFormatToken, ent: Option<&FileEntry>, name_width: 
         }
         UserFormatToken::Size => {
             let s = match ent {
-                Some(e) => user_size_string(e),
+                Some(e) => user_size_string(e, si),
                 None => "Size".to_string(),
             };
             if ent.is_none() {
@@ -498,14 +525,19 @@ fn render_user_token(tok: UserFormatToken, ent: Option<&FileEntry>, name_width: 
     }
 }
 
-fn join_user_parts(tokens: &[UserFormatToken], width: usize, ent: Option<&FileEntry>) -> String {
+fn join_user_parts(
+    tokens: &[UserFormatToken],
+    width: usize,
+    ent: Option<&FileEntry>,
+    si: bool,
+) -> String {
     if tokens.is_empty() {
         return String::new();
     }
     let name_width = name_column_width(tokens, width);
     let parts: Vec<String> = tokens
         .iter()
-        .map(|t| render_user_token(*t, ent, name_width))
+        .map(|t| render_user_token(*t, ent, name_width, si))
         .collect();
     let line = parts.join(" ");
     let n = line.chars().count();
@@ -520,17 +552,19 @@ fn join_user_parts(tokens: &[UserFormatToken], width: usize, ent: Option<&FileEn
 }
 
 /// Render one user-format listing row, truncated to `width`.
+/// `si` selects SI (1000) size units vs raw bytes.
 pub fn format_user_listing_line(
     ent: &FileEntry,
     tokens: &[UserFormatToken],
     width: usize,
+    si: bool,
 ) -> String {
-    join_user_parts(tokens, width, Some(ent))
+    join_user_parts(tokens, width, Some(ent), si)
 }
 
 /// Column header for a parsed user listing format, truncated to `width`.
 pub fn format_user_listing_header(tokens: &[UserFormatToken], width: usize) -> String {
-    join_user_parts(tokens, width, None)
+    join_user_parts(tokens, width, None, false)
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -684,7 +718,7 @@ mod tests {
         let now = SystemTime::now();
         let ent = make_entry("readme.txt", 42, now, false);
         let tokens = parse_user_listing_format("half type name | size | perm");
-        let line = format_user_listing_line(&ent, &tokens, 80);
+        let line = format_user_listing_line(&ent, &tokens, 80, false);
         assert!(line.contains("readme.txt"), "line={line:?}");
         assert!(line.contains("42"), "line={line:?}");
         assert!(line.contains("rwx"), "line={line:?}");
@@ -701,23 +735,43 @@ mod tests {
         let tokens = parse_user_listing_format("type name");
         let dir = make_entry("src", 0, now, true);
         assert!(
-            format_user_listing_line(&dir, &tokens, 40).starts_with('/'),
+            format_user_listing_line(&dir, &tokens, 40, false).starts_with('/'),
             "dir type"
         );
         let mut exe = make_entry("a.out", 10, now, false);
         exe.is_exe = true;
         assert!(
-            format_user_listing_line(&exe, &tokens, 40).starts_with('*'),
+            format_user_listing_line(&exe, &tokens, 40, false).starts_with('*'),
             "exe type"
         );
         let mut link = make_entry("link", 1, now, false);
         link.is_symlink = true;
         assert!(
-            format_user_listing_line(&link, &tokens, 40).starts_with('@'),
+            format_user_listing_line(&link, &tokens, 40, false).starts_with('@'),
             "symlink type"
         );
         let long = make_entry("very-long-filename-that-should-clip", 1, now, false);
-        let clipped = format_user_listing_line(&long, &tokens, 12);
+        let clipped = format_user_listing_line(&long, &tokens, 12, false);
         assert!(clipped.chars().count() <= 12);
+    }
+
+    #[test]
+    fn format_si_size_gnu_ish_lowercase() {
+        assert_eq!(format_si_size(42), "42");
+        assert_eq!(format_si_size(999), "999");
+        assert_eq!(format_si_size(1_200), "1.2k");
+        assert_eq!(format_si_size(3_400_000), "3.4M");
+        assert_eq!(format_si_size(5_600_000_000), "5.6G");
+    }
+
+    #[test]
+    fn user_format_size_si_flag() {
+        let now = SystemTime::now();
+        let ent = make_entry("big.bin", 3_400_000, now, false);
+        let tokens = parse_user_listing_format("size");
+        let raw = format_user_listing_line(&ent, &tokens, 16, false);
+        assert!(raw.contains("3400000"), "raw={raw:?}");
+        let si = format_user_listing_line(&ent, &tokens, 16, true);
+        assert!(si.contains("3.4M"), "si={si:?}");
     }
 }
