@@ -63,6 +63,20 @@ impl Subshell {
             .sum()
     }
 
+    /// Text to the left of the insertion point (completion looks at this).
+    pub fn text_before_cursor(&self) -> &str {
+        let i = self.byte_index_at_cursor().min(self.cmdline.len());
+        &self.cmdline[..i]
+    }
+
+    /// Replace `cmdline[from_byte..cursor]` with `text` and put the cursor after it.
+    pub fn replace_range_before_cursor(&mut self, from_byte: usize, text: &str) {
+        let end = self.byte_index_at_cursor().min(self.cmdline.len());
+        let from = from_byte.min(end);
+        self.cmdline.replace_range(from..end, text);
+        self.cursor = self.cmdline[..from].chars().count() + text.chars().count();
+    }
+
     /// Insert `s` at the cursor.
     pub fn insert_str(&mut self, s: &str) {
         let i = self.byte_index_at_cursor().min(self.cmdline.len());

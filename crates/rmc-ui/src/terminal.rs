@@ -19,6 +19,10 @@ use rmc_core::app::{
     FilterDialogFocus, HistoryDialogFocus, LayoutFocus, ScreenListFocus, UiMode,
     ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
+use rmc_core::complete::{
+    classify_token, collect_matches, common_replacement_prefix, filter_items, token_before_cursor,
+    CompletionItem, CompletionSources,
+};
 use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, search_files_streaming,
@@ -2137,6 +2141,19 @@ impl TerminalApp {
                 }
             }
             return Ok(());
+        }
+        // GNU mc(1) Alt-Tab completion. Handled before dialog matches so it
+        // applies on the shell command line and other input lines.
+        if matches!(app.ui_mode, UiMode::CompletionList { .. }) {
+            handle_completion_list_key(app, &key, page_rows)?;
+            return Ok(());
+        }
+        if is_complete_key(&key) {
+            if try_complete(app, page_rows)? {
+                return Ok(());
+            }
+        } else {
+            app.completion_retry = false;
         }
         // GNU mcdiff F4 / F14: open the existing editor on that side, then
         // return here and rebuild hunks from disk. Skip while Diff overlays
@@ -4777,6 +4794,7 @@ impl TerminalApp {
                     F::AutoMenus,
                     F::DropMenus,
                     F::MkdirAutoname,
+                    F::CompleteShowAll,
                     F::Ok,
                     F::Cancel,
                 ];
@@ -4827,6 +4845,7 @@ impl TerminalApp {
                         F::AutoMenus => draft.auto_menus = !draft.auto_menus,
                         F::DropMenus => draft.drop_menus = !draft.drop_menus,
                         F::MkdirAutoname => draft.mkdir_autoname = !draft.mkdir_autoname,
+                        F::CompleteShowAll => draft.complete_show_all = !draft.complete_show_all,
                         _ => {}
                     },
                     KeyCode::Enter => match *focus {
@@ -4842,6 +4861,7 @@ impl TerminalApp {
                         F::AutoMenus => draft.auto_menus = !draft.auto_menus,
                         F::DropMenus => draft.drop_menus = !draft.drop_menus,
                         F::MkdirAutoname => draft.mkdir_autoname = !draft.mkdir_autoname,
+                        F::CompleteShowAll => draft.complete_show_all = !draft.complete_show_all,
                         F::Ok => {
                             // Apply and close
                             let new_opts = *draft;
@@ -7815,6 +7835,306 @@ pub(crate) const HISTORY_CLEAN_TITLE: &str = "History cleaning";
 pub(crate) const HISTORY_CLEAN_MESSAGE: &str = "Do you want to clean this history?";
 pub(crate) const QUICK_CD_TITLE: &str = "Quick cd";
 pub(crate) const QUICK_CD_PROMPT: &str = "Enter directory";
+pub(crate) const COMPLETION_LIST_TITLE: &str = "Completion";
+
+fn is_complete_key(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Tab) && key.modifiers.contains(KeyModifiers::ALT)
+}
+
+fn completable_allow_command(mode: &UiMode) -> Option<bool> {
+    match mode {
+        UiMode::Normal | UiMode::ShellInput => Some(true),
+        UiMode::InputDialog { .. } | UiMode::PromptInput { .. } => Some(false),
+        UiMode::MkdirDialog {
+            focus_ok: false, ..
+        } => Some(false),
+        UiMode::FilterDialog {
+            focus: FilterDialogFocus::Pattern,
+            ..
+        } => Some(false),
+        _ => None,
+    }
+}
+
+fn read_completable_text(app: &App, mode: &UiMode) -> Option<String> {
+    match mode {
+        UiMode::Normal | UiMode::ShellInput => Some(app.subshell.text_before_cursor().to_string()),
+        UiMode::InputDialog { value, .. }
+        | UiMode::PromptInput { value, .. }
+        | UiMode::MkdirDialog { value, .. } => Some(value.clone()),
+        UiMode::FilterDialog {
+            pattern,
+            focus: FilterDialogFocus::Pattern,
+            ..
+        } => Some(pattern.clone()),
+        _ => None,
+    }
+}
+
+fn write_completable_token(app: &mut App, mode: &mut UiMode, token_start: usize, text: &str) {
+    match mode {
+        UiMode::Normal | UiMode::ShellInput => {
+            app.subshell.replace_range_before_cursor(token_start, text);
+            *mode = UiMode::ShellInput;
+        }
+        UiMode::InputDialog { value, .. }
+        | UiMode::PromptInput { value, .. }
+        | UiMode::MkdirDialog { value, .. } => {
+            let from = token_start.min(value.len());
+            value.replace_range(from.., text);
+        }
+        UiMode::FilterDialog { pattern, .. } => {
+            let from = token_start.min(pattern.len());
+            pattern.replace_range(from.., text);
+        }
+        _ => {}
+    }
+}
+
+fn app_completion_sources<'a>(
+    app: &'a App,
+    cwd: &'a Path,
+    allow_command: bool,
+) -> CompletionSources<'a> {
+    CompletionSources {
+        cwd,
+        allow_command,
+        path: app.completion_path_override.as_deref(),
+        passwd_path: app.completion_passwd_path.as_deref(),
+        hosts_path: app.completion_hosts_path.as_deref(),
+        home: app.completion_home.as_deref(),
+    }
+}
+
+fn completion_visible_rows(page_rows: usize, n_items: usize) -> usize {
+    page_rows.max(1).min(n_items.max(1)).min(12)
+}
+
+fn ensure_completion_visible(selected: usize, scroll_top: &mut usize, visible: usize) {
+    if selected < *scroll_top {
+        *scroll_top = selected;
+    } else if visible > 0 && selected >= *scroll_top + visible {
+        *scroll_top = selected + 1 - visible;
+    }
+}
+
+fn open_completion_list(app: &mut App, items: Vec<CompletionItem>, token_start: usize) {
+    let prev = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
+    app.ui_mode = UiMode::CompletionList {
+        items,
+        selected: 0,
+        scroll_top: 0,
+        token_start,
+        prev: Box::new(prev),
+    };
+    app.completion_retry = false;
+}
+
+fn write_token_current(app: &mut App, token_start: usize, text: &str) {
+    let mut mode = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
+    write_completable_token(app, &mut mode, token_start, text);
+    app.ui_mode = mode;
+}
+
+fn try_complete(app: &mut App, page_rows: usize) -> Result<bool> {
+    let Some(allow_command) = completable_allow_command(&app.ui_mode) else {
+        return Ok(false);
+    };
+    let Some(text) = read_completable_text(app, &app.ui_mode) else {
+        return Ok(false);
+    };
+    let (token_start, token) = token_before_cursor(&text);
+    let kind = classify_token(token, allow_command, &text, token_start);
+    let cwd = app.active_panel().cwd.clone();
+    let src = app_completion_sources(app, &cwd, allow_command);
+    let items = collect_matches(token, kind, &src);
+    if items.is_empty() {
+        app.completion_beep = true;
+        return Ok(true);
+    }
+    if items.len() == 1 {
+        let insert = items[0].insert_text();
+        write_token_current(app, token_start, &insert);
+        app.completion_beep = false;
+        app.completion_retry = false;
+        return Ok(true);
+    }
+    app.completion_beep = true;
+    let show_list = app.config_opts.complete_show_all || app.completion_retry;
+    if show_list {
+        open_completion_list(app, items, token_start);
+        if let UiMode::CompletionList {
+            items,
+            selected,
+            scroll_top,
+            ..
+        } = &mut app.ui_mode
+        {
+            let vis = completion_visible_rows(page_rows, items.len());
+            ensure_completion_visible(*selected, scroll_top, vis);
+        }
+        return Ok(true);
+    }
+    let prefix = common_replacement_prefix(&items);
+    if !prefix.is_empty() && prefix != token {
+        let escaped = if items
+            .iter()
+            .all(|i| matches!(i.kind, rmc_core::complete::CompletionKind::Filename))
+        {
+            rmc_core::complete::escape_filename_meta(&prefix)
+        } else {
+            prefix
+        };
+        write_token_current(app, token_start, &escaped);
+    }
+    app.completion_retry = true;
+    Ok(true)
+}
+
+fn completion_list_type_char(
+    app: &mut App,
+    prev: &mut UiMode,
+    items: &mut Vec<CompletionItem>,
+    selected: &mut usize,
+    scroll_top: &mut usize,
+    token_start: usize,
+    c: char,
+) -> Option<UiMode> {
+    let text = read_completable_text(app, prev)?;
+    let mut token = text.get(token_start..).unwrap_or("").to_string();
+    token.push(c);
+    let subset = filter_items(items, &token);
+    if subset.is_empty() {
+        app.completion_beep = true;
+        return None;
+    }
+    write_completable_token(app, prev, token_start, &token);
+    if subset.len() == 1 {
+        write_completable_token(app, prev, token_start, &subset[0].insert_text());
+        app.completion_retry = false;
+        return Some(std::mem::replace(prev, UiMode::Normal));
+    }
+    let prefix = common_replacement_prefix(&subset);
+    if prefix.len() > token.len() {
+        write_completable_token(app, prev, token_start, &prefix);
+    }
+    *items = subset;
+    *selected = 0;
+    *scroll_top = 0;
+    None
+}
+
+fn handle_completion_list_key(app: &mut App, key: &KeyEvent, page_rows: usize) -> Result<()> {
+    let mut mode = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
+    let UiMode::CompletionList {
+        items,
+        selected,
+        scroll_top,
+        token_start,
+        prev,
+    } = &mut mode
+    else {
+        app.ui_mode = mode;
+        return Ok(());
+    };
+    let visible = completion_visible_rows(page_rows, items.len());
+    match key.code {
+        KeyCode::Esc | KeyCode::F(10) | KeyCode::Left | KeyCode::Right => {
+            app.ui_mode = *std::mem::replace(prev, Box::new(UiMode::Normal));
+            app.completion_retry = false;
+            return Ok(());
+        }
+        KeyCode::Enter => {
+            if let Some(item) = items.get(*selected).cloned() {
+                write_completable_token(app, prev, *token_start, &item.insert_text());
+            }
+            app.ui_mode = *std::mem::replace(prev, Box::new(UiMode::Normal));
+            app.completion_retry = false;
+            app.completion_beep = false;
+            return Ok(());
+        }
+        KeyCode::Up => {
+            if *selected > 0 {
+                *selected -= 1;
+            }
+            ensure_completion_visible(*selected, scroll_top, visible);
+        }
+        KeyCode::Down => {
+            if *selected + 1 < items.len() {
+                *selected += 1;
+            }
+            ensure_completion_visible(*selected, scroll_top, visible);
+        }
+        KeyCode::PageUp => {
+            *selected = selected.saturating_sub(visible.max(1));
+            ensure_completion_visible(*selected, scroll_top, visible);
+        }
+        KeyCode::PageDown => {
+            if !items.is_empty() {
+                *selected = (*selected + visible.max(1)).min(items.len() - 1);
+            }
+            ensure_completion_visible(*selected, scroll_top, visible);
+        }
+        KeyCode::Home => {
+            *selected = 0;
+            *scroll_top = 0;
+        }
+        KeyCode::End => {
+            if !items.is_empty() {
+                *selected = items.len() - 1;
+            }
+            ensure_completion_visible(*selected, scroll_top, visible);
+        }
+        KeyCode::Tab if key.modifiers.contains(KeyModifiers::ALT) => {
+            if let Some(text) = read_completable_text(app, prev) {
+                let token = text.get(*token_start..).unwrap_or("");
+                let subset = filter_items(items, token);
+                if subset.len() == 1 {
+                    write_completable_token(app, prev, *token_start, &subset[0].insert_text());
+                    app.ui_mode = *std::mem::replace(prev, Box::new(UiMode::Normal));
+                    app.completion_retry = false;
+                    return Ok(());
+                } else if subset.is_empty() {
+                    app.completion_beep = true;
+                } else {
+                    *items = subset;
+                    *selected = 0;
+                    *scroll_top = 0;
+                }
+            }
+        }
+        KeyCode::Char(' ') if key.modifiers.is_empty() => {
+            if let Some(restored) =
+                completion_list_type_char(app, prev, items, selected, scroll_top, *token_start, ' ')
+            {
+                app.ui_mode = restored;
+                return Ok(());
+            }
+        }
+        KeyCode::Char(c) if key.modifiers.is_empty() => {
+            if let Some(restored) =
+                completion_list_type_char(app, prev, items, selected, scroll_top, *token_start, c)
+            {
+                app.ui_mode = restored;
+                return Ok(());
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(text) = read_completable_text(app, prev) {
+                let token = text.get(*token_start..).unwrap_or("");
+                if !token.is_empty() {
+                    let mut chars: Vec<char> = token.chars().collect();
+                    chars.pop();
+                    let new_token: String = chars.into_iter().collect();
+                    write_completable_token(app, prev, *token_start, &new_token);
+                }
+            }
+        }
+        _ => {}
+    }
+    app.ui_mode = mode;
+    Ok(())
+}
 
 fn focus_command_line(app: &mut App) {
     app.ui_mode = UiMode::ShellInput;
@@ -19803,6 +20123,380 @@ mod panel_tree_mode_tests {
         .unwrap();
         assert_eq!(app.left.mode, PanelMode::Tree);
         assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod alt_tab_completion_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, FilterDialogFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{ListingFormat, PanelMode};
+    use rmc_fs::local::LocalFs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-alt-tab-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+    }
+
+    fn press_alt_tab(app: &mut App) {
+        press_mod(app, KeyCode::Tab, KeyModifiers::ALT);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::create_dir(left.join("subdir")).unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        (left, right)
+    }
+
+    #[test]
+    fn unique_filename_inserts_rest_of_name() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(root.join("zzbeta.txt"), b"b").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "zza");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
+        assert!(!app.completion_beep);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ambiguous_common_prefix_then_list_when_show_all_off() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(root.join("zzalpine.txt"), b"b").unwrap();
+        let mut app = make_app(&root);
+        assert!(!app.config_opts.complete_show_all);
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zzalp");
+        assert!(app.completion_beep);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        press_alt_tab(&mut app);
+        match &app.ui_mode {
+            UiMode::CompletionList {
+                items, selected, ..
+            } => {
+                assert_eq!(items.len(), 2, "{items:?}");
+                assert_eq!(*selected, 0);
+                let names: Vec<&str> = items.iter().map(|i| i.display.as_str()).collect();
+                assert!(names.contains(&"zzalpha.txt"));
+                assert!(names.contains(&"zzalpine.txt"));
+            }
+            _ => panic!("second Alt-Tab must open list"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn show_all_opens_list_on_first_alt_tab() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(root.join("zzalpine.txt"), b"b").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.complete_show_all = true;
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zza");
+        assert!(app.completion_beep);
+        assert!(matches!(app.ui_mode, UiMode::CompletionList { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_enter_inserts_chosen_item() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(root.join("zzalpine.txt"), b"b").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.complete_show_all = true;
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "zzalpine.txt ");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_esc_f10_left_right_close_without_insert() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(root.join("zzalpine.txt"), b"b").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.complete_show_all = true;
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "zza");
+
+        press_alt_tab(&mut app);
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(app.subshell.cmdline, "zza");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+
+        press_alt_tab(&mut app);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.subshell.cmdline, "zza");
+
+        press_alt_tab(&mut app);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.subshell.cmdline, "zza");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn variable_completion_uses_known_env() {
+        std::env::set_var("RMCALT6607UIVAR", "1");
+        let root = temp_workspace();
+        std::fs::write(root.join("alpha.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "$RMCALT6607UIV");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "$RMCALT6607UIVAR");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_completion_only_on_shell_command_line() {
+        let root = temp_workspace();
+        std::fs::write(root.join("alpha.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "ech");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "echo ");
+
+        press_alt(&mut app, 'c');
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("expected Quick cd"),
+        }
+        type_str(&mut app, "ech");
+        press_alt_tab(&mut app);
+        match &app.ui_mode {
+            UiMode::InputDialog { value, .. } => {
+                assert_eq!(value, "ech", "command completion must not run on Quick cd");
+            }
+            UiMode::CompletionList { .. } => {
+                panic!("Quick cd must not command-complete into a list")
+            }
+            _ => panic!("expected InputDialog after typing on Quick cd"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_from_temp_path_on_command_line() {
+        let root = temp_workspace();
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let exe = bin.join("rmcuniqcmd6607");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        let mut perms = std::fs::metadata(&exe).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&exe, perms).unwrap();
+        std::fs::write(root.join("alpha.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        app.completion_path_override = Some(bin.to_string_lossy().into_owned());
+        type_str(&mut app, "rmcuniqcmd");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "rmcuniqcmd6607 ");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_empty_cmdline_switches_panels_alt_s_is_quick_search() {
+        let root = temp_workspace();
+        std::fs::write(root.join("alpha.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        assert!(app.subshell.cmdline.is_empty());
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+
+        press_alt(&mut app, 's');
+        assert!(app.quick_search.is_some());
+        assert!(
+            !matches!(app.ui_mode, UiMode::CompletionList { .. }),
+            "Alt-s must start panel quick search, not completion"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn username_and_hostname_from_local_files() {
+        let root = temp_workspace();
+        std::fs::write(root.join("alpha.txt"), b"a").unwrap();
+        let pw = root.join("passwd");
+        std::fs::write(&pw, "rmccompuser:x:1000:1000::/tmp:/bin/sh\n").unwrap();
+        let hosts = root.join("hosts");
+        std::fs::write(&hosts, "10.0.0.2 rmccomphost\n").unwrap();
+        let mut app = make_app(&root);
+        app.completion_passwd_path = Some(pw);
+        app.completion_hosts_path = Some(hosts);
+
+        type_str(&mut app, "~rmccomp");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "~rmccompuser/");
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::ShellInput;
+        type_str(&mut app, "@rmccomp");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "@rmccomphost");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_sort_equal_swap_help_quick_cd_tree_ctrl_x_q_still_work() {
+        let root = temp_workspace();
+        let (left_dir, right_dir) = two_panel_dirs(&root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+
+        open_left_right_item(&mut app, false, "Filter");
+        match &app.ui_mode {
+            UiMode::FilterDialog { focus, .. } => {
+                assert_eq!(*focus, FilterDialogFocus::Pattern);
+            }
+            _ => panic!("expected FilterDialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        assert!(matches!(app.ui_mode, UiMode::SortDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        app.layout.panel_ratio = 0.8;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+
+        assert_eq!(app.left.listing, ListingFormat::Full);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

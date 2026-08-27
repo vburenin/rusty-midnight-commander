@@ -173,6 +173,11 @@ pub struct ConfigOptions {
     /// GNU mc Options → Configuration → Mkdir autoname. When true, F7 prefills
     /// the Mkdir name with the current panel entry (not `..`). Default false.
     pub mkdir_autoname: bool,
+    /// GNU mc Options → Configuration → Complete: show all. Default **false**.
+    /// When false, the first Alt-Tab on an ambiguous token completes the common
+    /// prefix and beeps; the second Alt-Tab shows the list. When true, the first
+    /// Alt-Tab shows all possibilities.
+    pub complete_show_all: bool,
 }
 
 impl Default for ConfigOptions {
@@ -188,6 +193,7 @@ impl Default for ConfigOptions {
             auto_menus: false,
             drop_menus: false,
             mkdir_autoname: false,
+            complete_show_all: false,
         }
     }
 }
@@ -232,7 +238,7 @@ pub enum LayoutFocus {
     Cancel,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigOptionsFocus {
     Verbose,
     ComputeTotals,
@@ -244,6 +250,7 @@ pub enum ConfigOptionsFocus {
     AutoMenus,
     DropMenus,
     MkdirAutoname,
+    CompleteShowAll,
     Ok,
     Cancel,
 }
@@ -517,6 +524,16 @@ pub enum UiMode {
     },
     /// Command line at bottom has focus for editing/executing.
     ShellInput,
+    /// GNU mc(1) Alt-Tab completion listbox (ambiguous matches).
+    CompletionList {
+        items: Vec<crate::complete::CompletionItem>,
+        selected: usize,
+        scroll_top: usize,
+        /// Byte offset of the token in the input text (before the cursor).
+        token_start: usize,
+        /// Mode that owned the input line (restored on insert or cancel).
+        prev: Box<UiMode>,
+    },
     /// GNU mc command-line History list (Alt-h / M-h while the input line has focus).
     HistoryDialog {
         selected_index: usize,
@@ -1202,6 +1219,19 @@ pub struct App {
     pub config_opts: ConfigOptions,
     /// GNU mc-style Options → Virtual FS
     pub vfs_opts: VfsOptions,
+    /// Last Alt-Tab was an ambiguous common-prefix completion (show-all off).
+    /// The next Alt-Tab on this token opens the list. Cleared by any other key.
+    pub completion_retry: bool,
+    /// Ambiguous completion "beep" flag (no TTY / BEL required).
+    pub completion_beep: bool,
+    /// Test override for command `PATH` (`:`-separated). `None` uses the process PATH.
+    pub completion_path_override: Option<String>,
+    /// Test override for username completion (`/etc/passwd` by default).
+    pub completion_passwd_path: Option<PathBuf>,
+    /// Test override for hostname completion (`/etc/hosts` by default).
+    pub completion_hosts_path: Option<PathBuf>,
+    /// Test override for `~/` filename completion (`$HOME` by default).
+    pub completion_home: Option<PathBuf>,
     /// Selected skin name (e.g., "default")
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
@@ -1236,6 +1266,12 @@ impl App {
             vfs_opts: VfsOptions::default(),
             skin_name: "default".to_string(),
             shadows: true,
+            completion_retry: false,
+            completion_beep: false,
+            completion_path_override: None,
+            completion_passwd_path: None,
+            completion_hosts_path: None,
+            completion_home: None,
         };
         // Overlay user setup (if available) over defaults, then refresh panels.
         let _ = crate::config::load_user_setup(&mut app);
@@ -1768,6 +1804,7 @@ impl App {
             UiMode::MenuFocused => "Menus".to_string(),
             UiMode::Help { state, .. } => state.topic.clone(),
             UiMode::ShellInput => "Panels".to_string(),
+            UiMode::CompletionList { .. } => "Panels".to_string(),
             UiMode::HistoryDialog { .. } => "Panels".to_string(),
             UiMode::HotlistDialog(_) => "Panels".to_string(),
             UiMode::ExternalPanelizeDialog(_) => "External panelize".to_string(),
