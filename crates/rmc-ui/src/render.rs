@@ -2633,7 +2633,20 @@ fn draw_panel(
     let header_bg = pal.header_bg;
     p.set_fg_bg(header_fg, header_bg);
     let panel = if is_left { &app.left } else { &app.right };
-    match panel.listing {
+    let user_tokens = if matches!(panel.listing, rmc_core::panel::ListingFormat::User) {
+        rmc_core::panel::parse_user_listing_format(&panel.user_format)
+    } else {
+        Vec::new()
+    };
+    // Empty / unrecognized user_format falls back to Long layout.
+    let listing = if matches!(panel.listing, rmc_core::panel::ListingFormat::User)
+        && user_tokens.is_empty()
+    {
+        rmc_core::panel::ListingFormat::Long
+    } else {
+        panel.listing
+    };
+    match listing {
         rmc_core::panel::ListingFormat::Full => {
             p.goto(x + 1, y + 1);
             p.text("Name");
@@ -2646,7 +2659,13 @@ fn draw_panel(
             p.goto(x + 1, y + 1);
             p.text("Name");
         }
-        rmc_core::panel::ListingFormat::Long | rmc_core::panel::ListingFormat::User => {
+        rmc_core::panel::ListingFormat::User => {
+            p.goto(x + 1, y + 1);
+            let header =
+                rmc_core::panel::format_user_listing_header(&user_tokens, (w - 2) as usize);
+            p.text(&truncate(&header, (w - 2) as usize));
+        }
+        rmc_core::panel::ListingFormat::Long => {
             // Column-aligned like ls -l
             let perms_col = x + 1;
             let owner_col = perms_col + 12; // 10 perms + 2 spaces
@@ -2672,7 +2691,7 @@ fn draw_panel(
     let _panel = if is_left { &app.left } else { &app.right };
     // Viewport uses panel.scroll_top, updated by the event loop per visible capacity
     let panel = if is_left { &app.left } else { &app.right };
-    match panel.listing {
+    match listing {
         rmc_core::panel::ListingFormat::Full => {
             let size_col = x + w / 2;
             for i in 0..content_h as usize {
@@ -2761,7 +2780,7 @@ fn draw_panel(
                 }
             }
         }
-        rmc_core::panel::ListingFormat::Long | rmc_core::panel::ListingFormat::User => {
+        rmc_core::panel::ListingFormat::Long => {
             for i in 0..content_h as usize {
                 let row_y = content_top + i as u16;
                 p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -2792,6 +2811,40 @@ fn draw_panel(
                     let mut line = format!(
                         "{perms}  {owner:>8} {group:>8} {size:>8} {tm}  {}",
                         ent.name
+                    );
+                    line = truncate(&line, (w - 2) as usize);
+                    p.goto(x + 1, row_y);
+                    p.text(&line);
+                }
+            }
+        }
+        rmc_core::panel::ListingFormat::User => {
+            for i in 0..content_h as usize {
+                let row_y = content_top + i as u16;
+                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                p.goto(x + 1, row_y);
+                p.text(&" ".repeat((w - 2) as usize));
+                let idx = panel.scroll_top + i;
+                if let Some(ent) = panel.entries.get(idx) {
+                    let is_active_panel = (is_left
+                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                    let is_cursor = idx == panel.cursor;
+                    let selected = panel.selection.is_selected(idx);
+                    let (fg, bg) = if is_cursor && is_active_panel {
+                        (pal.selected_fg, pal.selected_bg)
+                    } else if selected && is_cursor {
+                        (pal.markselect_fg, pal.markselect_bg)
+                    } else if selected {
+                        (pal.marked_fg, pal.marked_bg)
+                    } else {
+                        (pal.core_default_fg, pal.core_default_bg)
+                    };
+                    p.set_fg_bg(fg, bg);
+                    let mut line = rmc_core::panel::format_user_listing_line(
+                        ent,
+                        &user_tokens,
+                        (w - 2) as usize,
                     );
                     line = truncate(&line, (w - 2) as usize);
                     p.goto(x + 1, row_y);
