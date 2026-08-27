@@ -304,6 +304,18 @@ pub fn list_available_skins() -> Vec<String> {
     names.into_iter().collect()
 }
 
+/// Load the palette for a skin name. Missing or unreadable names fall back to
+/// [`load_default_palette`] — the same path Options → Appearance uses when a
+/// named skin cannot be resolved (including `"default"`, which is not a file).
+pub fn load_palette_by_name(name: &str) -> McPalette {
+    if let Some(path) = find_skin_path_by_name(name) {
+        if let Ok(pal) = load_from_file(&path) {
+            return pal;
+        }
+    }
+    load_default_palette()
+}
+
 /// Resolve a skin name to a file path according to the same search order
 /// used by `list_available_skins` (except that "default" returns None).
 pub fn find_skin_path_by_name(name: &str) -> Option<PathBuf> {
@@ -409,5 +421,21 @@ mod tests {
             load_from_file(&path).unwrap_or_else(|e| panic!("parse {name}.ini: {e}"));
             assert_eq!(section_keys(&text), default_keys, "{name}.ini keys");
         }
+    }
+
+    #[test]
+    fn named_skin_loads_and_unknown_falls_back_to_default_loader() {
+        let dark = load_palette_by_name("dark");
+        let default = load_default_palette();
+        assert_ne!(
+            dark.core_default_bg, default.core_default_bg,
+            "dark.ini must not be the default palette"
+        );
+        assert!(find_skin_path_by_name("no-such-skin-rmc").is_none());
+        let missing = load_palette_by_name("no-such-skin-rmc");
+        assert_eq!(missing.core_default_bg, default.core_default_bg);
+        assert_eq!(missing.core_default_fg, default.core_default_fg);
+        let named_default = load_palette_by_name("default");
+        assert_eq!(named_default.core_default_bg, default.core_default_bg);
     }
 }

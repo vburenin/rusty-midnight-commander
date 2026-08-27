@@ -1499,6 +1499,13 @@ pub struct App {
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
     pub shadows: bool,
+    /// GNU mc(1) `-d`/`--nomouse`: when false, do not enable mouse capture
+    /// and do not process mouse events. Default true (mouse on). Process-lifetime.
+    pub mouse_enabled: bool,
+    /// GNU mc(1) concurrent subshell: `-U`/`--subshell` (true) vs `-u`/`--nosubshell`
+    /// (false). Default true, matching a build with subshell support. C-o still
+    /// toggles the panels/output screen; a PTY is spawned only when this is true.
+    pub use_subshell: bool,
 }
 
 impl App {
@@ -1532,6 +1539,8 @@ impl App {
             vfs_opts: VfsOptions::default(),
             skin_name: "default".to_string(),
             shadows: true,
+            mouse_enabled: true,
+            use_subshell: true,
             completion_retry: false,
             completion_beep: false,
             completion_path_override: None,

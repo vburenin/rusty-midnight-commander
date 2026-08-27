@@ -4,7 +4,6 @@ use crate::render::{
     panel_fbar_labels, viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS, FILE_MENU_ITEMS,
     LEFT_RIGHT_MENU_ITEMS,
 };
-use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -610,58 +609,201 @@ fn open_user_config_in_editor(app: &mut App, path: PathBuf) {
     push_internal_screen(app, editor_ui_mode(buf, None));
 }
 
-/// Startup flags: `--diff file1 file2`, `-e`/`--edit` files.
+/// GNU mc(1) startup flags. Unknown args are skipped so they do not hide
+/// `--diff` / `--edit` / `--view` later on the line.
+///
+/// `-U`/`--subshell` and `-u`/`--nosubshell` are mutually exclusive; last one
+/// wins. `--skin` overrides the ini/default name for this process; a missing
+/// named skin keeps that name and falls back visually the same way Options →
+/// Appearance does (default palette / `MC_SKIN`).
 pub fn apply_cli_args(app: &mut App, args: &[String]) -> Result<()> {
-    if args.len() >= 3 && args[0] == "--diff" {
-        let left = PathBuf::from(&args[1]);
-        let right = PathBuf::from(&args[2]);
-        let ltxt = read_vfs_text(app, &left);
-        let rtxt = read_vfs_text(app, &right);
-        let left_lines = rmc_diff::split_lines(&ltxt);
-        let right_lines = rmc_diff::split_lines(&rtxt);
-        let dr = rmc_diff::compute_diff(&ltxt, &rtxt);
-        app.push_screen(UiMode::Diff(rmc_core::app::DiffState {
-            left_path: left,
-            right_path: right,
-            left_lines,
-            right_lines,
-            hunks: dr.hunks,
-            current_hunk: 0,
-            left_modified: false,
-            right_modified: false,
-            show_line_numbers: false,
-            show_hunk_status: true,
-            search: None,
-            search_prompt: None,
-            goto_prompt: None,
-            confirm_exit: None,
-            left_scroll: 0,
-            right_scroll: 0,
-            panel_ratio: 0.5,
-            tab_width: 4,
-            merge_target_right: true,
-        }));
-        return Ok(());
-    }
-    if let Some(files) = parse_edit_files(args) {
-        open_editor_files(app, &files);
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            break;
+        }
+        if let Some(long) = a.strip_prefix("--") {
+            i = apply_long_option(app, long, args, i);
+            continue;
+        }
+        if a.starts_with('-') && a != "-" {
+            i = apply_short_cluster(app, a, args, i);
+            continue;
+        }
+        i += 1;
     }
     Ok(())
 }
 
-fn parse_edit_files(args: &[String]) -> Option<Vec<PathBuf>> {
-    if args.is_empty() {
-        return None;
+fn is_cli_option(s: &str) -> bool {
+    s.starts_with('-') && s != "-"
+}
+
+fn take_non_option_files(args: &[String], start: usize) -> (Vec<PathBuf>, usize) {
+    let mut files = Vec::new();
+    let mut i = start;
+    while i < args.len() && !is_cli_option(&args[i]) {
+        files.push(PathBuf::from(&args[i]));
+        i += 1;
     }
-    if args[0] == "-e" || args[0] == "--edit" {
-        return Some(args[1..].iter().map(PathBuf::from).collect());
+    (files, i)
+}
+
+fn apply_long_option(app: &mut App, long: &str, args: &[String], i: usize) -> usize {
+    if let Some((key, val)) = long.split_once('=') {
+        match key {
+            "skin" => {
+                app.skin_name = val.to_string();
+                i + 1
+            }
+            "view" => {
+                open_cli_viewer(app, PathBuf::from(val));
+                i + 1
+            }
+            "edit" => {
+                let mut files = vec![PathBuf::from(val)];
+                let (more, next) = take_non_option_files(args, i + 1);
+                files.extend(more);
+                open_editor_files(app, &files);
+                next
+            }
+            _ => i + 1,
+        }
+    } else {
+        match long {
+            "nomouse" => {
+                app.mouse_enabled = false;
+                i + 1
+            }
+            "nosubshell" => {
+                app.use_subshell = false;
+                i + 1
+            }
+            "subshell" => {
+                app.use_subshell = true;
+                i + 1
+            }
+            "skin" => {
+                if i + 1 < args.len() {
+                    app.skin_name = args[i + 1].clone();
+                    i + 2
+                } else {
+                    i + 1
+                }
+            }
+            "view" => {
+                if i + 1 < args.len() {
+                    open_cli_viewer(app, PathBuf::from(&args[i + 1]));
+                    i + 2
+                } else {
+                    i + 1
+                }
+            }
+            "edit" => {
+                let (files, next) = take_non_option_files(args, i + 1);
+                open_editor_files(app, &files);
+                next
+            }
+            "diff" => {
+                if i + 2 < args.len() {
+                    open_cli_diff(
+                        app,
+                        PathBuf::from(&args[i + 1]),
+                        PathBuf::from(&args[i + 2]),
+                    );
+                    i + 3
+                } else {
+                    i + 1
+                }
+            }
+            _ => i + 1,
+        }
     }
-    if let Some(rest) = args[0].strip_prefix("--edit=") {
-        let mut v = vec![PathBuf::from(rest)];
-        v.extend(args[1..].iter().map(PathBuf::from));
-        return Some(v);
+}
+
+fn apply_short_cluster(app: &mut App, arg: &str, args: &[String], i: usize) -> usize {
+    let chars: Vec<char> = arg[1..].chars().collect();
+    let mut cidx = 0;
+    while cidx < chars.len() {
+        match chars[cidx] {
+            'd' => app.mouse_enabled = false,
+            'u' => app.use_subshell = false,
+            'U' => app.use_subshell = true,
+            'S' => {
+                let rest: String = chars[cidx + 1..].iter().collect();
+                if rest.is_empty() {
+                    if i + 1 < args.len() {
+                        app.skin_name = args[i + 1].clone();
+                        return i + 2;
+                    }
+                    return i + 1;
+                }
+                app.skin_name = rest;
+                return i + 1;
+            }
+            'v' => {
+                let rest: String = chars[cidx + 1..].iter().collect();
+                if rest.is_empty() {
+                    if i + 1 < args.len() {
+                        open_cli_viewer(app, PathBuf::from(&args[i + 1]));
+                        return i + 2;
+                    }
+                    return i + 1;
+                }
+                open_cli_viewer(app, PathBuf::from(rest));
+                return i + 1;
+            }
+            'e' => {
+                let rest: String = chars[cidx + 1..].iter().collect();
+                let mut files = Vec::new();
+                if !rest.is_empty() {
+                    files.push(PathBuf::from(rest));
+                }
+                let (more, next) = take_non_option_files(args, i + 1);
+                files.extend(more);
+                open_editor_files(app, &files);
+                return next;
+            }
+            _ => {}
+        }
+        cidx += 1;
     }
-    None
+    i + 1
+}
+
+fn open_cli_viewer(app: &mut App, path: PathBuf) {
+    // GNU `-v`/`--view` always starts the internal viewer (mcview), not $PAGER.
+    push_internal_screen(app, UiMode::new_viewer(path));
+}
+
+fn open_cli_diff(app: &mut App, left: PathBuf, right: PathBuf) {
+    let ltxt = read_vfs_text(app, &left);
+    let rtxt = read_vfs_text(app, &right);
+    let left_lines = rmc_diff::split_lines(&ltxt);
+    let right_lines = rmc_diff::split_lines(&rtxt);
+    let dr = rmc_diff::compute_diff(&ltxt, &rtxt);
+    app.push_screen(UiMode::Diff(rmc_core::app::DiffState {
+        left_path: left,
+        right_path: right,
+        left_lines,
+        right_lines,
+        hunks: dr.hunks,
+        current_hunk: 0,
+        left_modified: false,
+        right_modified: false,
+        show_line_numbers: false,
+        show_hunk_status: true,
+        search: None,
+        search_prompt: None,
+        goto_prompt: None,
+        confirm_exit: None,
+        left_scroll: 0,
+        right_scroll: 0,
+        panel_ratio: 0.5,
+        tab_width: 4,
+        merge_target_right: true,
+    }));
 }
 
 fn open_diff_side_in_editor(app: &mut App, right: bool) -> Result<()> {
@@ -1555,8 +1697,11 @@ impl TerminalApp {
     pub fn run(app: &mut App) -> Result<()> {
         let mut out = stdout();
         enable_raw_mode()?;
-        execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-        let palette = load_default_palette();
+        execute!(out, EnterAlternateScreen)?;
+        if app.mouse_enabled {
+            execute!(out, EnableMouseCapture)?;
+        }
+        let palette = crate::skin::load_palette_by_name(&app.skin_name);
         let mut renderer = Renderer::new(palette);
         let mut current_skin = app.skin_name.clone();
         let mut last_draw = Instant::now();
@@ -1658,24 +1803,11 @@ impl TerminalApp {
                     }
                 }
             }
-            // Apply pending skin change by reloading palette
+            // Apply pending skin change by reloading palette (unknown names
+            // fall back the same way as startup / Options → Appearance).
             if app.skin_name != current_skin {
-                if let Some(path) = crate::skin::find_skin_path_by_name(&app.skin_name) {
-                    if let Ok(pal) = crate::skin::load_from_file(&path) {
-                        renderer.set_palette(pal);
-                        current_skin = app.skin_name.clone();
-                    } else {
-                        // Fallback: default palette
-                        let pal = crate::skin::load_default_palette();
-                        renderer.set_palette(pal);
-                        current_skin = app.skin_name.clone();
-                    }
-                } else {
-                    // "default" or unknown -> default loader (handles MC_SKIN first)
-                    let pal = crate::skin::load_default_palette();
-                    renderer.set_palette(pal);
-                    current_skin = app.skin_name.clone();
-                }
+                renderer.set_palette(crate::skin::load_palette_by_name(&app.skin_name));
+                current_skin = app.skin_name.clone();
             }
             // Poll the jobs worker without blocking the copy. Redraw the GNU mc
             // progress dialog on every tick so File/Total bars fill, and redraw
@@ -1709,6 +1841,10 @@ impl TerminalApp {
                         Self::handle_key(app, key, active_page_rows)?;
                     }
                     Event::Mouse(mev) => {
+                        // GNU `-d`/`--nomouse`: never process mouse events.
+                        if !app.mouse_enabled {
+                            continue;
+                        }
                         // Ignore mouse while subshell full-screen
                         if app.subshell.show_output_screen {
                             continue;
@@ -1956,7 +2092,11 @@ impl TerminalApp {
             *guard = None;
         }
         disable_raw_mode()?;
-        execute!(out, LeaveAlternateScreen, DisableMouseCapture)?;
+        if app.mouse_enabled {
+            execute!(out, LeaveAlternateScreen, DisableMouseCapture)?;
+        } else {
+            execute!(out, LeaveAlternateScreen)?;
+        }
         Ok(())
     }
 
@@ -3248,14 +3388,16 @@ impl TerminalApp {
                                 app.ui_mode = UiMode::Normal;
                                 handle_panel_enter(app)?;
                             } else {
-                                // Prefer executing inside a live PTY session when available.
-                                let outcome = {
+                                // Prefer a live PTY only when concurrent subshell is enabled.
+                                let outcome = if app.use_subshell {
                                     if let Ok(mut guard) = SUBSHELL_PTY.lock() {
                                         let pty_opt = guard.as_mut();
                                         app.subshell.execute_in_pty(&active_cwd, pty_opt)?
                                     } else {
                                         app.subshell.execute_current(&active_cwd)?
                                     }
+                                } else {
+                                    app.subshell.execute_current(&active_cwd)?
                                 };
                                 let _ = outcome;
                                 // Always rescan panels after a command (local VFS only here).
@@ -7688,8 +7830,10 @@ impl TerminalApp {
                 }
                 Action::ToggleSubshell => {
                     app.handle_action(Action::ToggleSubshell)?;
-                    // If toggled ON, ensure PTY session exists and is alive; spawn otherwise.
-                    if app.subshell.show_output_screen {
+                    // GNU `-u`/`--nosubshell`: C-o still toggles the output
+                    // screen, but must not spawn/attach a concurrent PTY.
+                    // Do not call terminal::size() here when disabled (no TTY in CI).
+                    if app.use_subshell && app.subshell.show_output_screen {
                         let (c, r) = crossterm::terminal::size()?;
                         if let Ok(mut guard) = SUBSHELL_PTY.lock() {
                             let need_spawn = match guard.as_mut() {
@@ -18120,6 +18264,308 @@ mod screen_selector_tests {
         press_alt(&mut app, '{');
         assert_eq!(editor_name(&app), "a.txt");
         assert_eq!(editor_text(&app), "alpha-buffer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod cli_startup_flags_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-cli-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn defaults_enable_mouse_and_subshell() {
+        let root = temp_workspace();
+        let app = make_app(&root);
+        assert!(app.mouse_enabled);
+        assert!(app.use_subshell);
+        assert_eq!(app.skin_name, "default");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nomouse_short_and_long_disable_mouse_flag() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["-d".into()]).unwrap();
+        assert!(
+            !app.mouse_enabled,
+            "GNU -d/--nomouse must leave a testable disable flag"
+        );
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["--nomouse".into()]).unwrap();
+        assert!(!app.mouse_enabled);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skin_short_long_equals_and_space_override_name() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["-S".into(), "dark".into()]).unwrap();
+        assert_eq!(app.skin_name, "dark");
+        apply_cli_args(&mut app, &["--skin".into(), "classic".into()]).unwrap();
+        assert_eq!(app.skin_name, "classic");
+        apply_cli_args(&mut app, &["--skin=gotar".into()]).unwrap();
+        assert_eq!(app.skin_name, "gotar");
+        apply_cli_args(&mut app, &["-Ssand".into()]).unwrap();
+        assert_eq!(app.skin_name, "sand");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unknown_skin_keeps_cli_name_and_falls_back_like_running_app() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["--skin=no-such-skin-rmc".into()]).unwrap();
+        assert_eq!(
+            app.skin_name, "no-such-skin-rmc",
+            "CLI name is kept; visual fallback is load_palette_by_name"
+        );
+        assert!(crate::skin::find_skin_path_by_name(&app.skin_name).is_none());
+        let fallback = crate::skin::load_palette_by_name(&app.skin_name);
+        let default = crate::skin::load_default_palette();
+        assert_eq!(fallback.core_default_bg, default.core_default_bg);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn subshell_flags_last_wins() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["-u".into()]).unwrap();
+        assert!(!app.use_subshell);
+        apply_cli_args(&mut app, &["-U".into()]).unwrap();
+        assert!(app.use_subshell);
+        apply_cli_args(&mut app, &["--nosubshell".into(), "--subshell".into()]).unwrap();
+        assert!(
+            app.use_subshell,
+            "last of -U/--subshell vs -u/--nosubshell wins"
+        );
+        apply_cli_args(&mut app, &["--subshell".into(), "--nosubshell".into()]).unwrap();
+        assert!(!app.use_subshell);
+        apply_cli_args(&mut app, &["-uU".into()]).unwrap();
+        assert!(app.use_subshell, "clustered -uU: last char wins");
+        apply_cli_args(&mut app, &["-Uu".into()]).unwrap();
+        assert!(!app.use_subshell, "clustered -Uu: last char wins");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nosubshell_c_o_toggles_output_without_pty_or_tty_size() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["-u".into()]).unwrap();
+        assert!(!app.use_subshell);
+        assert!(!app.subshell.show_output_screen);
+        // handle_key C-o must not call terminal::size() when subshell is off.
+        press_ctrl(&mut app, 'o');
+        assert!(
+            app.subshell.show_output_screen,
+            "C-o still toggles the output screen"
+        );
+        assert!(
+            SUBSHELL_PTY.lock().unwrap().is_none(),
+            "-u must not spawn/attach a PTY"
+        );
+        press_ctrl(&mut app, 'o');
+        assert!(!app.subshell.show_output_screen);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn view_short_long_equals_and_space_open_internal_viewer() {
+        let root = temp_workspace();
+        let file = root.join("readme.txt");
+        std::fs::write(&file, "hello-view").unwrap();
+        let path = file.to_string_lossy().into_owned();
+
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["-v".into(), path.clone()]).unwrap();
+        match &app.ui_mode {
+            UiMode::Viewer { path: p, .. } => assert_eq!(p, &file),
+            _ => panic!("-v must open Viewer"),
+        }
+
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["--view".into(), path.clone()]).unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Viewer { path: ref p, .. } if p == &file));
+
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &[format!("--view={path}")]).unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Viewer { path: ref p, .. } if p == &file));
+
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &[format!("-v{path}")]).unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Viewer { path: ref p, .. } if p == &file));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn view_uses_internal_viewer_even_when_config_prefers_external() {
+        let root = temp_workspace();
+        let file = root.join("x.txt");
+        std::fs::write(&file, "x").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.use_internal_view = false;
+        apply_cli_args(
+            &mut app,
+            &["--view".into(), file.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            UiMode::PauseAfterRun => panic!("--view must not use $PAGER"),
+            _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edit_equals_and_long_forms_still_open_editor() {
+        let root = temp_workspace();
+        let file = root.join("e.txt");
+        std::fs::write(&file, "edit-me").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &[format!("--edit={path}")]).unwrap();
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => {
+                assert_eq!(buf.path.as_deref(), Some(file.as_path()));
+                assert_eq!(buf.to_bytes(), b"edit-me");
+            }
+            _ => panic!("--edit=file must open Editor"),
+        }
+        let mut app = make_app(&root);
+        apply_cli_args(&mut app, &["--edit".into(), path]).unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diff_still_opens_side_by_side() {
+        let root = temp_workspace();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        std::fs::write(&a, "one\n").unwrap();
+        std::fs::write(&b, "two\n").unwrap();
+        let mut app = make_app(&root);
+        apply_cli_args(
+            &mut app,
+            &[
+                "--diff".into(),
+                a.to_string_lossy().into_owned(),
+                b.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        match &app.ui_mode {
+            UiMode::Diff(st) => {
+                assert_eq!(st.left_path, a);
+                assert_eq!(st.right_path, b);
+            }
+            _ => panic!("--diff must open Diff"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unknown_args_do_not_hide_diff_edit_or_flags() {
+        let root = temp_workspace();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        std::fs::write(&a, "L\n").unwrap();
+        std::fs::write(&b, "R\n").unwrap();
+        let mut app = make_app(&root);
+        apply_cli_args(
+            &mut app,
+            &[
+                "--bogus".into(),
+                "-x".into(),
+                "--nomouse".into(),
+                "--diff".into(),
+                a.to_string_lossy().into_owned(),
+                b.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(!app.mouse_enabled);
+        assert!(matches!(app.ui_mode, UiMode::Diff(_)));
+
+        let file = root.join("ed.txt");
+        std::fs::write(&file, "z").unwrap();
+        let mut app = make_app(&root);
+        apply_cli_args(
+            &mut app,
+            &[
+                "--unknown".into(),
+                "-e".into(),
+                file.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mixed_nomouse_skin_and_view() {
+        let root = temp_workspace();
+        let file = root.join("v.txt");
+        std::fs::write(&file, "v").unwrap();
+        let mut app = make_app(&root);
+        apply_cli_args(
+            &mut app,
+            &[
+                "--nomouse".into(),
+                "-S".into(),
+                "dark".into(),
+                "-u".into(),
+                "--view".into(),
+                file.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(!app.mouse_enabled);
+        assert_eq!(app.skin_name, "dark");
+        assert!(!app.use_subshell);
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("expected Viewer"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
