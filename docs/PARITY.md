@@ -49,7 +49,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [ ] Panel modes: Quick view, Info, Tree, Panelize (results)
 - [ ] Sort: name (alpha/natural), ext, mtime/atime/ctime, size, inode, unsorted; reverse toggle
 - [x] Options: directories first vs “Mix all files”
-- [ ] Filter dialog: glob/regex, files only toggle, case sensitivity
+- [x] Filter dialog: glob/regex, files only toggle, case sensitivity
 - [x] Show hidden files toggle (dotfiles)
 - [ ] Fast directory reload; manual rescan C-r
 - [ ] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection

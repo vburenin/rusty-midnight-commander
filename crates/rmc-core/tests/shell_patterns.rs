@@ -78,6 +78,7 @@ fn filter_regex_off_matches_txt() -> Result<()> {
     let mut app = app_in_dir(root)?;
     app.config_opts.shell_patterns = false;
     app.left.filter_glob = Some(r".*\.txt$".to_string());
+    app.left.filter_regex = true;
     app.reload_panels()?;
 
     let names = listed_names(&app);
@@ -94,19 +95,19 @@ fn filter_star_and_empty_show_all_in_both_modes() -> Result<()> {
     fs::write(root.join("foo.rs"), b"b")?;
 
     let mut app = app_in_dir(root)?;
-    for shell in [true, false] {
-        app.config_opts.shell_patterns = shell;
+    for regex in [false, true] {
+        app.left.filter_regex = regex;
         app.left.filter_glob = Some("*".to_string());
         app.reload_panels()?;
         let names = listed_names(&app);
-        assert!(names.iter().any(|n| n == "foo.txt"), "star shell={shell}");
-        assert!(names.iter().any(|n| n == "foo.rs"), "star shell={shell}");
+        assert!(names.iter().any(|n| n == "foo.txt"), "star regex={regex}");
+        assert!(names.iter().any(|n| n == "foo.rs"), "star regex={regex}");
 
         app.left.filter_glob = Some(String::new());
         app.reload_panels()?;
         let names = listed_names(&app);
-        assert!(names.iter().any(|n| n == "foo.txt"), "empty shell={shell}");
-        assert!(names.iter().any(|n| n == "foo.rs"), "empty shell={shell}");
+        assert!(names.iter().any(|n| n == "foo.txt"), "empty regex={regex}");
+        assert!(names.iter().any(|n| n == "foo.rs"), "empty regex={regex}");
     }
     Ok(())
 }

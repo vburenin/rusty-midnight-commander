@@ -31,6 +31,7 @@ fn panel_filename_filter_applies_and_keeps_parent() -> Result<()> {
     assert!(names.contains(&"b.c"));
     assert!(names.contains(&"abc.c"));
     assert!(!names.contains(&"a.txt"));
+    // Default Files only off: non-matching directories drop too.
     assert!(!names.contains(&"sub"));
 
     Ok(())
@@ -54,5 +55,53 @@ fn panel_filter_star_resets_to_all() -> Result<()> {
     assert!(names.contains(&"x.rs"));
     assert!(names.contains(&"y.md"));
     assert!(names.first().copied() == Some(".."));
+    Ok(())
+}
+
+#[test]
+fn panel_filter_files_only_keeps_directories() -> Result<()> {
+    let dir = tempdir()?;
+    let root = dir.path();
+    fs::write(root.join("keep.txt"), b"a")?;
+    fs::write(root.join("skip.dat"), b"b")?;
+    fs::create_dir(root.join("subdir"))?;
+
+    let vfs = LocalFs::new();
+    let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
+    app.change_dir(root)?;
+
+    app.left.filter_glob = Some("*.txt".to_string());
+    app.left.filter_files_only = true;
+    app.reload_panels()?;
+    let names: Vec<_> = app.left.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names.first().copied(), Some(".."));
+    assert!(names.contains(&"keep.txt"));
+    assert!(names.contains(&"subdir"));
+    assert!(!names.contains(&"skip.dat"));
+    Ok(())
+}
+
+#[test]
+fn panel_filter_case_insensitive_glob() -> Result<()> {
+    let dir = tempdir()?;
+    let root = dir.path();
+    fs::write(root.join("KEEP.TXT"), b"a")?;
+    fs::write(root.join("skip.dat"), b"b")?;
+
+    let vfs = LocalFs::new();
+    let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
+    app.change_dir(root)?;
+
+    app.left.filter_glob = Some("*.txt".to_string());
+    app.left.filter_case_sensitive = true;
+    app.reload_panels()?;
+    let names: Vec<_> = app.left.entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(!names.contains(&"KEEP.TXT"));
+
+    app.left.filter_case_sensitive = false;
+    app.reload_panels()?;
+    let names: Vec<_> = app.left.entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"KEEP.TXT"));
+    assert!(!names.contains(&"skip.dat"));
     Ok(())
 }

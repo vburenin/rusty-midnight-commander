@@ -29,11 +29,34 @@ pub fn name_matches(pattern: &str, name: &str) -> bool {
 ///   `[abc]` / `[a-z]` / `[!…]`), matched against the whole file name.
 /// - `shell_patterns == false`: `pattern` is a regular expression. Invalid
 ///   patterns match nothing.
+///
+/// Matching is case-sensitive (same as the Filter dialog's Case sensitive
+/// default). See [`filename_pattern_matches_ex`] for the case flag.
 pub fn filename_pattern_matches(pattern: &str, name: &str, shell_patterns: bool) -> bool {
+    filename_pattern_matches_ex(pattern, name, shell_patterns, true)
+}
+
+/// Filename glob/regex match with an explicit case-sensitivity flag.
+///
+/// Glob style matches Find File's name pattern (`*`, `?`) plus shell character
+/// classes already used by Select/Unselect. Regex uses the `regex` crate;
+/// invalid patterns match nothing. When `case_sensitive` is false, glob
+/// comparison is ASCII-case-insensitive (Find File style) and regex uses
+/// `RegexBuilder::case_insensitive`.
+pub fn filename_pattern_matches_ex(
+    pattern: &str,
+    name: &str,
+    shell_patterns: bool,
+    case_sensitive: bool,
+) -> bool {
     if shell_patterns {
-        shell_glob_matches(pattern, name)
+        if case_sensitive {
+            shell_glob_matches(pattern, name)
+        } else {
+            shell_glob_matches(&pattern.to_ascii_lowercase(), &name.to_ascii_lowercase())
+        }
     } else {
-        regex_matches(pattern, name)
+        regex_matches_ex(pattern, name, case_sensitive)
     }
 }
 
@@ -68,8 +91,11 @@ fn glob_match(pat: &[char], text: &[char]) -> bool {
     pi == pat.len()
 }
 
-fn regex_matches(pattern: &str, name: &str) -> bool {
-    regex::Regex::new(pattern).is_ok_and(|re| re.is_match(name))
+fn regex_matches_ex(pattern: &str, name: &str, case_sensitive: bool) -> bool {
+    regex::RegexBuilder::new(pattern)
+        .case_insensitive(!case_sensitive)
+        .build()
+        .is_ok_and(|re| re.is_match(name))
 }
 
 #[derive(Clone)]
@@ -259,5 +285,30 @@ mod tests {
         assert!(filename_pattern_matches(r".*\.txt$", "foo.txt", false));
         assert!(!filename_pattern_matches(r".*\.txt$", "foo.rs", false));
         assert!(!filename_pattern_matches("*.txt", "foo.txt", false));
+    }
+
+    #[test]
+    fn glob_and_regex_honor_case_sensitive_flag() {
+        assert!(filename_pattern_matches_ex("*.txt", "foo.txt", true, true));
+        assert!(!filename_pattern_matches_ex("*.txt", "FOO.TXT", true, true));
+        assert!(filename_pattern_matches_ex("*.txt", "FOO.TXT", true, false));
+        assert!(filename_pattern_matches_ex(
+            r".*\.txt$",
+            "foo.txt",
+            false,
+            true
+        ));
+        assert!(!filename_pattern_matches_ex(
+            r".*\.txt$",
+            "FOO.TXT",
+            false,
+            true
+        ));
+        assert!(filename_pattern_matches_ex(
+            r".*\.txt$",
+            "FOO.TXT",
+            false,
+            false
+        ));
     }
 }

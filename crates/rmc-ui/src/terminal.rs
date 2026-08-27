@@ -16,8 +16,8 @@ use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorMenu, EditorPipeDialog, EditorPipeFocus,
     EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus,
     EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog, EditorTabSpacingFocus,
-    HistoryDialogFocus, LayoutFocus, ScreenListFocus, UiMode, ViewerDisplayDialog,
-    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
+    FilterDialogFocus, HistoryDialogFocus, LayoutFocus, ScreenListFocus, UiMode,
+    ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
@@ -4321,6 +4321,111 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::FilterDialog {
+                side,
+                pattern,
+                regular_expression,
+                files_only,
+                case_sensitive,
+                focus,
+            } => {
+                use FilterDialogFocus as F;
+                let order = [
+                    F::Pattern,
+                    F::RegularExpression,
+                    F::FilesOnly,
+                    F::CaseSensitive,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                let mut apply = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                        return Ok(());
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if matches!(*focus, F::Pattern) {
+                            pattern.pop();
+                        }
+                    }
+                    // Space on checkboxes/buttons before generic Char so the
+                    // pattern field still accepts spaces.
+                    KeyCode::Char(' ') if !matches!(*focus, F::Pattern) => match *focus {
+                        F::RegularExpression => *regular_expression = !*regular_expression,
+                        F::FilesOnly => *files_only = !*files_only,
+                        F::CaseSensitive => *case_sensitive = !*case_sensitive,
+                        F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        F::Pattern => {}
+                    },
+                    KeyCode::Char(c)
+                        if key.modifiers.is_empty() && matches!(*focus, F::Pattern) =>
+                    {
+                        pattern.push(c);
+                    }
+                    KeyCode::Enter => match *focus {
+                        F::RegularExpression => *regular_expression = !*regular_expression,
+                        F::FilesOnly => *files_only = !*files_only,
+                        F::CaseSensitive => *case_sensitive = !*case_sensitive,
+                        F::Pattern | F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                    },
+                    _ => {}
+                }
+                if apply {
+                    let side = *side;
+                    let pat = pattern.clone();
+                    let regex = *regular_expression;
+                    let files_only = *files_only;
+                    let case_sensitive = *case_sensitive;
+                    let panel = if matches!(side, rmc_core::actions::PaneSide::Left) {
+                        &mut app.left
+                    } else {
+                        &mut app.right
+                    };
+                    panel.set_filename_filter(&pat, regex, files_only, case_sensitive);
+                    app.ui_mode = UiMode::Normal;
+                    app.reload_panels()?;
+                }
+                return Ok(());
+            }
             UiMode::CompareDirsDialog { mode, focus } => {
                 use rmc_core::app::{CompareDirsFocus as F, CompareDirsMode as M};
                 let order = [
@@ -5847,27 +5952,31 @@ impl TerminalApp {
                                 };
                             }
                             "Filter" => {
-                                // Open simple input dialog to set filename filter for the chosen side.
-                                let set_left = *top_index == 0;
-                                app.ui_mode = UiMode::InputDialog {
-                                    title: "Filter".into(),
-                                    prompt: "Enter glob (e.g. *.c):".into(),
-                                    value: "*".into(),
-                                    focus_ok: false,
-                                    on_submit: Box::new(move |app, input| {
-                                        let pat = input.trim().to_string();
-                                        let panel = if set_left {
-                                            &mut app.left
-                                        } else {
-                                            &mut app.right
-                                        };
-                                        if pat.is_empty() || pat == "*" {
-                                            panel.filter_glob = None;
-                                        } else {
-                                            panel.filter_glob = Some(pat);
-                                        }
-                                        Ok(())
-                                    }),
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => rmc_core::actions::PaneSide::Left,
+                                };
+                                let (pattern, regular_expression, files_only, case_sensitive) = {
+                                    let p = if matches!(side, rmc_core::actions::PaneSide::Left) {
+                                        &app.left
+                                    } else {
+                                        &app.right
+                                    };
+                                    (
+                                        p.filter_glob.clone().unwrap_or_default(),
+                                        p.filter_regex,
+                                        p.filter_files_only,
+                                        p.filter_case_sensitive,
+                                    )
+                                };
+                                app.ui_mode = UiMode::FilterDialog {
+                                    side,
+                                    pattern,
+                                    regular_expression,
+                                    files_only,
+                                    case_sensitive,
+                                    focus: FilterDialogFocus::Pattern,
                                 };
                             }
                             "FTP link" | "SFTP link" | "Shell link" | "SMB link" => {
@@ -17726,6 +17835,320 @@ mod listing_mode_dialog_tests {
         match &app.ui_mode {
             UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
             _ => panic!("File menu Quick cd must still open"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod filter_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::FilterDialogFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::ListingFormat;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-filter-dlg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
+        panel.entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    fn filter_dialog(app: &App) -> (PaneSide, &str, bool, bool, bool, FilterDialogFocus) {
+        match &app.ui_mode {
+            UiMode::FilterDialog {
+                side,
+                pattern,
+                regular_expression,
+                files_only,
+                case_sensitive,
+                focus,
+            } => (
+                *side,
+                pattern.as_str(),
+                *regular_expression,
+                *files_only,
+                *case_sensitive,
+                *focus,
+            ),
+            _ => panic!("expected FilterDialog"),
+        }
+    }
+
+    fn tab_to(app: &mut App, want: FilterDialogFocus) {
+        for _ in 0..12 {
+            if matches!(
+                app.ui_mode,
+                UiMode::FilterDialog { focus, .. } if focus == want
+            ) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach Filter focus {want:?}");
+    }
+
+    /// Left menu: Copy..Tree (11 items) then Filter.
+    fn open_left_filter(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        for _ in 0..11 {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+        let (side, _, _, _, _, _) = filter_dialog(app);
+        assert_eq!(side, PaneSide::Left, "Left menu Filter is left panel");
+    }
+
+    fn type_pattern(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn ok_filter(app: &mut App) {
+        tab_to(app, FilterDialogFocus::Ok);
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn left_menu_filter_opens_dialog_for_left_panel() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_left_filter(&mut app);
+        let (side, pattern, regex, files_only, case_sensitive, focus) = filter_dialog(&app);
+        assert_eq!(side, PaneSide::Left);
+        assert_eq!(pattern, "");
+        assert!(!regex);
+        assert!(!files_only);
+        assert!(case_sensitive);
+        assert_eq!(focus, FilterDialogFocus::Pattern);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_glob_ok_applies_to_that_panel_only() {
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), b"a").unwrap();
+        std::fs::write(root.join("skip.dat"), b"b").unwrap();
+        let mut app = make_app(&root);
+        let right_before = names(&app.right);
+        assert!(right_before.iter().any(|n| n == "keep.txt"));
+        assert!(right_before.iter().any(|n| n == "skip.dat"));
+
+        open_left_filter(&mut app);
+        type_pattern(&mut app, "*.txt");
+        ok_filter(&mut app);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.filter_glob.as_deref(), Some("*.txt"));
+        let left = names(&app.left);
+        assert_eq!(left.first().map(String::as_str), Some(".."));
+        assert!(left.iter().any(|n| n == "keep.txt"));
+        assert!(!left.iter().any(|n| n == "skip.dat"));
+        let right = names(&app.right);
+        assert!(right.iter().any(|n| n == "keep.txt"));
+        assert!(right.iter().any(|n| n == "skip.dat"));
+        assert_eq!(app.right.filter_glob, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_esc_and_f10_leave_filter_glob_unchanged() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.left.filter_glob = Some("*.txt".to_string());
+
+        open_left_filter(&mut app);
+        type_pattern(&mut app, "changed");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.filter_glob.as_deref(), Some("*.txt"));
+
+        open_left_filter(&mut app);
+        type_pattern(&mut app, "again");
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.filter_glob.as_deref(), Some("*.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_empty_pattern_ok_clears_filter() {
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), b"a").unwrap();
+        std::fs::write(root.join("skip.dat"), b"b").unwrap();
+        let mut app = make_app(&root);
+        app.left.filter_glob = Some("*.txt".to_string());
+        app.reload_panels().unwrap();
+        assert!(!names(&app.left).iter().any(|n| n == "skip.dat"));
+
+        open_left_filter(&mut app);
+        let existing = filter_dialog(&app).1.to_string();
+        for _ in 0..existing.len() + 2 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        ok_filter(&mut app);
+        assert_eq!(app.left.filter_glob, None);
+        let left = names(&app.left);
+        assert!(left.iter().any(|n| n == "keep.txt"));
+        assert!(left.iter().any(|n| n == "skip.dat"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_files_only_toggle_directories() {
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), b"a").unwrap();
+        std::fs::write(root.join("skip.dat"), b"b").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let mut app = make_app(&root);
+
+        // Files only off (default / GNU): non-matching dirs drop. `..` stays.
+        open_left_filter(&mut app);
+        type_pattern(&mut app, "*.txt");
+        ok_filter(&mut app);
+        let left = names(&app.left);
+        assert!(left.iter().any(|n| n == "keep.txt"));
+        assert!(!left.iter().any(|n| n == "skip.dat"));
+        assert!(!left.iter().any(|n| n == "subdir"));
+        assert_eq!(left.first().map(String::as_str), Some(".."));
+
+        // Files only on: directories still listed even when they do not match.
+        open_left_filter(&mut app);
+        tab_to(&mut app, FilterDialogFocus::FilesOnly);
+        press(&mut app, KeyCode::Char(' ')); // Space before generic Char
+        ok_filter(&mut app);
+        assert!(app.left.filter_files_only);
+        let left = names(&app.left);
+        assert!(left.iter().any(|n| n == "keep.txt"));
+        assert!(left.iter().any(|n| n == "subdir"));
+        assert!(!left.iter().any(|n| n == "skip.dat"));
+        assert_eq!(left.first().map(String::as_str), Some(".."));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_pattern_field_accepts_spaces() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_left_filter(&mut app);
+        type_pattern(&mut app, "a b");
+        assert_eq!(filter_dialog(&app).1, "a b");
+        assert_eq!(filter_dialog(&app).5, FilterDialogFocus::Pattern);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_regular_expression_ok_matches_txt() {
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), b"a").unwrap();
+        std::fs::write(root.join("skip.dat"), b"b").unwrap();
+        let mut app = make_app(&root);
+        open_left_filter(&mut app);
+        type_pattern(&mut app, r".*\.txt$");
+        tab_to(&mut app, FilterDialogFocus::RegularExpression);
+        press(&mut app, KeyCode::Char(' '));
+        ok_filter(&mut app);
+        assert!(app.left.filter_regex);
+        let left = names(&app.left);
+        assert!(left.iter().any(|n| n == "keep.txt"));
+        assert!(!left.iter().any(|n| n == "skip.dat"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_alt_t_command_screen_list_file_help_quick_cd_still_work() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::User);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Full);
+
+        open_command_item(&mut app, "Screen list");
+        assert!(
+            matches!(app.ui_mode, UiMode::ScreenList { .. }),
+            "Command menu Screen list must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right); // File
+        press(&mut app, KeyCode::Enter); // Help first
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open after Filter"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }

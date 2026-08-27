@@ -152,8 +152,9 @@ pub struct ConfigOptions {
     /// Does not apply to fire-and-forget desktop open (`xdg-open` `.spawn()`).
     pub pause_after_run: bool,
     /// GNU mc Options → Configuration → Use shell patterns. When true (default),
-    /// Select group, Unselect group, and the panel filter treat patterns as
-    /// shell globs (`*.c`, `?`, `[abc]`). When false, those patterns are regexes.
+    /// Select group and Unselect group treat patterns as shell globs (`*.c`, `?`,
+    /// `[abc]`). When false, those patterns are regexes. The Left/Right Filter
+    /// dialog has its own Regular expression checkbox.
     pub shell_patterns: bool,
     /// GNU mc Options → Configuration → Auto menus. When true, a successful
     /// `change_dir` into a different directory that contains a local `.mc.menu`
@@ -294,6 +295,17 @@ pub enum ListingModeFocus {
     Cancel,
 }
 
+/// Focus within the GNU Left/Right → Filter dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterDialogFocus {
+    Pattern,
+    RegularExpression,
+    FilesOnly,
+    CaseSensitive,
+    Ok,
+    Cancel,
+}
+
 #[allow(clippy::large_enum_variant)] // Editor owns EditorBuffer; overlays are boxed where needed
 pub enum UiMode {
     Normal,
@@ -350,6 +362,15 @@ pub enum UiMode {
         listing: crate::panel::ListingFormat,
         user_format: String,
         focus: ListingModeFocus,
+    },
+    /// GNU mc Left/Right → Filter dialog (mc(1) Filter…)
+    FilterDialog {
+        side: PaneSide,
+        pattern: String,
+        regular_expression: bool,
+        files_only: bool,
+        case_sensitive: bool,
+        focus: FilterDialogFocus,
     },
     Editor {
         buf: EditorBuffer,
@@ -1257,29 +1278,22 @@ impl App {
     fn reload_panels_impl(&mut self, force: bool) -> Result<()> {
         self.sync_vfs_dir_cache_timeout();
         let reverse_files_only = self.panel_opts.reverse_files_only;
-        let shell_patterns = self.config_opts.shell_patterns;
         let show_hidden = self.show_hidden;
         let fast = self.panel_opts.fast_reload;
 
         let left_cwd = self.left.cwd.clone();
         if force || !fast || !self.left.fast_reload_listing_is_current(show_hidden) {
             let left = self.vfs.list_dir(&left_cwd, show_hidden)?;
-            self.left.set_entries_with(
-                self.map_dir_entries(left),
-                reverse_files_only,
-                shell_patterns,
-            );
+            self.left
+                .set_entries_with(self.map_dir_entries(left), reverse_files_only);
             self.left.capture_dir_reload_stamp(show_hidden);
         }
 
         let right_cwd = self.right.cwd.clone();
         if force || !fast || !self.right.fast_reload_listing_is_current(show_hidden) {
             let right = self.vfs.list_dir(&right_cwd, show_hidden)?;
-            self.right.set_entries_with(
-                self.map_dir_entries(right),
-                reverse_files_only,
-                shell_patterns,
-            );
+            self.right
+                .set_entries_with(self.map_dir_entries(right), reverse_files_only);
             self.right.capture_dir_reload_stamp(show_hidden);
         }
         Ok(())
@@ -1509,7 +1523,6 @@ impl App {
         let new_cwd = path.to_path_buf();
         let cwd_changed = self.active_panel().cwd != new_cwd;
         let reverse_files_only = self.panel_opts.reverse_files_only;
-        let shell_patterns = self.config_opts.shell_patterns;
         let auto_menus = self.config_opts.auto_menus;
         self.sync_vfs_dir_cache_timeout();
         // Re-entering a remote/archive/extfs dir within the timeout reuses the
@@ -1520,7 +1533,7 @@ impl App {
         let show_hidden = self.show_hidden;
         let p = self.active_panel_mut();
         p.cwd = new_cwd.clone();
-        p.set_entries_with(entries, reverse_files_only, shell_patterns);
+        p.set_entries_with(entries, reverse_files_only);
         p.capture_dir_reload_stamp(show_hidden);
         // Auto menus: only after a real directory change, and only for a local
         // `.mc.menu` in the new panel cwd (not a parent, not reload/C-r/panelize).
@@ -1638,6 +1651,7 @@ impl App {
             UiMode::UserMenu { .. } => "User Menu".to_string(),
             UiMode::SortDialog { .. } => "Panels".to_string(),
             UiMode::ListingModeDialog { .. } => "Panels".to_string(),
+            UiMode::FilterDialog { .. } => "Panels".to_string(),
             UiMode::Editor { .. } => "Editor".to_string(),
             UiMode::FindDialog(_) => "Find File".to_string(),
             UiMode::CopyDialog { title, .. } => {
@@ -1862,13 +1876,8 @@ impl App {
         }
         let caption = self.active_panel().cwd.clone();
         let reverse_files_only = self.panel_opts.reverse_files_only;
-        let shell_patterns = self.config_opts.shell_patterns;
-        self.active_panel_mut().set_panelized_entries_with(
-            caption,
-            entries,
-            reverse_files_only,
-            shell_patterns,
-        );
+        self.active_panel_mut()
+            .set_panelized_entries_with(caption, entries, reverse_files_only);
         Ok(())
     }
 
