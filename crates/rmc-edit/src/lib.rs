@@ -453,7 +453,17 @@ impl EditorBuffer {
         case_insensitive: bool,
         wrap: bool,
     ) -> Option<(usize, usize)> {
-        self.search_impl(needle, !case_insensitive, false, false, false, wrap, false)
+        self.search_impl(
+            needle,
+            SearchScan {
+                case_sensitive: !case_insensitive,
+                backwards: false,
+                whole_words: false,
+                regexp: false,
+            },
+            wrap,
+            false,
+        )
     }
 
     /// Search with GNU mcedit Search-dialog options. Empty needle is a no-op.
@@ -469,10 +479,12 @@ impl EditorBuffer {
     ) -> Option<(usize, usize)> {
         self.search_impl(
             needle,
-            case_sensitive,
-            backwards,
-            whole_words,
-            regexp,
+            SearchScan {
+                case_sensitive,
+                backwards,
+                whole_words,
+                regexp,
+            },
             wrap,
             false,
         )
@@ -491,10 +503,12 @@ impl EditorBuffer {
         }
         self.search_impl(
             &needle,
-            !self.last_search_case_insensitive,
-            self.last_search_backwards,
-            self.last_search_whole_words,
-            self.last_search_regexp,
+            SearchScan {
+                case_sensitive: !self.last_search_case_insensitive,
+                backwards: self.last_search_backwards,
+                whole_words: self.last_search_whole_words,
+                regexp: self.last_search_regexp,
+            },
             wrap,
             true,
         )
@@ -503,10 +517,7 @@ impl EditorBuffer {
     fn search_impl(
         &mut self,
         needle: &[u8],
-        case_sensitive: bool,
-        backwards: bool,
-        whole_words: bool,
-        regexp: bool,
+        scan: SearchScan,
         wrap: bool,
         skip_current: bool,
     ) -> Option<(usize, usize)> {
@@ -514,16 +525,17 @@ impl EditorBuffer {
             return None;
         }
         self.last_search = needle.to_vec();
-        self.last_search_case_insensitive = !case_sensitive;
-        self.last_search_backwards = backwards;
-        self.last_search_whole_words = whole_words;
-        self.last_search_regexp = regexp;
+        self.last_search_case_insensitive = !scan.case_sensitive;
+        self.last_search_backwards = scan.backwards;
+        self.last_search_whole_words = scan.whole_words;
+        self.last_search_regexp = scan.regexp;
 
-        let re = if regexp {
-            match compile_search_regex(needle, !case_sensitive, whole_words) {
-                Some(re) => Some(re),
-                None => return None,
-            }
+        let re = if scan.regexp {
+            Some(compile_search_regex(
+                needle,
+                !scan.case_sensitive,
+                scan.whole_words,
+            )?)
         } else {
             None
         };
@@ -533,7 +545,7 @@ impl EditorBuffer {
         let mut start_col = self.col;
         let mut skip_first = false;
         if skip_current {
-            if backwards {
+            if scan.backwards {
                 if start_col > 0 {
                     start_col -= 1;
                 } else if start_row > 0 {
@@ -548,43 +560,21 @@ impl EditorBuffer {
         }
 
         if !skip_first {
-            if let Some((r, c)) = self.find_from(
-                needle,
-                case_sensitive,
-                backwards,
-                whole_words,
-                re.as_ref(),
-                start_row,
-                start_col,
-            ) {
+            if let Some((r, c)) = self.find_from(needle, scan, re.as_ref(), start_row, start_col) {
                 return Some(self.go_to_match(r, c));
             }
         }
         if wrap {
-            if backwards {
+            if scan.backwards {
                 let last_row = self.lines.len().saturating_sub(1);
-                if let Some((r, c)) = self.find_from(
-                    needle,
-                    case_sensitive,
-                    true,
-                    whole_words,
-                    re.as_ref(),
-                    last_row,
-                    usize::MAX,
-                ) {
+                if let Some((r, c)) =
+                    self.find_from(needle, scan, re.as_ref(), last_row, usize::MAX)
+                {
                     if r > orig.0 || (r == orig.0 && c >= orig.1) {
                         return Some(self.go_to_match(r, c));
                     }
                 }
-            } else if let Some((r, c)) = self.find_from(
-                needle,
-                case_sensitive,
-                false,
-                whole_words,
-                re.as_ref(),
-                0,
-                0,
-            ) {
+            } else if let Some((r, c)) = self.find_from(needle, scan, re.as_ref(), 0, 0) {
                 if r < orig.0 || (r == orig.0 && c <= orig.1) {
                     return Some(self.go_to_match(r, c));
                 }
@@ -603,9 +593,7 @@ impl EditorBuffer {
     fn find_from(
         &self,
         needle: &[u8],
-        case_sensitive: bool,
-        backwards: bool,
-        whole_words: bool,
+        scan: SearchScan,
         re: Option<&regex::bytes::Regex>,
         start_row: usize,
         start_col: usize,
@@ -613,19 +601,11 @@ impl EditorBuffer {
         if needle.is_empty() || self.lines.is_empty() {
             return None;
         }
-        if backwards {
+        if scan.backwards {
             let mut r = start_row.min(self.lines.len().saturating_sub(1));
             let mut c = start_col;
             loop {
-                if let Some(col) = find_on_line(
-                    &self.lines[r],
-                    needle,
-                    c,
-                    true,
-                    case_sensitive,
-                    whole_words,
-                    re,
-                ) {
+                if let Some(col) = find_on_line(&self.lines[r], needle, c, scan, re) {
                     return Some((r, col));
                 }
                 if r == 0 {
@@ -641,15 +621,7 @@ impl EditorBuffer {
                 if r >= self.lines.len() {
                     return None;
                 }
-                if let Some(col) = find_on_line(
-                    &self.lines[r],
-                    needle,
-                    c,
-                    false,
-                    case_sensitive,
-                    whole_words,
-                    re,
-                ) {
+                if let Some(col) = find_on_line(&self.lines[r], needle, c, scan, re) {
                     return Some((r, col));
                 }
                 r += 1;
@@ -974,6 +946,14 @@ impl EditorBuffer {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SearchScan {
+    case_sensitive: bool,
+    backwards: bool,
+    whole_words: bool,
+    regexp: bool,
+}
+
 fn is_ascii_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -1007,23 +987,21 @@ fn find_on_line(
     hay: &[u8],
     needle: &[u8],
     start: usize,
-    backwards: bool,
-    case_sensitive: bool,
-    whole_words: bool,
+    scan: SearchScan,
     re: Option<&regex::bytes::Regex>,
 ) -> Option<usize> {
     if let Some(re) = re {
-        return find_regex_on_line(re, hay, start, backwards);
+        return find_regex_on_line(re, hay, start, scan.backwards);
     }
-    if backwards {
+    if scan.backwards {
         let mut max_start = start;
         loop {
-            let found = if case_sensitive {
+            let found = if scan.case_sensitive {
                 rfind_bytes(hay, needle, max_start)
             } else {
                 rfind_bytes_ascii_ci(hay, needle, max_start)
             }?;
-            if !whole_words || is_whole_word_at(hay, found, needle.len()) {
+            if !scan.whole_words || is_whole_word_at(hay, found, needle.len()) {
                 return Some(found);
             }
             if found == 0 {
@@ -1034,12 +1012,12 @@ fn find_on_line(
     } else {
         let mut pos = start;
         loop {
-            let found = if case_sensitive {
+            let found = if scan.case_sensitive {
                 find_bytes(hay, needle, pos)
             } else {
                 find_bytes_ascii_ci(hay, needle, pos)
             }?;
-            if !whole_words || is_whole_word_at(hay, found, needle.len()) {
+            if !scan.whole_words || is_whole_word_at(hay, found, needle.len()) {
                 return Some(found);
             }
             pos = found.saturating_add(1);

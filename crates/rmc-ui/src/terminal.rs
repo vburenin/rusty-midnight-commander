@@ -1428,8 +1428,9 @@ impl TerminalApp {
                         *pipe_dialog = None;
                         *goto_dialog = None;
                         *status_msg = None;
-                        *search_dialog =
-                            Some(EditorSearchDialog::from_last_search(&buf.last_search));
+                        *search_dialog = Some(Box::new(EditorSearchDialog::from_last_search(
+                            &buf.last_search,
+                        )));
                     }
                     // GNU mcedit: Ctrl-R start/stop macro recording (toggle)
                     KeyCode::Char('r')

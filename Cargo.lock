@@ -1725,6 +1725,7 @@ name = "rmc-edit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "regex 1.13.1",
 ]
 
 [[package]]

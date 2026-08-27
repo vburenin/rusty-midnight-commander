@@ -292,6 +292,7 @@ pub enum ListingModeFocus {
     Cancel,
 }
 
+#[allow(clippy::large_enum_variant)] // Editor owns EditorBuffer; overlays are boxed where needed
 pub enum UiMode {
     Normal,
     /// MC User Menu (F2) – list of user-defined commands with hotkeys
@@ -335,7 +336,7 @@ pub enum UiMode {
         search_input: Option<String>,
         save_as_input: Option<String>,
         /// GNU mcedit F7 Search dialog (None while editing).
-        search_dialog: Option<EditorSearchDialog>,
+        search_dialog: Option<Box<EditorSearchDialog>>,
         /// GNU mcedit F4 Replace dialog (None while editing).
         replace_dialog: Option<EditorReplaceDialog>,
         /// GNU mcedit `|` Pipe dialog (None while editing).

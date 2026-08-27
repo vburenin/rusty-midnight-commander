@@ -75,7 +75,7 @@ impl Renderer {
                 status_msg.as_deref(),
                 search_input.as_deref(),
                 save_as_input.as_deref(),
-                search_dialog.as_ref(),
+                search_dialog.as_deref(),
                 replace_dialog.as_ref(),
                 pipe_dialog.as_ref(),
                 goto_dialog.as_deref(),
