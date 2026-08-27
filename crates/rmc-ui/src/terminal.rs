@@ -18736,7 +18736,7 @@ mod sort_dialog_tests {
         let root = temp_workspace();
         let (mut app, _, _) = seed_app(&root);
         let right_by = app.right.sort_by;
-        press_alt(&mut app, 's');
+        app.handle_action(Action::Sort(SortByAction::Size)).unwrap();
         assert_eq!(app.left.sort_by, SortBy::Size);
         assert_eq!(app.right.sort_by, right_by);
         assert_eq!(
@@ -18747,7 +18747,7 @@ mod sort_dialog_tests {
         assert_eq!(app.left.sort_by, SortBy::Ext);
         app.handle_action(Action::Sort(SortByAction::Time)).unwrap();
         assert_eq!(app.left.sort_by, SortBy::Time);
-        press_alt(&mut app, 'n');
+        app.handle_action(Action::Sort(SortByAction::Name)).unwrap();
         assert_eq!(app.left.sort_by, SortBy::Name);
         assert_eq!(app.right.sort_by, right_by);
         let _ = std::fs::remove_dir_all(&root);
