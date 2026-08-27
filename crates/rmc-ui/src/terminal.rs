@@ -1,10 +1,10 @@
 use crate::help::{global_index, HelpItem};
-use crate::render::Renderer;
+use crate::render::{viewer_menu_from_x, Renderer};
 use crate::skin::load_default_palette;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -15,7 +15,7 @@ use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog,
     EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus, EditorSearchDialog,
     EditorSearchFocus, HistoryDialogFocus, LayoutFocus, UiMode, ViewerDisplayDialog,
-    ViewerDisplayFocus, ViewerSearchDialog, ViewerSearchFocus,
+    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
@@ -580,6 +580,297 @@ pub(crate) fn viewer_apply_filter_to_current(cmd: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Reload viewer bytes as GNU Raw (on-disk) or Parsed (`mc.ext` `[view]` filter).
+pub(crate) fn viewer_reload_parsed(
+    display_path: &std::path::Path,
+    parsed: bool,
+) -> anyhow::Result<()> {
+    let view = if parsed {
+        rmc_view::ViewData::open_view(display_path)?
+    } else {
+        rmc_view::ViewData::from_path(display_path.to_path_buf())
+    };
+    let mut g = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+    *g = Some(ViewerState {
+        display_path: display_path.to_path_buf(),
+        view,
+    });
+    Ok(())
+}
+
+fn viewer_term_size(page_rows: usize) -> (u16, u16) {
+    crossterm::terminal::size().unwrap_or((80, page_rows.max(1) as u16 + 3))
+}
+
+fn viewer_page_down(
+    path: &std::path::Path,
+    hex: bool,
+    wrap: bool,
+    offset: u64,
+    page_rows: usize,
+) -> anyhow::Result<u64> {
+    let (cols, rows) = viewer_term_size(page_rows);
+    let content_rows = rows.saturating_sub(3);
+    if hex {
+        Ok(offset.saturating_add(16u64 * (content_rows as u64)))
+    } else {
+        let cpath = crate::terminal::viewer_ensure_view_for(path);
+        Ok(rmc_view::nav_page_down(
+            &cpath,
+            offset,
+            cols.saturating_sub(2),
+            content_rows,
+            wrap,
+        )?)
+    }
+}
+
+fn viewer_page_up(
+    path: &std::path::Path,
+    hex: bool,
+    wrap: bool,
+    offset: u64,
+    page_rows: usize,
+) -> anyhow::Result<u64> {
+    let (cols, rows) = viewer_term_size(page_rows);
+    let content_rows = rows.saturating_sub(3);
+    if hex {
+        Ok(offset.saturating_sub(16u64 * (content_rows as u64)))
+    } else {
+        let cpath = crate::terminal::viewer_ensure_view_for(path);
+        Ok(rmc_view::nav_page_up(
+            &cpath,
+            offset,
+            cols.saturating_sub(2),
+            content_rows,
+            wrap,
+        )?)
+    }
+}
+
+fn viewer_goto_end(
+    path: &std::path::Path,
+    hex: bool,
+    wrap: bool,
+    page_rows: usize,
+) -> anyhow::Result<u64> {
+    let (cols, rows) = viewer_term_size(page_rows);
+    let content_rows = rows.saturating_sub(3);
+    let cpath = crate::terminal::viewer_ensure_view_for(path);
+    if hex {
+        let len = rmc_view::file_len(&cpath)?;
+        Ok(len.saturating_sub(16u64 * (content_rows as u64)))
+    } else {
+        Ok(rmc_view::nav_end(
+            &cpath,
+            cols.saturating_sub(2),
+            content_rows,
+            wrap,
+        )?)
+    }
+}
+
+fn viewer_line_down(path: &std::path::Path, hex: bool, offset: u64) -> anyhow::Result<u64> {
+    if hex {
+        Ok(offset.saturating_add(16))
+    } else {
+        let cpath = crate::terminal::viewer_ensure_view_for(path);
+        Ok(rmc_view::nav_line_down(&cpath, offset)?)
+    }
+}
+
+fn viewer_line_up(path: &std::path::Path, hex: bool, offset: u64) -> anyhow::Result<u64> {
+    if hex {
+        Ok(offset.saturating_sub(16))
+    } else {
+        let cpath = crate::terminal::viewer_ensure_view_for(path);
+        Ok(rmc_view::nav_line_up(&cpath, offset)?)
+    }
+}
+
+fn viewer_sel_clear(anchor: &mut Option<u64>) {
+    *anchor = None;
+}
+
+fn viewer_sel_extend(anchor: &mut Option<u64>, cursor: u64) {
+    if anchor.is_none() {
+        *anchor = Some(cursor);
+    }
+}
+
+fn viewer_open_search_dialog(app: &mut App, backwards: bool) {
+    if let UiMode::Viewer {
+        search,
+        search_dialog,
+        search_prompt,
+        goto_prompt,
+        status_msg,
+        viewer_menu,
+        ..
+    } = &mut app.ui_mode
+    {
+        *search_prompt = None;
+        *goto_prompt = None;
+        *status_msg = None;
+        *viewer_menu = None;
+        let mut dlg =
+            ViewerSearchDialog::from_last_search(search.as_deref().unwrap_or("").as_bytes());
+        dlg.backwards = backwards;
+        *search_dialog = Some(Box::new(dlg));
+    }
+}
+
+fn viewer_open_display_options(app: &mut App) {
+    if let UiMode::Viewer {
+        hex,
+        wrap,
+        show_line_numbers,
+        show_cr,
+        search_dialog: None,
+        display_dialog,
+        search_prompt,
+        goto_prompt,
+        viewer_menu,
+        ..
+    } = &mut app.ui_mode
+    {
+        let ln = *show_line_numbers;
+        let cr = *show_cr;
+        let wrap = *wrap;
+        let hex = *hex;
+        *search_prompt = None;
+        *goto_prompt = None;
+        *viewer_menu = None;
+        *display_dialog = Some(Box::new(ViewerDisplayDialog::from_viewer(
+            ln, cr, wrap, hex,
+        )));
+    }
+}
+
+fn viewer_move_vertical(app: &mut App, dir: i8, extend: bool) -> anyhow::Result<()> {
+    if let UiMode::Viewer {
+        path,
+        hex,
+        offset,
+        sel_anchor,
+        sel_cursor,
+        ..
+    } = &mut app.ui_mode
+    {
+        let from = *sel_cursor;
+        if extend {
+            viewer_sel_extend(sel_anchor, from);
+        } else {
+            viewer_sel_clear(sel_anchor);
+        }
+        let next = if dir < 0 {
+            viewer_line_up(path, *hex, from)?
+        } else {
+            viewer_line_down(path, *hex, from)?
+        };
+        *sel_cursor = next;
+        *offset = next;
+    }
+    Ok(())
+}
+
+fn viewer_move_horizontal(app: &mut App, dir: i8, extend: bool) -> anyhow::Result<()> {
+    if let UiMode::Viewer {
+        sel_anchor,
+        sel_cursor,
+        ..
+    } = &mut app.ui_mode
+    {
+        let from = *sel_cursor;
+        if extend {
+            viewer_sel_extend(sel_anchor, from);
+        } else {
+            viewer_sel_clear(sel_anchor);
+        }
+        *sel_cursor = if dir < 0 {
+            from.saturating_sub(1)
+        } else {
+            from.saturating_add(1)
+        };
+    }
+    Ok(())
+}
+
+fn viewer_move_page(
+    app: &mut App,
+    down: bool,
+    page_rows: usize,
+    extend: bool,
+) -> anyhow::Result<()> {
+    if let UiMode::Viewer {
+        path,
+        hex,
+        wrap,
+        offset,
+        sel_anchor,
+        sel_cursor,
+        ..
+    } = &mut app.ui_mode
+    {
+        let from = *offset;
+        if extend {
+            viewer_sel_extend(sel_anchor, from);
+        } else {
+            viewer_sel_clear(sel_anchor);
+        }
+        let next = if down {
+            viewer_page_down(path, *hex, *wrap, from, page_rows)?
+        } else {
+            viewer_page_up(path, *hex, *wrap, from, page_rows)?
+        };
+        *offset = next;
+        *sel_cursor = next;
+    }
+    Ok(())
+}
+
+fn viewer_move_home(app: &mut App, extend: bool) -> anyhow::Result<()> {
+    if let UiMode::Viewer {
+        offset,
+        sel_anchor,
+        sel_cursor,
+        ..
+    } = &mut app.ui_mode
+    {
+        if extend {
+            viewer_sel_extend(sel_anchor, *sel_cursor);
+        } else {
+            viewer_sel_clear(sel_anchor);
+        }
+        *offset = rmc_view::nav_home();
+        *sel_cursor = *offset;
+    }
+    Ok(())
+}
+
+fn viewer_move_end(app: &mut App, page_rows: usize, extend: bool) -> anyhow::Result<()> {
+    if let UiMode::Viewer {
+        path,
+        hex,
+        wrap,
+        offset,
+        sel_anchor,
+        sel_cursor,
+        ..
+    } = &mut app.ui_mode
+    {
+        if extend {
+            viewer_sel_extend(sel_anchor, *sel_cursor);
+        } else {
+            viewer_sel_clear(sel_anchor);
+        }
+        let next = viewer_goto_end(path, *hex, *wrap, page_rows)?;
+        *offset = next;
+        *sel_cursor = next;
+    }
+    Ok(())
+}
+
 pub(crate) fn open_compare_dirs_dialog(app: &mut App) {
     app.ui_mode = UiMode::CompareDirsDialog {
         mode: rmc_core::app::CompareDirsMode::Quick,
@@ -976,8 +1267,16 @@ impl TerminalApp {
                         Self::handle_key(app, key, active_capacity)?;
                     }
                     Event::Mouse(mev) => {
-                        // Ignore mouse outside Normal panels mode and while subshell full-screen
+                        // Ignore mouse while subshell full-screen
                         if app.subshell.show_output_screen {
+                            continue;
+                        }
+                        if matches!(app.ui_mode, UiMode::Viewer { .. }) {
+                            let active_capacity = match app.active {
+                                rmc_core::actions::PaneSide::Left => left_capacity,
+                                rmc_core::actions::PaneSide::Right => right_capacity,
+                            };
+                            let _ = Self::handle_mouse(app, mev, active_capacity);
                             continue;
                         }
                         if !matches!(app.ui_mode, UiMode::Normal) {
@@ -1242,6 +1541,63 @@ impl TerminalApp {
                 on_ok: Box::new(|_| Ok(())),
             },
         }
+    }
+
+    fn handle_mouse(app: &mut App, mev: MouseEvent, page_rows: usize) -> Result<()> {
+        if !matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return Ok(());
+        }
+        if !matches!(
+            app.ui_mode,
+            UiMode::Viewer {
+                search_dialog: None,
+                display_dialog: None,
+                goto_prompt: None,
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        // GNU mc(1): menu bar appears if you click the topmost line.
+        if mev.row == 0 {
+            if let UiMode::Viewer { viewer_menu, .. } = &mut app.ui_mode {
+                *viewer_menu = Some(viewer_menu_from_x(mev.column));
+            }
+            return Ok(());
+        }
+        let (_cols, rows) = viewer_term_size(page_rows);
+        if mev.row == rows.saturating_sub(1) {
+            // F-bar click: packed number+label+space like draw_viewer_fbar.
+            if let UiMode::Viewer {
+                wrap,
+                hex,
+                parsed,
+                format_nroff,
+                ..
+            } = &app.ui_mode
+            {
+                let labels = crate::render::viewer_fbar_labels(*wrap, *hex, *parsed, *format_nroff);
+                let mut x = 0u16;
+                let mut hit = None;
+                for (i, lab) in labels.iter().enumerate() {
+                    let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+                    let w = num.len() as u16 + lab.len() as u16 + 1;
+                    if mev.column >= x && mev.column < x.saturating_add(w) {
+                        hit = Some((i + 1) as u8);
+                        break;
+                    }
+                    x = x.saturating_add(w);
+                }
+                if let Some(n) = hit {
+                    return Self::handle_key(
+                        app,
+                        KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE),
+                        page_rows,
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
@@ -5276,33 +5632,82 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::Viewer { .. } => {
-                // F9 Menu opens Display options unless Search is already open
-                // (same isolation as other modes). Leftover search/goto prompts
-                // are cleared; an already-open Search dialog is not stolen.
-                if matches!(key.code, KeyCode::F(9)) {
-                    if let UiMode::Viewer {
-                        hex,
-                        wrap,
-                        show_line_numbers,
-                        show_cr,
-                        search_dialog: None,
-                        display_dialog,
-                        search_prompt,
-                        goto_prompt,
-                        ..
-                    } = &mut app.ui_mode
-                    {
-                        if display_dialog.is_none() {
-                            let ln = *show_line_numbers;
-                            let cr = *show_cr;
-                            let wrap = *wrap;
-                            let hex = *hex;
-                            *search_prompt = None;
-                            *goto_prompt = None;
-                            *display_dialog = Some(Box::new(ViewerDisplayDialog::from_viewer(
-                                ln, cr, wrap, hex,
-                            )));
+                // Viewer File/Command/Options pull-down (GNU: click the topmost line).
+                if let UiMode::Viewer {
+                    viewer_menu: Some(menu),
+                    search_dialog: None,
+                    display_dialog: None,
+                    goto_prompt: None,
+                    ..
+                } = &app.ui_mode
+                {
+                    let menu = *menu;
+                    let items = menu.items();
+                    let mut sel = menu.selected();
+                    match key.code {
+                        KeyCode::Esc => {
+                            if let UiMode::Viewer { viewer_menu, .. } = &mut app.ui_mode {
+                                *viewer_menu = None;
+                            }
                             return Ok(());
+                        }
+                        KeyCode::Left => {
+                            let next = match menu {
+                                ViewerMenu::File { .. } => ViewerMenu::Options { selected: 0 },
+                                ViewerMenu::Command { .. } => ViewerMenu::File { selected: 0 },
+                                ViewerMenu::Options { .. } => ViewerMenu::Command { selected: 0 },
+                            };
+                            if let UiMode::Viewer { viewer_menu, .. } = &mut app.ui_mode {
+                                *viewer_menu = Some(next);
+                            }
+                            return Ok(());
+                        }
+                        KeyCode::Right => {
+                            let next = match menu {
+                                ViewerMenu::File { .. } => ViewerMenu::Command { selected: 0 },
+                                ViewerMenu::Command { .. } => ViewerMenu::Options { selected: 0 },
+                                ViewerMenu::Options { .. } => ViewerMenu::File { selected: 0 },
+                            };
+                            if let UiMode::Viewer { viewer_menu, .. } = &mut app.ui_mode {
+                                *viewer_menu = Some(next);
+                            }
+                            return Ok(());
+                        }
+                        KeyCode::Down => {
+                            if !items.is_empty() {
+                                sel = (sel + 1) % items.len();
+                                if let UiMode::Viewer { viewer_menu, .. } = &mut app.ui_mode {
+                                    *viewer_menu = Some(menu.with_selected(sel));
+                                }
+                            }
+                            return Ok(());
+                        }
+                        KeyCode::Up => {
+                            if !items.is_empty() {
+                                sel = (sel + items.len() - 1) % items.len();
+                                if let UiMode::Viewer { viewer_menu, .. } = &mut app.ui_mode {
+                                    *viewer_menu = Some(menu.with_selected(sel));
+                                }
+                            }
+                            return Ok(());
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            match menu {
+                                ViewerMenu::File { .. } => {
+                                    app.handle_action(Action::ViewerQuit)?;
+                                }
+                                ViewerMenu::Command { .. } => {
+                                    viewer_open_search_dialog(app, false);
+                                }
+                                ViewerMenu::Options { .. } => {
+                                    viewer_open_display_options(app);
+                                }
+                            }
+                            return Ok(());
+                        }
+                        _ => {
+                            // Fall through so F-keys still work while the menu is open
+                            // except F9 format (handled below after overlays).
                         }
                     }
                 }
@@ -5489,7 +5894,7 @@ impl TerminalApp {
                         return Ok(());
                     }
                 }
-                // mcview display-options dialog (F9 Menu). Stays in Viewer.
+                // mcview display-options dialog (Options → Display options). Stays in Viewer.
                 if let UiMode::Viewer {
                     hex,
                     wrap,
@@ -5568,14 +5973,25 @@ impl TerminalApp {
                     }
                 }
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => {
+                    KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc => {
                         app.handle_action(Action::ViewerQuit)?
                     }
-                    KeyCode::Char('h') | KeyCode::Char('x') | KeyCode::F(4) => {
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                    }
+                    KeyCode::Char('h') | KeyCode::Char('x') | KeyCode::F(4)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         app.handle_action(Action::ViewerToggleHex)?
                     }
-                    KeyCode::F(5) | KeyCode::Char('g') => {
-                        if let UiMode::Viewer { goto_prompt, .. } = &mut app.ui_mode {
+                    KeyCode::F(5) => {
+                        if let UiMode::Viewer {
+                            goto_prompt,
+                            viewer_menu,
+                            ..
+                        } = &mut app.ui_mode
+                        {
+                            *viewer_menu = None;
                             *goto_prompt = Some(String::new());
                         }
                     }
@@ -5624,17 +6040,54 @@ impl TerminalApp {
                             }),
                         };
                     }
-                    KeyCode::F(2) => {
-                        // Save — no-op stub for now
-                    }
-                    KeyCode::Char('w') => {
+                    KeyCode::F(2) | KeyCode::Char('w')
+                        if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
                         if let UiMode::Viewer { hex, wrap, .. } = &mut app.ui_mode {
                             if !*hex {
                                 *wrap = !*wrap;
                             }
                         }
                     }
-                    KeyCode::Char('l') => {
+                    KeyCode::F(8) => {
+                        if let UiMode::Viewer {
+                            path,
+                            parsed,
+                            offset,
+                            sel_anchor,
+                            sel_cursor,
+                            status_msg,
+                            ..
+                        } = &mut app.ui_mode
+                        {
+                            let next = !*parsed;
+                            let p = path.clone();
+                            match viewer_reload_parsed(&p, next) {
+                                Ok(()) => {
+                                    *parsed = next;
+                                    *offset = 0;
+                                    *sel_cursor = 0;
+                                    viewer_sel_clear(sel_anchor);
+                                    *status_msg = None;
+                                }
+                                Err(e) => {
+                                    *status_msg = Some(format!("{e}"));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::F(9) => {
+                        if let UiMode::Viewer { format_nroff, .. } = &mut app.ui_mode {
+                            *format_nroff = !*format_nroff;
+                        }
+                    }
+                    KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // GNU mcview C-l: refresh (next draw is enough).
+                    }
+                    KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.handle_action(Action::ToggleSubshell)?;
+                    }
+                    KeyCode::Char('l') if key.modifiers.is_empty() => {
                         if let UiMode::Viewer {
                             show_line_numbers, ..
                         } = &mut app.ui_mode
@@ -5642,139 +6095,76 @@ impl TerminalApp {
                             *show_line_numbers = !*show_line_numbers;
                         }
                     }
-                    KeyCode::Char('r') => {
+                    KeyCode::Char('r') if key.modifiers.is_empty() => {
                         if let UiMode::Viewer { show_cr, .. } = &mut app.ui_mode {
                             *show_cr = !*show_cr;
                         }
                     }
                     KeyCode::Up => {
-                        if let UiMode::Viewer {
-                            path, hex, offset, ..
-                        } = &mut app.ui_mode
-                        {
-                            if *hex {
-                                *offset = offset.saturating_sub(16);
-                            } else {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                *offset = rmc_view::nav_line_up(&cpath, *offset)?;
-                            }
-                        }
+                        viewer_move_vertical(app, -1, key.modifiers.contains(KeyModifiers::SHIFT))?;
                     }
                     KeyCode::Down => {
-                        if let UiMode::Viewer {
-                            path, hex, offset, ..
-                        } = &mut app.ui_mode
+                        viewer_move_vertical(app, 1, key.modifiers.contains(KeyModifiers::SHIFT))?;
+                    }
+                    KeyCode::Left => {
+                        viewer_move_horizontal(
+                            app,
+                            -1,
+                            key.modifiers.contains(KeyModifiers::SHIFT),
+                        )?;
+                    }
+                    KeyCode::Right => {
+                        viewer_move_horizontal(
+                            app,
+                            1,
+                            key.modifiers.contains(KeyModifiers::SHIFT),
+                        )?;
+                    }
+                    KeyCode::PageDown | KeyCode::Char(' ')
+                        if !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        if key.code == KeyCode::Char(' ')
+                            && !key.modifiers.is_empty()
+                            && !key.modifiers.contains(KeyModifiers::CONTROL)
                         {
-                            if *hex {
-                                *offset = offset.saturating_add(16);
-                            } else {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                *offset = rmc_view::nav_line_down(&cpath, *offset)?;
-                            }
+                            // ignore other modified spaces
+                        } else if key.code == KeyCode::Char(' ')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            // not C-v
+                        } else {
+                            viewer_move_page(app, true, page_rows, false)?;
                         }
                     }
-                    KeyCode::PageDown => {
-                        if let UiMode::Viewer {
-                            path,
-                            hex,
-                            wrap,
-                            offset,
-                            ..
-                        } = &mut app.ui_mode
-                        {
-                            let (cols, rows) = crossterm::terminal::size()?;
-                            // content area inside frame is rows-3, cols-2
-                            let content_rows = rows.saturating_sub(3);
-                            if *hex {
-                                let step = 16u64 * (content_rows as u64);
-                                *offset = offset.saturating_add(step);
-                            } else {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                *offset = rmc_view::nav_page_down(
-                                    &cpath,
-                                    *offset,
-                                    cols.saturating_sub(2),
-                                    content_rows,
-                                    *wrap,
-                                )?;
-                            }
-                        }
+                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        viewer_move_page(app, true, page_rows, false)?;
                     }
-                    KeyCode::PageUp => {
-                        if let UiMode::Viewer {
-                            path,
-                            hex,
-                            wrap,
-                            offset,
-                            ..
-                        } = &mut app.ui_mode
-                        {
-                            let (cols, rows) = crossterm::terminal::size()?;
-                            let content_rows = rows.saturating_sub(3);
-                            if *hex {
-                                let step = 16u64 * (content_rows as u64);
-                                *offset = offset.saturating_sub(step);
-                            } else {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                *offset = rmc_view::nav_page_up(
-                                    &cpath,
-                                    *offset,
-                                    cols.saturating_sub(2),
-                                    content_rows,
-                                    *wrap,
-                                )?;
-                            }
-                        }
+                    KeyCode::PageUp | KeyCode::Backspace => {
+                        viewer_move_page(app, false, page_rows, false)?;
                     }
-                    KeyCode::Home => {
-                        if let UiMode::Viewer { offset, .. } = &mut app.ui_mode {
-                            *offset = rmc_view::nav_home();
-                        }
+                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::ALT) => {
+                        viewer_move_page(app, false, page_rows, false)?;
                     }
-                    KeyCode::End => {
-                        if let UiMode::Viewer {
-                            path,
-                            hex,
-                            wrap,
-                            offset,
-                            ..
-                        } = &mut app.ui_mode
-                        {
-                            let (cols, rows) = crossterm::terminal::size()?;
-                            let content_rows = rows.saturating_sub(3);
-                            if *hex {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                let len = rmc_view::file_len(&cpath)?;
-                                let page = 16u64 * (content_rows as u64);
-                                *offset = len.saturating_sub(page);
-                            } else {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                *offset = rmc_view::nav_end(
-                                    &cpath,
-                                    cols.saturating_sub(2),
-                                    content_rows,
-                                    *wrap,
-                                )?;
-                            }
-                        }
+                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        viewer_move_page(app, false, page_rows, false)?;
+                    }
+                    KeyCode::Home | KeyCode::Char('g')
+                        if key.modifiers.is_empty()
+                            || key.modifiers.contains(KeyModifiers::SHIFT)
+                                && matches!(key.code, KeyCode::Home) =>
+                    {
+                        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                        viewer_move_home(app, shift)?;
+                    }
+                    KeyCode::End | KeyCode::Char('G') => {
+                        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                        viewer_move_end(app, page_rows, shift)?;
                     }
                     KeyCode::Char('/') | KeyCode::F(7) => {
-                        if let UiMode::Viewer {
-                            search,
-                            search_dialog,
-                            search_prompt,
-                            goto_prompt,
-                            status_msg,
-                            ..
-                        } = &mut app.ui_mode
-                        {
-                            *search_prompt = None;
-                            *goto_prompt = None;
-                            *status_msg = None;
-                            *search_dialog = Some(Box::new(ViewerSearchDialog::from_last_search(
-                                search.as_deref().unwrap_or("").as_bytes(),
-                            )));
-                        }
+                        viewer_open_search_dialog(app, false);
+                    }
+                    KeyCode::Char('?') => {
+                        viewer_open_search_dialog(app, true);
                     }
                     KeyCode::Char('n') | KeyCode::F(17) | KeyCode::F(19) => {
                         if let UiMode::Viewer {
@@ -10668,24 +11058,7 @@ mod viewer_search_tests {
     }
 
     fn open_viewer(app: &mut App, path: std::path::PathBuf) {
-        app.ui_mode = UiMode::Viewer {
-            path,
-            hex: false,
-            wrap: false,
-            offset: 0,
-            search: None,
-            search_prompt: None,
-            goto_prompt: None,
-            show_line_numbers: false,
-            show_cr: false,
-            search_dialog: None,
-            display_dialog: None,
-            search_case_sensitive: false,
-            search_backwards: false,
-            search_whole_words: false,
-            search_regexp: false,
-            status_msg: None,
-        };
+        app.ui_mode = UiMode::new_viewer(path);
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -11217,7 +11590,9 @@ mod viewer_search_tests {
 #[cfg(test)]
 mod viewer_display_options_tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use rmc_core::app::ViewerDisplayFocus;
     use rmc_core::config::KeyMap;
     use rmc_core::find::FindDialogState;
@@ -11243,24 +11618,7 @@ mod viewer_display_options_tests {
     }
 
     fn open_viewer(app: &mut App, path: std::path::PathBuf) {
-        app.ui_mode = UiMode::Viewer {
-            path,
-            hex: false,
-            wrap: false,
-            offset: 0,
-            search: None,
-            search_prompt: None,
-            goto_prompt: None,
-            show_line_numbers: false,
-            show_cr: false,
-            search_dialog: None,
-            display_dialog: None,
-            search_case_sensitive: false,
-            search_backwards: false,
-            search_whole_words: false,
-            search_regexp: false,
-            status_msg: None,
-        };
+        app.ui_mode = UiMode::new_viewer(path);
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -11270,6 +11628,26 @@ mod viewer_display_options_tests {
     fn press_alt(app: &mut App, c: char) {
         TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
             .unwrap();
+    }
+
+    fn click_viewer_options_menu(app: &mut App) {
+        TerminalApp::handle_mouse(
+            app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 18,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            10,
+        )
+        .unwrap();
+    }
+
+    /// GNU path: click topmost line on Options, then Enter on Display options.
+    fn open_display_options(app: &mut App) {
+        click_viewer_options_menu(app);
+        press(app, KeyCode::Enter);
     }
 
     fn display_dialog(app: &App) -> &ViewerDisplayDialog {
@@ -11286,7 +11664,7 @@ mod viewer_display_options_tests {
     }
 
     #[test]
-    fn f9_opens_display_dialog_defaults_match_viewer_state() {
+    fn options_menu_opens_display_dialog_defaults_match_viewer_state() {
         let root = temp_workspace();
         let file = root.join("notes.txt");
         std::fs::write(&file, "hello").unwrap();
@@ -11307,7 +11685,7 @@ mod viewer_display_options_tests {
             }
             _ => panic!("expected Viewer"),
         }
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         match &app.ui_mode {
             UiMode::Viewer {
                 display_dialog: Some(dlg),
@@ -11326,9 +11704,9 @@ mod viewer_display_options_tests {
                 assert_eq!(dlg.focus, ViewerDisplayFocus::ShowLineNumbers);
             }
             UiMode::InputDialog { title, .. } => {
-                panic!("F9 must stay in Viewer, not InputDialog {title:?}")
+                panic!("Display options must stay in Viewer, not InputDialog {title:?}")
             }
-            _ => panic!("F9 must open the Display options dialog in Viewer"),
+            _ => panic!("Options menu must open the Display options dialog in Viewer"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -11340,7 +11718,7 @@ mod viewer_display_options_tests {
         std::fs::write(&file, "abc").unwrap();
         let mut app = make_app();
         open_viewer(&mut app, file);
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         assert_eq!(
             display_dialog(&app).focus,
             ViewerDisplayFocus::ShowLineNumbers
@@ -11400,7 +11778,7 @@ mod viewer_display_options_tests {
         let mut app = make_app();
         open_viewer(&mut app, file);
 
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         press(&mut app, KeyCode::Char(' ')); // line numbers
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Char(' ')); // CR
@@ -11424,7 +11802,7 @@ mod viewer_display_options_tests {
             _ => panic!("Esc should stay in the viewer"),
         }
 
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::F(10));
         match &app.ui_mode {
@@ -11439,7 +11817,7 @@ mod viewer_display_options_tests {
             _ => panic!("F10 should stay in the viewer"),
         }
 
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);
@@ -11469,7 +11847,7 @@ mod viewer_display_options_tests {
         std::fs::write(&file, "hello\r\nworld\n").unwrap();
         let mut app = make_app();
         open_viewer(&mut app, file);
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         press(&mut app, KeyCode::Char(' ')); // line numbers
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Char(' ')); // CR
@@ -11506,7 +11884,7 @@ mod viewer_display_options_tests {
         std::fs::write(&file, "abc").unwrap();
         let mut app = make_app();
         open_viewer(&mut app, file);
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::F(9));
         assert!(display_dialog(&app).show_line_numbers);
@@ -11652,24 +12030,19 @@ mod viewer_display_options_tests {
     }
 
     #[test]
-    fn f9_clears_leftover_search_and_goto_prompts() {
+    fn options_menu_clears_leftover_search_prompt() {
         let root = temp_workspace();
         let file = root.join("notes.txt");
         std::fs::write(&file, "abc").unwrap();
         let mut app = make_app();
         open_viewer(&mut app, file);
         match &mut app.ui_mode {
-            UiMode::Viewer {
-                search_prompt,
-                goto_prompt,
-                ..
-            } => {
+            UiMode::Viewer { search_prompt, .. } => {
                 *search_prompt = Some("leftover".into());
-                *goto_prompt = Some("12".into());
             }
             _ => panic!("expected Viewer"),
         }
-        press(&mut app, KeyCode::F(9));
+        open_display_options(&mut app);
         match &app.ui_mode {
             UiMode::Viewer {
                 display_dialog: Some(_),
@@ -11680,7 +12053,7 @@ mod viewer_display_options_tests {
                 assert!(search_prompt.is_none());
                 assert!(goto_prompt.is_none());
             }
-            _ => panic!("F9 must open Display options and clear leftover prompts"),
+            _ => panic!("Options menu must open Display options and clear leftover prompts"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -11854,12 +12227,20 @@ mod viewer_compressed_filter_tests {
         press(&mut app, KeyCode::F(9));
         match &app.ui_mode {
             UiMode::Viewer {
-                display_dialog: Some(_),
+                format_nroff,
+                hex,
+                display_dialog,
                 ..
-            } => {}
-            _ => panic!("F9 must open Display options on decoded viewer"),
+            } => {
+                assert!(*hex, "F4 hex still on");
+                assert!(
+                    *format_nroff,
+                    "F9 toggles format/unformat on decoded viewer"
+                );
+                assert!(display_dialog.is_none(), "F9 is not Display options");
+            }
+            _ => panic!("F9 must toggle format on decoded viewer"),
         }
-        press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::F(10));
         assert!(matches!(app.ui_mode, UiMode::Normal));
         let _ = std::fs::remove_dir_all(&root);
@@ -12350,6 +12731,356 @@ mod diff_edit_in_place_tests {
             UiMode::Viewer { hex, .. } => assert!(*hex, "Viewer F4 toggles hex"),
             UiMode::Editor { .. } => panic!("Viewer F4 must not open Editor"),
             _ => panic!("Viewer F4 must stay in Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod viewer_selection_keybindings_tests {
+    use super::*;
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-viewer-keys-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn make_app_at(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn open_viewer(app: &mut App, path: std::path::PathBuf) {
+        app.ui_mode = UiMode::new_viewer(path);
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn many_lines() -> String {
+        (0..80).map(|i| format!("line-{i:02} abcdefgh\n")).collect()
+    }
+
+    fn decoded_bytes_path(display: &std::path::Path) -> Vec<u8> {
+        let p = viewer_ensure_view_for(display);
+        std::fs::read(p).unwrap()
+    }
+
+    #[test]
+    fn f5_goto_stays_in_viewer_not_editor() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, many_lines()).unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(5));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                goto_prompt: Some(_),
+                ..
+            } => {}
+            UiMode::Editor { .. } => panic!("F5 must not open Editor"),
+            _ => panic!("F5 must open viewer Goto"),
+        }
+        press(&mut app, KeyCode::Esc);
+        match &app.ui_mode {
+            UiMode::Viewer { goto_prompt, .. } => assert!(goto_prompt.is_none()),
+            _ => panic!("Esc closes Goto, stays in Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_pages_down_backspace_pages_up() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, many_lines()).unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        let start = match &app.ui_mode {
+            UiMode::Viewer { offset, .. } => *offset,
+            _ => panic!("expected Viewer"),
+        };
+        press(&mut app, KeyCode::Char(' '));
+        let mid = match &app.ui_mode {
+            UiMode::Viewer { offset, .. } => *offset,
+            _ => panic!("expected Viewer"),
+        };
+        assert!(mid > start, "Space pages down, got {mid} from {start}");
+        press(&mut app, KeyCode::Backspace);
+        let back = match &app.ui_mode {
+            UiMode::Viewer { offset, .. } => *offset,
+            _ => panic!("expected Viewer"),
+        };
+        assert!(back < mid, "Backspace pages up, got {back} from {mid}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shift_arrows_set_and_clear_selection() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, many_lines()).unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press_mod(&mut app, KeyCode::Down, KeyModifiers::SHIFT);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                sel_anchor,
+                sel_cursor,
+                ..
+            } => {
+                assert!(sel_anchor.is_some(), "Shift+Down sets a selection");
+                assert!(*sel_cursor > 0);
+                let a = sel_anchor.unwrap();
+                assert_ne!(a, *sel_cursor);
+            }
+            _ => panic!("expected Viewer"),
+        }
+        press(&mut app, KeyCode::Down);
+        match &app.ui_mode {
+            UiMode::Viewer { sel_anchor, .. } => {
+                assert!(sel_anchor.is_none(), "plain Down clears selection");
+            }
+            _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f2_wrap_f4_hex_f7_search_f9_format_f10_quit() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, many_lines()).unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(2));
+        match &app.ui_mode {
+            UiMode::Viewer { wrap, hex, .. } => {
+                assert!(*wrap);
+                assert!(!*hex);
+            }
+            _ => panic!("F2 wrap"),
+        }
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer { hex, .. } => assert!(*hex),
+            UiMode::Editor { .. } => panic!("F4 must not open Editor"),
+            _ => panic!("F4 hex"),
+        }
+        press(&mut app, KeyCode::F(4));
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog: Some(_),
+                ..
+            } => {}
+            _ => panic!("F7 Search"),
+        }
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                format_nroff,
+                display_dialog,
+                ..
+            } => {
+                assert!(*format_nroff);
+                assert!(display_dialog.is_none());
+            }
+            _ => panic!("F9 format"),
+        }
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f8_toggles_raw_parsed_on_gz() {
+        if !rmc_view::helper_on_path("gzip") {
+            return;
+        }
+        let root = temp_workspace();
+        let txt = root.join("notes.txt");
+        std::fs::write(&txt, b"decoded-payload\n").unwrap();
+        let gz = root.join("notes.txt.gz");
+        let out = std::fs::File::create(&gz).unwrap();
+        let ok = std::process::Command::new("gzip")
+            .arg("-c")
+            .arg(&txt)
+            .stdout(std::process::Stdio::from(out))
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let mut app = make_app_at(&root);
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt.gz")
+            .unwrap();
+        app.active_panel_mut().cursor = idx;
+        view_current_file(&mut app).unwrap();
+        let parsed_bytes = decoded_bytes_path(&gz);
+        assert_eq!(parsed_bytes, b"decoded-payload\n");
+        press(&mut app, KeyCode::F(8));
+        match &app.ui_mode {
+            UiMode::Viewer { parsed, .. } => assert!(!*parsed, "F8 enters Raw"),
+            _ => panic!("expected Viewer"),
+        }
+        let raw = decoded_bytes_path(&gz);
+        assert!(
+            raw.starts_with(&[0x1f, 0x8b]),
+            "Raw shows gzip magic, got {raw:?}"
+        );
+        press(&mut app, KeyCode::F(8));
+        match &app.ui_mode {
+            UiMode::Viewer { parsed, .. } => assert!(*parsed, "F8 returns to Parsed"),
+            _ => panic!("expected Viewer"),
+        }
+        assert_eq!(decoded_bytes_path(&gz), b"decoded-payload\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panel_f4_diff_f4_find_file_f4_unaffected() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+        let other = root.join("other.txt");
+        std::fs::write(&other, "world\n").unwrap();
+        let mut app = make_app_at(&root);
+
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt")
+            .unwrap();
+        app.active_panel_mut().cursor = idx;
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor { .. } => {}
+            UiMode::Viewer { .. } => panic!("panel F4 must open Editor"),
+            _ => panic!("panel F4 must open Editor"),
+        }
+        press(&mut app, KeyCode::F(10));
+
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "Find File F4 unaffected"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        let left_lines = rmc_diff::split_lines("hello\n");
+        let right_lines = rmc_diff::split_lines("world\n");
+        let hunks = rmc_diff::compute_diff("hello\n", "world\n").hunks;
+        app.ui_mode = UiMode::Diff(rmc_core::app::DiffState {
+            left_path: file.clone(),
+            right_path: other,
+            left_lines,
+            right_lines,
+            hunks,
+            current_hunk: 0,
+            left_modified: false,
+            right_modified: false,
+            show_line_numbers: false,
+            show_hunk_status: true,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
+            left_scroll: 0,
+            right_scroll: 0,
+            panel_ratio: 0.5,
+            tab_width: 4,
+            merge_target_right: true,
+        });
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor { return_to, .. } => {
+                assert!(return_to.is_some(), "Diff F4 nests editor");
+            }
+            UiMode::Viewer { .. } => panic!("Diff F4 must not open Viewer"),
+            UiMode::Diff(_) => panic!("Diff F4 must open editor in place"),
+            _ => panic!("Diff F4 must open Editor"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn click_options_menu_opens_display_not_f9() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        TerminalApp::handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 18,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            10,
+        )
+        .unwrap();
+        match &app.ui_mode {
+            UiMode::Viewer {
+                viewer_menu: Some(rmc_core::app::ViewerMenu::Options { .. }),
+                display_dialog,
+                ..
+            } => {
+                assert!(display_dialog.is_none());
+            }
+            _ => panic!("click Options must drop the Options menu"),
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog: Some(_),
+                viewer_menu,
+                ..
+            } => {
+                assert!(viewer_menu.is_none());
+            }
+            _ => panic!("Enter on Display options must open the dialog"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
