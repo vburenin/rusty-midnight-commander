@@ -337,6 +337,14 @@ mod tests {
             d.classic_progressbar,
             "GNU mc Classic progressbar defaults to true"
         );
+        assert!(
+            !d.preallocate_space,
+            "GNU mc Preallocate space defaults to false"
+        );
+        assert!(
+            d.use_cow_file_cloning,
+            "GNU mc Use COW file cloning defaults to true"
+        );
     }
 
     #[test]

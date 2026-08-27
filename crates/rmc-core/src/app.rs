@@ -185,6 +185,15 @@ pub struct ConfigOptions {
     /// GNU mc Options → Configuration → Mkdir autoname. When true, F7 prefills
     /// the Mkdir name with the current panel entry (not `..`). Default false.
     pub mkdir_autoname: bool,
+    /// GNU mc Options → Configuration → Preallocate space. Default **false**.
+    /// When true, local Copy/Move tries to reserve the whole destination size
+    /// (`posix_fallocate` / `fallocate`) before writing. Soft-fail if unsupported.
+    pub preallocate_space: bool,
+    /// GNU mc Options → Configuration → Use COW file cloning. Default **true**.
+    /// When true, local Copy/Move tries a copy-on-write clone (`FICLONE` /
+    /// `copy_file_range`) and falls back to an ordinary byte copy. When false,
+    /// never attempt clone.
+    pub use_cow_file_cloning: bool,
     /// GNU mc Options → Configuration → Complete: show all. Default **false**.
     /// When false, the first Alt-Tab on an ambiguous token completes the common
     /// prefix and beeps; the second Alt-Tab shows the list. When true, the first
@@ -205,7 +214,19 @@ impl Default for ConfigOptions {
             auto_menus: false,
             drop_menus: false,
             mkdir_autoname: false,
+            preallocate_space: false,
+            use_cow_file_cloning: true,
             complete_show_all: false,
+        }
+    }
+}
+
+impl ConfigOptions {
+    /// Local Copy/Move flags from Options → Configuration.
+    pub fn copy_flags(&self) -> rmc_fs::CopyFlags {
+        rmc_fs::CopyFlags {
+            preallocate_space: self.preallocate_space,
+            use_cow_file_cloning: self.use_cow_file_cloning,
         }
     }
 }
@@ -258,6 +279,8 @@ pub enum ConfigOptionsFocus {
     Verbose,
     ComputeTotals,
     ClassicProgressbar,
+    PreallocateSpace,
+    UseCowFileCloning,
     UseInternalViewer,
     UseInternalEditor,
     PauseAfterRun,
@@ -2500,8 +2523,14 @@ impl App {
             &self.config_opts,
         )?;
         let job_id = match op {
-            CopyMoveOp::Copy => self.jobs.spawn_copy(&src, &dst),
-            CopyMoveOp::Move => self.jobs.spawn_move(&src, &dst),
+            CopyMoveOp::Copy => {
+                self.jobs
+                    .spawn_copy_with_flags(&src, &dst, self.config_opts.copy_flags())
+            }
+            CopyMoveOp::Move => {
+                self.jobs
+                    .spawn_move_with_flags(&src, &dst, self.config_opts.copy_flags())
+            }
         };
         self.ui_mode = UiMode::FileOpProgress {
             op,
@@ -2856,6 +2885,37 @@ mod tests {
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert_eq!(std::fs::read(&dst).unwrap(), b"hello-progress");
         assert_eq!(std::fs::read(&src).unwrap(), b"hello-progress");
+    }
+
+    #[test]
+    fn begin_file_op_copy_with_cow_off_writes_bytes() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, b"no-cow-copy").unwrap();
+        app.config_opts.use_cow_file_cloning = false;
+        app.config_opts.preallocate_space = false;
+        app.begin_file_op(CopyMoveOp::Copy, src.clone(), dst.clone())
+            .unwrap();
+        wait_until_file_op_settled(&mut app, 5_000);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"no-cow-copy");
+        assert_eq!(std::fs::read(&src).unwrap(), b"no-cow-copy");
+    }
+
+    #[test]
+    fn begin_file_op_copy_with_preallocate_on_writes_bytes() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, vec![0x11u8; 2048]).unwrap();
+        app.config_opts.preallocate_space = true;
+        app.config_opts.use_cow_file_cloning = false;
+        app.begin_file_op(CopyMoveOp::Copy, src.clone(), dst.clone())
+            .unwrap();
+        wait_until_file_op_settled(&mut app, 5_000);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), vec![0x11u8; 2048]);
     }
 
     #[test]

@@ -528,7 +528,11 @@ pub fn default_config_dir() -> PathBuf {
 
 /// Save App options (layout/confirm/panels) and keymap to default config dir.
 pub fn save_setup(app: &crate::app::App) -> Result<()> {
-    let dir = default_config_dir();
+    save_setup_to(app, &default_config_dir())
+}
+
+/// Save App options and keymap into `dir` (`ini` + `keymap`).
+pub fn save_setup_to(app: &crate::app::App, dir: &Path) -> Result<()> {
     fs::create_dir_all(&dir)?;
     // Save options ini
     let ini_path = dir.join("ini");
@@ -603,6 +607,12 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "auto_menus={}", app.config_opts.auto_menus)?;
     writeln!(f, "drop_menus={}", app.config_opts.drop_menus)?;
     writeln!(f, "mkdir_autoname={}", app.config_opts.mkdir_autoname)?;
+    writeln!(f, "preallocate_space={}", app.config_opts.preallocate_space)?;
+    writeln!(
+        f,
+        "use_cow_file_cloning={}",
+        app.config_opts.use_cow_file_cloning
+    )?;
     writeln!(f, "complete_show_all={}", app.config_opts.complete_show_all)?;
     // Save keymap
     let keymap_path = dir.join("keymap");
@@ -612,7 +622,11 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
 
 /// If setup files exist, load them over defaults and apply to the App.
 pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
-    let dir = default_config_dir();
+    load_user_setup_from(app, &default_config_dir())
+}
+
+/// Load setup files from `dir` if they exist.
+pub fn load_user_setup_from(app: &mut crate::app::App, dir: &Path) -> Result<()> {
     // Keymap (optional)
     let keymap_path = dir.join("keymap");
     if keymap_path.exists() {
@@ -713,6 +727,8 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                     "auto_menus" => app.config_opts.auto_menus = vb(&v),
                     "drop_menus" => app.config_opts.drop_menus = vb(&v),
                     "mkdir_autoname" => app.config_opts.mkdir_autoname = vb(&v),
+                    "preallocate_space" => app.config_opts.preallocate_space = vb(&v),
+                    "use_cow_file_cloning" => app.config_opts.use_cow_file_cloning = vb(&v),
                     "complete_show_all" => app.config_opts.complete_show_all = vb(&v),
                     _ => {}
                 },
@@ -896,5 +912,43 @@ mod tests {
             Some(Action::FunctionKey(4))
         ));
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn configuration_copy_flags_ini_roundtrip() {
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        assert!(
+            !app.config_opts.preallocate_space,
+            "GNU default: preallocate off"
+        );
+        assert!(app.config_opts.use_cow_file_cloning, "GNU default: COW on");
+        app.config_opts.preallocate_space = true;
+        app.config_opts.use_cow_file_cloning = false;
+        app.config_opts.verbose = true;
+        app.config_opts.compute_totals = false;
+        app.config_opts.classic_progressbar = true;
+        app.config_opts.mkdir_autoname = true;
+        save_setup_to(&app, tmp.path()).expect("save_setup");
+
+        let vfs2 = LocalFs::new();
+        let mut app2 = App::new(Box::new(vfs2), KeyMap::mc_defaults()).unwrap();
+        load_user_setup_from(&mut app2, tmp.path()).expect("load_user_setup");
+        assert!(
+            app2.config_opts.preallocate_space,
+            "preallocate_space should round-trip"
+        );
+        assert!(
+            !app2.config_opts.use_cow_file_cloning,
+            "use_cow_file_cloning should round-trip"
+        );
+        assert!(app2.config_opts.verbose);
+        assert!(!app2.config_opts.compute_totals);
+        assert!(app2.config_opts.classic_progressbar);
+        assert!(app2.config_opts.mkdir_autoname);
     }
 }
