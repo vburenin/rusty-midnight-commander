@@ -391,6 +391,25 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::HotlistDialog(state) => {
             crate::hotlist::draw_hotlist_dialog(p, cols, rows, pal, state);
         }
+        rmc_core::app::UiMode::HistoryDialog {
+            selected_index,
+            scroll_top,
+            focus,
+            confirm_clean,
+        } => {
+            draw_history_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                app,
+                *selected_index,
+                *scroll_top,
+                *focus,
+                *confirm_clean,
+                app.shadows,
+            );
+        }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
             draw_dialog_box(
@@ -4078,6 +4097,142 @@ fn draw_jobs_dialog(
             pal.shadow_bg,
         );
         p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_history_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    app: &App,
+    selected: usize,
+    scroll_top: usize,
+    focus: rmc_core::app::HistoryDialogFocus,
+    confirm_clean: bool,
+    show_shadow: bool,
+) {
+    use rmc_core::app::HistoryDialogFocus as HF;
+    let entries = app.subshell.history();
+    let w = (cols as usize).min(64) as u16;
+    let min_h = 7u16;
+    let list_h = (entries.len() as u16).clamp(1, rows.saturating_sub(6));
+    let h = (list_h + 4).max(min_h).min(rows.saturating_sub(2));
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(
+        x + 1,
+        y,
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y);
+    p.text("┐");
+    p.vline(
+        x,
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        x + w.saturating_sub(1),
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h.saturating_sub(1));
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h.saturating_sub(1),
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
+    p.text("┘");
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {} ", crate::terminal::HISTORY_DIALOG_TITLE);
+    let tx = x + w.saturating_sub(ttl.len() as u16) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    let list_top = y + 1;
+    let visible = h.saturating_sub(4) as usize;
+    let mut start = scroll_top;
+    if selected < start {
+        start = selected;
+    }
+    if visible > 0 && selected >= start + visible {
+        start = selected.saturating_add(1).saturating_sub(visible);
+    }
+    for i in 0..visible {
+        let row_y = list_top + i as u16;
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        p.goto(x + 1, row_y);
+        p.text(&" ".repeat(w.saturating_sub(2) as usize));
+        let idx = start + i;
+        if let Some(line) = entries.get(idx) {
+            if idx == selected && matches!(focus, HF::List) {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+            } else {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+            }
+            let t = truncate(line, w.saturating_sub(4) as usize);
+            p.goto(x + 2, row_y);
+            p.text(&t);
+        }
+    }
+    let sel_btn = |want: HF, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!(
+        "{}  {}  {}",
+        sel_btn(HF::Ok, "OK"),
+        sel_btn(HF::Cancel, "Cancel"),
+        sel_btn(HF::Clear, "Clear")
+    );
+    let bx = x + w.saturating_sub(btns.len() as u16) / 2;
+    p.goto(bx, y + h.saturating_sub(2));
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+    if confirm_clean {
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            crate::terminal::HISTORY_CLEAN_TITLE,
+            crate::terminal::HISTORY_CLEAN_MESSAGE,
+            &["< Yes >", "No"],
+            show_shadow,
+        );
     }
 }
 

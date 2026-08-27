@@ -11,7 +11,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use rmc_core::actions::{Action, PaneSide};
-use rmc_core::app::{App, LayoutFocus, UiMode};
+use rmc_core::app::{App, HistoryDialogFocus, LayoutFocus, UiMode};
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
 };
@@ -1430,6 +1430,11 @@ impl TerminalApp {
                             app.subshell.cmdline = s;
                         }
                     }
+                    KeyCode::Char('h') | KeyCode::Char('H')
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                    {
+                        open_command_history(app);
+                    }
                     KeyCode::Enter
                         if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
                     {
@@ -1443,6 +1448,130 @@ impl TerminalApp {
                         app.subshell.cmdline.push(c);
                         app.subshell.clear_history_nav();
                     }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::HistoryDialog {
+                selected_index,
+                scroll_top,
+                focus,
+                confirm_clean,
+            } => {
+                use HistoryDialogFocus as HF;
+                if *confirm_clean {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) | KeyCode::Char('n') | KeyCode::Char('N') => {
+                            *confirm_clean = false;
+                        }
+                        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            app.subshell.clear_history();
+                            *selected_index = 0;
+                            *scroll_top = 0;
+                            *confirm_clean = false;
+                            *focus = HF::List;
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                let list_rows = history_list_rows();
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::ShellInput;
+                    }
+                    KeyCode::Tab => {
+                        *focus = match *focus {
+                            HF::List => HF::Ok,
+                            HF::Ok => HF::Cancel,
+                            HF::Cancel => HF::Clear,
+                            HF::Clear => HF::List,
+                        };
+                    }
+                    KeyCode::BackTab => {
+                        *focus = match *focus {
+                            HF::List => HF::Clear,
+                            HF::Ok => HF::List,
+                            HF::Cancel => HF::Ok,
+                            HF::Clear => HF::Cancel,
+                        };
+                    }
+                    KeyCode::Left | KeyCode::Right
+                        if matches!(*focus, HF::Ok | HF::Cancel | HF::Clear) =>
+                    {
+                        *focus = match (*focus, key.code) {
+                            (HF::Ok, KeyCode::Right) => HF::Cancel,
+                            (HF::Cancel, KeyCode::Right) => HF::Clear,
+                            (HF::Clear, KeyCode::Right) => HF::Ok,
+                            (HF::Ok, KeyCode::Left) => HF::Clear,
+                            (HF::Cancel, KeyCode::Left) => HF::Ok,
+                            (HF::Clear, KeyCode::Left) => HF::Cancel,
+                            (f, _) => f,
+                        };
+                    }
+                    KeyCode::Up if matches!(*focus, HF::List) => {
+                        if *selected_index > 0 {
+                            *selected_index -= 1;
+                        }
+                        if *selected_index < *scroll_top {
+                            *scroll_top = *selected_index;
+                        }
+                    }
+                    KeyCode::Down if matches!(*focus, HF::List) => {
+                        if *selected_index + 1 < app.subshell.history_len() {
+                            *selected_index += 1;
+                        }
+                        if *selected_index >= *scroll_top + list_rows {
+                            *scroll_top =
+                                selected_index.saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Home if matches!(*focus, HF::List) => {
+                        *selected_index = 0;
+                        *scroll_top = 0;
+                    }
+                    KeyCode::End if matches!(*focus, HF::List) => {
+                        if app.subshell.history_len() > 0 {
+                            *selected_index = app.subshell.history_len() - 1;
+                            *scroll_top =
+                                selected_index.saturating_sub(list_rows.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::F(8) => {
+                        let cleanup = app.confirm.history_cleanup;
+                        request_history_clear(
+                            &mut app.subshell,
+                            cleanup,
+                            selected_index,
+                            scroll_top,
+                            focus,
+                            confirm_clean,
+                        );
+                    }
+                    KeyCode::Enter => match *focus {
+                        HF::List | HF::Ok => {
+                            let idx = *selected_index;
+                            if let Some(s) = app.subshell.history().get(idx).cloned() {
+                                app.subshell.cmdline = s;
+                                app.subshell.clear_history_nav();
+                                app.ui_mode = UiMode::ShellInput;
+                            }
+                        }
+                        HF::Cancel => {
+                            app.ui_mode = UiMode::ShellInput;
+                        }
+                        HF::Clear => {
+                            let cleanup = app.confirm.history_cleanup;
+                            request_history_clear(
+                                &mut app.subshell,
+                                cleanup,
+                                selected_index,
+                                scroll_top,
+                                focus,
+                                confirm_clean,
+                            );
+                        }
+                    },
                     _ => {}
                 }
                 return Ok(());
@@ -5530,6 +5659,49 @@ impl TerminalApp {
     }
 }
 
+pub(crate) const HISTORY_DIALOG_TITLE: &str = "History";
+pub(crate) const HISTORY_CLEAN_TITLE: &str = "History cleaning";
+pub(crate) const HISTORY_CLEAN_MESSAGE: &str = "Do you want to clean this history?";
+
+fn open_command_history(app: &mut App) {
+    let selected_index = app.subshell.history_len().saturating_sub(1);
+    app.ui_mode = UiMode::HistoryDialog {
+        selected_index,
+        scroll_top: 0,
+        focus: HistoryDialogFocus::List,
+        confirm_clean: false,
+    };
+}
+
+fn history_list_rows() -> usize {
+    crossterm::terminal::size()
+        .ok()
+        .map(|(_, rows)| rows.saturating_sub(6).clamp(4, 16) as usize)
+        .unwrap_or(8)
+}
+
+fn request_history_clear(
+    subshell: &mut rmc_core::subshell::Subshell,
+    history_cleanup: bool,
+    selected_index: &mut usize,
+    scroll_top: &mut usize,
+    focus: &mut HistoryDialogFocus,
+    confirm_clean: &mut bool,
+) {
+    if subshell.history_len() == 0 {
+        return;
+    }
+    if history_cleanup {
+        *confirm_clean = true;
+    } else {
+        subshell.clear_history();
+        *selected_index = 0;
+        *scroll_top = 0;
+        *focus = HistoryDialogFocus::List;
+        *confirm_clean = false;
+    }
+}
+
 /// Map Left/Right to ParentDir/Enter when GNU mc Lynx-like motion is enabled.
 /// When the flag is off, Left/Right stay unbound (today's listing-mode behavior).
 fn lynx_like_arrow_action(lynx_like: bool, code: KeyCode) -> Option<Action> {
@@ -6847,5 +7019,267 @@ mod file_op_abort_keys_tests {
             drop(app);
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+}
+
+#[cfg(test)]
+mod command_history_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::{ConfirmOptions, ConfirmationsFocus, HistoryDialogFocus};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.confirm.history_cleanup = true;
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn seed_history(app: &mut App, cmds: &[&str]) {
+        let cwd = app.active_panel().cwd.clone();
+        for cmd in cmds {
+            app.subshell.cmdline = cmd.to_string();
+            app.subshell.execute_current(&cwd).unwrap();
+            app.subshell.clear_cmdline();
+        }
+    }
+
+    fn open_history(app: &mut App) {
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(app, 'h');
+    }
+
+    fn assert_history_dialog(app: &App, confirm_clean: bool) {
+        match &app.ui_mode {
+            UiMode::HistoryDialog {
+                confirm_clean: cc, ..
+            } => assert_eq!(*cc, confirm_clean, "confirm_clean"),
+            _ => panic!("expected HistoryDialog"),
+        }
+    }
+
+    #[test]
+    fn alt_h_opens_history_enter_pastes_esc_keeps_cmdline() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        seed_history(&mut app, &["echo first", "echo second"]);
+        app.subshell.cmdline = "typed".to_string();
+        open_history(&mut app);
+        match &app.ui_mode {
+            UiMode::HistoryDialog {
+                selected_index,
+                confirm_clean,
+                focus,
+                ..
+            } => {
+                assert!(!*confirm_clean);
+                assert!(matches!(*focus, HistoryDialogFocus::List));
+                assert_eq!(*selected_index, 1);
+            }
+            _ => panic!("expected HistoryDialog"),
+        }
+
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "echo second");
+
+        app.subshell.cmdline = "keep-me".to_string();
+        open_history(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "keep-me");
+
+        app.subshell.cmdline = "keep-f10".to_string();
+        open_history(&mut app);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "keep-f10");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_h_opens_empty_history_dialog() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(app.subshell.history().is_empty());
+        open_history(&mut app);
+        match &app.ui_mode {
+            UiMode::HistoryDialog {
+                selected_index,
+                confirm_clean,
+                ..
+            } => {
+                assert_eq!(*selected_index, 0);
+                assert!(!*confirm_clean);
+            }
+            _ => panic!("expected HistoryDialog even when empty"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::HistoryDialog { .. }));
+        assert!(app.subshell.cmdline.is_empty());
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_h_from_panels_does_not_open_history() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        seed_history(&mut app, &["echo x"]);
+        app.ui_mode = UiMode::Normal;
+        press_alt(&mut app, 'h');
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clear_with_history_cleanup_prompts_and_waits_for_yes() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.confirm.history_cleanup = true;
+        seed_history(&mut app, &["echo a", "echo b"]);
+        open_history(&mut app);
+        press(&mut app, KeyCode::F(8));
+        assert_history_dialog(&app, true);
+        assert_eq!(app.subshell.history_len(), 2);
+
+        press(&mut app, KeyCode::Esc);
+        assert_history_dialog(&app, false);
+        assert_eq!(app.subshell.history_len(), 2);
+
+        press(&mut app, KeyCode::F(8));
+        assert_history_dialog(&app, true);
+        press(&mut app, KeyCode::Enter);
+        assert_history_dialog(&app, false);
+        assert_eq!(app.subshell.history_len(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clear_without_history_cleanup_wipes_immediately() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.confirm.history_cleanup = false;
+        seed_history(&mut app, &["echo a", "echo b"]);
+        open_history(&mut app);
+        press(&mut app, KeyCode::F(8));
+        assert_history_dialog(&app, false);
+        assert_eq!(app.subshell.history_len(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn confirmations_dialog_has_history_cleanup_checkbox() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(ConfirmOptions::default().history_cleanup);
+        app.ui_mode = UiMode::ConfirmationsDialog {
+            draft: ConfirmOptions::default(),
+            focus: ConfirmationsFocus::HistoryCleanup,
+        };
+        assert!(app.confirm.history_cleanup);
+        press(&mut app, KeyCode::Char(' '));
+        match &app.ui_mode {
+            UiMode::ConfirmationsDialog { draft, focus } => {
+                assert!(matches!(*focus, ConfirmationsFocus::HistoryCleanup));
+                assert!(!draft.history_cleanup);
+            }
+            _ => panic!("expected ConfirmationsDialog"),
+        }
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            !app.confirm.history_cleanup,
+            "OK must apply the History cleanup toggle"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn toggling_confirmations_history_cleanup_changes_clear_prompt() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        seed_history(&mut app, &["echo a", "echo b"]);
+
+        app.ui_mode = UiMode::ConfirmationsDialog {
+            draft: app.confirm,
+            focus: ConfirmationsFocus::HistoryCleanup,
+        };
+        // Default is on; turn it off and apply.
+        assert!(app.confirm.history_cleanup);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.confirm.history_cleanup);
+
+        open_history(&mut app);
+        press(&mut app, KeyCode::F(8));
+        assert_history_dialog(&app, false);
+        assert_eq!(app.subshell.history_len(), 0);
+
+        seed_history(&mut app, &["echo c"]);
+        app.ui_mode = UiMode::ConfirmationsDialog {
+            draft: app.confirm,
+            focus: ConfirmationsFocus::HistoryCleanup,
+        };
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.confirm.history_cleanup);
+
+        open_history(&mut app);
+        press(&mut app, KeyCode::F(8));
+        assert_history_dialog(&app, true);
+        assert_eq!(app.subshell.history_len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clear_button_matches_f8() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.confirm.history_cleanup = false;
+        seed_history(&mut app, &["echo z"]);
+        open_history(&mut app);
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Tab); // Cancel
+        press(&mut app, KeyCode::Tab); // Clear
+        match &app.ui_mode {
+            UiMode::HistoryDialog { focus, .. } => {
+                assert!(matches!(*focus, HistoryDialogFocus::Clear));
+            }
+            _ => panic!("expected HistoryDialog"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.subshell.history_len(), 0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

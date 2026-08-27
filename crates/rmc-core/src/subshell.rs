@@ -88,6 +88,33 @@ impl Subshell {
         self.history_index = None;
     }
 
+    /// Previously executed commands, oldest first (most recent last).
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    /// Number of recorded commands.
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Wipe the command history and any Up/Down navigation state.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.history_index = None;
+    }
+
+    /// Record `cmd` in history, skipping empty lines and consecutive duplicates.
+    fn remember_command(&mut self, cmd: &str) {
+        if cmd.is_empty() {
+            return;
+        }
+        if self.history.last().map(String::as_str) != Some(cmd) {
+            self.history.push(cmd.to_string());
+        }
+        self.history_index = None;
+    }
+
     /// Execute the current command line using the user's shell.
     /// - Uses $SHELL or falls back to /bin/sh
     /// - Runs with `current_dir` set to `cwd`
@@ -125,11 +152,7 @@ impl Subshell {
             combined.extend_from_slice(&output.stderr);
         }
         self.append_output_bytes(&combined);
-        // Record history (avoid duplicate consecutive entries)
-        if self.history.last() != Some(&cmd_owned) {
-            self.history.push(cmd_owned);
-        }
-        self.history_index = None;
+        self.remember_command(&cmd_owned);
         Ok(ExecOutcome {
             exit_code: status.code().unwrap_or_default(),
             output_collected: true,
@@ -242,11 +265,7 @@ impl Subshell {
                 }
                 let line = format!("{}\n", cmd_owned);
                 session.write(line.as_bytes())?;
-                // Record history (avoid duplicate consecutive entries)
-                if self.history.last() != Some(&cmd_owned) {
-                    self.history.push(cmd_owned);
-                }
-                self.history_index = None;
+                self.remember_command(&cmd_owned);
                 // We do not synchronously collect output here; it's available via the PTY session.
                 return Ok(ExecOutcome {
                     exit_code: 0,
@@ -510,6 +529,56 @@ mod tests {
             buf.contains("pty-hello"),
             "PTY did not echo expected output; got: {}",
             buf
+        );
+    }
+
+    fn seed_history(ss: &mut Subshell, cwd: &Path, cmds: &[&str]) {
+        for cmd in cmds {
+            ss.cmdline = cmd.to_string();
+            ss.execute_current(cwd).unwrap();
+            ss.clear_cmdline();
+        }
+    }
+
+    #[test]
+    fn history_records_commands_and_clear_empties() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let mut ss = Subshell::new();
+        seed_history(&mut ss, cwd, &["echo one", "echo two", "echo three"]);
+        assert_eq!(
+            ss.history(),
+            &[
+                "echo one".to_string(),
+                "echo two".into(),
+                "echo three".into()
+            ]
+        );
+        assert_eq!(ss.history_len(), 3);
+
+        ss.clear_history();
+        assert!(ss.history().is_empty());
+        assert_eq!(ss.history_len(), 0);
+        assert!(ss.history_prev().is_none());
+        assert!(ss.history_next().is_none());
+
+        seed_history(&mut ss, cwd, &["echo after-clear"]);
+        assert_eq!(ss.history(), &["echo after-clear".to_string()]);
+        assert_eq!(ss.history_prev().as_deref(), Some("echo after-clear"));
+        // At the only entry; next past newest yields a fresh empty line.
+        assert_eq!(ss.history_next().as_deref(), Some(""));
+        assert!(ss.history_next().is_none());
+    }
+
+    #[test]
+    fn history_skips_consecutive_duplicates() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let mut ss = Subshell::new();
+        seed_history(&mut ss, cwd, &["echo same", "echo same", "echo other"]);
+        assert_eq!(
+            ss.history(),
+            &["echo same".to_string(), "echo other".into()]
         );
     }
 }

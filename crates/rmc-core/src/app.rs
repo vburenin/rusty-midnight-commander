@@ -105,8 +105,10 @@ pub struct PanelOptions {
     pub fast_reload: bool,
     pub reverse_files_only: bool, // default true — dirs-first reverse: files only (dirs stay name-asc)
     pub simple_swap: bool,        // default false — swap panes without flipping active
-    pub auto_save_setup: bool,    // default false; store only
-    pub lynx_like: bool,          // default false — Left=parent, Right=enter in listing
+    /// GNU mc Options → Panels → Auto save setup. Default false.
+    /// When true, Quit calls [`crate::config::save_setup`].
+    pub auto_save_setup: bool,
+    pub lynx_like: bool, // default false — Left=parent, Right=enter in listing
 }
 
 impl Default for PanelOptions {
@@ -451,6 +453,14 @@ pub enum UiMode {
     },
     /// Command line at bottom has focus for editing/executing.
     ShellInput,
+    /// GNU mc command-line History list (Alt-h / M-h while the input line has focus).
+    HistoryDialog {
+        selected_index: usize,
+        scroll_top: usize,
+        focus: HistoryDialogFocus,
+        /// When true, show the GNU mc "clean this history?" confirmation.
+        confirm_clean: bool,
+    },
     // Directory Hotlist
     HotlistDialog(HotlistDialogState),
     /// Background jobs list dialog (C-x j).
@@ -554,6 +564,16 @@ pub enum CopyDialogFocus {
     Background,
     Cancel,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HistoryDialogFocus {
+    /// The history list has focus; Up/Down change the selected row.
+    List,
+    Ok,
+    Cancel,
+    /// GNU mc History widget "Clear" (not a generic "Delete all").
+    Clear,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationsFocus {
     Delete,
@@ -1073,6 +1093,7 @@ impl App {
             UiMode::MenuFocused => "Menus".to_string(),
             UiMode::Help { state, .. } => state.topic.clone(),
             UiMode::ShellInput => "Panels".to_string(),
+            UiMode::HistoryDialog { .. } => "Panels".to_string(),
             UiMode::HotlistDialog(_) => "Panels".to_string(),
             UiMode::JobsDialog { .. } => "Panels".to_string(),
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
