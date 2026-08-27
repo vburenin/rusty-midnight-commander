@@ -15,6 +15,22 @@ pub struct Metadata {
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
+    /// Hard-link count (`st_nlink`). Archives, remote VFS, and `..` markers use 1.
+    pub nlink: u64,
+}
+
+/// Unix `st_nlink`, or 1 when the OS does not expose a link count.
+pub(crate) fn nlink_from_std(md: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        md.nlink()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        1
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +167,7 @@ pub mod local {
             permissions: mode,
             owner,
             group,
+            nlink: super::nlink_from_std(&md),
         }
     }
 
@@ -175,6 +192,7 @@ pub mod local {
                         permissions: 0,
                         owner: None,
                         group: None,
+                        nlink: 1,
                     },
                 });
             }
@@ -495,5 +513,45 @@ mod tests {
         fs.chown(&file, None, None, false).unwrap();
         // And also on the directory recursively
         fs.chown(dir.path(), None, None, true).unwrap();
+    }
+
+    #[test]
+    fn nlink_regular_file_is_one() {
+        let fs = local::LocalFs::new();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("plain.txt");
+        {
+            let mut w = fs.write_file(&file).unwrap();
+            use std::io::Write;
+            writeln!(w, "data").unwrap();
+        }
+        assert_eq!(fs.stat(&file).unwrap().nlink, 1);
+        let list = fs.list_dir(dir.path(), true).unwrap();
+        let ent = list.iter().find(|e| e.name == "plain.txt").unwrap();
+        assert_eq!(ent.meta.nlink, 1);
+        let parent = list.iter().find(|e| e.name == "..").unwrap();
+        assert_eq!(parent.meta.nlink, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nlink_hard_link_pair_is_two() {
+        let fs = local::LocalFs::new();
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        let b = dir.path().join("b.txt");
+        {
+            let mut w = fs.write_file(&a).unwrap();
+            use std::io::Write;
+            writeln!(w, "data").unwrap();
+        }
+        fs.link_hard(&a, &b).unwrap();
+        assert_eq!(fs.stat(&a).unwrap().nlink, 2);
+        assert_eq!(fs.stat(&b).unwrap().nlink, 2);
+        let list = fs.list_dir(dir.path(), true).unwrap();
+        for name in ["a.txt", "b.txt"] {
+            let ent = list.iter().find(|e| e.name == name).unwrap();
+            assert_eq!(ent.meta.nlink, 2, "{name}");
+        }
     }
 }

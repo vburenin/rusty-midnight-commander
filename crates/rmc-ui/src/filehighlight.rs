@@ -134,6 +134,7 @@ mod tests {
             permissions: 0o644,
             owner: None,
             group: None,
+            nlink: 1,
         }
     }
 

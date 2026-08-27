@@ -183,6 +183,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -213,6 +214,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         };
         // Inside-VFS paths: vfs_root/<display>
@@ -260,6 +262,7 @@ fn parent_marker(parent: PathBuf) -> DirEntry {
             permissions: 0,
             owner: None,
             group: None,
+            nlink: 1,
         },
     }
 }
@@ -280,5 +283,6 @@ fn to_meta(md: std::fs::Metadata) -> Metadata {
         permissions: mode,
         owner: None,
         group: None,
+        nlink: crate::nlink_from_std(&md),
     }
 }

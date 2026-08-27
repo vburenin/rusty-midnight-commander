@@ -98,6 +98,7 @@ pub fn list_dir(
                                 permissions: 0o755,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         },
                     );
@@ -118,6 +119,7 @@ pub fn list_dir(
                             permissions: header_mode(mode, false),
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -138,6 +140,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -185,6 +188,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let entries = read_entries(archive_path)?;
@@ -202,6 +206,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
                 permissions: header_mode(mode, is_dir),
                 owner: None,
                 group: None,
+                nlink: 1,
             });
         }
         if p.starts_with(&target) {
@@ -218,6 +223,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         })
     } else {
         Err(FsError::Message(format!(

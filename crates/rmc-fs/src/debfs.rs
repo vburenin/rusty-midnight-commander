@@ -74,6 +74,7 @@ fn list_tar_from_reader<R: Read>(
                                 permissions: 0o755,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         },
                     );
@@ -96,6 +97,7 @@ fn list_tar_from_reader<R: Read>(
                             permissions: header_mode(entry.header(), false),
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -116,6 +118,7 @@ fn list_tar_from_reader<R: Read>(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -161,6 +164,7 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let mut ar = Archive::new(reader);
@@ -184,6 +188,7 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
                 permissions: mode,
                 owner: None,
                 group: None,
+                nlink: 1,
             });
         }
         if path.starts_with(&in_norm) {
@@ -200,6 +205,7 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         })
     } else {
         Err(FsError::Message(format!(
@@ -363,6 +369,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let mut comps = inner_full.components();
@@ -392,6 +399,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
                     permissions: entry.header().mode() & 0o7777,
                     owner: None,
                     group: None,
+                    nlink: 1,
                 });
             }
         }
