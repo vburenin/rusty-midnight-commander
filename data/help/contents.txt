@@ -7,24 +7,21 @@
 #
 = Contents
 
-Welcome to the built‑in help. This viewer is keyboard driven.
+Built-in hypertext help. Topics summarize the public mc(1), mcview(1),
+mcedit(1), and mcdiff(1) manuals. This text is original Apache-2.0.
 
-Navigation:
-  - Esc or F10: close help
-  - Enter or Right: follow the selected link
-  - Tab / Up / Down / Left: move between links
-  - Backspace or l: go back
+Tab selects the next link. Enter follows it. Space and Backspace page
+this node. F1 shows the key list. F10, Esc, or q leaves help.
 
-Topics:
-* Panels -> Panels
-* Viewer -> Viewer
-* Editor -> Editor
-* Diff Viewer -> Diff
-* User Menu -> User Menu
-* File operations and dialogs -> Dialogs
-* Copy -> Copy
-* Move -> Move
-* Mkdir -> Mkdir
-* Delete -> Delete
+* Help viewer keys -> Keys
+* Directory panels -> Panels
 * Find File -> Find File
-
+* Internal editor -> Editor
+* Internal viewer -> Viewer
+* Diff viewer -> Diff
+* Virtual file system -> VFS
+* Directory tree -> Directory Tree
+* External panelize -> External panelize
+* Screen list -> Screen list
+* User menu -> User Menu
+* File operations -> Dialogs

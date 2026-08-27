@@ -1,15 +1,19 @@
 # Apache-2.0 original help text
 = Diff Viewer | Diff
 
-The diff viewer shows side‑by‑side differences between two files.
+Side-by-side comparison of two files (`mcr --diff` or from panels).
 
-Keys (typical):
-  - Up/Down, PageUp/PageDown: navigate
-  - n / N: next/previous hunk
-  - F5: merge current hunk (when supported)
-  - F10: quit
+  n / N           next / previous hunk
+  F4              edit the left file in place
+  Shift-F4 / F14  edit the right file
+  F5              merge the current hunk
+  C-u             swap sides
+  C-r             refresh from disk
+  F7              search
+  F10             quit
 
-Links:
+Edits return to this viewer and hunks rebuild from the saved files.
+
 * Contents -> Contents
-* Panels -> Panels
-
+* Internal editor -> Editor
+* Directory panels -> Panels

@@ -1,15 +1,22 @@
 # Apache-2.0 original help text
 = Editor
 
-The internal editor opens a file in a full‑screen window with its own menu bar.
+Internal editor (mcedit). F4 from panels opens the highlighted file.
 
-Keys:
-  - F2: save
-  - F9: show the editor menu bar
-  - F10 or Esc Esc: quit (with confirmation when there are unsaved changes)
-  - Arrow keys, PageUp/PageDown, Home/End: navigate
+  F2 save                 F4 replace              F7 search
+  F9 File/Edit/Search/Command/Options
+  F10 or q quit (confirm if the buffer is dirty)
+  F12 / Shift-F2 Save as
+  Alt-l goto line         | pipe block through a command
+  C-r record macro        C-a replay last macro
 
-Links:
+Insert/overwrite, autoindent, and tab width are Options. Syntax
+highlighting follows the file type. Several files can be open; Screen
+list (Alt-`) switches among them.
+
+F1 from the editor opens this node.
+
 * Contents -> Contents
-* Panels -> Panels
-
+* Screen list -> Screen list
+* Internal viewer -> Viewer
+* Directory panels -> Panels

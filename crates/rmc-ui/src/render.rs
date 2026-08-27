@@ -3990,7 +3990,7 @@ fn draw_help(
     p.vline(
         0,
         1,
-        rows.saturating_sub(2),
+        rows.saturating_sub(3),
         '│',
         pal.frame_fg,
         pal.dialog_default_bg,
@@ -3998,22 +3998,23 @@ fn draw_help(
     p.vline(
         cols - 1,
         1,
-        rows.saturating_sub(2),
+        rows.saturating_sub(3),
         '│',
         pal.frame_fg,
         pal.dialog_default_bg,
     );
-    p.goto(0, rows - 1);
+    let frame_bottom = rows.saturating_sub(2);
+    p.goto(0, frame_bottom);
     p.text("└");
     p.hline(
         1,
-        rows - 1,
+        frame_bottom,
         cols.saturating_sub(2),
         '─',
         pal.frame_fg,
         pal.dialog_default_bg,
     );
-    p.goto(cols - 1, rows - 1);
+    p.goto(cols - 1, frame_bottom);
     p.text("┘");
     // Title
     let (title, items) = if let Some(index) = index_opt {
@@ -4030,9 +4031,9 @@ fn draw_help(
     let tx = (cols.saturating_sub(title.len() as u16)) / 2;
     p.goto(tx, 0);
     p.text(&title);
-    // Content area layout (inside frame)
+    // Content area inside the frame; last row is the GNU-ish help F-bar.
     let content_top = 1u16;
-    let content_h = rows.saturating_sub(2);
+    let content_h = rows.saturating_sub(3);
     // Build rendered lines from items, keeping link indices
     let mut rendered: Vec<(String, Option<usize>)> = Vec::new();
     let mut link_idx: usize = 0;
@@ -4073,23 +4074,23 @@ fn draw_help(
             p.text(&pad);
         }
     }
-    // Bottom F-bar (MC-style)
+    // Bottom F-bar (GNU help: Help / Index / Prev / Next / Quit — not the panel bar)
     draw_help_fbar(p, rows.saturating_sub(1), cols, pal);
 }
 
+/// GNU mc help viewer F-bar. Focused labels (not panel Help/Menu/View/Edit).
+pub(crate) fn help_fbar_labels() -> [&'static str; 10] {
+    [
+        "Help",  // F1 — this key list
+        "Index", // F2 — Contents
+        "Prev",  // F3 — history back
+        "Next",  // F4 — follow selected link
+        "", "", "", "", "", "Quit",
+    ]
+}
+
 fn draw_help_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = [
-        "Help",  // F1
-        "Index", // F2
-        "Prev",  // F3
-        "Next",  // F4
-        "",      // F5
-        "",      // F6
-        "",      // F7
-        "",      // F8
-        "",      // F9
-        "Quit",  // F10
-    ];
+    let labels = help_fbar_labels();
     let mut x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num = if i == 9 { "10" } else { &(i + 1).to_string() };
@@ -5959,6 +5960,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Filter",
         ],
         &[
+            "Help",
             "View",
             "Edit",
             "Copy",
@@ -6172,9 +6174,23 @@ fn draw_listing_mode_dialog(
 
 #[cfg(test)]
 mod viewer_fbar_and_selection_style_tests {
-    use super::{viewer_fbar_labels, viewer_line_style};
+    use super::{help_fbar_labels, viewer_fbar_labels, viewer_line_style};
     use crate::mc_colors::McPalette;
     use crossterm::style::Color;
+
+    #[test]
+    fn gnu_help_fbar_is_not_panel_bar() {
+        assert_eq!(
+            help_fbar_labels(),
+            ["Help", "Index", "Prev", "Next", "", "", "", "", "", "Quit"]
+        );
+        assert_ne!(
+            help_fbar_labels()[1],
+            "Menu",
+            "help F-bar must not reuse the panel Menu/View/Edit labels"
+        );
+        assert_eq!(help_fbar_labels()[9], "Quit");
+    }
 
     #[test]
     fn gnu_mcview_fbar_labels_default_text_mode() {

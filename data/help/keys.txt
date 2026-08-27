@@ -1,0 +1,27 @@
+# Apache-2.0 original help text
+= Help viewer keys | Keys
+
+Keys accepted in this help viewer (F1 while help is already open).
+
+Links:
+  Tab / BackTab   next / previous link
+  Enter           follow the highlighted link
+  F3, l, p        previous node (history back)
+  F4, n           follow the highlighted link (Next)
+
+Paging (also the general movement keys):
+  Space, PageDown           next page
+  Backspace, Delete, b      previous page
+  C-b, C-h                  previous page
+  Up / Down                 one line
+  u / d                     half page
+  Home, g                   start of this node
+  End, G                    end of this node
+
+Other:
+  F1               this key list
+  F2, c, i         Contents / Index
+  F10, Esc, q      leave help (restore the previous screen)
+
+* Contents -> Contents
+* Directory panels -> Panels

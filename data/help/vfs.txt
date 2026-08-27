@@ -1,0 +1,15 @@
+# Apache-2.0 original help text
+= Virtual file system | VFS
+
+Panels can browse more than a local directory. Enter on a supported
+archive (tar, tar.gz/tgz, zip) opens it as a directory. `..` leaves the
+archive and returns to the parent path.
+
+extfs helpers can list and copy out of other archive-like trees. Copy
+from an archive into a local panel extracts. Remote links (FTP/SFTP and
+similar) are configured from the Left/Right menus when those backends
+are available.
+
+* Contents -> Contents
+* Directory panels -> Panels
+* Internal viewer -> Viewer
