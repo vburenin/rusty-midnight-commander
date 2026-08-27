@@ -1,6 +1,6 @@
 use rmc_fs::remote::{
-    copy_out_with_client, ftp_connect_target, list_dir_with_client, parse_remote_url_str,
-    RemoteClient, RemoteEntry, RemoteScheme, RemoteUrl,
+    copy_out_with_client, ftp_connect_target, list_dir, list_dir_with_client, parse_remote_url_str,
+    set_ftp_proxy, RemoteClient, RemoteEntry, RemoteScheme, RemoteUrl,
 };
 use tempfile::tempdir;
 
@@ -179,4 +179,96 @@ fn ftp_connect_target_user_at_host_gateway() {
         ftp_connect_target(&anon, Some("gw.local")),
         ("gw.local:21".into(), "anonymous@ftp.gnu.org".into())
     );
+}
+
+#[test]
+fn ftp_connect_sends_user_at_host_to_proxy() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    struct ClearProxy;
+    impl Drop for ClearProxy {
+        fn drop(&mut self) {
+            set_ftp_proxy(None);
+        }
+    }
+    let _clear = ClearProxy;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut stream = stream;
+        stream.write_all(b"220 mock ftp\r\n").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let _ = tx.send(line.clone());
+        stream.write_all(b"331 need password\r\n").unwrap();
+        line.clear();
+        let _ = reader.read_line(&mut line);
+        stream.write_all(b"230 logged in\r\n").unwrap();
+        line.clear();
+        let _ = reader.read_line(&mut line); // TYPE I
+        let _ = stream.write_all(b"200 ok\r\n");
+    });
+
+    set_ftp_proxy(Some(&format!("127.0.0.1:{port}")));
+    let url = ftp_url("ftp.example.com", None, Some("alice"));
+    let _ = list_dir(&url, std::path::Path::new("."), false);
+
+    let user_line = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("proxy should receive USER");
+    assert_eq!(user_line, "USER alice@ftp.example.com\r\n");
+}
+
+#[test]
+fn ftp_connect_direct_sends_plain_user_to_real_host() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    struct ClearProxy;
+    impl Drop for ClearProxy {
+        fn drop(&mut self) {
+            set_ftp_proxy(None);
+        }
+    }
+    let _clear = ClearProxy;
+    set_ftp_proxy(None);
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut stream = stream;
+        stream.write_all(b"220 mock ftp\r\n").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let _ = tx.send(line.clone());
+        stream.write_all(b"331 need password\r\n").unwrap();
+        line.clear();
+        let _ = reader.read_line(&mut line);
+        stream.write_all(b"230 logged in\r\n").unwrap();
+        line.clear();
+        let _ = reader.read_line(&mut line);
+        let _ = stream.write_all(b"200 ok\r\n");
+    });
+
+    let url = ftp_url("127.0.0.1", Some(port), Some("alice"));
+    let _ = list_dir(&url, std::path::Path::new("."), false);
+
+    let user_line = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("real host should receive USER");
+    assert_eq!(user_line, "USER alice\r\n");
 }
