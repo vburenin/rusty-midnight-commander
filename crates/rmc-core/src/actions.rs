@@ -121,6 +121,19 @@ pub fn keyevent_to_function_key(ev: &KeyEvent) -> Option<u8> {
     }
 }
 
+/// GNU mc(1) File menu Shift-F / F13–F20. Terminals send `F(13)`…`F(20)` **or**
+/// Shift+F3…Shift+F10. Esc-number stays F1–F10 (`esc_digit_to_function_key`).
+pub fn file_menu_shift_function_key(ev: &KeyEvent) -> Option<u8> {
+    let shift_only = ev.modifiers.contains(KeyModifiers::SHIFT)
+        && !ev.modifiers.contains(KeyModifiers::CONTROL)
+        && !ev.modifiers.contains(KeyModifiers::ALT);
+    match ev.code {
+        KeyCode::F(n @ 13..=20) if ev.modifiers.is_empty() => Some(n),
+        KeyCode::F(n @ 3..=10) if shift_only => Some(n.saturating_add(10)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +163,55 @@ mod tests {
         );
         assert_eq!(
             keyevent_to_function_key(&KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+            None
+        );
+    }
+
+    #[test]
+    fn file_menu_shift_f_maps_f13_through_f20_and_shift_f3_through_f10() {
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(13), KeyModifiers::NONE)),
+            Some(13)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(16), KeyModifiers::NONE)),
+            Some(16)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),
+            Some(20)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT)),
+            Some(13)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(4), KeyModifiers::SHIFT)),
+            Some(14)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT)),
+            Some(15)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(6), KeyModifiers::SHIFT)),
+            Some(16)
+        );
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT)),
+            Some(20)
+        );
+        // Esc-number / plain F3 stay F1–F10, not F13.
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(esc_digit_to_function_key('3'), Some(3));
+        assert_eq!(
+            file_menu_shift_function_key(&KeyEvent::new(
+                KeyCode::F(3),
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL
+            )),
             None
         );
     }

@@ -46,6 +46,17 @@ F7  = Mkdir
 F8  = Delete
 F9  = FocusMenu
 F10 = Quit
+# GNU mc(1) File menu Shift-F / F13–F20 (F13 view-raw, F14 edit-new, F15/F16 copy/move to current panel)
+F13   = FunctionKey13
+S-F3  = FunctionKey13
+F14   = FunctionKey14
+S-F4  = FunctionKey14
+F15   = FunctionKey15
+S-F5  = FunctionKey15
+F16   = FunctionKey16
+S-F6  = FunctionKey16
+F20   = Quit
+S-F10 = Quit
 
 # GNU mc(1) Quick search (C-s / Alt-s). Sort by size remains on the Sort order dialog.
 C-s   = QuickSearch

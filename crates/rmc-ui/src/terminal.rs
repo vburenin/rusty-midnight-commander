@@ -14,7 +14,10 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use rmc_core::actions::{esc_digit_to_function_key, keyevent_to_function_key, Action, PaneSide};
+use rmc_core::actions::{
+    esc_digit_to_function_key, file_menu_shift_function_key, keyevent_to_function_key, Action,
+    PaneSide,
+};
 use rmc_core::app::{
     App, ChmodDialogFocus, ChownDialogFocus, EditorGotoDialog, EditorGotoFocus, EditorMenu,
     EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog,
@@ -7317,6 +7320,22 @@ impl TerminalApp {
                 page_rows,
             );
         }
+        // GNU mc(1) File menu: Shift+F3..F10 is F13..F20. Esc-number stays F1–F10.
+        // Viewer/editor already returned above (F17 next-search / editor F19 stay).
+        if matches!(app.ui_mode, UiMode::Normal)
+            && app.quick_search.is_none()
+            && matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing)
+        {
+            if let Some(n) = file_menu_shift_function_key(&key) {
+                if !key.modifiers.is_empty() {
+                    return Self::handle_key(
+                        app,
+                        KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE),
+                        page_rows,
+                    );
+                }
+            }
+        }
 
         // (C-x handling centralized below with app.pending_ctrl_x)
 
@@ -7584,44 +7603,14 @@ impl TerminalApp {
                 Action::ViewFile => {
                     view_current_file(app)?;
                 }
-                Action::FunctionKey(4) => {
-                    // Open editor on selected file (panels Normal mode)
-                    if matches!(app.ui_mode, UiMode::Normal) {
-                        if let Some(ent) = app.active_panel().current_entry().cloned() {
-                            if !ent.is_dir {
-                                if app.config_opts.use_internal_edit {
-                                    // Read file bytes via VFS
-                                    let mut data = Vec::new();
-                                    if let Ok(mut r) = app.vfs.read_file(&ent.path) {
-                                        use std::io::Read;
-                                        let _ = r.read_to_end(&mut data);
-                                    }
-                                    let buf = rmc_edit::EditorBuffer::from_bytes(
-                                        &data,
-                                        Some(ent.path.clone()),
-                                    );
-                                    push_internal_screen(app, editor_ui_mode(buf, None));
-                                } else {
-                                    // Spawn external editor (EDITOR or VISUAL or vi)
-                                    let prog = std::env::var("EDITOR")
-                                        .ok()
-                                        .filter(|s| !s.trim().is_empty())
-                                        .or_else(|| {
-                                            std::env::var("VISUAL")
-                                                .ok()
-                                                .filter(|s| !s.trim().is_empty())
-                                        })
-                                        .unwrap_or_else(|| "vi".to_string());
-                                    let _ = std::process::Command::new(&prog)
-                                        .arg(&ent.path)
-                                        .current_dir(&app.active_panel().cwd)
-                                        .status();
-                                    app.reload_panels()?;
-                                }
-                            }
-                        }
-                    }
-                }
+                Action::FunctionKey(n) => match n {
+                    4 => open_panel_editor(app, false),
+                    13 => view_current_file_raw(app)?,
+                    14 => open_panel_editor(app, true),
+                    15 => open_copy_move_dialog(app, false, true, true),
+                    16 => open_copy_move_dialog(app, true, true, true),
+                    _ => {}
+                },
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
                 Action::PanelJumpTop | Action::PanelJumpMiddle | Action::PanelJumpBottom => {
@@ -7680,42 +7669,10 @@ impl TerminalApp {
                     }
                 }
                 Action::Copy => {
-                    if let Some(ent) = app.active_panel().current_entry().cloned() {
-                        let dst_dir = app.inactive_panel_mut().cwd.clone();
-                        let default_to = dst_dir.join(&ent.name).display().to_string();
-                        app.ui_mode = UiMode::CopyDialog {
-                            title: "Copy".into(),
-                            src_name: ent.name.clone(),
-                            src_path: ent.path.clone(),
-                            mask: "*".into(),
-                            to: default_to,
-                            using_shell_patterns: true,
-                            follow_links: false,
-                            preserve_attrs: true,
-                            dive_into_subdir: false,
-                            stable_symlinks: false,
-                            focus: rmc_core::app::CopyDialogFocus::To,
-                        };
-                    }
+                    open_copy_move_dialog(app, false, false, false);
                 }
                 Action::Move => {
-                    if let Some(ent) = app.active_panel().current_entry().cloned() {
-                        let dst_dir = app.inactive_panel_mut().cwd.clone();
-                        let default_to = dst_dir.join(&ent.name).display().to_string();
-                        app.ui_mode = UiMode::CopyDialog {
-                            title: "Move".into(),
-                            src_name: ent.name.clone(),
-                            src_path: ent.path.clone(),
-                            mask: "*".into(),
-                            to: default_to,
-                            using_shell_patterns: true,
-                            follow_links: false,
-                            preserve_attrs: true,
-                            dive_into_subdir: false,
-                            stable_symlinks: false,
-                            focus: rmc_core::app::CopyDialogFocus::To,
-                        };
-                    }
+                    open_copy_move_dialog(app, true, false, false);
                 }
                 Action::Enter => {
                     handle_panel_enter(app)?;
@@ -8434,23 +8391,174 @@ fn mkdir_dialog_initial_name(
 /// Public mailing-list wording for GNU mc's pause line (not copied from GPL C).
 pub(crate) const PAUSE_AFTER_RUN_PROMPT: &str = "Press any key to continue...";
 
+fn panel_external_editor() -> String {
+    std::env::var("EDITOR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("VISUAL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+/// F4 edits the highlighted file. F14 / S-F4 starts a new empty buffer
+/// (`mcr -e` untitled path). No "Ask new file name" option is wired yet.
+fn open_panel_editor(app: &mut App, new_file: bool) {
+    if !matches!(app.ui_mode, UiMode::Normal) {
+        return;
+    }
+    if new_file {
+        if app.config_opts.use_internal_edit {
+            let buf = rmc_edit::EditorBuffer::from_bytes(b"", None);
+            push_internal_screen(app, editor_ui_mode(buf, None));
+        } else {
+            let prog = panel_external_editor();
+            let _ = std::process::Command::new(&prog)
+                .current_dir(&app.active_panel().cwd)
+                .status();
+            let _ = app.reload_panels();
+        }
+        return;
+    }
+    let Some(ent) = app.active_panel().current_entry().cloned() else {
+        return;
+    };
+    if ent.is_dir {
+        return;
+    }
+    if app.config_opts.use_internal_edit {
+        let mut data = Vec::new();
+        if let Ok(mut r) = app.vfs.read_file(&ent.path) {
+            use std::io::Read;
+            let _ = r.read_to_end(&mut data);
+        }
+        let buf = rmc_edit::EditorBuffer::from_bytes(&data, Some(ent.path.clone()));
+        push_internal_screen(app, editor_ui_mode(buf, None));
+    } else {
+        let prog = panel_external_editor();
+        let _ = std::process::Command::new(&prog)
+            .arg(&ent.path)
+            .current_dir(&app.active_panel().cwd)
+            .status();
+        let _ = app.reload_panels();
+    }
+}
+
+/// Copy/Move source: tagged names, or the current file. F15/F16 set
+/// `ignore_tags` so only the selected name is used.
+fn copy_move_source(app: &App, ignore_tags: bool) -> Option<(String, PathBuf)> {
+    let panel = app.active_panel();
+    if !ignore_tags && !panel.selection.is_empty() {
+        let ents: Vec<_> = panel
+            .selection
+            .iter()
+            .filter_map(|i| panel.entries.get(i))
+            .filter(|e| !e.is_parent_marker())
+            .collect();
+        if ents.is_empty() {
+            return None;
+        }
+        let src_name = if ents.len() == 1 {
+            ents[0].name.clone()
+        } else {
+            ents.iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        return Some((src_name, ents[0].path.clone()));
+    }
+    let ent = panel.current_entry()?;
+    if ent.is_parent_marker() {
+        return None;
+    }
+    Some((ent.name.clone(), ent.path.clone()))
+}
+
+/// F5/F6: dest = other panel, use tags when present.
+/// F15/F16: dest = current panel, always the selected file.
+fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_tags: bool) {
+    let Some((src_name, src_path)) = copy_move_source(app, ignore_tags) else {
+        return;
+    };
+    let dst_dir = if to_current {
+        app.active_panel().cwd.clone()
+    } else {
+        app.inactive_panel().cwd.clone()
+    };
+    let tagged_count = if ignore_tags {
+        0
+    } else {
+        let panel = app.active_panel();
+        panel
+            .selection
+            .iter()
+            .filter_map(|i| panel.entries.get(i))
+            .filter(|e| !e.is_parent_marker())
+            .count()
+    };
+    let default_to = if tagged_count > 1 {
+        dst_dir.display().to_string()
+    } else {
+        match src_path.file_name() {
+            Some(name) => dst_dir.join(name).display().to_string(),
+            None => dst_dir.join(&src_name).display().to_string(),
+        }
+    };
+    app.ui_mode = UiMode::CopyDialog {
+        title: if is_move {
+            "Move".into()
+        } else {
+            "Copy".into()
+        },
+        src_name,
+        src_path,
+        mask: "*".into(),
+        to: default_to,
+        using_shell_patterns: true,
+        follow_links: false,
+        preserve_attrs: true,
+        dive_into_subdir: false,
+        stable_symlinks: false,
+        focus: rmc_core::app::CopyDialogFocus::To,
+    };
+}
+
 /// F3 / `[open] = view`: internal viewer when configured, else $PAGER / view / less.
 fn view_current_file(app: &mut App) -> Result<()> {
-    view_current_file_with_pager(app, None)
+    view_current_file_with(app, None, false)
+}
+
+/// GNU F13 / S-F3: same as F3 but without formatting or mc.ext `[view]` filters.
+fn view_current_file_raw(app: &mut App) -> Result<()> {
+    view_current_file_with(app, None, true)
 }
 
 /// `pager_override` replaces `$PAGER` when `Some` (tests pass a command that exits immediately).
 fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> Result<()> {
+    view_current_file_with(app, pager_override, false)
+}
+
+fn view_current_file_with(app: &mut App, pager_override: Option<&str>, raw: bool) -> Result<()> {
     if app.config_opts.use_internal_view {
         if let Some(ent) = app.active_panel().current_entry().cloned() {
             if !ent.is_dir {
                 // Archives (.tar.gz / .tgz / …): F3 enters VFS, same as Enter.
-                // Single-file .gz/.bz2/.xz stay in the viewer with decoded bytes.
-                if let Some(entered) = app.vfs.enter_path(&ent.path) {
-                    app.change_dir(&entered)?;
-                    return Ok(());
+                // F13 raw skips that preprocessing and shows on-disk bytes.
+                if !raw {
+                    if let Some(entered) = app.vfs.enter_path(&ent.path) {
+                        app.change_dir(&entered)?;
+                        return Ok(());
+                    }
                 }
-                match rmc_view::ViewData::open_view(&ent.path) {
+                let view = if raw {
+                    Ok(rmc_view::ViewData::from_path(ent.path.clone()))
+                } else {
+                    rmc_view::ViewData::open_view(&ent.path)
+                };
+                match view {
                     Ok(view) => {
                         park_current_viewer_to_cache();
                         if let Ok(mut g) = VIEWER_STATE.lock() {
@@ -8459,7 +8567,14 @@ fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> 
                                 view,
                             });
                         }
-                        app.handle_action(Action::ViewFile)?;
+                        if raw {
+                            push_internal_screen(
+                                app,
+                                UiMode::new_viewer_with_parsed(ent.path.clone(), false),
+                            );
+                        } else {
+                            app.handle_action(Action::ViewFile)?;
+                        }
                     }
                     Err(err) => {
                         app.ui_mode = UiMode::DialogConfirm {
@@ -23688,10 +23803,55 @@ mod panel_function_keys_tests {
     }
 
     fn copy_title(app: &App) -> &str {
+        copy_fields(app).0
+    }
+
+    fn copy_fields(app: &App) -> (&str, &str, &str) {
         match &app.ui_mode {
-            UiMode::CopyDialog { title, .. } => title.as_str(),
+            UiMode::CopyDialog {
+                title,
+                src_name,
+                to,
+                ..
+            } => (title.as_str(), src_name.as_str(), to.as_str()),
             _ => panic!("expected CopyDialog, got {}", mode_name(app)),
         }
+    }
+
+    fn dest_in_dir(to: &str, dir: &std::path::Path) -> bool {
+        std::path::Path::new(to).starts_with(dir)
+    }
+
+    fn make_split_app(left: &std::path::Path, right: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(left).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(right).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn viewer_parsed(app: &App) -> bool {
+        match &app.ui_mode {
+            UiMode::Viewer { parsed, .. } => *parsed,
+            _ => panic!("expected Viewer, got {}", mode_name(app)),
+        }
+    }
+
+    fn editor_path_and_empty(app: &App) -> (Option<std::path::PathBuf>, bool) {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => {
+                let empty = buf.to_bytes().is_empty();
+                (buf.path.clone(), empty)
+            }
+            _ => panic!("expected Editor, got {}", mode_name(app)),
+        }
+    }
+
+    fn tag_name(app: &mut App, name: &str) {
+        goto_name(app, name);
+        press(app, KeyCode::Insert);
     }
 
     fn mode_name(app: &App) -> &'static str {
@@ -23970,6 +24130,255 @@ mod panel_function_keys_tests {
             mode_name(&app)
         );
         assert!(!app.quit, "Esc-Esc must not quit the app");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f13_and_shift_f3_open_raw_viewer_f3_stays_parsed() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            viewer_parsed(&app),
+            "F3 must open the parsed/filtered viewer"
+        );
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(13));
+        assert!(
+            !viewer_parsed(&app),
+            "F13 must open the raw/unparsed viewer"
+        );
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "viewer F3 is still Quit, got {}",
+            mode_name(&app)
+        );
+        assert!(!app.quit);
+
+        press_rows(&mut app, KeyCode::F(3), KeyModifiers::SHIFT, 10);
+        assert!(
+            !viewer_parsed(&app),
+            "S-F3 must open the raw/unparsed viewer"
+        );
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        // Esc-3 is F3, not F13.
+        press(&mut app, KeyCode::Esc);
+        press_char(&mut app, '3');
+        assert!(
+            viewer_parsed(&app),
+            "Esc-3 must be F3 parsed view, not F13 raw"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f14_opens_new_empty_buffer_f4_edits_highlighted() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        let highlighted = app
+            .active_panel()
+            .current_entry()
+            .map(|e| e.path.clone())
+            .unwrap();
+
+        press(&mut app, KeyCode::F(4));
+        let (path, _) = editor_path_and_empty(&app);
+        assert_eq!(
+            path.as_ref(),
+            Some(&highlighted),
+            "F4 edits the highlighted file"
+        );
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(14));
+        let (path, empty) = editor_path_and_empty(&app);
+        assert!(
+            path.as_ref().is_none_or(|p| p.as_os_str().is_empty()),
+            "F14 must be a new/untitled buffer, got {path:?}"
+        );
+        assert!(empty, "F14 buffer must be empty");
+        press(&mut app, KeyCode::F(10));
+
+        press_rows(&mut app, KeyCode::F(4), KeyModifiers::SHIFT, 10);
+        let (path, empty) = editor_path_and_empty(&app);
+        assert!(
+            path.as_ref().is_none_or(|p| p.as_os_str().is_empty()),
+            "S-F4 must be a new/untitled buffer, got {path:?}"
+        );
+        assert!(empty);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f15_f16_dest_current_ignore_tags_f5_f6_other_and_tags() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("notes.txt"), b"hello\n").unwrap();
+        std::fs::write(left.join("other.txt"), b"world\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        app.panel_opts.mark_moves_down = false;
+        tag_name(&mut app, "other.txt");
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(5));
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Copy");
+        assert!(
+            src.contains("other.txt"),
+            "F5 must use tagged files, got {src:?}"
+        );
+        assert!(
+            !src.contains("notes.txt"),
+            "F5 tagged-only source must not add the untagged cursor, got {src:?}"
+        );
+        assert!(
+            dest_in_dir(to, &right),
+            "F5 dest defaults to the other panel, to={to} other={}",
+            right.display()
+        );
+        assert!(
+            !dest_in_dir(to, &left),
+            "F5 dest must not default to the current panel, to={to} current={}",
+            left.display()
+        );
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(15));
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Copy");
+        assert_eq!(src, "notes.txt", "F15 ignores tags; selected file only");
+        assert!(
+            dest_in_dir(to, &left),
+            "F15 dest defaults to the current panel, to={to} current={}",
+            left.display()
+        );
+        assert!(
+            !dest_in_dir(to, &right),
+            "F15 dest must not default to the other panel, to={to} other={}",
+            right.display()
+        );
+        press(&mut app, KeyCode::Esc);
+
+        press_rows(&mut app, KeyCode::F(5), KeyModifiers::SHIFT, 10);
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Copy");
+        assert_eq!(src, "notes.txt", "S-F5 == F15");
+        assert!(dest_in_dir(to, &left), "S-F5 dest is current panel");
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(6));
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Move");
+        assert!(src.contains("other.txt"), "F6 uses tags, got {src:?}");
+        assert!(dest_in_dir(to, &right), "F6 dest is other panel, to={to}");
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(16));
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Move");
+        assert_eq!(src, "notes.txt", "F16 ignores tags");
+        assert!(dest_in_dir(to, &left), "F16 dest is current panel, to={to}");
+        press(&mut app, KeyCode::Esc);
+
+        press_rows(&mut app, KeyCode::F(6), KeyModifiers::SHIFT, 10);
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Move");
+        assert_eq!(src, "notes.txt", "S-F6 == F16");
+        assert!(dest_in_dir(to, &left));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f20_and_shift_f10_quit_like_f10_from_listing() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(20));
+        assert!(
+            is_quit_or_confirm(&app),
+            "F20 Quit, got {} quit={}",
+            mode_name(&app),
+            app.quit
+        );
+        app.quit = false;
+        app.ui_mode = UiMode::Normal;
+
+        press_rows(&mut app, KeyCode::F(10), KeyModifiers::SHIFT, 10);
+        assert!(
+            is_quit_or_confirm(&app),
+            "S-F10 Quit, got {} quit={}",
+            mode_name(&app),
+            app.quit
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_f13_back_to_panels_fkeys_c_l_insert_c_s_still_work() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(13));
+        assert!(!viewer_parsed(&app));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+
+        press(&mut app, KeyCode::F(1));
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "F1 after F13, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::Esc);
+        press_char(&mut app, '5');
+        assert_eq!(copy_title(&app), "Copy", "Esc-5 still F5 after F13");
+        press(&mut app, KeyCode::Esc);
+
+        press_ctrl(&mut app, 'l');
+        assert!(app.needs_full_clear, "C-l still repaints after F13");
+        app.needs_full_clear = false;
+
+        press(&mut app, KeyCode::Insert);
+        let marked: Vec<&str> = {
+            let p = app.active_panel();
+            p.selection
+                .iter()
+                .filter_map(|i| p.entries.get(i).map(|e| e.name.as_str()))
+                .collect()
+        };
+        assert_eq!(marked, vec!["notes.txt"]);
+
+        press_ctrl(&mut app, 's');
+        assert!(app.quick_search.is_some(), "C-s still starts Quick search");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

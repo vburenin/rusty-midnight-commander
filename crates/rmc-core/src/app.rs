@@ -2111,6 +2111,12 @@ impl UiMode {
 
     /// Internal viewer with GNU mcview defaults (parsed on, format off, no selection).
     pub fn new_viewer(path: PathBuf) -> Self {
+        Self::new_viewer_with_parsed(path, true)
+    }
+
+    /// Internal viewer. `parsed = false` is GNU F13 View raw (no mc.ext
+    /// `[view]` filter / formatting). F3 uses `parsed = true`.
+    pub fn new_viewer_with_parsed(path: PathBuf, parsed: bool) -> Self {
         UiMode::Viewer {
             path,
             hex: false,
@@ -2122,7 +2128,7 @@ impl UiMode {
             show_line_numbers: false,
             show_cr: false,
             format_nroff: false,
-            parsed: true,
+            parsed,
             sel_anchor: None,
             sel_cursor: 0,
             viewer_menu: None,

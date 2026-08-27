@@ -58,4 +58,74 @@ fn resolves_mc_defaults() {
             other => panic!("F{n} must bind {want}, got {other:?}"),
         }
     }
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(13), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(13))
+        ),
+        "F13 View raw"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(13))
+        ),
+        "S-F3 == F13"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(14), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(14))
+        ),
+        "F14 Edit new"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(4), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(14))
+        ),
+        "S-F4 == F14"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(15), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(15))
+        ),
+        "F15 Copy to current"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(15))
+        ),
+        "S-F5 == F15"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(16), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(16))
+        ),
+        "F16 Move to current"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(6), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(16))
+        ),
+        "S-F6 == F16"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),
+            Some(Action::Quit)
+        ),
+        "F20 Quit"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT)),
+            Some(Action::Quit)
+        ),
+        "S-F10 == F20 Quit"
+    );
 }
