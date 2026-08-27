@@ -131,10 +131,13 @@ mod tests {
             is_exe,
             size: 0,
             modified: SystemTime::UNIX_EPOCH,
+            accessed: SystemTime::UNIX_EPOCH,
+            changed: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: None,
             group: None,
             nlink: 1,
+            inode: 0,
         }
     }
 

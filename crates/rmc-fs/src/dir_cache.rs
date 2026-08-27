@@ -134,6 +134,9 @@ mod tests {
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: SystemTime::UNIX_EPOCH,
+                changed: SystemTime::UNIX_EPOCH,
+                inode: 0,
             },
         }
     }

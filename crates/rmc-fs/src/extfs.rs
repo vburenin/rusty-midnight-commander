@@ -184,6 +184,9 @@ pub fn list_dir(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: SystemTime::UNIX_EPOCH,
+                changed: SystemTime::UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -215,6 +218,9 @@ pub fn list_dir(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: SystemTime::UNIX_EPOCH,
+                changed: SystemTime::UNIX_EPOCH,
+                inode: 0,
             },
         };
         // Inside-VFS paths: vfs_root/<display>
@@ -263,6 +269,9 @@ fn parent_marker(parent: PathBuf) -> DirEntry {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: SystemTime::UNIX_EPOCH,
+            changed: SystemTime::UNIX_EPOCH,
+            inode: 0,
         },
     }
 }
@@ -284,5 +293,8 @@ fn to_meta(md: std::fs::Metadata) -> Metadata {
         owner: None,
         group: None,
         nlink: crate::nlink_from_std(&md),
+        accessed: md.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        changed: md.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        inode: 0,
     }
 }

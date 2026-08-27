@@ -75,6 +75,9 @@ fn list_tar_from_reader<R: Read>(
                                 owner: None,
                                 group: None,
                                 nlink: 1,
+                                accessed: UNIX_EPOCH,
+                                changed: UNIX_EPOCH,
+                                inode: 0,
                             },
                         },
                     );
@@ -94,10 +97,13 @@ fn list_tar_from_reader<R: Read>(
                             is_executable: (header_mode(entry.header(), false) & 0o111) != 0,
                             size,
                             modified,
+                            accessed: modified,
+                            changed: modified,
                             permissions: header_mode(entry.header(), false),
                             owner: None,
                             group: None,
                             nlink: 1,
+                            inode: 0,
                         },
                     },
                 );
@@ -119,6 +125,9 @@ fn list_tar_from_reader<R: Read>(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -165,6 +174,9 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let mut ar = Archive::new(reader);
@@ -185,10 +197,13 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
                 is_executable: (!is_dir) && (mode & 0o111 != 0),
                 size,
                 modified,
+                accessed: modified,
+                changed: modified,
                 permissions: mode,
                 owner: None,
                 group: None,
                 nlink: 1,
+                inode: 0,
             });
         }
         if path.starts_with(&in_norm) {
@@ -206,6 +221,9 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         })
     } else {
         Err(FsError::Message(format!(
@@ -370,6 +388,9 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let mut comps = inner_full.components();
@@ -396,10 +417,13 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
                     is_executable: (entry.header().mode() & 0o111) != 0,
                     size,
                     modified,
+                    accessed: modified,
+                    changed: modified,
                     permissions: entry.header().mode() & 0o7777,
                     owner: None,
                     group: None,
                     nlink: 1,
+                    inode: 0,
                 });
             }
         }
