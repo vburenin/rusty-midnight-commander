@@ -11697,23 +11697,26 @@ mod viewer_compressed_filter_tests {
             _ => panic!("expected Viewer after Search"),
         }
 
+        press(&mut app, KeyCode::Char('w'));
+        match &app.ui_mode {
+            UiMode::Viewer { wrap, hex, .. } => {
+                assert!(*wrap);
+                assert!(!*hex);
+            }
+            _ => panic!("expected Viewer wrap"),
+        }
+
         press(&mut app, KeyCode::F(4));
         match &app.ui_mode {
-            UiMode::Viewer { hex, .. } => assert!(*hex, "F4 hex on decoded stream"),
+            UiMode::Viewer { hex, wrap, .. } => {
+                assert!(*hex, "F4 hex on decoded stream");
+                assert!(*wrap);
+            }
             _ => panic!("expected Viewer hex"),
         }
         let hex_bytes = decoded_bytes(&gz);
         assert_eq!(hex_bytes, PAYLOAD, "hex mode still uses decoded bytes");
         assert!(!hex_bytes.starts_with(&[0x1f, 0x8b]));
-
-        press(&mut app, KeyCode::Char('w'));
-        match &app.ui_mode {
-            UiMode::Viewer { wrap, hex, .. } => {
-                assert!(*wrap);
-                assert!(*hex);
-            }
-            _ => panic!("expected Viewer wrap"),
-        }
 
         press(&mut app, KeyCode::F(9));
         match &app.ui_mode {
@@ -11851,7 +11854,7 @@ mod viewer_compressed_filter_tests {
             "Find File must not start decompressing / open Viewer"
         );
 
-        app.ui_mode = UiMode::Normal;
+        app.ui_mode = UiMode::ShellInput;
         press_alt(&mut app, 'h');
         assert!(
             matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
