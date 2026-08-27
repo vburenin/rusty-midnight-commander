@@ -6775,6 +6775,7 @@ mod file_op_abort_keys_tests {
         let dst = root.join("big.dst");
         std::fs::write(&src, vec![0xABu8; 4 * 1024 * 1024]).unwrap();
         let mut app = make_app(&root);
+        app.jobs.set_chunk_delay_ms(5);
         app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
         let job_id = match &app.ui_mode {
             UiMode::FileOpProgress {

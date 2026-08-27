@@ -49,6 +49,9 @@ pub struct BackgroundJob {
 struct JobEntry {
     job: BackgroundJob,
     cancel_flag: Arc<AtomicBool>,
+    /// Per-queue chunk pause. Tests in other crates set this because `cfg(test)`
+    /// is off when this crate is a normal dependency.
+    chunk_delay_ms: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Default)]
@@ -63,6 +66,7 @@ pub struct JobQueue {
     inner: Arc<(Mutex<Inner>, Condvar)>,
     next_id: AtomicU64,
     worker: Option<JoinHandle<()>>,
+    chunk_delay_ms: Arc<AtomicU64>,
 }
 
 impl JobQueue {
@@ -76,6 +80,7 @@ impl JobQueue {
             inner,
             next_id: AtomicU64::new(1),
             worker: Some(worker),
+            chunk_delay_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -107,12 +112,20 @@ impl JobQueue {
                 error: None,
             },
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            chunk_delay_ms: Arc::clone(&self.chunk_delay_ms),
         }));
         let (lock, cvar) = &*self.inner;
         let mut inner = lock.lock().expect("JobQueue mutex poisoned");
         inner.jobs.push(entry);
         cvar.notify_all();
         id
+    }
+
+    /// Pause this many milliseconds after each 64 KiB chunk. Used by tests in
+    /// other crates (where `cfg(test)` is off for this crate) so Abort can
+    /// observe an in-flight copy. Production always leaves this at 0.
+    pub fn set_chunk_delay_ms(&self, ms: u64) {
+        self.chunk_delay_ms.store(ms, Ordering::Relaxed);
     }
 
     /// Cancel a job by id. Best-effort: running copies will stop mid-copy.
@@ -350,7 +363,7 @@ fn copy_file_chunks(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    {
+    let chunk_delay_ms = {
         let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
         job.job.file_total = total;
         job.job.file_done = 0;
@@ -358,7 +371,8 @@ fn copy_file_chunks(
         if job.job.bytes_total == 0 {
             job.job.bytes_total = total;
         }
-    }
+        Arc::clone(&job.chunk_delay_ms)
+    };
 
     let mut src_f = File::open(src)?;
     let mut dst_f = OpenOptions::new()
@@ -387,7 +401,12 @@ fn copy_file_chunks(
             job.job.bytes_done = *overall;
         }
         // Give other threads a chance (useful for tests to trigger cancel).
-        if cfg!(test) {
+        // `cfg(test)` covers this crate's tests; `chunk_delay_ms` covers tests
+        // in dependent crates where this crate is not built with cfg(test).
+        let delay_ms = chunk_delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        } else if cfg!(test) {
             thread::yield_now();
             thread::sleep(Duration::from_millis(1));
         }
