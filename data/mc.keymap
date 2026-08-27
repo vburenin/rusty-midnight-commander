@@ -23,6 +23,7 @@ Alt-g     = PanelJumpTop
 Alt-r     = PanelJumpMiddle
 Alt-j     = PanelJumpBottom
 Tab       = SwitchPanel
+C-i       = SwitchPanel
 Enter     = Enter
 Backspace = ParentDir
 C-PageUp  = ParentDir
