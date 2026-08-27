@@ -1680,7 +1680,11 @@ impl TerminalApp {
             // immediately when Abort or completion returns to Normal.
             let file_op = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
             app.drive_pending_file_op()?;
-            if last_draw.elapsed() > Duration::from_millis(33)
+            // GNU mc(1) C-l: full clear+redraw from current App state (draw already
+            // queues Clear(All)). Consume the flag before draw; do not reload panels.
+            let force_repaint = app.take_needs_full_clear();
+            if force_repaint
+                || last_draw.elapsed() > Duration::from_millis(33)
                 || file_op
                 || matches!(app.ui_mode, UiMode::FileOpProgress { .. })
             {
@@ -2038,6 +2042,21 @@ impl TerminalApp {
         Ok(())
     }
 
+    /// GNU mc(1) C-l full screen repaint. Viewer/editor keep their own C-l.
+    /// Learn-keys capture records C-l. C-x chords (C-x l hardlink) are not stolen.
+    fn honors_cl_repaint(app: &App) -> bool {
+        if app.pending_ctrl_x {
+            return false;
+        }
+        match app.ui_mode {
+            UiMode::Viewer { .. } | UiMode::Editor { .. } => false,
+            UiMode::LearnKeysDialog {
+                capturing: true, ..
+            } => false,
+            _ => true,
+        }
+    }
+
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
         let active_cwd = app.active_panel().cwd.clone();
         let pending_ctrl_x = app.pending_ctrl_x;
@@ -2106,6 +2125,14 @@ impl TerminalApp {
                 app.ui_mode = UiMode::ShellInput;
             }
             return Ok(());
+        }
+        // GNU mc(1) C-l: full screen repaint. Viewer/editor keep their own C-l;
+        // Learn-keys capture records C-l; C-x chords are not stolen.
+        if Self::honors_cl_repaint(app) {
+            if matches!(app.keymap.resolve(&key), Some(Action::Repaint)) {
+                app.handle_action(Action::Repaint)?;
+                return Ok(());
+            }
         }
         // GNU mc(1) Screen selector: Alt-} next, Alt-{ previous, Alt-` list.
         // Skip while a modal dialog (including editor/viewer/diff overlays) eats keys.
@@ -7134,6 +7161,7 @@ impl TerminalApp {
                     }
                     KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         // GNU mcview C-l: refresh (next draw is enough).
+                        // Panel C-l is Action::Repaint; do not steal this viewer binding.
                     }
                     KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.handle_action(Action::ToggleSubshell)?;
@@ -23300,6 +23328,247 @@ mod panel_toggle_mark_tests {
         let stay = app.active_panel().cursor;
         press(&mut app, KeyCode::Insert);
         assert_eq!(app.active_panel().cursor, stay);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_cl_repaint_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-cl-repaint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn seed_listing(root: &std::path::Path) {
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        std::fs::write(root.join("bbb.txt"), b"b").unwrap();
+        std::fs::write(root.join("zzz.bin"), b"z").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+    }
+
+    fn cursor_name(app: &App) -> &str {
+        app.active_panel()
+            .current_entry()
+            .map(|e| e.name.as_str())
+            .unwrap_or("")
+    }
+
+    fn goto_name(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn selected_names(app: &App) -> Vec<String> {
+        let p = app.active_panel();
+        p.selection
+            .iter()
+            .filter_map(|i| p.entries.get(i).map(|e| e.name.clone()))
+            .collect()
+    }
+
+    fn snapshot_panel(app: &App) -> (std::path::PathBuf, Vec<String>, usize, Vec<usize>) {
+        let p = app.active_panel();
+        (
+            p.cwd.clone(),
+            p.entries.iter().map(|e| e.name.clone()).collect(),
+            p.cursor,
+            p.selection.iter().collect(),
+        )
+    }
+
+    #[test]
+    fn keymap_binds_c_l_to_repaint_and_c_r_to_refresh() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            Some(Action::Repaint)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Some(Action::Refresh)
+        ));
+    }
+
+    #[test]
+    fn c_l_requests_full_repaint_without_changing_panel_state() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "bbb.txt");
+        let before = snapshot_panel(&app);
+        let stamp_left = app.left.dir_reload_stamp;
+        let stamp_right = app.right.dir_reload_stamp;
+        assert!(!app.needs_full_clear);
+
+        press_ctrl(&mut app, 'l');
+
+        assert!(
+            app.needs_full_clear,
+            "C-l must set needs_full_clear for the draw loop"
+        );
+        assert_eq!(snapshot_panel(&app), before);
+        assert_eq!(app.left.dir_reload_stamp, stamp_left);
+        assert_eq!(app.right.dir_reload_stamp, stamp_right);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_input_c_l_repaints_and_does_not_append_to_cmdline() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::ShellInput;
+        app.subshell.replace_cmdline("echo hello".to_string());
+        let cmd_before = app.subshell.cmdline.clone();
+        let before = snapshot_panel(&app);
+
+        press_ctrl(&mut app, 'l');
+
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "C-l must stay on the command line"
+        );
+        assert_eq!(
+            app.subshell.cmdline, cmd_before,
+            "C-l must not insert 'l' into the command line"
+        );
+        assert!(app.needs_full_clear);
+        assert_eq!(snapshot_panel(&app), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_insert_mark_c_l_marks_quick_search_and_alt_g_still_work() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "aaa.txt");
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+
+        press_ctrl(&mut app, 'l');
+        assert!(app.needs_full_clear);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+        assert_eq!(cursor_name(&app), "aaa.txt");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        app.needs_full_clear = false;
+
+        press_ctrl(&mut app, 's');
+        assert!(
+            app.quick_search.is_some(),
+            "C-s Quick search must still start after C-l"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+
+        let page = 5;
+        app.active_panel_mut().scroll_top = 0;
+        press_rows(&mut app, KeyCode::Char('g'), KeyModifiers::ALT, page);
+        assert_eq!(cursor_name(&app), "..");
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn menu_c_l_repaints_without_closing_unlike_esc() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        assert!(matches!(app.ui_mode, UiMode::Menu { .. }));
+        let before = snapshot_panel(&app);
+
+        press_ctrl(&mut app, 'l');
+        assert!(
+            matches!(app.ui_mode, UiMode::Menu { .. }),
+            "C-l must not dismiss the menu the way Esc does"
+        );
+        assert!(app.needs_full_clear);
+        assert_eq!(snapshot_panel(&app), before);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn viewer_c_l_keeps_mcview_refresh_path() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::new_viewer(file);
+        match &mut app.ui_mode {
+            UiMode::Viewer {
+                show_line_numbers, ..
+            } => *show_line_numbers = false,
+            _ => unreachable!(),
+        }
+
+        press_ctrl(&mut app, 'l');
+
+        match &app.ui_mode {
+            UiMode::Viewer {
+                show_line_numbers, ..
+            } => {
+                assert!(
+                    !*show_line_numbers,
+                    "viewer C-l must not toggle line numbers (plain l does that)"
+                );
+            }
+            _ => panic!("viewer C-l must stay in the viewer"),
+        }
+        assert!(
+            !app.needs_full_clear,
+            "mcview keeps its own C-l path; panel Repaint must not steal it"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

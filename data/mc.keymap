@@ -8,7 +8,7 @@
 #
 # Actions use existing rmc_core::actions::Action variant names (simplified):
 #   MoveUp, MoveDown, PageUp, PageDown, Home, End, Enter, ParentDir, SwitchPanel, ToggleHidden,
-#   SwapPanels, Refresh, ShowHelp, ViewFile, Copy, Move, Mkdir, Delete, FocusMenu, Quit,
+#   SwapPanels, Refresh, Repaint, ShowHelp, ViewFile, Copy, Move, Mkdir, Delete, FocusMenu, Quit,
 #   ToggleSelect, SortName, SortTime, CycleListingFormat, QuickSearch
 
 # Movement and navigation
@@ -31,6 +31,8 @@ C-PageUp  = ParentDir
 C-h     = ToggleHidden
 C-u     = SwapPanels
 C-r     = Refresh
+# GNU mc(1) Miscellaneous Keys: C-l redraw / repaint the screen (not C-r Reload)
+C-l     = Repaint
 C-o     = ToggleSubshell
 
 # Function keys (F-bar)

@@ -1307,6 +1307,8 @@ pub struct App {
     pub active: PaneSide,
     pub show_hidden: bool,
     pub quit: bool,
+    /// GNU mc(1) C-l: the event loop clears the terminal and redraws before the next `draw`.
+    pub needs_full_clear: bool,
     pub ui_mode: UiMode,
     /// Parked internal modules (editor / viewer / diff). The currently displayed
     /// module lives in `ui_mode`; its slot here is a `Normal` placeholder.
@@ -1369,6 +1371,7 @@ impl App {
             active: PaneSide::Left,
             show_hidden: false,
             quit: false,
+            needs_full_clear: false,
             ui_mode: UiMode::Normal,
             screens: Vec::new(),
             screen_idx: 0,
@@ -1576,6 +1579,10 @@ impl App {
                 self.vfs.invalidate_dir_cache(Some(&right));
                 self.reload_panels_impl(true)?;
             }
+            Repaint => {
+                // C-l: full screen repaint only. Do not reload panels or invalidate VFS cache.
+                self.needs_full_clear = true;
+            }
             ToggleSubshell => {
                 // Toggle full-screen subshell/output view.
                 self.subshell.toggle_output_screen();
@@ -1779,6 +1786,11 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Consume the C-l full-repaint request. The event loop checks this before `draw`.
+    pub fn take_needs_full_clear(&mut self) -> bool {
+        std::mem::take(&mut self.needs_full_clear)
     }
 
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
