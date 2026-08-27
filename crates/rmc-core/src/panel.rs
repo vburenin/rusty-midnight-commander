@@ -518,23 +518,53 @@ fn user_type_char(ent: &FileEntry) -> char {
     }
 }
 
-/// GNU-ish SI (base 1000) size: 1.2k, 3.4M, 5.6G. Used when Panel `kilobyte_si` is on.
-pub fn format_si_size(size: u64) -> String {
-    const K: f64 = 1_000.0;
-    const M: f64 = 1_000_000.0;
-    const G: f64 = 1_000_000_000.0;
-    const T: f64 = 1_000_000_000_000.0;
-    let s = size as f64;
-    if s >= T {
-        format!("{:.1}T", s / T)
-    } else if s >= G {
-        format!("{:.1}G", s / G)
-    } else if s >= M {
-        format!("{:.1}M", s / M)
-    } else if s >= K {
-        format!("{:.1}k", s / K)
+/// Format a byte count for panel size columns and mini-status.
+///
+/// GNU Midnight Commander `kilobyte_si` (Options → Panels → Use SI size units):
+/// - `si == false` (default): powers of 1024 with suffixes K, M, G, T (not KiB).
+///   Values below 1024 are a plain integer with no suffix.
+/// - `si == true`: powers of 1000 with suffixes B, kB, MB, GB, TB.
+pub fn format_byte_size(bytes: u64, si: bool) -> String {
+    let base = if si { 1000u64 } else { 1024u64 };
+    let units: &[&str] = if si {
+        &["B", "kB", "MB", "GB", "TB", "PB", "EB"]
     } else {
-        size.to_string()
+        &["", "K", "M", "G", "T", "P", "E"]
+    };
+
+    if bytes < base {
+        return if units[0].is_empty() {
+            bytes.to_string()
+        } else {
+            format!("{bytes}{}", units[0])
+        };
+    }
+
+    let mut unit = 1usize;
+    let mut div = base;
+    while unit + 1 < units.len() {
+        let Some(next) = div.checked_mul(base) else {
+            break;
+        };
+        if bytes / div < base {
+            break;
+        }
+        div = next;
+        unit += 1;
+    }
+
+    let whole = bytes / div;
+    // One fractional digit only when the whole part is a single digit so the
+    // panel column stays compact (1.5K, 1.2kB) while 976K stays an integer.
+    if whole < 10 {
+        let tenth = (bytes % div) * 10 / div;
+        if tenth == 0 {
+            format!("{whole}{}", units[unit])
+        } else {
+            format!("{whole}.{tenth}{}", units[unit])
+        }
+    } else {
+        format!("{whole}{}", units[unit])
     }
 }
 
@@ -543,10 +573,8 @@ fn user_size_string(ent: &FileEntry, si: bool) -> String {
         "UP--DIR".to_string()
     } else if ent.is_dir {
         String::new()
-    } else if si {
-        format_si_size(ent.size)
     } else {
-        ent.size.to_string()
+        format_byte_size(ent.size, si)
     }
 }
 
@@ -662,7 +690,7 @@ fn join_user_parts(
 }
 
 /// Render one user-format listing row, truncated to `width`.
-/// `si` selects SI (1000) size units vs raw bytes.
+/// `si` selects SI (1000: B/kB/MB/…) size units vs 1024-based (K/M/G).
 pub fn format_user_listing_line(
     ent: &FileEntry,
     tokens: &[UserFormatToken],
@@ -856,23 +884,40 @@ mod tests {
     }
 
     #[test]
-    fn format_si_size_gnu_ish_lowercase() {
-        assert_eq!(format_si_size(42), "42");
-        assert_eq!(format_si_size(999), "999");
-        assert_eq!(format_si_size(1_200), "1.2k");
-        assert_eq!(format_si_size(3_400_000), "3.4M");
-        assert_eq!(format_si_size(5_600_000_000), "5.6G");
+    fn format_byte_size_1024_vs_1000() {
+        // Flag off (default): 1024-based, GNU mc K/M/G (not KiB).
+        assert!(!crate::app::PanelOptions::default().kilobyte_si);
+        assert_eq!(format_byte_size(42, false), "42");
+        assert_eq!(format_byte_size(1000, false), "1000");
+        assert_eq!(format_byte_size(1024, false), "1K");
+        assert_eq!(format_byte_size(1536, false), "1.5K");
+        assert_eq!(format_byte_size(1_000_000, false), "976K");
+        assert_eq!(format_byte_size(1_048_576, false), "1M");
+        // Flag on: decimal SI (1000) B / kB / MB / GB / TB.
+        assert_eq!(format_byte_size(42, true), "42B");
+        assert_eq!(format_byte_size(999, true), "999B");
+        assert_eq!(format_byte_size(1000, true), "1kB");
+        assert_eq!(format_byte_size(1024, true), "1kB");
+        assert_eq!(format_byte_size(1_200, true), "1.2kB");
+        assert_eq!(format_byte_size(1_000_000, true), "1MB");
+        assert_eq!(format_byte_size(1_048_576, true), "1MB");
+        assert_eq!(format_byte_size(3_400_000, true), "3.4MB");
+        assert_eq!(format_byte_size(5_600_000_000, true), "5.6GB");
+        assert_eq!(
+            format_byte_size(1024, crate::app::PanelOptions::default().kilobyte_si),
+            "1K"
+        );
     }
 
     #[test]
     fn user_format_size_si_flag() {
         let now = SystemTime::now();
-        let ent = make_entry("big.bin", 3_400_000, now, false);
+        let ent = make_entry("big.bin", 1_000_000, now, false);
         let tokens = parse_user_listing_format("size");
-        let raw = format_user_listing_line(&ent, &tokens, 16, false);
-        assert!(raw.contains("3400000"), "raw={raw:?}");
+        let iec = format_user_listing_line(&ent, &tokens, 16, false);
+        assert!(iec.contains("976K"), "1024-based={iec:?}");
         let si = format_user_listing_line(&ent, &tokens, 16, true);
-        assert!(si.contains("3.4M"), "si={si:?}");
+        assert!(si.contains("1MB"), "SI={si:?}");
     }
 
     #[test]
