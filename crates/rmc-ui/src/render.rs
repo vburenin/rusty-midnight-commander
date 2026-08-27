@@ -605,6 +605,24 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 app.shadows,
             );
         }
+        rmc_core::app::UiMode::ScreenList {
+            selected,
+            scroll_top,
+            focus,
+            ..
+        } => {
+            draw_screen_list_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                app,
+                *selected,
+                *scroll_top,
+                *focus,
+                app.shadows,
+            );
+        }
         _ => {}
     }
     Ok(())
@@ -5123,6 +5141,124 @@ fn draw_jobs_dialog(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn draw_screen_list_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    app: &App,
+    selected: usize,
+    scroll_top: usize,
+    focus: rmc_core::app::ScreenListFocus,
+    show_shadow: bool,
+) {
+    use rmc_core::app::ScreenListFocus as F;
+    let entries = app.screen_list_labels();
+    let w = (cols as usize).min(56) as u16;
+    let min_h = 7u16;
+    let list_h = (entries.len() as u16).clamp(1, rows.saturating_sub(6));
+    let h = (list_h + 4).max(min_h).min(rows.saturating_sub(2));
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(
+        x + 1,
+        y,
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y);
+    p.text("┐");
+    p.vline(
+        x,
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        x + w.saturating_sub(1),
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h.saturating_sub(1));
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h.saturating_sub(1),
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
+    p.text("┘");
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = " Screen list ";
+    let tx = x + w.saturating_sub(ttl.len() as u16) / 2;
+    p.goto(tx, y);
+    p.text(ttl);
+    let list_top = y + 1;
+    let visible = h.saturating_sub(4) as usize;
+    let mut start = scroll_top;
+    if selected < start {
+        start = selected;
+    }
+    if visible > 0 && selected >= start + visible {
+        start = selected.saturating_add(1).saturating_sub(visible);
+    }
+    for i in 0..visible {
+        let row_y = list_top + i as u16;
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        p.goto(x + 1, row_y);
+        p.text(&" ".repeat(w.saturating_sub(2) as usize));
+        let idx = start + i;
+        if let Some(line) = entries.get(idx) {
+            if idx == selected && matches!(focus, F::List) {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+            } else {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+            }
+            let t = truncate(line, w.saturating_sub(4) as usize);
+            p.goto(x + 2, row_y);
+            p.text(&t);
+        }
+    }
+    let sel_btn = |want: F, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
+    let bx = x + w.saturating_sub(btns.len() as u16) / 2;
+    p.goto(bx, y + h.saturating_sub(2));
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_history_dialog(
     p: &mut Painter,
     cols: u16,
@@ -5843,6 +5979,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Directory hotlist",
             "Compare dirs",
             "External panelize",
+            "Screen list",
         ],
         &[
             "Configuration",

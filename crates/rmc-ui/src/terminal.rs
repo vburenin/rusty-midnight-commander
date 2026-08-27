@@ -15,8 +15,8 @@ use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorMenu, EditorPipeDialog, EditorPipeFocus,
     EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus,
     EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog, EditorTabSpacingFocus,
-    HistoryDialogFocus, LayoutFocus, UiMode, ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu,
-    ViewerSearchDialog, ViewerSearchFocus,
+    HistoryDialogFocus, LayoutFocus, ScreenListFocus, UiMode, ViewerDisplayDialog,
+    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
@@ -28,7 +28,9 @@ use rmc_core::layout::compute_chrome_geom;
 use rmc_core::panelize::{
     ExternalPanelizeDialogState, ExternalPanelizeFocus as EPF, PanelizeStore,
 };
+use std::collections::HashMap;
 use std::io::stdout;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub struct TerminalApp;
@@ -43,6 +45,9 @@ pub(crate) struct ViewerState {
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 pub(crate) static VIEWER_STATE: Lazy<Mutex<Option<ViewerState>>> = Lazy::new(|| Mutex::new(None));
+/// Parked viewer bytes for screens that are not currently displayed.
+static VIEWER_CACHE: Lazy<Mutex<HashMap<PathBuf, ViewerState>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Persistent PTY-backed subshell session for C-o console.
 // Lives in the UI crate to avoid widening App's trait bounds or Debug/Clone surface.
@@ -264,21 +269,7 @@ fn editor_save_to_path(
 }
 
 fn editor_ui_mode(buf: rmc_edit::EditorBuffer, return_to: Option<Box<UiMode>>) -> UiMode {
-    UiMode::Editor {
-        buf,
-        show_menu: None,
-        status_msg: None,
-        search_input: None,
-        save_as_dialog: None,
-        search_dialog: None,
-        replace_dialog: None,
-        pipe_dialog: None,
-        goto_dialog: None,
-        tab_spacing_dialog: None,
-        pending_quit: false,
-        confirm_exit: None,
-        return_to,
-    }
+    UiMode::new_editor(buf, return_to)
 }
 
 /// GNU mc(1) Internal Diff Viewer: F4 edits the left file; F14 (Shift-F4) the right.
@@ -368,8 +359,284 @@ fn leave_editor(app: &mut App) {
                 reload_diff_from_disk(app, false);
             }
         }
-        None => app.ui_mode = UiMode::Normal,
+        None => close_current_screen_ui(app),
     }
+}
+
+fn close_current_screen_ui(app: &mut App) {
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        viewer_forget(path);
+    }
+    app.close_current_screen();
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        let p = path.clone();
+        let _ = viewer_ensure_view_for(&p);
+    }
+}
+
+fn push_internal_screen(app: &mut App, mode: UiMode) {
+    if matches!(app.ui_mode, UiMode::Viewer { .. }) {
+        park_current_viewer_to_cache();
+    }
+    app.push_screen(mode);
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        let p = path.clone();
+        let _ = viewer_ensure_view_for(&p);
+    }
+}
+
+fn switch_to_screen_ui(app: &mut App, idx: usize) {
+    if matches!(app.ui_mode, UiMode::Viewer { .. }) {
+        park_current_viewer_to_cache();
+    }
+    app.switch_screen(idx);
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        let p = path.clone();
+        let _ = viewer_ensure_view_for(&p);
+    }
+}
+
+fn cycle_screen_ui(app: &mut App, delta: isize) {
+    if matches!(app.ui_mode, UiMode::Viewer { .. }) {
+        park_current_viewer_to_cache();
+    }
+    app.cycle_screen(delta);
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        let p = path.clone();
+        let _ = viewer_ensure_view_for(&p);
+    }
+}
+
+fn screen_hotkeys_blocked(mode: &UiMode) -> bool {
+    match mode {
+        UiMode::Normal | UiMode::ShellInput => false,
+        UiMode::Editor {
+            show_menu,
+            search_input,
+            save_as_dialog,
+            search_dialog,
+            replace_dialog,
+            pipe_dialog,
+            goto_dialog,
+            tab_spacing_dialog,
+            confirm_exit,
+            ..
+        } => {
+            show_menu.is_some()
+                || search_input.is_some()
+                || save_as_dialog.is_some()
+                || search_dialog.is_some()
+                || replace_dialog.is_some()
+                || pipe_dialog.is_some()
+                || goto_dialog.is_some()
+                || tab_spacing_dialog.is_some()
+                || confirm_exit.is_some()
+        }
+        UiMode::Viewer {
+            viewer_menu,
+            search_dialog,
+            display_dialog,
+            goto_prompt,
+            search_prompt,
+            ..
+        } => {
+            viewer_menu.is_some()
+                || search_dialog.is_some()
+                || display_dialog.is_some()
+                || goto_prompt.is_some()
+                || search_prompt.is_some()
+        }
+        UiMode::Diff(s) => {
+            s.confirm_exit.is_some() || s.search_prompt.is_some() || s.goto_prompt.is_some()
+        }
+        _ => true,
+    }
+}
+
+fn is_screen_cycle_key(key: &KeyEvent) -> Option<isize> {
+    if !key.modifiers.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('}') | KeyCode::Char(']') => Some(1),
+        KeyCode::Char('{') | KeyCode::Char('[') => Some(-1),
+        _ => None,
+    }
+}
+
+fn is_screen_list_key(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Char('`'))
+}
+
+fn open_screen_list(app: &mut App) {
+    let selected = app.screen_idx;
+    let prev = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
+    let prev = match prev {
+        UiMode::Menu { .. } => UiMode::Normal,
+        other => other,
+    };
+    app.ui_mode = UiMode::ScreenList {
+        selected,
+        scroll_top: 0,
+        focus: ScreenListFocus::List,
+        prev: Box::new(prev),
+    };
+}
+
+fn apply_screen_list_selection(app: &mut App, selected: usize, prev: Box<UiMode>) {
+    app.ui_mode = *prev;
+    switch_to_screen_ui(app, selected);
+}
+
+enum ScreenListAction {
+    Stay,
+    Cancel,
+    Accept(usize),
+}
+
+fn screen_list_key_action(app: &mut App, key: &KeyEvent, page_rows: usize) -> ScreenListAction {
+    use ScreenListFocus as F;
+    let n = app.screens.len() + 1;
+    let list_rows = page_rows.max(1);
+    let UiMode::ScreenList {
+        selected,
+        scroll_top,
+        focus,
+        ..
+    } = &mut app.ui_mode
+    else {
+        return ScreenListAction::Stay;
+    };
+    match key.code {
+        KeyCode::Esc | KeyCode::F(10) => ScreenListAction::Cancel,
+        KeyCode::Tab => {
+            *focus = match *focus {
+                F::List => F::Ok,
+                F::Ok => F::Cancel,
+                F::Cancel => F::List,
+            };
+            ScreenListAction::Stay
+        }
+        KeyCode::BackTab => {
+            *focus = match *focus {
+                F::List => F::Cancel,
+                F::Ok => F::List,
+                F::Cancel => F::Ok,
+            };
+            ScreenListAction::Stay
+        }
+        KeyCode::Left | KeyCode::Right if matches!(*focus, F::Ok | F::Cancel) => {
+            *focus = if matches!(*focus, F::Ok) {
+                F::Cancel
+            } else {
+                F::Ok
+            };
+            ScreenListAction::Stay
+        }
+        KeyCode::Up if matches!(*focus, F::List) => {
+            if *selected > 0 {
+                *selected -= 1;
+            }
+            if *selected < *scroll_top {
+                *scroll_top = *selected;
+            }
+            ScreenListAction::Stay
+        }
+        KeyCode::Down if matches!(*focus, F::List) => {
+            if n > 0 && *selected + 1 < n {
+                *selected += 1;
+            }
+            if *selected >= *scroll_top + list_rows {
+                *scroll_top = selected.saturating_sub(list_rows.saturating_sub(1));
+            }
+            ScreenListAction::Stay
+        }
+        KeyCode::Home if matches!(*focus, F::List) => {
+            *selected = 0;
+            *scroll_top = 0;
+            ScreenListAction::Stay
+        }
+        KeyCode::End if matches!(*focus, F::List) => {
+            if n > 0 {
+                *selected = n - 1;
+                *scroll_top = selected.saturating_sub(list_rows.saturating_sub(1));
+            }
+            ScreenListAction::Stay
+        }
+        KeyCode::Enter => match *focus {
+            F::List | F::Ok => ScreenListAction::Accept(*selected),
+            F::Cancel => ScreenListAction::Cancel,
+        },
+        _ => ScreenListAction::Stay,
+    }
+}
+
+/// `mcr -e` / `--edit`: each path is an editor screen. Empty list → one untitled buffer.
+pub fn open_editor_files(app: &mut App, paths: &[PathBuf]) {
+    if paths.is_empty() {
+        let buf = rmc_edit::EditorBuffer::from_bytes(b"", None);
+        push_internal_screen(app, editor_ui_mode(buf, None));
+        return;
+    }
+    for path in paths {
+        let data = read_vfs_bytes(app, path);
+        let buf = rmc_edit::EditorBuffer::from_bytes(&data, Some(path.clone()));
+        push_internal_screen(app, editor_ui_mode(buf, None));
+    }
+}
+
+/// Startup flags: `--diff file1 file2`, `-e`/`--edit` files.
+pub fn apply_cli_args(app: &mut App, args: &[String]) -> Result<()> {
+    if args.len() >= 3 && args[0] == "--diff" {
+        let left = PathBuf::from(&args[1]);
+        let right = PathBuf::from(&args[2]);
+        let ltxt = read_vfs_text(app, &left);
+        let rtxt = read_vfs_text(app, &right);
+        let left_lines = rmc_diff::split_lines(&ltxt);
+        let right_lines = rmc_diff::split_lines(&rtxt);
+        let dr = rmc_diff::compute_diff(&ltxt, &rtxt);
+        app.push_screen(UiMode::Diff(rmc_core::app::DiffState {
+            left_path: left,
+            right_path: right,
+            left_lines,
+            right_lines,
+            hunks: dr.hunks,
+            current_hunk: 0,
+            left_modified: false,
+            right_modified: false,
+            show_line_numbers: false,
+            show_hunk_status: true,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
+            left_scroll: 0,
+            right_scroll: 0,
+            panel_ratio: 0.5,
+            tab_width: 4,
+            merge_target_right: true,
+        }));
+        return Ok(());
+    }
+    if let Some(files) = parse_edit_files(args) {
+        open_editor_files(app, &files);
+    }
+    Ok(())
+}
+
+fn parse_edit_files(args: &[String]) -> Option<Vec<PathBuf>> {
+    if args.is_empty() {
+        return None;
+    }
+    if args[0] == "-e" || args[0] == "--edit" {
+        return Some(args[1..].iter().map(PathBuf::from).collect());
+    }
+    if let Some(rest) = args[0].strip_prefix("--edit=") {
+        let mut v = vec![PathBuf::from(rest)];
+        v.extend(args[1..].iter().map(PathBuf::from));
+        return Some(v);
+    }
+    None
 }
 
 fn open_diff_side_in_editor(app: &mut App, right: bool) -> Result<()> {
@@ -551,12 +818,48 @@ fn encode_key_for_pty(key: &KeyEvent) -> Option<Vec<u8>> {
 }
 
 pub(crate) fn viewer_clear_state() {
-    if let Ok(mut g) = VIEWER_STATE.lock() {
-        *g = None;
+    park_current_viewer_to_cache();
+}
+
+fn park_current_viewer_to_cache() {
+    let mut cur = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+    let mut cache = VIEWER_CACHE.lock().expect("viewer cache mutex poisoned");
+    if let Some(s) = cur.take() {
+        cache.insert(s.display_path.clone(), s);
+    }
+}
+
+fn viewer_forget(path: &Path) {
+    {
+        let mut cur = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+        if cur.as_ref().is_some_and(|s| s.display_path == path) {
+            cur.take();
+        }
+    }
+    if let Ok(mut cache) = VIEWER_CACHE.lock() {
+        cache.remove(path);
     }
 }
 
 pub(crate) fn viewer_ensure_view_for(display_path: &std::path::Path) -> std::path::PathBuf {
+    {
+        let g = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+        if let Some(s) = g.as_ref() {
+            if s.display_path == display_path {
+                return s.view.path().to_path_buf();
+            }
+        }
+    }
+    park_current_viewer_to_cache();
+    {
+        let mut cache = VIEWER_CACHE.lock().expect("viewer cache mutex poisoned");
+        if let Some(s) = cache.remove(display_path) {
+            let p = s.view.path().to_path_buf();
+            let mut g = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
+            *g = Some(s);
+            return p;
+        }
+    }
     let mut g = VIEWER_STATE.lock().expect("viewer state mutex poisoned");
     let need_new = g
         .as_ref()
@@ -1744,6 +2047,38 @@ impl TerminalApp {
                     app.abort_file_op()?;
                 }
                 _ => {}
+            }
+            return Ok(());
+        }
+        // GNU mc(1) Screen selector: Alt-} next, Alt-{ previous, Alt-` list.
+        // Skip while a modal dialog (including editor/viewer/diff overlays) eats keys.
+        if !screen_hotkeys_blocked(&app.ui_mode) {
+            if let Some(delta) = is_screen_cycle_key(&key) {
+                cycle_screen_ui(app, delta);
+                return Ok(());
+            }
+            if is_screen_list_key(&key) {
+                open_screen_list(app);
+                return Ok(());
+            }
+        }
+        if matches!(app.ui_mode, UiMode::ScreenList { .. }) {
+            match screen_list_key_action(app, &key, page_rows) {
+                ScreenListAction::Stay => {}
+                ScreenListAction::Cancel => {
+                    if let UiMode::ScreenList { prev, .. } =
+                        std::mem::replace(&mut app.ui_mode, UiMode::Normal)
+                    {
+                        app.ui_mode = *prev;
+                    }
+                }
+                ScreenListAction::Accept(idx) => {
+                    if let UiMode::ScreenList { prev, .. } =
+                        std::mem::replace(&mut app.ui_mode, UiMode::Normal)
+                    {
+                        apply_screen_list_selection(app, idx, prev);
+                    }
+                }
             }
             return Ok(());
         }
@@ -5314,6 +5649,7 @@ impl TerminalApp {
                         "Directory hotlist",
                         "Compare dirs",
                         "External panelize",
+                        "Screen list",
                     ],
                     &[
                         "Configuration",
@@ -5774,6 +6110,9 @@ impl TerminalApp {
                             "External panelize" => {
                                 open_external_panelize_dialog(app);
                             }
+                            "Screen list" => {
+                                open_screen_list(app);
+                            }
                             "Quit" => {
                                 app.handle_action(Action::Quit)?;
                             }
@@ -5831,11 +6170,11 @@ impl TerminalApp {
                                         let s = rmc_diff::join_lines(&state.right_lines);
                                         let _ = w.write_all(s.as_bytes());
                                     }
-                                    app.ui_mode = UiMode::Normal;
+                                    close_current_screen_ui(app);
                                 }
                                 F::No => {
                                     // Discard changes and exit
-                                    app.ui_mode = UiMode::Normal;
+                                    close_current_screen_ui(app);
                                 }
                                 F::Cancel => {
                                     state.confirm_exit = None;
@@ -5910,7 +6249,7 @@ impl TerminalApp {
                                 focus: rmc_core::app::YncFocus::Yes,
                             });
                         } else {
-                            app.ui_mode = UiMode::Normal;
+                            close_current_screen_ui(app);
                         }
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => {
@@ -6156,7 +6495,7 @@ impl TerminalApp {
                         KeyCode::Enter | KeyCode::Char(' ') => {
                             match menu {
                                 ViewerMenu::File { .. } => {
-                                    app.handle_action(Action::ViewerQuit)?;
+                                    close_current_screen_ui(app);
                                 }
                                 ViewerMenu::Command { .. } => {
                                     viewer_open_search_dialog(app, false);
@@ -6436,7 +6775,7 @@ impl TerminalApp {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc => {
-                        app.handle_action(Action::ViewerQuit)?
+                        close_current_screen_ui(app)
                     }
                     KeyCode::F(1) => {
                         app.handle_action(Action::ShowHelp)?;
@@ -7207,7 +7546,7 @@ impl TerminalApp {
                                         &data,
                                         Some(ent.path.clone()),
                                     );
-                                    app.ui_mode = editor_ui_mode(buf, None);
+                                    push_internal_screen(app, editor_ui_mode(buf, None));
                                 } else {
                                     // Spawn external editor (EDITOR or VISUAL or vi)
                                     let prog = std::env::var("EDITOR")
@@ -7599,6 +7938,7 @@ fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> 
                 }
                 match rmc_view::ViewData::open_view(&ent.path) {
                     Ok(view) => {
+                        park_current_viewer_to_cache();
                         if let Ok(mut g) = VIEWER_STATE.lock() {
                             *g = Some(ViewerState {
                                 display_path: ent.path.clone(),
@@ -15734,6 +16074,285 @@ mod directory_tree_command_tests {
             "F3 Forget removes the directory from the figure"
         );
         assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod screen_selector_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ScreenListFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-screens-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn editor_name(app: &App) -> String {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            _ => panic!("expected Editor, got other mode"),
+        }
+    }
+
+    fn editor_text(app: &App) -> String {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => String::from_utf8_lossy(&buf.to_bytes()).into_owned(),
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn viewer_name(app: &App) -> String {
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            _ => panic!("expected Viewer"),
+        }
+    }
+
+    fn open_two_editors(app: &mut App) {
+        select_named(app, "a.txt");
+        press(app, KeyCode::F(4));
+        assert_eq!(editor_name(app), "a.txt");
+        press_alt(app, '}');
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Alt-}} wraps to panels with one editor"
+        );
+        select_named(app, "b.txt");
+        press(app, KeyCode::F(4));
+        assert_eq!(editor_name(app), "b.txt");
+        assert_eq!(app.screens.len(), 2, "two editor screens");
+    }
+
+    #[test]
+    fn f4_second_file_adds_editor_screen_cycle_and_quit_keeps_buffer() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), "alpha-buffer").unwrap();
+        std::fs::write(root.join("b.txt"), "beta-buffer").unwrap();
+        let mut app = make_app(&root);
+        open_two_editors(&mut app);
+        assert_eq!(editor_text(&app), "beta-buffer");
+
+        press_alt(&mut app, '{');
+        assert_eq!(editor_name(&app), "a.txt");
+        assert_eq!(editor_text(&app), "alpha-buffer");
+        press_alt(&mut app, '}');
+        assert_eq!(editor_name(&app), "b.txt");
+        assert_eq!(editor_text(&app), "beta-buffer");
+
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(
+            editor_name(&app),
+            "a.txt",
+            "quitting current editor reveals the other"
+        );
+        assert_eq!(editor_text(&app), "alpha-buffer");
+        assert_eq!(app.screens.len(), 1);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.screens.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_backtick_and_command_menu_screen_list_enter_switches() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), "alpha-buffer").unwrap();
+        std::fs::write(root.join("b.txt"), "beta-buffer").unwrap();
+        let mut app = make_app(&root);
+        open_two_editors(&mut app);
+        assert_eq!(editor_name(&app), "b.txt");
+
+        press_alt(&mut app, '`');
+        match &app.ui_mode {
+            UiMode::ScreenList {
+                selected, focus, ..
+            } => {
+                assert_eq!(*selected, 2);
+                assert!(matches!(*focus, ScreenListFocus::List));
+            }
+            _ => panic!("Alt-` must open Screen list"),
+        }
+        let labels = app.screen_list_labels();
+        assert!(
+            labels.iter().any(|s| s.contains("a.txt")),
+            "list must include first editor: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|s| s.contains("b.txt")),
+            "list must include second editor: {labels:?}"
+        );
+        press(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_name(&app), "a.txt");
+        assert_eq!(editor_text(&app), "alpha-buffer");
+
+        press_alt(&mut app, '}');
+        press_alt(&mut app, '}');
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "wrap to panels to open Command menu"
+        );
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::ScreenList { .. } => {}
+            UiMode::Menu { .. } => panic!("Command menu Screen list must not stay on Menu"),
+            UiMode::Editor { .. } => panic!("Command menu Screen list must not stay in Editor"),
+            UiMode::Normal => panic!("Command menu Screen list must open the dialog"),
+            _ => panic!("Command menu Screen list must open the dialog"),
+        }
+        let labels = app.screen_list_labels();
+        assert!(labels.iter().any(|s| s.contains("a.txt")));
+        assert!(labels.iter().any(|s| s.contains("b.txt")));
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Esc on Screen list opened from panels stays on panels"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn screen_list_esc_and_f10_cancel_leave_current() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), "alpha-buffer").unwrap();
+        std::fs::write(root.join("b.txt"), "beta-buffer").unwrap();
+        let mut app = make_app(&root);
+        open_two_editors(&mut app);
+        press_alt(&mut app, '`');
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(editor_name(&app), "b.txt");
+        press_alt(&mut app, '`');
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(editor_name(&app), "b.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn viewer_and_editor_coexist_on_stack() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), "alpha-buffer").unwrap();
+        std::fs::write(root.join("b.txt"), "beta-buffer").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "a.txt");
+        press(&mut app, KeyCode::F(3));
+        assert_eq!(viewer_name(&app), "a.txt");
+        press_alt(&mut app, '}');
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        select_named(&mut app, "b.txt");
+        press(&mut app, KeyCode::F(4));
+        assert_eq!(editor_name(&app), "b.txt");
+        let labels = app.screen_list_labels();
+        assert!(labels
+            .iter()
+            .any(|s| s.contains("Viewer") && s.contains("a.txt")));
+        assert!(labels
+            .iter()
+            .any(|s| s.contains("Editor") && s.contains("b.txt")));
+        press_alt(&mut app, '{');
+        assert_eq!(viewer_name(&app), "a.txt");
+        press_alt(&mut app, '}');
+        assert_eq!(editor_name(&app), "b.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_file_f4_still_works_stack_of_one() {
+        let root = temp_workspace();
+        std::fs::write(root.join("only.txt"), "solo").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "only.txt");
+        press(&mut app, KeyCode::F(4));
+        assert_eq!(editor_name(&app), "only.txt");
+        assert_eq!(app.screens.len(), 1);
+        assert_eq!(editor_text(&app), "solo");
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.screens.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cli_edit_opens_each_file_as_editor_screen() {
+        let root = temp_workspace();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        std::fs::write(&a, "alpha-buffer").unwrap();
+        std::fs::write(&b, "beta-buffer").unwrap();
+        let mut app = make_app(&root);
+        apply_cli_args(
+            &mut app,
+            &[
+                "-e".into(),
+                a.to_string_lossy().into_owned(),
+                b.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(app.screens.len(), 2);
+        assert_eq!(editor_name(&app), "b.txt");
+        assert_eq!(editor_text(&app), "beta-buffer");
+        press_alt(&mut app, '{');
+        assert_eq!(editor_name(&app), "a.txt");
+        assert_eq!(editor_text(&app), "alpha-buffer");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

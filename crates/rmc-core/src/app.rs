@@ -505,6 +505,14 @@ pub enum UiMode {
     ExternalPanelizeDialog(ExternalPanelizeDialogState),
     /// GNU mc(1) Command menu Directory tree figure (not panel Tree mode).
     DirectoryTree(DirectoryTreeState),
+    /// GNU mc(1) Screen list: currently open internal modules (and the file manager).
+    ScreenList {
+        selected: usize,
+        scroll_top: usize,
+        focus: ScreenListFocus,
+        /// Mode to restore on Esc/F10 (the screen that was current).
+        prev: Box<UiMode>,
+    },
     /// Background jobs list dialog (C-x j).
     JobsDialog {
         /// Selected row in the jobs list.
@@ -570,6 +578,13 @@ pub enum UiMode {
     /// Any key dismisses so the panels can redraw. Not used for fire-and-forget
     /// desktop open.
     PauseAfterRun,
+}
+
+fn unwrap_screen_overlay(mode: &UiMode) -> &UiMode {
+    match mode {
+        UiMode::ScreenList { prev, .. } | UiMode::Help { prev, .. } => unwrap_screen_overlay(prev),
+        other => other,
+    }
 }
 
 #[derive(Clone)]
@@ -1074,6 +1089,14 @@ pub enum HistoryDialogFocus {
     Clear,
 }
 
+/// GNU mc(1) Screen list dialog focus (list vs OK/Cancel).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScreenListFocus {
+    List,
+    Ok,
+    Cancel,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmationsFocus {
     Delete,
@@ -1127,6 +1150,12 @@ pub struct App {
     pub show_hidden: bool,
     pub quit: bool,
     pub ui_mode: UiMode,
+    /// Parked internal modules (editor / viewer / diff). The currently displayed
+    /// module lives in `ui_mode`; its slot here is a `Normal` placeholder.
+    /// Panels are not stored — they are screen index 0, not extra file managers.
+    pub screens: Vec<UiMode>,
+    /// 0 = panels; `1..=screens.len()` = that module is current (`ui_mode`).
+    pub screen_idx: usize,
     /// Subshell / command line state and last output.
     pub subshell: Subshell,
     pub hotlist: Hotlist,
@@ -1164,6 +1193,8 @@ impl App {
             show_hidden: false,
             quit: false,
             ui_mode: UiMode::Normal,
+            screens: Vec::new(),
+            screen_idx: 0,
             subshell: Subshell::new(),
             hotlist: Hotlist::load_from_default_path(),
             pending_ctrl_x: false,
@@ -1451,7 +1482,7 @@ impl App {
             ViewFile => {
                 if let Some(ent) = self.active_panel().current_entry() {
                     if !ent.is_dir {
-                        self.ui_mode = UiMode::new_viewer(ent.path.clone());
+                        self.push_screen(UiMode::new_viewer(ent.path.clone()));
                     }
                 }
             }
@@ -1459,7 +1490,7 @@ impl App {
                 // UI layer opens dialogs; core provides helpers
             }
             ShowUserMenu => self.try_open_user_menu(),
-            ViewerQuit => self.ui_mode = UiMode::Normal,
+            ViewerQuit => self.close_current_screen(),
             ViewerToggleHex => {
                 if let UiMode::Viewer { hex, .. } = &mut self.ui_mode {
                     *hex = !*hex;
@@ -1547,6 +1578,25 @@ impl App {
 }
 
 impl UiMode {
+    /// Internal editor with GNU mcedit defaults (no pull-down / overlays).
+    pub fn new_editor(buf: EditorBuffer, return_to: Option<Box<UiMode>>) -> Self {
+        UiMode::Editor {
+            buf,
+            show_menu: None,
+            status_msg: None,
+            search_input: None,
+            save_as_dialog: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            tab_spacing_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+            return_to,
+        }
+    }
+
     /// Internal viewer with GNU mcview defaults (parsed on, format off, no selection).
     pub fn new_viewer(path: PathBuf) -> Self {
         UiMode::Viewer {
@@ -1616,6 +1666,7 @@ impl App {
             UiMode::HotlistDialog(_) => "Panels".to_string(),
             UiMode::ExternalPanelizeDialog(_) => "External panelize".to_string(),
             UiMode::DirectoryTree(_) => "Directory Tree".to_string(),
+            UiMode::ScreenList { .. } => "Screen list".to_string(),
             UiMode::JobsDialog { .. } => "Panels".to_string(),
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
             UiMode::LayoutDialog { .. } => "Panels".to_string(),
@@ -1633,6 +1684,134 @@ impl App {
     }
     pub fn page_down_by(&mut self, rows: usize) {
         self.active_panel_mut().page_down(rows);
+    }
+
+    /// Push an internal module (editor / viewer / diff) as a new screen.
+    /// Parks the currently displayed module, if any. Does not create extra
+    /// file-manager screens — panels remain index 0.
+    pub fn push_screen(&mut self, mode: UiMode) {
+        if self.screen_idx > 0 {
+            let slot = self.screen_idx - 1;
+            if slot < self.screens.len() {
+                std::mem::swap(&mut self.ui_mode, &mut self.screens[slot]);
+            }
+        }
+        self.screens.push(mode);
+        self.screen_idx = self.screens.len();
+        std::mem::swap(&mut self.ui_mode, &mut self.screens[self.screen_idx - 1]);
+    }
+
+    /// Switch to screen `new_idx` (0 = panels). Wraps are the caller's job.
+    pub fn switch_screen(&mut self, new_idx: usize) {
+        let max = self.screens.len();
+        let new_idx = new_idx.min(max);
+        if new_idx == self.screen_idx {
+            return;
+        }
+        if self.screen_idx > 0 {
+            let slot = self.screen_idx - 1;
+            if slot < self.screens.len() {
+                std::mem::swap(&mut self.ui_mode, &mut self.screens[slot]);
+            }
+        }
+        self.screen_idx = new_idx;
+        if new_idx == 0 {
+            self.ui_mode = UiMode::Normal;
+        } else {
+            std::mem::swap(&mut self.ui_mode, &mut self.screens[new_idx - 1]);
+        }
+    }
+
+    /// Alt-} / Alt-{ wrap around panels + open modules.
+    pub fn cycle_screen(&mut self, delta: isize) {
+        let n = self.screens.len() + 1;
+        if n <= 1 {
+            return;
+        }
+        let next = (self.screen_idx as isize + delta).rem_euclid(n as isize) as usize;
+        self.switch_screen(next);
+    }
+
+    /// Close the current internal module. Restores the previous screen, or
+    /// panels if none remain. Direct `ui_mode` assignments with `screen_idx == 0`
+    /// just return to panels (existing tests).
+    pub fn close_current_screen(&mut self) {
+        if self.screen_idx == 0 {
+            self.ui_mode = UiMode::Normal;
+            return;
+        }
+        let idx = self.screen_idx;
+        self.ui_mode = UiMode::Normal;
+        if idx > 0 && idx <= self.screens.len() {
+            self.screens.remove(idx - 1);
+        }
+        self.screen_idx = 0;
+        let prev = idx.saturating_sub(1);
+        if prev > 0 {
+            self.switch_screen(prev);
+        }
+    }
+
+    /// Labels for the Screen list dialog, including the single file manager.
+    pub fn screen_list_labels(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.screens.len() + 1);
+        out.push("Midnight Commander".to_string());
+        for i in 1..=self.screens.len() {
+            out.push(self.screen_label_at(i));
+        }
+        out
+    }
+
+    fn screen_label_at(&self, idx: usize) -> String {
+        if idx == 0 {
+            return "Midnight Commander".to_string();
+        }
+        Self::module_label(self.screen_mode_at(idx))
+    }
+
+    fn screen_mode_at(&self, idx: usize) -> &UiMode {
+        if self.screen_idx == idx {
+            unwrap_screen_overlay(&self.ui_mode)
+        } else if idx > 0 && idx <= self.screens.len() {
+            unwrap_screen_overlay(&self.screens[idx - 1])
+        } else {
+            unwrap_screen_overlay(&self.ui_mode)
+        }
+    }
+
+    fn module_label(mode: &UiMode) -> String {
+        match mode {
+            UiMode::Editor { buf, .. } => {
+                let name = buf
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "(no name)".to_string());
+                format!("Editor: {name}")
+            }
+            UiMode::Viewer { path, .. } => {
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                format!("Viewer: {name}")
+            }
+            UiMode::Diff(s) => {
+                let left = s
+                    .left_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| s.left_path.display().to_string());
+                let right = s
+                    .right_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| s.right_path.display().to_string());
+                format!("Diff: {left} | {right}")
+            }
+            _ => "Screen".to_string(),
+        }
     }
 
     pub fn panelize_paths(&mut self, paths: &[PathBuf], base: Option<&Path>) -> Result<()> {

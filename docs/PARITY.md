@@ -132,7 +132,7 @@ Per mcview(1) and mc(1) “Internal File Viewer”:
 ## 6) Internal editor (mcedit) — Status: Later
 
 From mcedit(1):
-- [ ] Basics: open multiple files (up to size limits), binary-safe
+- [x] Basics: open multiple files (up to size limits), binary-safe
 - [x] Editing: block copy/move/delete/cut/paste; undo; insert/overwrite; autoindent; tab width
 - [x] Syntax highlighting for common types
 - [x] Macros; external filters (pipe regions to commands)

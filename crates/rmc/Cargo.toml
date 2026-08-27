@@ -13,9 +13,6 @@ anyhow.workspace = true
 rmc-core = { path = "../rmc-core" }
 rmc-fs = { path = "../rmc-fs" }
 rmc-ui = { path = "../rmc-ui" }
-rmc-view = { path = "../rmc-view" }
-crossterm.workspace = true
-rmc-diff = { path = "../rmc-diff" }
 
 [features]
 default = []

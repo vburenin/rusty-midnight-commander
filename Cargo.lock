@@ -1109,12 +1109,9 @@ name = "mcr"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "crossterm",
  "rmc-core",
- "rmc-diff",
  "rmc-fs",
  "rmc-ui",
- "rmc-view",
 ]
 
 [[package]]
