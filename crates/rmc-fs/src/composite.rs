@@ -335,7 +335,7 @@ impl Vfs for CompositeFs {
 
     fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>> {
         let cacheable = self.is_cacheable(path);
-        let result = match self.route_kind(path) {
+        let result: FsResult<Box<dyn Write + Send>> = match self.route_kind(path) {
             Route::Local { path } => self.local.write_file(path),
             Route::Archive { .. } => Err(FsError::Message(
                 "write into an archive is not supported".into(),
