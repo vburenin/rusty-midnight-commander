@@ -11693,17 +11693,18 @@ mod editor_ins_autoindent_tab_tests {
         open_editor_path(&mut app, b"", Some(std::path::PathBuf::from("main.rs")));
         assert_eq!(editor_buf(&app).tab_width, 8);
         press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('i'));
         press(&mut app, KeyCode::Char('f'));
-        press(&mut app, KeyCode::Char('n'));
-        assert_eq!(editor_buf(&app).to_bytes(), b"\tfn");
+        assert_eq!(editor_buf(&app).to_bytes(), b"\tif");
+        editor_buf_mut(&mut app).view_col = 0;
         let row = &editor_buf(&app).render_window(16, 1)[0];
         assert_eq!(&row[..8], "        ");
-        assert_eq!(&row[8..10], "fn");
+        assert_eq!(&row[8..10], "if");
         let spans = &editor_buf(&app).render_window_spans(16, 1)[0];
         assert!(
             spans
                 .iter()
-                .any(|s| s.kind == TokenKind::Keyword && s.text == "fn"),
+                .any(|s| s.kind == TokenKind::Keyword && s.text == "if"),
             "{spans:?}"
         );
     }
