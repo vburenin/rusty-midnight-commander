@@ -2,6 +2,7 @@ pub mod actions;
 pub mod app;
 pub mod config;
 pub mod events;
+pub mod fileop;
 pub mod find;
 pub mod hotlist;
 pub mod jobs;

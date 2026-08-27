@@ -492,10 +492,13 @@ impl TerminalApp {
                     current_skin = app.skin_name.clone();
                 }
             }
-            if last_draw.elapsed() > Duration::from_millis(33) {
+            if last_draw.elapsed() > Duration::from_millis(33)
+                || matches!(app.ui_mode, UiMode::FileOpProgress { started: false, .. })
+            {
                 renderer.draw(app)?;
                 last_draw = Instant::now();
             }
+            app.drive_pending_file_op()?;
 
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
@@ -743,6 +746,29 @@ impl TerminalApp {
         disable_raw_mode()?;
         execute!(out, LeaveAlternateScreen, DisableMouseCapture)?;
         Ok(())
+    }
+
+    fn file_op_progress_mode(
+        vfs: &dyn rmc_fs::Vfs,
+        opts: &rmc_core::app::ConfigOptions,
+        op: rmc_core::app::CopyMoveOp,
+        src: std::path::PathBuf,
+        dst: std::path::PathBuf,
+    ) -> UiMode {
+        match rmc_core::fileop::FileOpProgressState::prepare(vfs, op, &src, &dst, opts) {
+            Ok(state) => UiMode::FileOpProgress {
+                op,
+                src,
+                dst,
+                state,
+                started: false,
+            },
+            Err(err) => UiMode::DialogConfirm {
+                title: "Error".into(),
+                message: format!("{err}"),
+                on_ok: Box::new(|_| Ok(())),
+            },
+        }
     }
 
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
@@ -2847,6 +2873,21 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::FileOpProgress { started, .. } => {
+                match key.code {
+                    KeyCode::Esc
+                    | KeyCode::F(10)
+                    | KeyCode::Enter
+                    | KeyCode::Char('a')
+                    | KeyCode::Char('A')
+                        if !*started =>
+                    {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::CopyDialog {
                 title,
                 src_name: _,
@@ -2915,52 +2956,41 @@ impl TerminalApp {
                             F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
                             F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
                             F::Ok => {
-                                // If destination exists, open overwrite dialog; else perform action
+                                // If destination exists, open overwrite dialog; else start progress.
                                 let dst = Path::new(&*to).to_path_buf();
+                                let src = src_path.clone();
+                                let op = if title == "Copy" {
+                                    rmc_core::app::CopyMoveOp::Copy
+                                } else {
+                                    rmc_core::app::CopyMoveOp::Move
+                                };
                                 let exists = app.vfs.stat(&dst).is_ok();
                                 if exists {
                                     if app.confirm.overwrite {
-                                        let op = if title == "Copy" {
-                                            rmc_core::app::CopyMoveOp::Copy
-                                        } else {
-                                            rmc_core::app::CopyMoveOp::Move
-                                        };
                                         app.ui_mode = UiMode::OverwriteDialog {
                                             op,
-                                            src_path: src_path.clone(),
+                                            src_path: src,
                                             dst_path: dst,
                                             focus: rmc_core::app::OverwriteFocus::Yes,
                                         };
                                     } else {
-                                        // Perform "Yes" path: remove destination then copy/move
                                         let _ = app.vfs.remove(&dst, false);
-                                        let res = if title == "Copy" {
-                                            app.vfs.copy(src_path, &dst)
-                                        } else {
-                                            app.vfs.move_path(src_path, &dst)
-                                        };
-                                        match res {
-                                            Ok(()) => {
-                                                app.ui_mode = UiMode::Normal;
-                                                app.reload_panels()?;
-                                            }
-                                            Err(err) => {
-                                                app.ui_mode = UiMode::DialogConfirm {
-                                                    title: "Error".into(),
-                                                    message: format!("{err}"),
-                                                    on_ok: Box::new(|_| Ok(())),
-                                                };
-                                            }
-                                        }
+                                        app.ui_mode = Self::file_op_progress_mode(
+                                            app.vfs.as_ref(),
+                                            &app.config_opts,
+                                            op,
+                                            src,
+                                            dst,
+                                        );
                                     }
                                 } else {
-                                    if title == "Copy" {
-                                        app.vfs.copy(src_path, Path::new(&*to))?;
-                                    } else {
-                                        app.vfs.move_path(src_path, Path::new(&*to))?;
-                                    }
-                                    app.ui_mode = UiMode::Normal;
-                                    app.reload_panels()?;
+                                    app.ui_mode = Self::file_op_progress_mode(
+                                        app.vfs.as_ref(),
+                                        &app.config_opts,
+                                        op,
+                                        src,
+                                        dst,
+                                    );
                                 }
                             }
                             F::Background => {
@@ -3148,26 +3178,17 @@ impl TerminalApp {
                                 }
                             }
                         } else if act_yes {
-                            let _ = app.vfs.remove(dst_path, false);
-                            let res = match *op {
-                                rmc_core::app::CopyMoveOp::Copy => app.vfs.copy(src_path, dst_path),
-                                rmc_core::app::CopyMoveOp::Move => {
-                                    app.vfs.move_path(src_path, dst_path)
-                                }
-                            };
-                            match res {
-                                Ok(()) => {
-                                    app.ui_mode = UiMode::Normal;
-                                    app.reload_panels()?;
-                                }
-                                Err(err) => {
-                                    app.ui_mode = UiMode::DialogConfirm {
-                                        title: "Error".into(),
-                                        message: format!("{err}"),
-                                        on_ok: Box::new(|_| Ok(())),
-                                    };
-                                }
-                            }
+                            let op = *op;
+                            let src = src_path.clone();
+                            let dst = dst_path.clone();
+                            let _ = app.vfs.remove(&dst, false);
+                            app.ui_mode = Self::file_op_progress_mode(
+                                app.vfs.as_ref(),
+                                &app.config_opts,
+                                op,
+                                src,
+                                dst,
+                            );
                         } else {
                             app.ui_mode = UiMode::Normal;
                         }

@@ -128,11 +128,21 @@ impl Default for PanelOptions {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigOptions {
-    pub verbose: bool,             // default true; store only unless wired later
-    pub compute_totals: bool,      // default true; store only
-    pub classic_progressbar: bool, // default true; store only
-    pub use_internal_view: bool,   // default true — keep F3 internal viewer by default
-    pub use_internal_edit: bool,   // default true — keep F4 internal editor by default
+    /// GNU mc Options → Configuration → Verbose operation. Default **true**.
+    /// When true, Copy/Move progress shows the current file name. When false,
+    /// the per-file name is omitted (totals/bar only).
+    pub verbose: bool,
+    /// GNU mc Options → Configuration → Compute totals. Default **true**.
+    /// When true, Copy/Move pre-scans total size/count so the progress bar has
+    /// a real denominator. When false, skip the pre-scan (progress may be
+    /// indeterminate / file-by-file only).
+    pub compute_totals: bool,
+    /// GNU mc Options → Configuration → Classic progressbar. Default **true**.
+    /// When true, Copy/Move uses GNU mc's classic one-line `****` bar. When
+    /// false, use two bars (File + Total).
+    pub classic_progressbar: bool,
+    pub use_internal_view: bool, // default true — keep F3 internal viewer by default
+    pub use_internal_edit: bool, // default true — keep F4 internal editor by default
     /// After a waited external command (Enter-execute, external F3/$PAGER), show a
     /// "Press any key to continue..." prompt before panels redraw. Default false.
     /// Does not apply to fire-and-forget desktop open (`xdg-open` `.spawn()`).
@@ -251,7 +261,7 @@ pub struct DiffState {
     pub merge_target_right: bool, // F5 merges into right when true; swap flips this
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyMoveOp {
     Copy,
     Move,
@@ -346,6 +356,15 @@ pub enum UiMode {
         dive_into_subdir: bool,
         stable_symlinks: bool,
         focus: CopyDialogFocus,
+    },
+    /// GNU mc file-operations progress dialog (Copy/Move).
+    FileOpProgress {
+        op: CopyMoveOp,
+        src: PathBuf,
+        dst: PathBuf,
+        state: crate::fileop::FileOpProgressState,
+        /// False until `App::drive_pending_file_op` starts the transfer.
+        started: bool,
     },
     /// Overwrite/Replace dialog shown when destination exists for Copy/Move.
     OverwriteDialog {
@@ -1034,6 +1053,10 @@ impl App {
                     "Move".to_string()
                 }
             }
+            UiMode::FileOpProgress { op, .. } => match op {
+                CopyMoveOp::Copy => "Copy".to_string(),
+                CopyMoveOp::Move => "Move".to_string(),
+            },
             UiMode::OverwriteDialog { op, .. } => match op {
                 CopyMoveOp::Copy => "Copy".to_string(),
                 CopyMoveOp::Move => "Move".to_string(),
@@ -1122,6 +1145,65 @@ impl App {
         );
         Ok(())
     }
+
+    /// Open the GNU mc Copy/Move progress dialog for `src` → `dst`.
+    /// Honors verbose / compute_totals / classic_progressbar. The transfer runs
+    /// on the next [`App::drive_pending_file_op`] so the dialog can paint first.
+    pub fn begin_file_op(&mut self, op: CopyMoveOp, src: PathBuf, dst: PathBuf) -> Result<()> {
+        let state = crate::fileop::FileOpProgressState::prepare(
+            self.vfs.as_ref(),
+            op,
+            &src,
+            &dst,
+            &self.config_opts,
+        )?;
+        self.ui_mode = UiMode::FileOpProgress {
+            op,
+            src,
+            dst,
+            state,
+            started: false,
+        };
+        Ok(())
+    }
+
+    /// If a Copy/Move progress dialog is waiting, run the transfer once.
+    pub fn drive_pending_file_op(&mut self) -> Result<()> {
+        let (op, src, dst, started) = match &self.ui_mode {
+            UiMode::FileOpProgress {
+                op,
+                src,
+                dst,
+                started,
+                ..
+            } => (*op, src.clone(), dst.clone(), *started),
+            _ => return Ok(()),
+        };
+        if started {
+            return Ok(());
+        }
+        if let UiMode::FileOpProgress { started, .. } = &mut self.ui_mode {
+            *started = true;
+        }
+        let res = match op {
+            CopyMoveOp::Copy => self.vfs.copy(&src, &dst),
+            CopyMoveOp::Move => self.vfs.move_path(&src, &dst),
+        };
+        match res {
+            Ok(()) => {
+                self.ui_mode = UiMode::Normal;
+                self.reload_panels()?;
+            }
+            Err(err) => {
+                self.ui_mode = UiMode::DialogConfirm {
+                    title: "Error".into(),
+                    message: format!("{err}"),
+                    on_ok: Box::new(|_| Ok(())),
+                };
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1199,5 +1281,59 @@ mod tests {
         app.config_opts.drop_menus = true;
         app.handle_action(Action::FocusMenu).unwrap();
         assert_menu(&app, 0, 0, true);
+    }
+
+    #[test]
+    fn begin_file_op_prescans_when_compute_totals_on() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, vec![0xCDu8; 1800]).unwrap();
+        app.config_opts.compute_totals = true;
+        app.config_opts.verbose = true;
+        app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+        match &app.ui_mode {
+            UiMode::FileOpProgress { state, started, .. } => {
+                assert_eq!(state.bytes_total, Some(1800));
+                assert_eq!(state.source_name, "src.bin");
+                assert!(!*started);
+                let view = state.view(47, false);
+                assert_eq!(view.source_name.as_deref(), Some("src.bin"));
+            }
+            _ => panic!("expected FileOpProgress"),
+        }
+    }
+
+    #[test]
+    fn begin_file_op_skips_prescan_when_compute_totals_off() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, vec![0xCDu8; 900]).unwrap();
+        app.config_opts.compute_totals = false;
+        app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+        match &app.ui_mode {
+            UiMode::FileOpProgress { state, .. } => {
+                assert_eq!(state.bytes_total, None);
+                let view = state.view(47, false);
+                assert!(view.total_bytes.is_none());
+            }
+            _ => panic!("expected FileOpProgress"),
+        }
+    }
+
+    #[test]
+    fn drive_pending_file_op_copies_and_returns_to_normal() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, b"hello-progress").unwrap();
+        app.config_opts.compute_totals = true;
+        app.begin_file_op(CopyMoveOp::Copy, src.clone(), dst.clone())
+            .unwrap();
+        app.drive_pending_file_op().unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"hello-progress");
+        assert_eq!(std::fs::read(&src).unwrap(), b"hello-progress");
     }
 }
