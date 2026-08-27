@@ -133,9 +133,12 @@ pub struct ConfigOptions {
     /// "Press any key to continue..." prompt before panels redraw. Default false.
     /// Does not apply to fire-and-forget desktop open (`xdg-open` `.spawn()`).
     pub pause_after_run: bool,
-    pub shell_patterns: bool, // default true; store only
-    pub auto_menus: bool,     // default false; store only
-    pub drop_menus: bool,     // default false; store only
+    /// GNU mc Options → Configuration → Use shell patterns. When true (default),
+    /// Select group, Unselect group, and the panel filter treat patterns as
+    /// shell globs (`*.c`, `?`, `[abc]`). When false, those patterns are regexes.
+    pub shell_patterns: bool,
+    pub auto_menus: bool, // default false; store only
+    pub drop_menus: bool, // default false; store only
     /// GNU mc Options → Configuration → Mkdir autoname. When true, F7 prefills
     /// the Mkdir name with the current panel entry (not `..`). Default false.
     pub mkdir_autoname: bool,
@@ -483,40 +486,6 @@ pub enum UiMode {
     PauseAfterRun,
 }
 
-// Simple glob matcher supporting '*' (any sequence) and '?' (single char).
-// Case-sensitive, anchored to full string.
-fn glob_match(pat: &str, name: &str) -> bool {
-    glob_match_impl(pat.as_bytes(), name.as_bytes())
-}
-
-fn glob_match_impl(p: &[u8], s: &[u8]) -> bool {
-    // Two-pointer with backtracking on '*'
-    let (mut i, mut j) = (0usize, 0usize);
-    let (mut star_i, mut star_j) = (None, 0usize);
-    while j < s.len() {
-        if i < p.len() && (p[i] == b'?' || p[i] == s[j]) {
-            i += 1;
-            j += 1;
-        } else if i < p.len() && p[i] == b'*' {
-            star_i = Some(i);
-            i += 1;
-            star_j = j;
-        } else if let Some(si) = star_i {
-            // backtrack: advance match under last '*'
-            i = si + 1;
-            star_j += 1;
-            j = star_j;
-        } else {
-            return false;
-        }
-    }
-    // Consume trailing '*' in pattern
-    while i < p.len() && p[i] == b'*' {
-        i += 1;
-    }
-    i == p.len()
-}
-
 #[derive(Clone)]
 pub struct HelpState {
     pub topic: String,        // current node name
@@ -694,22 +663,29 @@ impl App {
     fn reload_panels_impl(&mut self, force: bool) -> Result<()> {
         self.sync_vfs_dir_cache_timeout();
         let reverse_files_only = self.panel_opts.reverse_files_only;
+        let shell_patterns = self.config_opts.shell_patterns;
         let show_hidden = self.show_hidden;
         let fast = self.panel_opts.fast_reload;
 
         let left_cwd = self.left.cwd.clone();
         if force || !fast || !self.left.fast_reload_listing_is_current(show_hidden) {
             let left = self.vfs.list_dir(&left_cwd, show_hidden)?;
-            self.left
-                .set_entries_with(self.map_dir_entries(left), reverse_files_only);
+            self.left.set_entries_with(
+                self.map_dir_entries(left),
+                reverse_files_only,
+                shell_patterns,
+            );
             self.left.capture_dir_reload_stamp(show_hidden);
         }
 
         let right_cwd = self.right.cwd.clone();
         if force || !fast || !self.right.fast_reload_listing_is_current(show_hidden) {
             let right = self.vfs.list_dir(&right_cwd, show_hidden)?;
-            self.right
-                .set_entries_with(self.map_dir_entries(right), reverse_files_only);
+            self.right.set_entries_with(
+                self.map_dir_entries(right),
+                reverse_files_only,
+                shell_patterns,
+            );
             self.right.capture_dir_reload_stamp(show_hidden);
         }
         Ok(())
@@ -806,19 +782,7 @@ impl App {
                     title,
                     value: "*".to_string(),
                     on_submit: Box::new(|app, pattern| {
-                        let pat = pattern.trim().to_string();
-                        let len = app.active_panel().entries.len();
-                        for idx in 0..len {
-                            let ent = &app.active_panel().entries[idx];
-                            if ent.is_parent_marker() {
-                                continue;
-                            }
-                            if glob_match(&pat, &ent.name)
-                                && !app.active_panel().selection.is_selected(idx)
-                            {
-                                app.active_panel_mut().selection.select(idx);
-                            }
-                        }
+                        app.apply_group_pattern(pattern.trim(), true);
                         Ok(())
                     }),
                 };
@@ -829,19 +793,7 @@ impl App {
                     title,
                     value: "*".to_string(),
                     on_submit: Box::new(|app, pattern| {
-                        let pat = pattern.trim().to_string();
-                        let len = app.active_panel().entries.len();
-                        for idx in 0..len {
-                            let ent = &app.active_panel().entries[idx];
-                            if ent.is_parent_marker() {
-                                continue;
-                            }
-                            if glob_match(&pat, &ent.name)
-                                && app.active_panel().selection.is_selected(idx)
-                            {
-                                app.active_panel_mut().selection.unselect(idx);
-                            }
-                        }
+                        app.apply_group_pattern(pattern.trim(), false);
                         Ok(())
                     }),
                 };
@@ -975,6 +927,7 @@ impl App {
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
         let new_cwd = path.to_path_buf();
         let reverse_files_only = self.panel_opts.reverse_files_only;
+        let shell_patterns = self.config_opts.shell_patterns;
         self.sync_vfs_dir_cache_timeout();
         // Re-entering a remote/archive/extfs dir within the timeout reuses the
         // cached listing (GNU mc). C-r / Refresh is the force-reload.
@@ -984,9 +937,34 @@ impl App {
         let show_hidden = self.show_hidden;
         let p = self.active_panel_mut();
         p.cwd = new_cwd;
-        p.set_entries_with(entries, reverse_files_only);
+        p.set_entries_with(entries, reverse_files_only, shell_patterns);
         p.capture_dir_reload_stamp(show_hidden);
         Ok(())
+    }
+
+    /// Select (`select == true`) or unselect files whose names match `pattern`.
+    /// Honors Options → Configuration → Use shell patterns. Skips `..`.
+    fn apply_group_pattern(&mut self, pattern: &str, select: bool) {
+        let shell_patterns = self.config_opts.shell_patterns;
+        let matches: Vec<usize> = self
+            .active_panel()
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.is_parent_marker())
+            .filter(|(_, e)| {
+                crate::matchutil::filename_pattern_matches(pattern, &e.name, shell_patterns)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let panel = self.active_panel_mut();
+        for idx in matches {
+            if select {
+                panel.selection.select(idx);
+            } else {
+                panel.selection.unselect(idx);
+            }
+        }
     }
 }
 
@@ -1087,8 +1065,13 @@ impl App {
         }
         let caption = self.active_panel().cwd.clone();
         let reverse_files_only = self.panel_opts.reverse_files_only;
-        self.active_panel_mut()
-            .set_panelized_entries_with(caption, entries, reverse_files_only);
+        let shell_patterns = self.config_opts.shell_patterns;
+        self.active_panel_mut().set_panelized_entries_with(
+            caption,
+            entries,
+            reverse_files_only,
+            shell_patterns,
+        );
         Ok(())
     }
 }
