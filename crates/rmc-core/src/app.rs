@@ -314,6 +314,8 @@ pub enum UiMode {
         show_cr: bool,
         /// GNU mcview F7 Search dialog (None while viewing).
         search_dialog: Option<Box<ViewerSearchDialog>>,
+        /// Viewer display-options dialog (F9 Menu). None while viewing.
+        display_dialog: Option<Box<ViewerDisplayDialog>>,
         /// Last Search-dialog flags, used by n / F17.
         search_case_sensitive: bool,
         search_backwards: bool,
@@ -611,6 +613,66 @@ pub struct EditorSearchDialog {
 pub type ViewerSearchDialog = EditorSearchDialog;
 /// Focus order matches editor Search: field → four checkboxes → OK → Cancel.
 pub type ViewerSearchFocus = EditorSearchFocus;
+
+/// Focus within the mcview display-options dialog (F9 Menu).
+/// Checkboxes first, then OK / Cancel — same cycle as Search.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ViewerDisplayFocus {
+    #[default]
+    ShowLineNumbers,
+    ShowCr,
+    WrapMode,
+    HexMode,
+    Ok,
+    Cancel,
+}
+
+impl ViewerDisplayFocus {
+    /// True when focus is one of the display-option checkboxes.
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Self::ShowLineNumbers | Self::ShowCr | Self::WrapMode | Self::HexMode
+        )
+    }
+}
+
+/// mcview display-options dialog: checkboxes for GNU Internal File Viewer
+/// display flags (line numbers, CR as ^M, wrap, hex). Title ` Display options `.
+/// Checkboxes seed from the current Viewer flags (unlike Search, which resets).
+#[derive(Clone)]
+pub struct ViewerDisplayDialog {
+    pub show_line_numbers: bool,
+    pub show_cr: bool,
+    pub wrap: bool,
+    pub hex: bool,
+    pub focus: ViewerDisplayFocus,
+}
+
+impl ViewerDisplayDialog {
+    /// Seed checkboxes from the live Viewer flags. Focus starts on the first checkbox.
+    pub fn from_viewer(show_line_numbers: bool, show_cr: bool, wrap: bool, hex: bool) -> Self {
+        Self {
+            show_line_numbers,
+            show_cr,
+            wrap,
+            hex,
+            focus: ViewerDisplayFocus::ShowLineNumbers,
+        }
+    }
+
+    /// Toggle the focused checkbox. Returns false when focus is not a checkbox.
+    pub fn toggle_focused_checkbox(&mut self) -> bool {
+        match self.focus {
+            ViewerDisplayFocus::ShowLineNumbers => self.show_line_numbers = !self.show_line_numbers,
+            ViewerDisplayFocus::ShowCr => self.show_cr = !self.show_cr,
+            ViewerDisplayFocus::WrapMode => self.wrap = !self.wrap,
+            ViewerDisplayFocus::HexMode => self.hex = !self.hex,
+            _ => return false,
+        }
+        true
+    }
+}
 
 impl EditorSearchDialog {
     /// Prefill the search field from the editor's last Search needle.
@@ -1209,6 +1271,7 @@ impl App {
                             show_line_numbers: false,
                             show_cr: false,
                             search_dialog: None,
+                            display_dialog: None,
                             search_case_sensitive: false,
                             search_backwards: false,
                             search_whole_words: false,
