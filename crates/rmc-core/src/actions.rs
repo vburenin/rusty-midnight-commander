@@ -19,6 +19,8 @@ pub enum Action {
     // High level UI mode changes
     Quit,
     Refresh,
+    /// GNU mc(1) C-l: full terminal repaint. Does not re-list directories (that is Refresh / C-r).
+    Repaint,
     ToggleHidden,
     SwapPanels,
     /// GNU mc Left/Right → Equal panel size (Alt-=). 50/50 split; does not swap.

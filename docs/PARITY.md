@@ -28,7 +28,7 @@ Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”
 - [ ] Bottom F-key label bar (F1…F10)
 - [ ] Default F-bar labels: Help, Menu, View, Edit, Copy, RenMov, Mkdir, Delete, PullDn, Quit
 - [x] Horizontal and vertical panel split layouts (Left/Right; Above/Below nomenclature)
-- [ ] Screen repaint: C-l
+- [x] Screen repaint: C-l
 
 Visual spec: Default skin colors (summarized from misc/skins/default.ini; names are foreground;background)
 - [ ] Core: default lightgray;blue, selected black;cyan, marked yellow;blue, mark+selected yellow;cyan, header yellow;blue, frame lightgray;blue
@@ -90,7 +90,7 @@ Command line integration (filename helpers, history, completion):
 - [x] Quick cd: Alt-c
 
 Misc panel actions:
-- [ ] C-l: full repaint
+- [x] C-l: full repaint
 - [x] C-x c: chmod dialog; C-x o: chown dialog
 - [x] C-x l: hardlink; C-x s: absolute symlink; C-x v: relative symlink
 - [x] Swap panels (Command menu; Action::SwapPanels; honors Options → Panels → Simple swap)

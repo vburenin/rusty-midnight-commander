@@ -137,6 +137,11 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
             Refresh,
         );
+        // GNU mc(1) Miscellaneous Keys: C-l redraw / repaint the screen (not C-r Reload).
+        m.bind(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            Repaint,
+        );
         // Subshell toggle (C-o)
         m.bind(
             KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
@@ -320,6 +325,7 @@ fn parse_action(s: &str) -> Option<Action> {
     match s {
         "Quit" => Some(Quit),
         "Refresh" => Some(Refresh),
+        "Repaint" => Some(Repaint),
         "ToggleSubshell" => Some(Action::ToggleSubshell),
         "ToggleHidden" => Some(ToggleHidden),
         "SwapPanels" => Some(SwapPanels),
@@ -380,6 +386,7 @@ fn format_action(a: &Action) -> String {
     match a {
         Quit => "Quit",
         Refresh => "Refresh",
+        Repaint => "Repaint",
         Action::ToggleSubshell => "ToggleSubshell",
         ToggleHidden => "ToggleHidden",
         SwapPanels => "SwapPanels",
@@ -690,6 +697,10 @@ mod tests {
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
             Some(Action::Refresh)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            Some(Action::Repaint)
         ));
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),

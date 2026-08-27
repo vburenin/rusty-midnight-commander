@@ -27,4 +27,8 @@ fn resolves_mc_defaults() {
     assert!(matches!(a, Some(Action::ToggleSelect)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
     assert!(matches!(a, Some(Action::ToggleSelect)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+    assert!(matches!(a, Some(Action::Repaint)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(matches!(a, Some(Action::Refresh)));
 }
