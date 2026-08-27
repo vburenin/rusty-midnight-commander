@@ -36,6 +36,12 @@ pub enum Action {
     PageDown,
     Home,
     End,
+    /// GNU mc(1) Alt-g: select the top currently visible listing entry.
+    PanelJumpTop,
+    /// GNU mc(1) Alt-r: select the middle currently visible listing entry.
+    PanelJumpMiddle,
+    /// GNU mc(1) Alt-j: select the bottom currently visible listing entry.
+    PanelJumpBottom,
     Enter,
     ParentDir,
     SwitchPanel,

@@ -1674,6 +1674,9 @@ impl App {
                 self.active_panel_mut().end();
                 self.sync_other_preview_target();
             }
+            PanelJumpTop => self.jump_visible_top_by(10),
+            PanelJumpMiddle => self.jump_visible_middle_by(10),
+            PanelJumpBottom => self.jump_visible_bottom_by(10),
             Enter => {
                 let panelized = self.active_panel().is_panelized();
                 let ent_opt = self.active_panel().current_entry().cloned();
@@ -2150,6 +2153,24 @@ impl App {
     }
     pub fn page_down_by(&mut self, rows: usize) {
         self.active_panel_mut().page_down(rows);
+        self.sync_other_preview_target();
+    }
+
+    /// GNU mc(1) Alt-g: top visible listing row. Uses `page_rows` from `handle_key`.
+    pub fn jump_visible_top_by(&mut self, page_rows: usize) {
+        self.active_panel_mut().jump_visible_top(page_rows);
+        self.sync_other_preview_target();
+    }
+
+    /// GNU mc(1) Alt-r: middle visible listing row. Uses `page_rows` from `handle_key`.
+    pub fn jump_visible_middle_by(&mut self, page_rows: usize) {
+        self.active_panel_mut().jump_visible_middle(page_rows);
+        self.sync_other_preview_target();
+    }
+
+    /// GNU mc(1) Alt-j: bottom visible listing row. Uses `page_rows` from `handle_key`.
+    pub fn jump_visible_bottom_by(&mut self, page_rows: usize) {
+        self.active_panel_mut().jump_visible_bottom(page_rows);
         self.sync_other_preview_target();
     }
 

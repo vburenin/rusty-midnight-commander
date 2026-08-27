@@ -13,4 +13,10 @@ fn resolves_mc_defaults() {
     assert!(matches!(a, Some(Action::EqualizePanels)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT));
     assert!(matches!(a, Some(Action::TogglePanelSplit)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT));
+    assert!(matches!(a, Some(Action::PanelJumpTop)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT));
+    assert!(matches!(a, Some(Action::PanelJumpMiddle)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
+    assert!(matches!(a, Some(Action::PanelJumpBottom)));
 }
