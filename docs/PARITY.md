@@ -100,7 +100,7 @@ Subshell/screen toggle:
 - [x] C-o: toggle panels vs subshell/output screen (when subshell enabled)
 
 Tree/directory navigation (from tree and general movement keys):
-- [ ] b/C-b/C-h/Backspace/Delete: page up; Space: page down; u/d: half-page; g/G: begin/end
+- [x] b/C-b/C-h/Backspace/Delete: page up; Space: page down; u/d: half-page; g/G: begin/end
 
 Note: Keymaps customizable via mc.keymap; terminal “Learn keys” dialog required for some terms.
 

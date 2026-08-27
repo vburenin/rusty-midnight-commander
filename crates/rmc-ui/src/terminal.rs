@@ -7543,6 +7543,12 @@ impl TerminalApp {
                 app.pending_quote = true;
                 return Ok(());
             }
+            // GNU mc(1) Tree panel (Left/Right → Tree): paging keys including
+            // C-b / Delete before Emacs so they do not steal to the cmdline.
+            // Listing C-b / Delete stay Emacs. Uses `page_rows`; never TTY size.
+            if handle_panel_tree_key(app, key, page_rows) {
+                return Ok(());
+            }
             // Emacs-like input-line keys: C-a/C-e always focus the line.
             // Other unbound Emacs chords go to the line; Home/End/Left/Right/
             // Backspace/C-h/C-u stay panel bindings here.
@@ -7554,11 +7560,6 @@ impl TerminalApp {
             if !qs_owns_delete && try_cmdline_emacs_key(app, &key, false) {
                 return Ok(());
             }
-        }
-        // GNU mc(1) Tree panel mode (Left/Right → Tree). Not the Command-menu
-        // Directory tree dialog. Uses `page_rows`; never `terminal::size()`.
-        if handle_panel_tree_key(app, key, page_rows) {
-            return Ok(());
         }
         // Panel listing Quick search (UiMode::Normal). Tree C-s is handled above.
         // Inactive C-s / Alt-s start via Action::QuickSearch on the keymap path.
@@ -9030,31 +9031,109 @@ fn handle_panel_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> bool
             }
             true
         }
-        KeyCode::Backspace => {
+        _ => {
             if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.search.pop();
+                if apply_tree_figure_paging_key(&mut tree.figure, &key, list_rows, search_active) {
+                    return true;
+                }
+            }
+            match key.code {
+                KeyCode::Char(c)
+                    if search_active && key.modifiers.is_empty() && !c.is_control() =>
+                {
+                    if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                        tree.figure.search.push(c);
+                        tree.figure.search_next();
+                        tree.figure.ensure_visible(list_rows);
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+}
+
+/// GNU mc(1) tree-figure paging keys (Directory Tree / General Movement Keys).
+/// `b` / C-b / C-h / Backspace / Delete: page up; Space: page down (before
+/// generic `Char`, so it does not insert); `u`/`d`: half-page; `g`/`G`: begin/end.
+/// Reuses [`DirectoryTreeState::page_up`] / `page_down` / `move_home` / `move_end`.
+/// `list_rows` comes from `handle_key` (never `crossterm::terminal::size()`).
+///
+/// When `search_eats_chars` is set (panel tree after C-s), letter keys still type
+/// into the search string. C-h / Backspace still pop a live search.
+fn apply_tree_figure_paging_key(
+    figure: &mut DirectoryTreeState,
+    key: &KeyEvent,
+    list_rows: usize,
+    search_eats_chars: bool,
+) -> bool {
+    let list_rows = list_rows.max(1);
+    let half = (list_rows / 2).max(1);
+    let none = key.modifiers.is_empty();
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    if alt {
+        return false;
+    }
+    match key.code {
+        KeyCode::Char(' ') if none => {
+            figure.page_down(list_rows);
+            figure.ensure_visible(list_rows);
+            true
+        }
+        KeyCode::Char('b') if none && !search_eats_chars => {
+            figure.page_up(list_rows);
+            figure.ensure_visible(list_rows);
+            true
+        }
+        KeyCode::Char('b' | 'B') if ctrl => {
+            figure.page_up(list_rows);
+            figure.ensure_visible(list_rows);
+            true
+        }
+        KeyCode::Delete if none => {
+            figure.page_up(list_rows);
+            figure.ensure_visible(list_rows);
+            true
+        }
+        KeyCode::Backspace if none => {
+            if search_eats_chars || !figure.search.is_empty() {
+                figure.search.pop();
+            } else {
+                figure.page_up(list_rows);
+                figure.ensure_visible(list_rows);
             }
             true
         }
-        KeyCode::Char('h') if ctrl => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.search.pop();
+        KeyCode::Char('h' | 'H') if ctrl => {
+            if search_eats_chars || !figure.search.is_empty() {
+                figure.search.pop();
+            } else {
+                figure.page_up(list_rows);
+                figure.ensure_visible(list_rows);
             }
             true
         }
-        KeyCode::Char(' ') if !search_active && key.modifiers.is_empty() => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.page_down(list_rows);
-                tree.figure.ensure_visible(list_rows);
-            }
+        KeyCode::Char('u') if none && !search_eats_chars => {
+            figure.page_up(half);
+            figure.ensure_visible(list_rows);
             true
         }
-        KeyCode::Char(c) if search_active && key.modifiers.is_empty() && !c.is_control() => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.search.push(c);
-                tree.figure.search_next();
-                tree.figure.ensure_visible(list_rows);
-            }
+        KeyCode::Char('d') if none && !search_eats_chars => {
+            figure.page_down(half);
+            figure.ensure_visible(list_rows);
+            true
+        }
+        KeyCode::Char('g') if none && !search_eats_chars => {
+            figure.move_home();
+            figure.ensure_visible(list_rows);
+            true
+        }
+        KeyCode::Char('G') if (none || shift) && !ctrl && !search_eats_chars => {
+            figure.move_end();
+            figure.ensure_visible(list_rows);
             true
         }
         _ => false,
@@ -9297,24 +9376,25 @@ fn handle_directory_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> 
                 st.ensure_visible(list_rows);
             }
         }
-        KeyCode::Backspace => {
-            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
-                st.search.pop();
+        _ => {
+            // Same figure paging keys as the Tree panel (Space before generic Char).
+            let consumed = if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                apply_tree_figure_paging_key(st, &key, list_rows, false)
+            } else {
+                false
+            };
+            if !consumed {
+                if let KeyCode::Char(c) = key.code {
+                    if key.modifiers.is_empty() && !c.is_control() {
+                        if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
+                            st.search.push(c);
+                            st.search_next();
+                            st.ensure_visible(list_rows);
+                        }
+                    }
+                }
             }
         }
-        KeyCode::Char('h') if ctrl => {
-            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
-                st.search.pop();
-            }
-        }
-        KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
-            if let UiMode::DirectoryTree(st) = &mut app.ui_mode {
-                st.search.push(c);
-                st.search_next();
-                st.ensure_visible(list_rows);
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -16902,6 +16982,10 @@ mod directory_tree_command_tests {
         TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
     }
 
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
     fn press_ctrl(app: &mut App, c: char) {
         TerminalApp::handle_key(
             app,
@@ -17087,6 +17171,45 @@ mod directory_tree_command_tests {
         .unwrap();
         TerminalApp::handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), 2)
             .unwrap();
+        assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dialog_paging_keys_share_tree_figure() {
+        let root = temp_workspace();
+        for i in 0..24 {
+            std::fs::create_dir_all(root.join(format!("n{i:02}"))).unwrap();
+        }
+        let mut app = make_app(&root);
+        open_via_command_menu(&mut app);
+        press(&mut app, KeyCode::F(4));
+        assert!(!tree_state(&app).is_dynamic());
+        let page = 5;
+        let half = (page / 2).max(1);
+        press_rows(&mut app, KeyCode::End, KeyModifiers::NONE, page);
+        let last = tree_state(&app).selected_index;
+        assert!(last > page + half);
+
+        press_rows(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, page);
+        assert_eq!(tree_state(&app).selected_index, last - page);
+        assert!(
+            tree_state(&app).search.is_empty(),
+            "b must page, not insert into search"
+        );
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        press_rows(&mut app, KeyCode::Char(' '), KeyModifiers::NONE, page);
+        assert_eq!(tree_state(&app).selected_index, page);
+        assert!(
+            tree_state(&app).search.is_empty(),
+            "Space before generic Char must not insert"
+        );
+        press_rows(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, page);
+        assert_eq!(tree_state(&app).selected_index, page + half);
+        press_rows(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, page);
+        assert_eq!(tree_state(&app).selected_index, 0);
+        press_rows(&mut app, KeyCode::Char('G'), KeyModifiers::NONE, page);
+        assert_eq!(tree_state(&app).selected_index, last);
         assert!(matches!(app.ui_mode, UiMode::DirectoryTree(_)));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -20376,7 +20499,7 @@ mod panel_tree_mode_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rmc_core::app::ListingModeFocus;
     use rmc_core::config::KeyMap;
-    use rmc_core::dirtree::DirectoryTreeState;
+    use rmc_core::dirtree::{DirectoryTreeMode, DirectoryTreeState};
     use rmc_core::panel::{tree_panel_mini_status, ListingFormat, PanelMode};
     use rmc_fs::local::LocalFs;
 
@@ -20400,22 +20523,20 @@ mod panel_tree_mode_tests {
         app
     }
 
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
     fn press(app: &mut App, code: KeyCode) {
-        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+        press_rows(app, code, KeyModifiers::NONE, 10);
     }
 
     fn press_ctrl(app: &mut App, c: char) {
-        TerminalApp::handle_key(
-            app,
-            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
-            10,
-        )
-        .unwrap();
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
     }
 
     fn press_alt(app: &mut App, c: char) {
-        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
-            .unwrap();
+        press_rows(app, KeyCode::Char(c), KeyModifiers::ALT, 10);
     }
 
     fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -20503,6 +20624,25 @@ mod panel_tree_mode_tests {
 
     fn tree_selected(app: &App) -> std::path::PathBuf {
         tree_figure(app).selected_path()
+    }
+
+    fn tree_index(app: &App) -> usize {
+        tree_figure(app).selected_index
+    }
+
+    fn seed_child_dirs(dir: &std::path::Path, n: usize) {
+        for i in 0..n {
+            std::fs::create_dir(dir.join(format!("n{i:02}"))).unwrap();
+        }
+    }
+
+    fn open_static_tree(app: &mut App) {
+        open_left_right_item(app, false, "Tree");
+        press(app, KeyCode::F(4));
+        assert!(
+            !tree_figure(app).is_dynamic(),
+            "F4 Static gives a linear list for paging tests"
+        );
     }
 
     #[test]
@@ -20867,6 +21007,221 @@ mod panel_tree_mode_tests {
         .unwrap();
         assert_eq!(app.left.mode, PanelMode::Tree);
         assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_paging_keys_page_up_down_half_begin_end() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        seed_child_dirs(&left_dir, 24);
+        open_static_tree(&mut app);
+        let page = 5;
+        let half = (page / 2).max(1);
+        press_rows(&mut app, KeyCode::End, KeyModifiers::NONE, page);
+        let last = tree_index(&app);
+        assert!(
+            last > page + half,
+            "need a tall static tree, last={last} page={page}"
+        );
+
+        let page_up_keys = [
+            (KeyCode::Char('b'), KeyModifiers::NONE),
+            (KeyCode::Char('b'), KeyModifiers::CONTROL),
+            (KeyCode::Char('h'), KeyModifiers::CONTROL),
+            (KeyCode::Backspace, KeyModifiers::NONE),
+            (KeyCode::Delete, KeyModifiers::NONE),
+        ];
+        for (code, mods) in page_up_keys {
+            press_rows(&mut app, KeyCode::End, KeyModifiers::NONE, page);
+            assert_eq!(tree_index(&app), last);
+            press_rows(&mut app, code, mods, page);
+            assert_eq!(
+                tree_index(&app),
+                last - page,
+                "{code:?} {mods:?} should page up by {page}"
+            );
+            assert!(matches!(app.ui_mode, UiMode::Normal));
+            assert_eq!(app.left.mode, PanelMode::Tree);
+            assert!(app.subshell.cmdline.is_empty());
+        }
+
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), 0);
+        press_rows(&mut app, KeyCode::Char(' '), KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), page, "Space pages down");
+        press_rows(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), page + half, "d half-page down");
+        press_rows(&mut app, KeyCode::Char('u'), KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), page, "u half-page up");
+
+        press_rows(&mut app, KeyCode::Char('g'), KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), 0, "g first node");
+        press_rows(&mut app, KeyCode::Char('G'), KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), last, "G last node");
+        press_rows(&mut app, KeyCode::Char('G'), KeyModifiers::SHIFT, page);
+        assert_eq!(tree_index(&app), last);
+
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        press_rows(&mut app, KeyCode::Char('b'), KeyModifiers::NONE, page);
+        assert_eq!(tree_index(&app), 0, "page up does not wrap");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_paging_empty_and_single_node_are_nops() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        let page = 5;
+        let keys = [
+            (KeyCode::Char('b'), KeyModifiers::NONE),
+            (KeyCode::Char('b'), KeyModifiers::CONTROL),
+            (KeyCode::Char('h'), KeyModifiers::CONTROL),
+            (KeyCode::Backspace, KeyModifiers::NONE),
+            (KeyCode::Delete, KeyModifiers::NONE),
+            (KeyCode::Char(' '), KeyModifiers::NONE),
+            (KeyCode::Char('u'), KeyModifiers::NONE),
+            (KeyCode::Char('d'), KeyModifiers::NONE),
+            (KeyCode::Char('g'), KeyModifiers::NONE),
+            (KeyCode::Char('G'), KeyModifiers::NONE),
+        ];
+
+        let one = tree_figure(&app)
+            .entries
+            .first()
+            .cloned()
+            .expect("seeded tree has at least one node");
+        if let Some(tree) = app.left.tree.as_mut() {
+            tree.figure.known = vec![one.clone()];
+            tree.figure.entries = vec![one];
+            tree.figure.selected_index = 0;
+            tree.figure.scroll_top = 0;
+            tree.figure.mode = DirectoryTreeMode::Static;
+            tree.figure.search.clear();
+        }
+        for (code, mods) in keys {
+            press_rows(&mut app, code, mods, page);
+            assert_eq!(tree_index(&app), 0, "single-node {code:?}");
+            assert_eq!(tree_figure(&app).entries.len(), 1);
+        }
+
+        if let Some(tree) = app.left.tree.as_mut() {
+            tree.figure.known.clear();
+            tree.figure.entries.clear();
+            tree.figure.selected_index = 0;
+            tree.figure.scroll_top = 0;
+            tree.figure.search.clear();
+        }
+        for (code, mods) in keys {
+            press_rows(&mut app, code, mods, page);
+            assert_eq!(tree_index(&app), 0, "empty {code:?}");
+            assert!(tree_figure(&app).entries.is_empty());
+        }
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_space_alt_g_plain_g_and_c_h_are_not_tree_paging() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        std::fs::write(left_dir.join("a.txt"), b"a").unwrap();
+        std::fs::write(left_dir.join("z.txt"), b"z").unwrap();
+        app.reload_panels().unwrap();
+        app.panel_opts.mark_moves_down = false;
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        let z_idx = app
+            .left
+            .entries
+            .iter()
+            .position(|e| e.name == "z.txt")
+            .expect("z.txt");
+        let a_idx = app
+            .left
+            .entries
+            .iter()
+            .position(|e| e.name == "a.txt")
+            .expect("a.txt");
+
+        app.left.cursor = a_idx;
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            app.left.selection.is_selected(a_idx),
+            "listing Space still ToggleSelect"
+        );
+        assert_eq!(app.left.cursor, a_idx);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.left.cursor = z_idx;
+        press_alt(&mut app, 'g');
+        assert_eq!(app.left.cursor, 0, "Alt-g still jumps to visible top");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.left.cursor = z_idx;
+        let hidden_before = app.show_hidden;
+        press_ctrl(&mut app, 'h');
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_ne!(app.show_hidden, hidden_before, "listing C-h toggles hidden");
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "listing C-h is not tree page-up"
+        );
+        let z_idx = app
+            .left
+            .entries
+            .iter()
+            .position(|e| e.name == "z.txt")
+            .expect("z.txt after hidden toggle");
+        app.left.cursor = z_idx;
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(
+            app.left.cursor, z_idx,
+            "listing g does not jump to listing begin"
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "listing g types into the cmdline"
+        );
+        assert_eq!(app.subshell.cmdline, "g");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_input_space_g_uppercase_g_insert_chars() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        app.ui_mode = UiMode::ShellInput;
+        app.subshell.replace_cmdline("echo".to_string());
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Char('G'));
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "echo gG");
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_paging_then_enter_still_chdirs_other_panel() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        seed_child_dirs(&left_dir, 24);
+        open_static_tree(&mut app);
+        let page = 5;
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        press_rows(&mut app, KeyCode::Char(' '), KeyModifiers::NONE, page);
+        press_rows(&mut app, KeyCode::Char('d'), KeyModifiers::NONE, page);
+        let dest = tree_selected(&app);
+        assert_ne!(dest, left_dir);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, dest);
+        assert_ne!(app.right.cwd, right_dir);
+        assert_eq!(app.active, PaneSide::Left);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
