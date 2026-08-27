@@ -3175,6 +3175,12 @@ impl TerminalApp {
                     if try_cmdline_emacs_key(app, &key, true) {
                         return Ok(());
                     }
+                    // GNU mc(1) Alt-g/r/j go to the directory panel, not the input line.
+                    if let Some(action) = app.keymap.resolve(&key) {
+                        if apply_panel_visible_jump(app, &action, page_rows) {
+                            return Ok(());
+                        }
+                    }
                     // Command line editing and execution
                     match key.code {
                         KeyCode::Esc => {
@@ -7619,6 +7625,9 @@ impl TerminalApp {
                 }
                 Action::PageUp => app.page_up_by(page_rows),
                 Action::PageDown => app.page_down_by(page_rows),
+                Action::PanelJumpTop | Action::PanelJumpMiddle | Action::PanelJumpBottom => {
+                    apply_panel_visible_jump(app, &action, page_rows);
+                }
                 Action::ToggleSubshell => {
                     app.handle_action(Action::ToggleSubshell)?;
                     // If toggled ON, ensure PTY session exists and is alive; spawn otherwise.
@@ -8143,6 +8152,18 @@ fn try_cmdline_emacs_key(app: &mut App, key: &KeyEvent, line_has_focus: bool) ->
         app.subshell.clear_history_nav();
     }
     focus_command_line(app);
+    true
+}
+
+/// GNU mc(1) Alt-g / Alt-r / Alt-j: jump the active listing to the top / middle /
+/// bottom *visible* file. Uses `page_rows` from `handle_key` (never TTY size).
+fn apply_panel_visible_jump(app: &mut App, action: &Action, page_rows: usize) -> bool {
+    match action {
+        Action::PanelJumpTop => app.jump_visible_top_by(page_rows),
+        Action::PanelJumpMiddle => app.jump_visible_middle_by(page_rows),
+        Action::PanelJumpBottom => app.jump_visible_bottom_by(page_rows),
+        _ => return false,
+    }
     true
 }
 
@@ -22248,6 +22269,287 @@ mod chmod_chown_link_dialog_tests {
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.active, PaneSide::Right);
         assert_eq!(app.left.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_jump_visible_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-panel-jump-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_alt_rows(app: &mut App, c: char, page_rows: usize) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::ALT, page_rows);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn press_alt_tab(app: &mut App) {
+        press_rows(app, KeyCode::Tab, KeyModifiers::ALT, 10);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn seed_files(root: &std::path::Path, n: usize) {
+        std::fs::write(root.join("zzalpha.txt"), b"z").unwrap();
+        for i in 0..n {
+            std::fs::write(root.join(format!("file{i:02}.txt")), b"x").unwrap();
+        }
+    }
+
+    fn listing_len(app: &App) -> usize {
+        app.active_panel().entries.len()
+    }
+
+    #[test]
+    fn keymap_binds_alt_g_r_j() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT)),
+            Some(Action::PanelJumpTop)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT)),
+            Some(Action::PanelJumpMiddle)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT)),
+            Some(Action::PanelJumpBottom)
+        ));
+    }
+
+    #[test]
+    fn listing_that_fits_jumps_first_middle_last() {
+        let root = temp_workspace();
+        seed_files(&root, 4);
+        let mut app = make_app(&root);
+        let len = listing_len(&app);
+        assert!(len > 1, "expected .. plus files, got {len}");
+        let page = 20;
+        assert!(len <= page, "listing must fit in the window");
+        assert_eq!(app.active_panel().entries[0].name, "..");
+
+        press_alt_rows(&mut app, 'g', page);
+        assert_eq!(app.active_panel().cursor, 0);
+        assert_eq!(app.active_panel().entries[0].name, "..");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.subshell.cmdline.is_empty());
+
+        press_alt_rows(&mut app, 'j', page);
+        assert_eq!(app.active_panel().cursor, len - 1);
+
+        press_alt_rows(&mut app, 'r', page);
+        // visible = min(page, len) = len; middle = offset + visible/2 = len/2.
+        assert_eq!(app.active_panel().cursor, len / 2);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.subshell.cmdline.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scrolled_listing_jumps_visible_window_not_home_end() {
+        let root = temp_workspace();
+        seed_files(&root, 24);
+        let mut app = make_app(&root);
+        let len = listing_len(&app);
+        let page = 5;
+        assert!(len > page + 4, "need a listing taller than the window");
+        let offset = 6;
+        app.active_panel_mut().scroll_top = offset;
+        app.active_panel_mut().cursor = offset + 2;
+        let other_cursor = app.right.cursor;
+        let other_scroll = app.right.scroll_top;
+
+        press_alt_rows(&mut app, 'g', page);
+        assert_eq!(app.active_panel().cursor, offset);
+        assert_ne!(app.active_panel().cursor, 0);
+        assert_eq!(app.active_panel().scroll_top, offset);
+
+        press_alt_rows(&mut app, 'j', page);
+        let vis = page.min(len - offset);
+        assert_eq!(app.active_panel().cursor, offset + vis - 1);
+        assert_ne!(app.active_panel().cursor, len - 1);
+        assert_eq!(app.active_panel().scroll_top, offset);
+
+        press_alt_rows(&mut app, 'r', page);
+        assert_eq!(app.active_panel().cursor, offset + vis / 2);
+        assert_eq!(app.active_panel().scroll_top, offset);
+
+        // Down/Up still move one row; Home still goes to the first listing entry.
+        let mid = app.active_panel().cursor;
+        press_rows(&mut app, KeyCode::Down, KeyModifiers::NONE, page);
+        assert_eq!(app.active_panel().cursor, mid + 1);
+        press_rows(&mut app, KeyCode::Up, KeyModifiers::NONE, page);
+        assert_eq!(app.active_panel().cursor, mid);
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        assert_eq!(app.active_panel().cursor, 0);
+
+        assert_eq!(app.right.cursor, other_cursor);
+        assert_eq!(app.right.scroll_top, other_scroll);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_g_r_j_do_not_insert_or_focus_cmdline() {
+        let root = temp_workspace();
+        seed_files(&root, 8);
+        let mut app = make_app(&root);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press_alt_rows(&mut app, 'g', 10);
+        press_alt_rows(&mut app, 'r', 10);
+        press_alt_rows(&mut app, 'j', 10);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            app.subshell.cmdline.is_empty(),
+            "Alt-g/r/j must not insert into the command line, got {:?}",
+            app.subshell.cmdline
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_and_parent_only_listings_do_not_panic() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert_eq!(app.active_panel().entries[0].name, "..");
+        press_alt_rows(&mut app, 'g', 10);
+        assert_eq!(app.active_panel().cursor, 0);
+        press_alt_rows(&mut app, 'r', 10);
+        assert_eq!(app.active_panel().cursor, 0);
+        press_alt_rows(&mut app, 'j', 10);
+        assert_eq!(app.active_panel().cursor, 0);
+
+        app.active_panel_mut().entries.clear();
+        app.active_panel_mut().cursor = 0;
+        app.active_panel_mut().scroll_top = 0;
+        press_alt_rows(&mut app, 'g', 10);
+        press_alt_rows(&mut app, 'r', 10);
+        press_alt_rows(&mut app, 'j', 10);
+        assert!(app.active_panel().entries.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_jump_alt_tab_emacs_chmod_select_and_tab_switch_still_work() {
+        let root = temp_workspace();
+        seed_files(&root, 12);
+        let mut app = make_app(&root);
+        let page = 5;
+        app.active_panel_mut().scroll_top = 4;
+        app.active_panel_mut().cursor = 6;
+        press_alt_rows(&mut app, 'j', page);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.subshell.clear_cmdline();
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        press_ctrl(&mut app, 'a');
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "C-a Emacs start must still focus the command line"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('c'));
+        assert!(
+            matches!(app.ui_mode, UiMode::ChmodDialog { .. }),
+            "C-x c Chmod must still open after a visible jump"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::Char('+'));
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.subshell.clear_cmdline();
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_input_alt_g_jumps_panel_without_inserting() {
+        let root = temp_workspace();
+        seed_files(&root, 16);
+        let mut app = make_app(&root);
+        let page = 5;
+        let offset = 3;
+        app.active_panel_mut().scroll_top = offset;
+        app.active_panel_mut().cursor = offset + 1;
+        type_str(&mut app, "echo");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        press_alt_rows(&mut app, 'g', page);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "echo");
+        assert_eq!(app.active_panel().cursor, offset);
+        press_alt_rows(&mut app, 'j', page);
+        let vis = page.min(listing_len(&app) - offset);
+        assert_eq!(app.active_panel().cursor, offset + vis - 1);
+        assert_eq!(app.subshell.cmdline, "echo");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_g_in_select_dialog_does_not_move_panel() {
+        let root = temp_workspace();
+        seed_files(&root, 8);
+        let mut app = make_app(&root);
+        app.active_panel_mut().cursor = 2;
+        press(&mut app, KeyCode::Char('+'));
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        press_alt_rows(&mut app, 'g', 10);
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        assert_eq!(app.active_panel().cursor, 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -92,6 +92,19 @@ impl KeyMap {
         m.bind(new_event(KeyCode::PageDown), PageDown);
         m.bind(new_event(KeyCode::Home), Home);
         m.bind(new_event(KeyCode::End), End);
+        // GNU mc(1) Directory Panels: Alt-g/r/j jump to top/middle/bottom visible file.
+        m.bind(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
+            PanelJumpTop,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT),
+            PanelJumpMiddle,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
+            PanelJumpBottom,
+        );
         m.bind(new_event(KeyCode::Tab), SwitchPanel);
         m.bind(new_event(KeyCode::Enter), Enter);
         m.bind(
@@ -313,6 +326,9 @@ fn parse_action(s: &str) -> Option<Action> {
         "PageDown" => Some(PageDown),
         "Home" => Some(Home),
         "End" => Some(End),
+        "PanelJumpTop" => Some(PanelJumpTop),
+        "PanelJumpMiddle" => Some(PanelJumpMiddle),
+        "PanelJumpBottom" => Some(PanelJumpBottom),
         "Enter" => Some(Enter),
         "ParentDir" => Some(ParentDir),
         "SwitchPanel" => Some(SwitchPanel),
@@ -369,6 +385,9 @@ fn format_action(a: &Action) -> String {
         PageDown => "PageDown",
         Home => "Home",
         End => "End",
+        PanelJumpTop => "PanelJumpTop",
+        PanelJumpMiddle => "PanelJumpMiddle",
+        PanelJumpBottom => "PanelJumpBottom",
         Enter => "Enter",
         ParentDir => "ParentDir",
         SwitchPanel => "SwitchPanel",
@@ -668,6 +687,18 @@ mod tests {
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
             Some(Action::ParentDir)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT)),
+            Some(Action::PanelJumpTop)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT)),
+            Some(Action::PanelJumpMiddle)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT)),
+            Some(Action::PanelJumpBottom)
         ));
     }
 

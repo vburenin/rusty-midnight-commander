@@ -18,6 +18,10 @@ PageUp    = PageUp
 PageDown  = PageDown
 Home      = Home
 End       = End
+# GNU mc(1) Directory Panels: jump to top/middle/bottom currently visible file
+Alt-g     = PanelJumpTop
+Alt-r     = PanelJumpMiddle
+Alt-j     = PanelJumpBottom
 Tab       = SwitchPanel
 Enter     = Enter
 Backspace = ParentDir

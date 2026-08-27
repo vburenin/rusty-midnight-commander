@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisibleJump {
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelMode {
     Listing,
     QuickView,
@@ -458,6 +465,42 @@ impl PanelState {
         if !self.entries.is_empty() {
             self.cursor = self.entries.len() - 1;
         }
+    }
+
+    /// GNU mc(1) Alt-g: select the top file currently drawn in the panel.
+    ///
+    /// `page_rows` is the panel body height from `handle_key` (never TTY size).
+    pub fn jump_visible_top(&mut self, page_rows: usize) {
+        self.jump_visible(page_rows, VisibleJump::Top);
+    }
+
+    /// GNU mc(1) Alt-r: select the middle file currently drawn in the panel.
+    pub fn jump_visible_middle(&mut self, page_rows: usize) {
+        self.jump_visible(page_rows, VisibleJump::Middle);
+    }
+
+    /// GNU mc(1) Alt-j: select the bottom file currently drawn in the panel.
+    pub fn jump_visible_bottom(&mut self, page_rows: usize) {
+        self.jump_visible(page_rows, VisibleJump::Bottom);
+    }
+
+    fn jump_visible(&mut self, page_rows: usize, which: VisibleJump) {
+        let len = self.entries.len();
+        if len == 0 {
+            return;
+        }
+        let last = len - 1;
+        let slots = listing_page_capacity(self.listing, self.brief_columns, page_rows).max(1);
+        let offset = self.scroll_top.min(last);
+        // Files actually drawn (short listing / partial last page), not empty slots.
+        let visible = slots.min(len - offset);
+        let idx = match which {
+            VisibleJump::Top => offset,
+            VisibleJump::Middle => offset + visible / 2,
+            VisibleJump::Bottom => offset + visible.saturating_sub(1),
+        };
+        self.cursor = idx.min(last);
+        self.ensure_visible(slots);
     }
 
     pub fn ensure_visible(&mut self, content_rows: usize) {
@@ -940,6 +983,54 @@ mod tests {
             nlink: 1,
             inode: 0,
         }
+    }
+
+    #[test]
+    fn jump_visible_empty_listing_is_noop() {
+        let mut p = PanelState::new(".");
+        p.entries.clear();
+        p.cursor = 0;
+        p.scroll_top = 0;
+        p.jump_visible_top(5);
+        p.jump_visible_middle(5);
+        p.jump_visible_bottom(5);
+        assert!(p.entries.is_empty());
+        assert_eq!(p.cursor, 0);
+        assert_eq!(p.scroll_top, 0);
+    }
+
+    #[test]
+    fn jump_visible_fits_and_scrolled_viewport() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.entries = (0..6)
+            .map(|i| make_entry(&format!("e{i}"), 1, now, false))
+            .collect();
+        p.scroll_top = 0;
+        p.cursor = 4;
+        // Listing fits: visible = min(slots, len) = 6; middle = offset + visible/2.
+        p.jump_visible_top(20);
+        assert_eq!(p.cursor, 0);
+        p.jump_visible_bottom(20);
+        assert_eq!(p.cursor, 5);
+        p.jump_visible_middle(20);
+        assert_eq!(p.cursor, 3);
+
+        p.entries = (0..21)
+            .map(|i| make_entry(&format!("f{i:02}"), 1, now, false))
+            .collect();
+        p.scroll_top = 5;
+        p.cursor = 9;
+        let slots = 4;
+        p.jump_visible_top(slots);
+        assert_eq!(p.cursor, 5, "Alt-g is the first visible row, not index 0");
+        assert_eq!(p.scroll_top, 5);
+        p.jump_visible_bottom(slots);
+        assert_eq!(p.cursor, 8, "Alt-j is last visible (5+4-1), not len-1");
+        assert_eq!(p.scroll_top, 5);
+        p.jump_visible_middle(slots);
+        assert_eq!(p.cursor, 7, "middle = offset + visible/2 = 5 + 4/2");
+        assert_eq!(p.scroll_top, 5);
     }
 
     #[test]
