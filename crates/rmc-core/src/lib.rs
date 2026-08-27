@@ -4,6 +4,7 @@ pub mod complete;
 pub mod config;
 pub mod dirtree;
 pub mod events;
+pub mod filemask;
 pub mod fileop;
 pub mod find;
 pub mod hotlist;

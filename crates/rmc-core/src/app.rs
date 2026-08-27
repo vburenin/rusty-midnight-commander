@@ -662,6 +662,9 @@ pub enum UiMode {
         title: String, // "Copy" or "Move"
         src_name: String,
         src_path: PathBuf,
+        /// Tagged (or current) sources snapshotted when the dialog opened.
+        /// `src_path` is the first entry; F15/F16 store only the current file.
+        src_paths: Vec<PathBuf>,
         mask: String,
         to: String,
         using_shell_patterns: bool,

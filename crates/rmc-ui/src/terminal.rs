@@ -1926,6 +1926,87 @@ impl TerminalApp {
         }
     }
 
+    /// Apply GNU source-mask filtering and dest-wildcard expansion, then OK
+    /// (overwrite / progress) or Background (job queue) with the resolved list.
+    fn submit_copy_move_dialog(
+        app: &mut App,
+        op: rmc_core::app::CopyMoveOp,
+        sources: Vec<PathBuf>,
+        mask: String,
+        to: String,
+        using_shell_patterns: bool,
+        background: bool,
+    ) {
+        let dest_path = Path::new(&to);
+        let exists_as_dir = app.vfs.stat(dest_path).map(|m| m.is_dir).unwrap_or(false);
+        let dest_is_dir = rmc_core::filemask::dest_is_directory(&to, exists_as_dir);
+        let pairs = rmc_core::filemask::resolve_copy_move_pairs(
+            &sources,
+            &mask,
+            &to,
+            using_shell_patterns,
+            dest_is_dir,
+        );
+        if pairs.is_empty() {
+            app.ui_mode = UiMode::Normal;
+            return;
+        }
+        let flags = app.config_opts.copy_flags();
+        if background {
+            for (src, dst) in pairs {
+                match op {
+                    rmc_core::app::CopyMoveOp::Copy => {
+                        app.jobs.spawn_copy_with_flags(src, dst, flags);
+                    }
+                    rmc_core::app::CopyMoveOp::Move => {
+                        app.jobs.spawn_move_with_flags(src, dst, flags);
+                    }
+                }
+            }
+            app.ui_mode = UiMode::Normal;
+            return;
+        }
+        let mut iter = pairs.into_iter();
+        let Some((src, dst)) = iter.next() else {
+            app.ui_mode = UiMode::Normal;
+            return;
+        };
+        let rest: Vec<_> = iter.collect();
+        let exists = app.vfs.stat(&dst).is_ok();
+        if exists {
+            if app.confirm.overwrite {
+                let skip = app.dont_overwrite_with_zero;
+                app.ui_mode = UiMode::OverwriteDialog {
+                    op,
+                    src_path: src,
+                    dst_path: dst,
+                    focus: rmc_core::app::OverwriteFocus::Yes,
+                    skip_zero_length: skip,
+                };
+                return;
+            }
+            let _ = app.vfs.remove(&dst, false);
+        }
+        app.ui_mode = Self::file_op_progress_mode(
+            app.vfs.as_ref(),
+            &app.jobs,
+            &app.config_opts,
+            op,
+            src,
+            dst,
+        );
+        for (src, dst) in rest {
+            match op {
+                rmc_core::app::CopyMoveOp::Copy => {
+                    app.jobs.spawn_copy_with_flags(src, dst, flags);
+                }
+                rmc_core::app::CopyMoveOp::Move => {
+                    app.jobs.spawn_move_with_flags(src, dst, flags);
+                }
+            }
+        }
+    }
+
     /// Mouse entry used by the event loop and unit tests. GNU `-d`/`--nomouse`
     /// never handles events. Shift+mouse is a passthrough so the terminal can
     /// select/paste. Editor/dialog modes do not consume clicks.
@@ -5558,7 +5639,8 @@ impl TerminalApp {
             UiMode::CopyDialog {
                 title,
                 src_name: _,
-                src_path,
+                src_path: _,
+                src_paths,
                 mask,
                 to,
                 using_shell_patterns,
@@ -5614,80 +5696,32 @@ impl TerminalApp {
                             }
                         }
                     }
-                    KeyCode::Enter => {
-                        use std::path::Path;
-                        match *focus {
-                            F::Checkbox1 => *using_shell_patterns = !*using_shell_patterns,
-                            F::Checkbox2 => *follow_links = !*follow_links,
-                            F::Checkbox3 => *preserve_attrs = !*preserve_attrs,
-                            F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
-                            F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
-                            F::Ok => {
-                                // If destination exists, open overwrite dialog; else start progress.
-                                let dst = Path::new(&*to).to_path_buf();
-                                let src = src_path.clone();
-                                let op = if title == "Copy" {
-                                    rmc_core::app::CopyMoveOp::Copy
-                                } else {
-                                    rmc_core::app::CopyMoveOp::Move
-                                };
-                                let exists = app.vfs.stat(&dst).is_ok();
-                                if exists {
-                                    if app.confirm.overwrite {
-                                        let skip = app.dont_overwrite_with_zero;
-                                        app.ui_mode = UiMode::OverwriteDialog {
-                                            op,
-                                            src_path: src,
-                                            dst_path: dst,
-                                            focus: rmc_core::app::OverwriteFocus::Yes,
-                                            skip_zero_length: skip,
-                                        };
-                                    } else {
-                                        let _ = app.vfs.remove(&dst, false);
-                                        app.ui_mode = Self::file_op_progress_mode(
-                                            app.vfs.as_ref(),
-                                            &app.jobs,
-                                            &app.config_opts,
-                                            op,
-                                            src,
-                                            dst,
-                                        );
-                                    }
-                                } else {
-                                    app.ui_mode = Self::file_op_progress_mode(
-                                        app.vfs.as_ref(),
-                                        &app.jobs,
-                                        &app.config_opts,
-                                        op,
-                                        src,
-                                        dst,
-                                    );
-                                }
-                            }
-                            F::Background => {
-                                // Enqueue background job; do not block.
-                                let flags = app.config_opts.copy_flags();
-                                if title == "Copy" {
-                                    app.jobs.spawn_copy_with_flags(
-                                        src_path.clone(),
-                                        Path::new(&*to).to_path_buf(),
-                                        flags,
-                                    );
-                                } else {
-                                    app.jobs.spawn_move_with_flags(
-                                        src_path.clone(),
-                                        Path::new(&*to).to_path_buf(),
-                                        flags,
-                                    );
-                                }
-                                app.ui_mode = UiMode::Normal;
-                            }
-                            F::Cancel => {
-                                app.ui_mode = UiMode::Normal;
-                            }
-                            _ => {}
+                    KeyCode::Enter => match *focus {
+                        F::Checkbox1 => *using_shell_patterns = !*using_shell_patterns,
+                        F::Checkbox2 => *follow_links = !*follow_links,
+                        F::Checkbox3 => *preserve_attrs = !*preserve_attrs,
+                        F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
+                        F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
+                        F::Ok | F::Background => {
+                            let background = matches!(*focus, F::Background);
+                            let op = if title == "Copy" {
+                                rmc_core::app::CopyMoveOp::Copy
+                            } else {
+                                rmc_core::app::CopyMoveOp::Move
+                            };
+                            let sources = src_paths.clone();
+                            let mask_s = mask.clone();
+                            let to_s = to.clone();
+                            let shell = *using_shell_patterns;
+                            Self::submit_copy_move_dialog(
+                                app, op, sources, mask_s, to_s, shell, background,
+                            );
                         }
-                    }
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                        _ => {}
+                    },
 
                     _ => {}
                 }
@@ -8734,7 +8768,7 @@ fn open_panel_editor(app: &mut App, new_file: bool) {
 
 /// Copy/Move source: tagged names, or the current file. F15/F16 set
 /// `ignore_tags` so only the selected name is used.
-fn copy_move_source(app: &App, ignore_tags: bool) -> Option<(String, PathBuf)> {
+fn copy_move_source(app: &App, ignore_tags: bool) -> Option<(String, Vec<PathBuf>)> {
     let panel = app.active_panel();
     if !ignore_tags && !panel.selection.is_empty() {
         let ents: Vec<_> = panel
@@ -8754,38 +8788,29 @@ fn copy_move_source(app: &App, ignore_tags: bool) -> Option<(String, PathBuf)> {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        return Some((src_name, ents[0].path.clone()));
+        let paths = ents.iter().map(|e| e.path.clone()).collect();
+        return Some((src_name, paths));
     }
     let ent = panel.current_entry()?;
     if ent.is_parent_marker() {
         return None;
     }
-    Some((ent.name.clone(), ent.path.clone()))
+    Some((ent.name.clone(), vec![ent.path.clone()]))
 }
 
 /// F5/F6: dest = other panel, use tags when present.
 /// F15/F16: dest = current panel, always the selected file.
 fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_tags: bool) {
-    let Some((src_name, src_path)) = copy_move_source(app, ignore_tags) else {
+    let Some((src_name, src_paths)) = copy_move_source(app, ignore_tags) else {
         return;
     };
+    let src_path = src_paths[0].clone();
     let dst_dir = if to_current {
         app.active_panel().cwd.clone()
     } else {
         app.inactive_panel().cwd.clone()
     };
-    let tagged_count = if ignore_tags {
-        0
-    } else {
-        let panel = app.active_panel();
-        panel
-            .selection
-            .iter()
-            .filter_map(|i| panel.entries.get(i))
-            .filter(|e| !e.is_parent_marker())
-            .count()
-    };
-    let default_to = if tagged_count > 1 {
+    let default_to = if src_paths.len() > 1 {
         dst_dir.display().to_string()
     } else {
         match src_path.file_name() {
@@ -8801,6 +8826,7 @@ fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_
         },
         src_name,
         src_path,
+        src_paths,
         mask: "*".into(),
         to: default_to,
         using_shell_patterns: true,
@@ -9638,7 +9664,8 @@ fn directory_tree_copy_move(app: &mut App, copy: bool) {
     app.ui_mode = UiMode::CopyDialog {
         title: if copy { "Copy".into() } else { "Move".into() },
         src_name: name,
-        src_path: src,
+        src_path: src.clone(),
+        src_paths: vec![src],
         mask: "*".into(),
         to: default_to,
         using_shell_patterns: true,
@@ -27422,6 +27449,329 @@ mod mouse_shift_passthrough_tests {
             } => {}
             _ => panic!("plain viewer menu-bar click still opens a menu"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod copy_mask_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, CopyDialogFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::jobs::JobStatus;
+    use rmc_fs::local::LocalFs;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    fn temp_workspace() -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-copy-mask-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_split_app(left: &Path, right: &Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(left).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(right).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn goto_name(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn tag_name(app: &mut App, name: &str) {
+        goto_name(app, name);
+        press(app, KeyCode::Insert);
+    }
+
+    fn dest_filename(to: &str, name: &str) -> String {
+        match Path::new(to).parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                parent.join(name).display().to_string()
+            }
+            _ => name.to_string(),
+        }
+    }
+
+    fn patch_copy_dialog(
+        app: &mut App,
+        mask: &str,
+        to: Option<&str>,
+        shell: bool,
+        focus: CopyDialogFocus,
+    ) {
+        match &mut app.ui_mode {
+            UiMode::CopyDialog {
+                mask: m,
+                to: t,
+                using_shell_patterns,
+                focus: f,
+                ..
+            } => {
+                *m = mask.to_string();
+                if let Some(to) = to {
+                    *t = to.to_string();
+                }
+                *using_shell_patterns = shell;
+                *f = focus;
+            }
+            _ => panic!("expected CopyDialog"),
+        }
+    }
+
+    fn wait_file_op(app: &mut App) {
+        let start = Instant::now();
+        loop {
+            app.poll_file_op_progress().unwrap();
+            if !matches!(app.ui_mode, UiMode::FileOpProgress { .. }) {
+                return;
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                panic!("file op did not finish");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_jobs_done(app: &App) {
+        let start = Instant::now();
+        loop {
+            let snap = app.jobs.snapshot();
+            if !snap.is_empty()
+                && snap.iter().all(|j| {
+                    matches!(
+                        j.status,
+                        JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                    )
+                })
+            {
+                assert!(
+                    snap.iter().all(|j| j.status == JobStatus::Done),
+                    "jobs failed: {snap:?}"
+                );
+                return;
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                panic!("jobs did not finish: {snap:?}");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn f5_glob_star_c_to_bak_copies_resolved_name() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("foo.c"), b"int main(){}\n").unwrap();
+        std::fs::write(left.join("foo.rs"), b"fn main(){}\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "foo.c");
+        press(&mut app, KeyCode::F(5));
+        let to = match &app.ui_mode {
+            UiMode::CopyDialog { to, .. } => dest_filename(to, "*.bak"),
+            _ => panic!("expected CopyDialog"),
+        };
+        patch_copy_dialog(&mut app, "*.c", Some(&to), true, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        assert!(right.join("foo.bak").is_file(), "foo.c -> foo.bak");
+        assert!(!right.join("foo.rs").exists());
+        assert_eq!(
+            std::fs::read(right.join("foo.bak")).unwrap(),
+            b"int main(){}\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f5_star_into_directory_keeps_basename() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("notes.txt"), b"hello\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(5));
+        let to = right.display().to_string();
+        patch_copy_dialog(&mut app, "*", Some(&to), true, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        assert!(right.join("notes.txt").is_file());
+        assert_eq!(std::fs::read(right.join("notes.txt")).unwrap(), b"hello\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tagged_files_not_matching_mask_are_skipped() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("foo.c"), b"c\n").unwrap();
+        std::fs::write(left.join("bar.rs"), b"rs\n").unwrap();
+        std::fs::write(left.join("baz.c"), b"c2\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        app.panel_opts.mark_moves_down = false;
+        tag_name(&mut app, "foo.c");
+        tag_name(&mut app, "bar.rs");
+        tag_name(&mut app, "baz.c");
+        press(&mut app, KeyCode::F(5));
+        let to = right.join("*.bak").display().to_string();
+        patch_copy_dialog(&mut app, "*.c", Some(&to), true, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        assert!(right.join("foo.bak").is_file());
+        assert!(right.join("baz.bak").is_file());
+        assert!(!right.join("bar.bak").exists());
+        assert!(!right.join("bar.rs").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn using_shell_patterns_off_uses_regex_mask() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("foo.c"), b"c\n").unwrap();
+        std::fs::write(left.join("foo.rs"), b"rs\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "foo.c");
+        press(&mut app, KeyCode::F(5));
+        let to = match &app.ui_mode {
+            UiMode::CopyDialog { to, .. } => dest_filename(to, "*.bak"),
+            _ => panic!("expected CopyDialog"),
+        };
+        patch_copy_dialog(
+            &mut app,
+            r"^\(.*\)\.c$",
+            Some(&to),
+            false,
+            CopyDialogFocus::Ok,
+        );
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        assert!(right.join("foo.bak").is_file());
+        assert!(!right.join("foo.rs").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glob_mask_does_not_match_when_shell_patterns_off() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("foo.txt"), b"t\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "foo.txt");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_dialog(&mut app, "*.txt", None, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "non-matching regex mask copies nothing"
+        );
+        assert!(!right.join("foo.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn background_enqueues_resolved_dest_not_raw_to() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("foo.c"), b"c\n").unwrap();
+        std::fs::write(left.join("bar.rs"), b"rs\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        app.panel_opts.mark_moves_down = false;
+        tag_name(&mut app, "foo.c");
+        tag_name(&mut app, "bar.rs");
+        press(&mut app, KeyCode::F(5));
+        let to = right.join("*.bak").display().to_string();
+        patch_copy_dialog(
+            &mut app,
+            "*.c",
+            Some(&to),
+            true,
+            CopyDialogFocus::Background,
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let snap = app.jobs.snapshot();
+        assert_eq!(snap.len(), 1, "only mask-matching tagged files: {snap:?}");
+        assert!(
+            snap[0].dst.ends_with("foo.bak"),
+            "Background must use mask-replaced dest, got {:?}",
+            snap[0].dst
+        );
+        assert!(
+            !snap[0].dst.ends_with("*.bak"),
+            "raw dest wildcard must not be queued: {:?}",
+            snap[0].dst
+        );
+        wait_jobs_done(&app);
+        assert!(right.join("foo.bak").is_file());
+        assert!(!right.join("bar.bak").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f6_move_honors_mask_into_directory() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("keep.rs"), b"rs\n").unwrap();
+        std::fs::write(left.join("gone.c"), b"c\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        app.panel_opts.mark_moves_down = false;
+        tag_name(&mut app, "keep.rs");
+        tag_name(&mut app, "gone.c");
+        press(&mut app, KeyCode::F(6));
+        let to = right.display().to_string();
+        patch_copy_dialog(&mut app, "*.c", Some(&to), true, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        assert!(right.join("gone.c").is_file());
+        assert!(!right.join("keep.rs").exists());
+        assert!(left.join("keep.rs").is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
