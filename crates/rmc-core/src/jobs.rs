@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -336,6 +337,11 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
     let _ = id; // keep id for potential future logging
 }
 
+struct LinkState {
+    hardlinks: HashMap<(u64, u64), PathBuf>,
+    visited: HashSet<(u64, u64)>,
+}
+
 fn copy_streaming(
     job_arc: &Arc<Mutex<JobEntry>>,
     src: &Path,
@@ -344,7 +350,19 @@ fn copy_streaming(
     flags: CopyFlags,
 ) -> io::Result<()> {
     let mut overall: u64 = 0;
-    copy_any(job_arc, src, dst, cancel_flag, &mut overall, flags)
+    let mut links = LinkState {
+        hardlinks: HashMap::new(),
+        visited: HashSet::new(),
+    };
+    copy_any(
+        job_arc,
+        src,
+        dst,
+        cancel_flag,
+        &mut overall,
+        flags,
+        &mut links,
+    )
 }
 
 fn copy_any(
@@ -354,12 +372,34 @@ fn copy_any(
     cancel_flag: &AtomicBool,
     overall: &mut u64,
     flags: CopyFlags,
+    links: &mut LinkState,
 ) -> io::Result<()> {
     if cancel_flag.load(Ordering::Relaxed) {
         return Ok(());
     }
-    let md = fs::symlink_metadata(src)?;
-    if md.file_type().is_dir() {
+    let lmd = fs::symlink_metadata(src)?;
+    if lmd.file_type().is_symlink() && !flags.follow_links {
+        rmc_fs::copy_local::copy_symlink(src, dst, flags.stable_symlinks)?;
+        if flags.preserve_attrs {
+            rmc_fs::copy_local::preserve_attrs(src, dst)?;
+        }
+        note_local_link_done(job_arc, src, overall);
+        return Ok(());
+    }
+    let md = if flags.follow_links {
+        fs::metadata(src).unwrap_or(lmd)
+    } else {
+        lmd
+    };
+    if md.is_dir() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let key = (md.dev(), md.ino());
+            if !links.visited.insert(key) {
+                return Ok(());
+            }
+        }
         fs::create_dir_all(dst)?;
         for ent in fs::read_dir(src)? {
             if cancel_flag.load(Ordering::Relaxed) {
@@ -377,11 +417,48 @@ fn copy_any(
                 cancel_flag,
                 overall,
                 flags,
+                links,
             )?;
+        }
+        if flags.preserve_attrs {
+            rmc_fs::copy_local::preserve_attrs(src, dst)?;
         }
         return Ok(());
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if !flags.follow_links && md.nlink() > 1 {
+            let key = (md.dev(), md.ino());
+            if let Some(prev) = links.hardlinks.get(&key) {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::hard_link(prev, dst)?;
+                note_local_link_done(job_arc, src, overall);
+                return Ok(());
+            }
+            copy_file_chunks(job_arc, src, dst, cancel_flag, overall, flags)?;
+            links.hardlinks.insert(key, dst.to_path_buf());
+            return Ok(());
+        }
+    }
     copy_file_chunks(job_arc, src, dst, cancel_flag, overall, flags)
+}
+
+fn note_local_link_done(job_arc: &Arc<Mutex<JobEntry>>, src: &Path, overall: &mut u64) {
+    let current_name = src
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+    job.job.files_done = job.job.files_done.saturating_add(1);
+    job.job.file_done = 0;
+    job.job.file_total = 0;
+    job.job.bytes_done = *overall;
+    if !current_name.is_empty() {
+        job.job.current_name = current_name;
+    }
 }
 
 fn copy_file_chunks(
@@ -419,6 +496,7 @@ fn copy_file_chunks(
         .open(dst)?;
 
     if flags.use_cow_file_cloning && rmc_fs::copy_local::try_cow_clone(&src_f, &dst_f) {
+        drop(dst_f);
         *overall = overall.saturating_add(total);
         {
             let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
@@ -426,6 +504,9 @@ fn copy_file_chunks(
             job.job.file_done = total;
             job.job.file_total = total;
             job.job.bytes_done = *overall;
+        }
+        if flags.preserve_attrs {
+            rmc_fs::copy_local::preserve_attrs(src, dst)?;
         }
         return Ok(());
     }
@@ -460,6 +541,10 @@ fn copy_file_chunks(
         }
     }
     dst_f.flush()?;
+    drop(dst_f);
+    if flags.preserve_attrs {
+        rmc_fs::copy_local::preserve_attrs(src, dst)?;
+    }
     {
         let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
         job.job.files_done = job.job.files_done.saturating_add(1);
@@ -476,10 +561,26 @@ fn move_with_fallback(
     cancel_flag: &AtomicBool,
     flags: CopyFlags,
 ) -> io::Result<()> {
+    // Follow links cannot be a rename: dest must be the referent content.
+    if flags.follow_links {
+        copy_streaming(job_arc, src, dst, cancel_flag, flags)?;
+        if !cancel_flag.load(Ordering::Relaxed) {
+            let md = fs::symlink_metadata(src)?;
+            if md.file_type().is_dir() {
+                fs::remove_dir_all(src)?;
+            } else {
+                fs::remove_file(src)?;
+            }
+        }
+        return Ok(());
+    }
     // Try fast path: rename.
-    let src_meta = fs::metadata(src);
+    let src_meta = fs::symlink_metadata(src);
     match fs::rename(src, dst) {
         Ok(()) => {
+            if flags.stable_symlinks {
+                rmc_fs::copy_local::rewrite_stable_symlinks_after_move(src, dst)?;
+            }
             // Update byte counters best-effort.
             if let Ok(m) = src_meta.as_ref().map(|m| m.len()) {
                 let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
@@ -817,6 +918,7 @@ mod tests {
             CopyFlags {
                 preallocate_space: false,
                 use_cow_file_cloning: false,
+                ..CopyFlags::default()
             },
         );
         let status = wait_for_status(
@@ -854,6 +956,7 @@ mod tests {
             CopyFlags {
                 preallocate_space: true,
                 use_cow_file_cloning: false,
+                ..CopyFlags::default()
             },
         );
         let status = wait_for_status(
@@ -874,5 +977,126 @@ mod tests {
             queue.get(id).and_then(|j| j.error)
         );
         assert_eq!(fs::read(&dst).unwrap(), data);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_follow_links_off_copies_symlink() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        let src = dir.path().join("link");
+        let dst = dir.path().join("copied");
+        fs::write(&target, b"payload").unwrap();
+        std::os::unix::fs::symlink(&target, &src).unwrap();
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                follow_links: false,
+                use_cow_file_cloning: false,
+                ..CopyFlags::default()
+            },
+        );
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(
+            status,
+            JobStatus::Done,
+            "{:?}",
+            queue.get(id).and_then(|j| j.error)
+        );
+        assert!(fs::symlink_metadata(&dst).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_follow_links_on_copies_referent() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        let src = dir.path().join("link");
+        let dst = dir.path().join("copied");
+        fs::write(&target, b"payload").unwrap();
+        std::os::unix::fs::symlink(&target, &src).unwrap();
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                follow_links: true,
+                use_cow_file_cloning: false,
+                ..CopyFlags::default()
+            },
+        );
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(
+            status,
+            JobStatus::Done,
+            "{:?}",
+            queue.get(id).and_then(|j| j.error)
+        );
+        assert!(!fs::symlink_metadata(&dst).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&dst).unwrap(), b"payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_preserve_attrs_on_keeps_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        fs::write(&src, b"x").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o707)).unwrap();
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                preserve_attrs: true,
+                use_cow_file_cloning: false,
+                ..CopyFlags::default()
+            },
+        );
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(
+            status,
+            JobStatus::Done,
+            "{:?}",
+            queue.get(id).and_then(|j| j.error)
+        );
+        assert_eq!(
+            fs::metadata(&dst).unwrap().permissions().mode() & 0o777,
+            0o707
+        );
     }
 }

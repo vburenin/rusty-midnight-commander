@@ -1897,10 +1897,10 @@ impl TerminalApp {
         op: rmc_core::app::CopyMoveOp,
         src: std::path::PathBuf,
         dst: std::path::PathBuf,
+        flags: rmc_fs::CopyFlags,
     ) -> UiMode {
         match rmc_core::fileop::FileOpProgressState::prepare(vfs, op, &src, &dst, opts) {
             Ok(state) => {
-                let flags = opts.copy_flags();
                 let job_id = match op {
                     rmc_core::app::CopyMoveOp::Copy => {
                         jobs.spawn_copy_with_flags(&src, &dst, flags)
@@ -1928,6 +1928,7 @@ impl TerminalApp {
 
     /// Apply GNU source-mask filtering and dest-wildcard expansion, then OK
     /// (overwrite / progress) or Background (job queue) with the resolved list.
+    #[allow(clippy::too_many_arguments)]
     fn submit_copy_move_dialog(
         app: &mut App,
         op: rmc_core::app::CopyMoveOp,
@@ -1935,6 +1936,10 @@ impl TerminalApp {
         mask: String,
         to: String,
         using_shell_patterns: bool,
+        follow_links: bool,
+        preserve_attrs: bool,
+        dive_into_subdir: bool,
+        stable_symlinks: bool,
         background: bool,
     ) {
         let dest_path = Path::new(&to);
@@ -1951,7 +1956,29 @@ impl TerminalApp {
             app.ui_mode = UiMode::Normal;
             return;
         }
-        let flags = app.config_opts.copy_flags();
+        let mut flags = app.config_opts.copy_flags();
+        flags.follow_links = follow_links;
+        flags.preserve_attrs = preserve_attrs;
+        flags.dive_into_subdir = dive_into_subdir;
+        flags.stable_symlinks = stable_symlinks;
+        app.copy_op_flags = flags;
+        let pairs: Vec<(PathBuf, PathBuf)> = pairs
+            .into_iter()
+            .map(|(src, dst)| {
+                let src_is_dir = app.vfs.stat(&src).map(|m| m.is_dir).unwrap_or(false);
+                let mask_dst_is_dir = app.vfs.stat(&dst).map(|m| m.is_dir).unwrap_or(false);
+                let dst = rmc_fs::apply_dive_into_subdir(
+                    &src,
+                    dst,
+                    dest_path,
+                    dest_is_dir,
+                    src_is_dir,
+                    mask_dst_is_dir,
+                    dive_into_subdir,
+                );
+                (src, dst)
+            })
+            .collect();
         if background {
             for (src, dst) in pairs {
                 match op {
@@ -1972,8 +1999,10 @@ impl TerminalApp {
             return;
         };
         let rest: Vec<_> = iter.collect();
-        let exists = app.vfs.stat(&dst).is_ok();
-        if exists {
+        let dst_meta = app.vfs.stat(&dst).ok();
+        let src_is_dir = app.vfs.stat(&src).map(|m| m.is_dir).unwrap_or(false);
+        let merging_into_dir = src_is_dir && dst_meta.as_ref().is_some_and(|m| m.is_dir);
+        if dst_meta.is_some() && !merging_into_dir {
             if app.confirm.overwrite {
                 let skip = app.dont_overwrite_with_zero;
                 app.ui_mode = UiMode::OverwriteDialog {
@@ -1994,6 +2023,7 @@ impl TerminalApp {
             op,
             src,
             dst,
+            flags,
         );
         for (src, dst) in rest {
             match op {
@@ -5713,8 +5743,13 @@ impl TerminalApp {
                             let mask_s = mask.clone();
                             let to_s = to.clone();
                             let shell = *using_shell_patterns;
+                            let follow = *follow_links;
+                            let preserve = *preserve_attrs;
+                            let dive = *dive_into_subdir;
+                            let stable = *stable_symlinks;
                             Self::submit_copy_move_dialog(
-                                app, op, sources, mask_s, to_s, shell, background,
+                                app, op, sources, mask_s, to_s, shell, follow, preserve, dive,
+                                stable, background,
                             );
                         }
                         F::Cancel => {
@@ -5887,6 +5922,7 @@ impl TerminalApp {
                                 op,
                                 src,
                                 dst,
+                                app.copy_op_flags,
                             );
                         } else {
                             app.ui_mode = UiMode::Normal;
@@ -27542,6 +27578,33 @@ mod copy_mask_dialog_tests {
         }
     }
 
+    fn patch_copy_options(
+        app: &mut App,
+        follow_links: bool,
+        preserve_attrs: bool,
+        dive_into_subdir: bool,
+        stable_symlinks: bool,
+        focus: CopyDialogFocus,
+    ) {
+        match &mut app.ui_mode {
+            UiMode::CopyDialog {
+                follow_links: fl,
+                preserve_attrs: pa,
+                dive_into_subdir: dive,
+                stable_symlinks: st,
+                focus: f,
+                ..
+            } => {
+                *fl = follow_links;
+                *pa = preserve_attrs;
+                *dive = dive_into_subdir;
+                *st = stable_symlinks;
+                *f = focus;
+            }
+            _ => panic!("expected CopyDialog"),
+        }
+    }
+
     fn wait_file_op(app: &mut App) {
         let start = Instant::now();
         loop {
@@ -27772,6 +27835,243 @@ mod copy_mask_dialog_tests {
         assert!(right.join("gone.c").is_file());
         assert!(!right.join("keep.rs").exists());
         assert!(left.join("keep.rs").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follow_links_off_copies_symlink_as_symlink() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("target.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink(left.join("target.txt"), left.join("thelink")).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "thelink");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, false, true, false, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        let dst = right.join("thelink");
+        assert!(
+            std::fs::symlink_metadata(&dst)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "Follow links off must copy the symlink itself"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follow_links_on_copies_referent_content() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("target.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink(left.join("target.txt"), left.join("thelink")).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "thelink");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, true, true, false, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        let dst = right.join("thelink");
+        assert!(
+            !std::fs::symlink_metadata(&dst)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "Follow links on must copy the referent file"
+        );
+        assert_eq!(std::fs::read(&dst).unwrap(), b"payload");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dive_into_subdir_off_merges_into_existing_dest() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(left.join("foo")).unwrap();
+        std::fs::write(left.join("foo").join("bar"), b"x").unwrap();
+        std::fs::create_dir_all(right.join("foo")).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "foo");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, false, true, false, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        assert!(
+            right.join("foo").join("bar").is_file(),
+            "dive off: /foo/bar → existing /bla/foo/bar"
+        );
+        assert!(
+            !right.join("foo").join("foo").exists(),
+            "dive off must not nest /bla/foo/foo"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dive_into_subdir_on_nests_source_dir() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(left.join("foo")).unwrap();
+        std::fs::write(left.join("foo").join("bar"), b"x").unwrap();
+        std::fs::create_dir_all(right.join("foo")).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "foo");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, false, true, true, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        assert!(
+            right.join("foo").join("foo").join("bar").is_file(),
+            "dive on: /foo → existing /bla/foo becomes /bla/foo/foo/bar"
+        );
+        assert!(
+            !right.join("foo").join("bar").exists(),
+            "dive on must not merge contents into /bla/foo"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserve_attributes_on_keeps_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let src = left.join("mode.bin");
+        std::fs::write(&src, b"x").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o707)).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "mode.bin");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, false, true, false, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        let mode = std::fs::metadata(right.join("mode.bin"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o707);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserve_attributes_off_does_not_force_source_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let src = left.join("mode.bin");
+        std::fs::write(&src, b"x").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o707)).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "mode.bin");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, false, false, false, false, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        let mode = std::fs::metadata(right.join("mode.bin"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_ne!(mode, 0o707, "preserve off respects umask, got {mode:#o}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_symlinks_on_rewrites_relative_target() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(left.join("sub")).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("file.txt"), b"hi").unwrap();
+        std::os::unix::fs::symlink(
+            std::path::Path::new("../file.txt"),
+            left.join("sub").join("link"),
+        )
+        .unwrap();
+        let mut app = make_split_app(&left.join("sub"), &right);
+        goto_name(&mut app, "link");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(&mut app, false, true, false, true, CopyDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        wait_file_op(&mut app);
+        wait_jobs_done(&app);
+        let dst = right.join("link");
+        assert!(std::fs::symlink_metadata(&dst)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let stored = std::fs::read_link(&dst).unwrap();
+        assert_ne!(
+            stored,
+            std::path::Path::new("../file.txt"),
+            "stable rewrite must change relative text when dest depth differs"
+        );
+        let resolved = std::fs::canonicalize(&dst).unwrap();
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(left.join("file.txt")).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_uses_same_follow_links_off() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("target.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink(left.join("target.txt"), left.join("thelink")).unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "thelink");
+        press(&mut app, KeyCode::F(5));
+        patch_copy_options(
+            &mut app,
+            false,
+            true,
+            false,
+            false,
+            CopyDialogFocus::Background,
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        wait_jobs_done(&app);
+        let dst = right.join("thelink");
+        assert!(std::fs::symlink_metadata(&dst)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
