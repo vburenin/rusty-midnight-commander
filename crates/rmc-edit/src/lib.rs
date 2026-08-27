@@ -560,21 +560,22 @@ impl EditorBuffer {
         }
 
         if !skip_first {
-            if let Some((r, c)) = self.find_from(needle, scan, re.as_ref(), start_row, start_col) {
+            if let Some((r, c, _)) = self.find_from(needle, scan, re.as_ref(), start_row, start_col)
+            {
                 return Some(self.go_to_match(r, c));
             }
         }
         if wrap {
             if scan.backwards {
                 let last_row = self.lines.len().saturating_sub(1);
-                if let Some((r, c)) =
+                if let Some((r, c, _)) =
                     self.find_from(needle, scan, re.as_ref(), last_row, usize::MAX)
                 {
                     if r > orig.0 || (r == orig.0 && c >= orig.1) {
                         return Some(self.go_to_match(r, c));
                     }
                 }
-            } else if let Some((r, c)) = self.find_from(needle, scan, re.as_ref(), 0, 0) {
+            } else if let Some((r, c, _)) = self.find_from(needle, scan, re.as_ref(), 0, 0) {
                 if r < orig.0 || (r == orig.0 && c <= orig.1) {
                     return Some(self.go_to_match(r, c));
                 }
@@ -597,7 +598,7 @@ impl EditorBuffer {
         re: Option<&regex::bytes::Regex>,
         start_row: usize,
         start_col: usize,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<(usize, usize, usize)> {
         if needle.is_empty() || self.lines.is_empty() {
             return None;
         }
@@ -605,8 +606,8 @@ impl EditorBuffer {
             let mut r = start_row.min(self.lines.len().saturating_sub(1));
             let mut c = start_col;
             loop {
-                if let Some(col) = find_on_line(&self.lines[r], needle, c, scan, re) {
-                    return Some((r, col));
+                if let Some((col, len)) = find_on_line(&self.lines[r], needle, c, scan, re) {
+                    return Some((r, col, len));
                 }
                 if r == 0 {
                     return None;
@@ -621,8 +622,8 @@ impl EditorBuffer {
                 if r >= self.lines.len() {
                     return None;
                 }
-                if let Some(col) = find_on_line(&self.lines[r], needle, c, scan, re) {
-                    return Some((r, col));
+                if let Some((col, len)) = find_on_line(&self.lines[r], needle, c, scan, re) {
+                    return Some((r, col, len));
                 }
                 r += 1;
                 c = 0;
@@ -631,6 +632,7 @@ impl EditorBuffer {
     }
 
     /// Replace next occurrence of `from` with `to`. Returns replaced (row,col) start.
+    /// Substring search; clears backwards / whole-words / regexp last-search flags.
     pub fn replace_next(
         &mut self,
         from: &[u8],
@@ -638,39 +640,170 @@ impl EditorBuffer {
         case_insensitive: bool,
         wrap: bool,
     ) -> Option<(usize, usize)> {
-        let found = self.search_forward_opts(from, case_insensitive, wrap)?;
-        self.replace_at(found.0, found.1, from.len(), to);
+        self.replace_next_with_options(
+            from,
+            to,
+            SearchOptions {
+                case_sensitive: !case_insensitive,
+                backwards: false,
+                whole_words: false,
+                regexp: false,
+            },
+            wrap,
+        )
+    }
+
+    /// Replace the next match honoring GNU mcedit Replace-dialog options.
+    /// Reuses [`Self::search_with_options`]. Invalid regex: no panic, no replace.
+    ///
+    /// Regex replacement expands GNU-style `\0` / `\&` (whole match) and `\1`–`\9`
+    /// (capture groups) via `regex::bytes`. Other bytes in the replacement are
+    /// copied literally; `\\` becomes a single backslash.
+    pub fn replace_next_with_options(
+        &mut self,
+        from: &[u8],
+        to: &[u8],
+        opts: SearchOptions,
+        wrap: bool,
+    ) -> Option<(usize, usize)> {
+        let found = self.search_with_options(
+            from,
+            opts.case_sensitive,
+            opts.backwards,
+            opts.whole_words,
+            opts.regexp,
+            wrap,
+        )?;
+        let scan = SearchScan::from(opts);
+        let (len, repl) = self.match_and_replacement(found.0, found.1, from, to, scan)?;
+        if len == 0 {
+            return None;
+        }
+        self.replace_at(found.0, found.1, len, &repl);
+        if !opts.backwards {
+            self.col = found.1.saturating_add(repl.len());
+        }
         Some(found)
     }
 
     /// Replace all occurrences of `from` with `to`. Returns number of replacements.
+    /// Whole-file substring replace (starts at the beginning of the buffer).
     pub fn replace_all(&mut self, from: &[u8], to: &[u8], case_insensitive: bool) -> usize {
+        let saved = (self.row, self.col);
+        self.row = 0;
+        self.col = 0;
+        let n = self.replace_all_with_options(
+            from,
+            to,
+            SearchOptions {
+                case_sensitive: !case_insensitive,
+                backwards: false,
+                whole_words: false,
+                regexp: false,
+            },
+        );
+        if n == 0 {
+            self.row = saved.0;
+            self.col = saved.1;
+        }
+        n
+    }
+
+    /// Replace remaining matches from the cursor, honoring GNU Replace options.
+    /// Invalid regex: no panic, returns 0. Zero-length matches are skipped.
+    pub fn replace_all_with_options(
+        &mut self,
+        from: &[u8],
+        to: &[u8],
+        opts: SearchOptions,
+    ) -> usize {
         if from.is_empty() {
             return 0;
         }
+        let scan = SearchScan::from(opts);
+        self.last_search = from.to_vec();
+        self.last_search_case_insensitive = !scan.case_sensitive;
+        self.last_search_backwards = scan.backwards;
+        self.last_search_whole_words = scan.whole_words;
+        self.last_search_regexp = scan.regexp;
+
+        let re = if scan.regexp {
+            match compile_search_regex(from, !scan.case_sensitive, scan.whole_words) {
+                Some(re) => Some(re),
+                None => return 0,
+            }
+        } else {
+            None
+        };
+
         let mut count = 0usize;
-        let mut r = 0usize;
-        while r < self.lines.len() {
-            let mut c = 0usize;
-            loop {
-                let hay = &self.lines[r];
-                let pos = if case_insensitive {
-                    find_bytes_ascii_ci(hay, from, c)
-                } else {
-                    find_bytes(hay, from, c)
-                };
-                if let Some(p) = pos {
-                    self.replace_at(r, p, from.len(), to);
-                    count += 1;
-                    // Continue after the inserted text
-                    c = p.saturating_add(to.len());
+        let mut r = self.row;
+        let mut c = self.col;
+        while let Some((hr, hc, hlen)) = self.find_from(from, scan, re.as_ref(), r, c) {
+            if hlen == 0 {
+                // Avoid looping on zero-width regex matches.
+                if scan.backwards {
+                    if hc == 0 {
+                        if hr == 0 {
+                            break;
+                        }
+                        r = hr - 1;
+                        c = usize::MAX;
+                    } else {
+                        r = hr;
+                        c = hc - 1;
+                    }
+                } else if hc < self.lines.get(hr).map(|l| l.len()).unwrap_or(0) {
+                    r = hr;
+                    c = hc + 1;
+                } else if hr + 1 < self.lines.len() {
+                    r = hr + 1;
+                    c = 0;
                 } else {
                     break;
                 }
+                continue;
             }
-            r += 1;
+            let repl = match replacement_bytes(&self.lines[hr], hc, from, to, scan, re.as_ref()) {
+                Some((_, bytes)) => bytes,
+                None => to.to_vec(),
+            };
+            self.replace_at(hr, hc, hlen, &repl);
+            count += 1;
+            if scan.backwards {
+                if hc == 0 {
+                    if hr == 0 {
+                        break;
+                    }
+                    r = hr - 1;
+                    c = usize::MAX;
+                } else {
+                    r = hr;
+                    c = hc - 1;
+                }
+            } else {
+                r = hr;
+                c = hc.saturating_add(repl.len());
+            }
         }
         count
+    }
+
+    fn match_and_replacement(
+        &self,
+        row: usize,
+        col: usize,
+        from: &[u8],
+        to: &[u8],
+        scan: SearchScan,
+    ) -> Option<(usize, Vec<u8>)> {
+        let hay = self.lines.get(row)?;
+        let re = if scan.regexp {
+            compile_search_regex(from, !scan.case_sensitive, scan.whole_words)
+        } else {
+            None
+        };
+        replacement_bytes(hay, col, from, to, scan, re.as_ref())
     }
 
     fn replace_at(&mut self, row: usize, col: usize, from_len: usize, to: &[u8]) {
@@ -954,6 +1087,26 @@ struct SearchScan {
     regexp: bool,
 }
 
+/// GNU mcedit Search/Replace option flags (same four checkboxes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    pub case_sensitive: bool,
+    pub backwards: bool,
+    pub whole_words: bool,
+    pub regexp: bool,
+}
+
+impl From<SearchOptions> for SearchScan {
+    fn from(o: SearchOptions) -> Self {
+        Self {
+            case_sensitive: o.case_sensitive,
+            backwards: o.backwards,
+            whole_words: o.whole_words,
+            regexp: o.regexp,
+        }
+    }
+}
+
 fn is_ascii_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -989,7 +1142,7 @@ fn find_on_line(
     start: usize,
     scan: SearchScan,
     re: Option<&regex::bytes::Regex>,
-) -> Option<usize> {
+) -> Option<(usize, usize)> {
     if let Some(re) = re {
         return find_regex_on_line(re, hay, start, scan.backwards);
     }
@@ -1002,7 +1155,7 @@ fn find_on_line(
                 rfind_bytes_ascii_ci(hay, needle, max_start)
             }?;
             if !scan.whole_words || is_whole_word_at(hay, found, needle.len()) {
-                return Some(found);
+                return Some((found, needle.len()));
             }
             if found == 0 {
                 return None;
@@ -1018,7 +1171,7 @@ fn find_on_line(
                 find_bytes_ascii_ci(hay, needle, pos)
             }?;
             if !scan.whole_words || is_whole_word_at(hay, found, needle.len()) {
-                return Some(found);
+                return Some((found, needle.len()));
             }
             pos = found.saturating_add(1);
         }
@@ -1030,26 +1183,87 @@ fn find_regex_on_line(
     hay: &[u8],
     start: usize,
     backwards: bool,
-) -> Option<usize> {
+) -> Option<(usize, usize)> {
     if backwards {
         let mut last = None;
         let mut pos = 0usize;
         while pos <= hay.len() {
             match re.find_at(hay, pos) {
                 Some(m) if m.start() <= start => {
-                    last = Some(m.start());
-                    pos = m.start().saturating_add(1);
-                    if pos == m.start() {
+                    last = Some((m.start(), m.len()));
+                    let next = m.start().saturating_add(1);
+                    if next == pos {
                         break;
                     }
+                    pos = next;
                 }
                 Some(_) | None => break,
             }
         }
         last
     } else {
-        re.find_at(hay, start).map(|m| m.start())
+        re.find_at(hay, start).map(|m| (m.start(), m.len()))
     }
+}
+
+/// Replacement bytes for a match starting at `col`. Regex replacements expand
+/// GNU mcedit-style `\0`/`\&` (whole match) and `\1`–`\9` (groups).
+fn replacement_bytes(
+    hay: &[u8],
+    col: usize,
+    from: &[u8],
+    to: &[u8],
+    scan: SearchScan,
+    re: Option<&regex::bytes::Regex>,
+) -> Option<(usize, Vec<u8>)> {
+    if scan.regexp {
+        let re = re?;
+        let caps = re.captures_at(hay, col)?;
+        let m = caps.get(0)?;
+        if m.start() != col {
+            return None;
+        }
+        Some((m.len(), expand_gnu_replacement(&caps, to)))
+    } else {
+        Some((from.len(), to.to_vec()))
+    }
+}
+
+fn expand_gnu_replacement(caps: &regex::bytes::Captures<'_>, template: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(template.len());
+    let mut i = 0usize;
+    while i < template.len() {
+        if template[i] == b'\\' && i + 1 < template.len() {
+            match template[i + 1] {
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 2;
+                }
+                b'0' | b'&' => {
+                    if let Some(m) = caps.get(0) {
+                        out.extend_from_slice(m.as_bytes());
+                    }
+                    i += 2;
+                }
+                d @ b'1'..=b'9' => {
+                    let n = (d - b'0') as usize;
+                    if let Some(m) = caps.get(n) {
+                        out.extend_from_slice(m.as_bytes());
+                    }
+                    i += 2;
+                }
+                c => {
+                    out.push(b'\\');
+                    out.push(c);
+                    i += 2;
+                }
+            }
+        } else {
+            out.push(template[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn rfind_bytes(hay: &[u8], needle: &[u8], max_start: usize) -> Option<usize> {
@@ -1483,6 +1697,15 @@ mod tests {
         assert_eq!(b.search_next_opts(true), Some((0, 0)));
     }
 
+    fn so(case_sensitive: bool, backwards: bool, whole_words: bool, regexp: bool) -> SearchOptions {
+        SearchOptions {
+            case_sensitive,
+            backwards,
+            whole_words,
+            regexp,
+        }
+    }
+
     #[test]
     fn replace_next_and_all() {
         let mut b = EditorBuffer::from_bytes(b"abc ABC abc\nzz", None);
@@ -1495,6 +1718,100 @@ mod tests {
         let n = b.replace_all(b"abc", b"Y", true);
         assert_eq!(n, 2);
         assert_eq!(b.to_bytes(), b"X Y Y\nzz");
+    }
+
+    #[test]
+    fn replace_options_case_sensitive() {
+        let mut b = EditorBuffer::from_bytes(b"Abc abc", None);
+        assert_eq!(
+            b.replace_next_with_options(b"abc", b"X", so(false, false, false, false), false),
+            Some((0, 0))
+        );
+        assert_eq!(b.to_bytes(), b"X abc");
+        let mut b = EditorBuffer::from_bytes(b"Abc abc", None);
+        assert_eq!(
+            b.replace_next_with_options(b"abc", b"X", so(true, false, false, false), false),
+            Some((0, 4))
+        );
+        assert_eq!(b.to_bytes(), b"Abc X");
+        assert!(!b.last_search_case_insensitive);
+        assert_eq!(b.search_next_opts(false), None);
+    }
+
+    #[test]
+    fn replace_options_backwards() {
+        let mut b = EditorBuffer::from_bytes(b"cat x cat", None);
+        b.row = 0;
+        b.col = 9;
+        assert_eq!(
+            b.replace_next_with_options(b"cat", b"Y", so(true, true, false, false), false),
+            Some((0, 6))
+        );
+        assert_eq!(b.to_bytes(), b"cat x Y");
+        assert!(b.last_search_backwards);
+        assert_eq!(
+            b.replace_next_with_options(b"cat", b"Y", so(true, true, false, false), false),
+            Some((0, 0))
+        );
+        assert_eq!(b.to_bytes(), b"Y x Y");
+    }
+
+    #[test]
+    fn replace_options_whole_words_skips_category() {
+        let mut b = EditorBuffer::from_bytes(b"category cat", None);
+        assert_eq!(
+            b.replace_next_with_options(b"cat", b"X", so(true, false, true, false), false),
+            Some((0, 9))
+        );
+        assert_eq!(b.to_bytes(), b"category X");
+        let mut b = EditorBuffer::from_bytes(b"category cat", None);
+        assert_eq!(
+            b.replace_all_with_options(b"cat", b"X", so(true, false, true, false)),
+            1
+        );
+        assert_eq!(b.to_bytes(), b"category X");
+        assert!(b.last_search_whole_words);
+    }
+
+    #[test]
+    fn replace_options_regex_and_invalid() {
+        let mut b = EditorBuffer::from_bytes(b"aaab", None);
+        assert_eq!(
+            b.replace_next_with_options(b"a+b", b"Z", so(true, false, false, true), false),
+            Some((0, 0))
+        );
+        assert_eq!(b.to_bytes(), b"Z");
+        let mut b = EditorBuffer::from_bytes(b"aaab", None);
+        assert_eq!(
+            b.replace_next_with_options(b"(", b"Z", so(true, false, false, true), false),
+            None
+        );
+        assert_eq!(b.to_bytes(), b"aaab");
+        assert_eq!((b.row, b.col), (0, 0));
+        assert_eq!(
+            b.replace_all_with_options(b"(", b"Z", so(true, false, false, true)),
+            0
+        );
+        assert_eq!(b.to_bytes(), b"aaab");
+    }
+
+    #[test]
+    fn replace_regex_expands_capture_groups() {
+        let mut b = EditorBuffer::from_bytes(b"hello-world", None);
+        assert_eq!(
+            b.replace_next_with_options(
+                b"([a-z]+)-([a-z]+)",
+                b"\\2/\\1",
+                so(true, false, false, true),
+                false,
+            ),
+            Some((0, 0))
+        );
+        assert_eq!(b.to_bytes(), b"world/hello");
+        let mut b = EditorBuffer::from_bytes(b"ab ab", None);
+        let n = b.replace_all_with_options(b"(a)(b)", b"\\2\\1", so(true, false, false, true));
+        assert_eq!(n, 2);
+        assert_eq!(b.to_bytes(), b"ba ba");
     }
 
     #[test]

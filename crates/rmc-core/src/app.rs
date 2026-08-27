@@ -338,7 +338,7 @@ pub enum UiMode {
         /// GNU mcedit F7 Search dialog (None while editing).
         search_dialog: Option<Box<EditorSearchDialog>>,
         /// GNU mcedit F4 Replace dialog (None while editing).
-        replace_dialog: Option<EditorReplaceDialog>,
+        replace_dialog: Option<Box<EditorReplaceDialog>>,
         /// GNU mcedit `|` Pipe dialog (None while editing).
         pipe_dialog: Option<EditorPipeDialog>,
         /// GNU mcedit Alt-l Goto line dialog (None while editing).
@@ -626,33 +626,85 @@ impl EditorSearchDialog {
 }
 
 /// Focus within the GNU mcedit F4 Replace dialog.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum EditorReplaceFocus {
+    #[default]
     Search,
     Replacement,
+    CaseSensitive,
+    Backwards,
+    WholeWords,
+    RegularExpression,
     Replace,
     All,
+    Skip,
     Cancel,
 }
 
-/// GNU mcedit-style Replace dialog: search + replacement fields and
-/// Replace / All / Cancel buttons. Replace next keeps the dialog open so the
-/// user can replace the following match; All closes after reporting the count.
+impl EditorReplaceFocus {
+    /// True when focus is one of the four GNU Replace checkboxes.
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Self::CaseSensitive | Self::Backwards | Self::WholeWords | Self::RegularExpression
+        )
+    }
+
+    /// True when focus is Replace / All / Skip / Cancel.
+    pub fn is_button(self) -> bool {
+        matches!(self, Self::Replace | Self::All | Self::Skip | Self::Cancel)
+    }
+}
+
+/// GNU mcedit-style Replace dialog: Search plus a replacement field, the same
+/// four option checkboxes (all default off), and Replace / All / Skip / Cancel.
+///
+/// GNU mcedit puts Skip on the “replace this occurrence?” prompt after a match
+/// is found. This replica keeps a single combined dialog (already Replace / All
+/// / Cancel) and adds Skip there. All charsets is omitted, as on Search.
+/// Replace next keeps the dialog open; All closes after reporting the count.
 #[derive(Clone)]
 pub struct EditorReplaceDialog {
     pub search: String,
     pub replacement: String,
+    pub case_sensitive: bool,
+    pub backwards: bool,
+    pub whole_words: bool,
+    pub regular_expression: bool,
     pub focus: EditorReplaceFocus,
+    /// True after Skip landed on a match so the next Skip advances past it.
+    pub on_match: bool,
 }
 
 impl EditorReplaceDialog {
     /// Prefill the search field from the editor's last Search (F7) needle.
+    /// Checkboxes always start at GNU defaults (unchecked). Replacement starts empty.
     pub fn from_last_search(last_search: &[u8]) -> Self {
         Self {
             search: String::from_utf8_lossy(last_search).into_owned(),
             replacement: String::new(),
+            case_sensitive: false,
+            backwards: false,
+            whole_words: false,
+            regular_expression: false,
             focus: EditorReplaceFocus::Search,
+            on_match: false,
         }
+    }
+
+    /// Toggle the focused checkbox. Returns false when focus is not a checkbox.
+    pub fn toggle_focused_checkbox(&mut self) -> bool {
+        match self.focus {
+            EditorReplaceFocus::CaseSensitive => self.case_sensitive = !self.case_sensitive,
+            EditorReplaceFocus::Backwards => self.backwards = !self.backwards,
+            EditorReplaceFocus::WholeWords => self.whole_words = !self.whole_words,
+            EditorReplaceFocus::RegularExpression => {
+                self.regular_expression = !self.regular_expression
+            }
+            _ => return false,
+        }
+        self.on_match = false;
+        true
     }
 }
 

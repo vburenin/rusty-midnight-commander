@@ -43,47 +43,100 @@ pub(crate) static VIEWER_STATE: Lazy<Mutex<Option<ViewerState>>> = Lazy::new(|| 
 pub(crate) static SUBSHELL_PTY: Lazy<Mutex<Option<rmc_core::subshell::PtySession>>> =
     Lazy::new(|| Mutex::new(None));
 
-/// Replace the next match from the cursor. Empty needle is a no-op (does not
-/// wipe the buffer). On success the cursor advances past the replacement so
-/// another Replace finds the following match. Dialog stays open.
-fn editor_replace_next(
-    buf: &mut rmc_edit::EditorBuffer,
-    search: &str,
-    replacement: &str,
-) -> Option<String> {
-    if search.is_empty() {
-        return None;
-    }
-    let repl = replacement.as_bytes();
-    match buf.replace_next(
-        search.as_bytes(),
-        repl,
-        buf.last_search_case_insensitive,
-        true,
-    ) {
-        Some((_, col)) => {
-            buf.col = col.saturating_add(repl.len());
-            Some("Replaced".into())
-        }
-        None => Some("Not found".into()),
+fn replace_opts(dlg: &EditorReplaceDialog) -> rmc_edit::SearchOptions {
+    rmc_edit::SearchOptions {
+        case_sensitive: dlg.case_sensitive,
+        backwards: dlg.backwards,
+        whole_words: dlg.whole_words,
+        regexp: dlg.regular_expression,
     }
 }
 
-/// Replace every match. Empty needle is a no-op and returns None so the caller
-/// can leave the dialog open without changing the buffer.
-fn editor_replace_all(
+/// Replace the next match from the cursor, honoring dialog options. Empty
+/// needle is a no-op (does not wipe the buffer). On success the cursor
+/// advances past the replacement so another Replace finds the following match
+/// (backwards: cursor stays at the replacement so the next search continues
+/// toward the start). Dialog stays open.
+fn editor_replace_next(
     buf: &mut rmc_edit::EditorBuffer,
-    search: &str,
-    replacement: &str,
-) -> Option<usize> {
-    if search.is_empty() {
+    dlg: &mut EditorReplaceDialog,
+) -> Option<String> {
+    if dlg.search.is_empty() {
         return None;
     }
-    Some(buf.replace_all(
-        search.as_bytes(),
-        replacement.as_bytes(),
-        buf.last_search_case_insensitive,
+    match buf.replace_next_with_options(
+        dlg.search.as_bytes(),
+        dlg.replacement.as_bytes(),
+        replace_opts(dlg),
+        true,
+    ) {
+        Some(_) => {
+            dlg.on_match = false;
+            Some("Replaced".into())
+        }
+        None => {
+            dlg.on_match = false;
+            Some("Not found".into())
+        }
+    }
+}
+
+/// Replace remaining matches from the cursor. Empty needle is a no-op and
+/// returns None so the caller can leave the dialog open without changing the
+/// buffer.
+fn editor_replace_all(
+    buf: &mut rmc_edit::EditorBuffer,
+    dlg: &EditorReplaceDialog,
+) -> Option<usize> {
+    if dlg.search.is_empty() {
+        return None;
+    }
+    Some(buf.replace_all_with_options(
+        dlg.search.as_bytes(),
+        dlg.replacement.as_bytes(),
+        replace_opts(dlg),
     ))
+}
+
+/// Skip this match: move to the next match without replacing. Empty needle is
+/// a no-op. If none, status is `Not found` and the dialog stays open.
+fn editor_replace_skip(
+    buf: &mut rmc_edit::EditorBuffer,
+    dlg: &mut EditorReplaceDialog,
+) -> Option<String> {
+    if dlg.search.is_empty() {
+        return None;
+    }
+    let found = if dlg.on_match {
+        let _ = buf.search_with_options(
+            dlg.search.as_bytes(),
+            dlg.case_sensitive,
+            dlg.backwards,
+            dlg.whole_words,
+            dlg.regular_expression,
+            false,
+        );
+        buf.search_next_opts(false)
+    } else {
+        buf.search_with_options(
+            dlg.search.as_bytes(),
+            dlg.case_sensitive,
+            dlg.backwards,
+            dlg.whole_words,
+            dlg.regular_expression,
+            false,
+        )
+    };
+    match found {
+        Some(_) => {
+            dlg.on_match = true;
+            Some("Found".into())
+        }
+        None => {
+            dlg.on_match = false;
+            Some("Not found".into())
+        }
+    }
 }
 
 /// Pipe selection (or whole buffer) through `cmd`. Empty command is a no-op
@@ -1088,12 +1141,23 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
-                // GNU mcedit F4 Replace dialog (Replace / All / Cancel).
-                // Replace next keeps the dialog open for the following match;
-                // All closes after reporting how many replacements were made.
+                // GNU mcedit F4 Replace dialog (Replace / All / Skip / Cancel +
+                // four Search checkboxes). Replace next / Skip keep the dialog
+                // open; All closes after reporting how many replacements were made.
                 if let Some(dlg) = replace_dialog {
                     use EditorReplaceFocus as F;
-                    let order = [F::Search, F::Replacement, F::Replace, F::All, F::Cancel];
+                    let order = [
+                        F::Search,
+                        F::Replacement,
+                        F::CaseSensitive,
+                        F::Backwards,
+                        F::WholeWords,
+                        F::RegularExpression,
+                        F::Replace,
+                        F::All,
+                        F::Skip,
+                        F::Cancel,
+                    ];
                     let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
                     match key.code {
                         KeyCode::Esc | KeyCode::F(10) => {
@@ -1107,10 +1171,8 @@ impl TerminalApp {
                             idx = (idx + order.len() - 1) % order.len();
                             dlg.focus = order[idx];
                         }
-                        KeyCode::Left | KeyCode::Right
-                            if matches!(dlg.focus, F::Replace | F::All | F::Cancel) =>
-                        {
-                            let buttons = [F::Replace, F::All, F::Cancel];
+                        KeyCode::Left | KeyCode::Right if dlg.focus.is_button() => {
+                            let buttons = [F::Replace, F::All, F::Skip, F::Cancel];
                             let bidx = buttons.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
                             let next = if matches!(key.code, KeyCode::Right) {
                                 (bidx + 1) % buttons.len()
@@ -1122,35 +1184,47 @@ impl TerminalApp {
                         KeyCode::Backspace => match dlg.focus {
                             F::Search => {
                                 dlg.search.pop();
+                                dlg.on_match = false;
                             }
                             F::Replacement => {
                                 dlg.replacement.pop();
                             }
                             _ => {}
                         },
+                        // Space toggles checkboxes before generic Char so typing
+                        // still inserts a space into the search/replacement fields.
+                        KeyCode::Char(' ')
+                            if key.modifiers.is_empty() && dlg.focus.is_checkbox() =>
+                        {
+                            let _ = dlg.toggle_focused_checkbox();
+                        }
+                        KeyCode::Enter if dlg.focus.is_checkbox() => {
+                            let _ = dlg.toggle_focused_checkbox();
+                        }
                         KeyCode::Enter | KeyCode::Char(' ')
-                            if matches!(dlg.focus, F::Replace | F::All | F::Cancel)
-                                || matches!(key.code, KeyCode::Enter) =>
+                            if dlg.focus.is_button() || matches!(key.code, KeyCode::Enter) =>
                         {
                             match dlg.focus {
                                 F::Cancel => {
                                     *replace_dialog = None;
                                 }
                                 F::All => {
-                                    if let Some(n) =
-                                        editor_replace_all(buf, &dlg.search, &dlg.replacement)
-                                    {
+                                    if let Some(n) = editor_replace_all(buf, dlg) {
                                         *status_msg = Some(format!("Replaced all: {n}"));
                                         *replace_dialog = None;
                                     }
                                 }
-                                F::Search | F::Replacement | F::Replace => {
-                                    if let Some(msg) =
-                                        editor_replace_next(buf, &dlg.search, &dlg.replacement)
-                                    {
+                                F::Skip => {
+                                    if let Some(msg) = editor_replace_skip(buf, dlg) {
                                         *status_msg = Some(msg);
                                     }
                                 }
+                                F::Search | F::Replacement | F::Replace => {
+                                    if let Some(msg) = editor_replace_next(buf, dlg) {
+                                        *status_msg = Some(msg);
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         KeyCode::Char(c)
@@ -1158,7 +1232,10 @@ impl TerminalApp {
                                 && matches!(dlg.focus, F::Search | F::Replacement) =>
                         {
                             match dlg.focus {
-                                F::Search => dlg.search.push(c),
+                                F::Search => {
+                                    dlg.search.push(c);
+                                    dlg.on_match = false;
+                                }
                                 F::Replacement => dlg.replacement.push(c),
                                 _ => {}
                             }
@@ -1470,8 +1547,9 @@ impl TerminalApp {
                         *pipe_dialog = None;
                         *goto_dialog = None;
                         *status_msg = None;
-                        *replace_dialog =
-                            Some(EditorReplaceDialog::from_last_search(&buf.last_search));
+                        *replace_dialog = Some(Box::new(EditorReplaceDialog::from_last_search(
+                            &buf.last_search,
+                        )));
                     }
                     // Pipe selection (or whole buffer) through external command (GNU mcedit).
                     KeyCode::Char('|') => {
@@ -7607,6 +7685,7 @@ mod editor_replace_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rmc_core::app::EditorReplaceFocus;
     use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
     use rmc_edit::EditorBuffer;
     use rmc_fs::local::LocalFs;
 
@@ -7635,6 +7714,11 @@ mod editor_replace_tests {
         TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
     }
 
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
     fn type_text(app: &mut App, s: &str) {
         for c in s.chars() {
             press(app, KeyCode::Char(c));
@@ -7657,13 +7741,26 @@ mod editor_replace_tests {
             UiMode::Editor {
                 replace_dialog: Some(dlg),
                 ..
-            } => dlg,
+            } => dlg.as_ref(),
             UiMode::Editor {
                 search_input: Some(_),
                 ..
             } => panic!("expected Replace dialog, got Search"),
             _ => panic!("expected Editor Replace dialog"),
         }
+    }
+
+    fn tab_until(app: &mut App, want: EditorReplaceFocus) {
+        for _ in 0..16 {
+            if replace_dialog(app).focus == want {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!(
+            "did not reach {want:?}, stuck on {:?}",
+            replace_dialog(app).focus
+        );
     }
 
     #[test]
@@ -7676,12 +7773,22 @@ mod editor_replace_tests {
                 replace_dialog: Some(dlg),
                 search_input,
                 save_as_input,
+                search_dialog,
+                pipe_dialog,
+                goto_dialog,
                 ..
             } => {
                 assert!(search_input.is_none(), "F4 must not open Search");
                 assert!(save_as_input.is_none());
+                assert!(search_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert!(goto_dialog.is_none());
                 assert!(dlg.search.is_empty());
                 assert!(dlg.replacement.is_empty());
+                assert!(!dlg.case_sensitive);
+                assert!(!dlg.backwards);
+                assert!(!dlg.whole_words);
+                assert!(!dlg.regular_expression);
                 assert!(matches!(dlg.focus, EditorReplaceFocus::Search));
             }
             _ => panic!("F4 must open the Replace dialog"),
@@ -7713,19 +7820,15 @@ mod editor_replace_tests {
     #[test]
     fn all_replaces_every_match_and_reports_count() {
         let mut app = make_app();
+        // GNU Case sensitive defaults off, so "abc" also matches ABC.
         open_editor(&mut app, b"abc ABC abc");
         press(&mut app, KeyCode::F(4));
         type_text(&mut app, "abc");
         press(&mut app, KeyCode::Tab);
         type_text(&mut app, "Y");
-        press(&mut app, KeyCode::Tab); // Replace button
-        press(&mut app, KeyCode::Tab); // All
-        assert!(matches!(
-            replace_dialog(&app).focus,
-            EditorReplaceFocus::All
-        ));
+        tab_until(&mut app, EditorReplaceFocus::All);
         press(&mut app, KeyCode::Enter);
-        assert_eq!(editor_bytes(&app), b"Y ABC Y");
+        assert_eq!(editor_bytes(&app), b"Y Y Y");
         match &app.ui_mode {
             UiMode::Editor {
                 replace_dialog,
@@ -7735,7 +7838,7 @@ mod editor_replace_tests {
                 assert!(replace_dialog.is_none());
                 let msg = status_msg.as_deref().expect("status_msg after All");
                 assert!(
-                    msg.contains('2'),
+                    msg.contains('3'),
                     "status_msg must mention the replacement count, got {msg:?}"
                 );
             }
@@ -7744,7 +7847,7 @@ mod editor_replace_tests {
     }
 
     #[test]
-    fn esc_leaves_buffer_unchanged() {
+    fn esc_f10_cancel_leave_buffer_unchanged() {
         let mut app = make_app();
         open_editor(&mut app, b"hello");
         press(&mut app, KeyCode::F(4));
@@ -7764,6 +7867,33 @@ mod editor_replace_tests {
             }
             _ => panic!("Esc should stay in the editor"),
         }
+
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "hello");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "bye");
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(editor_bytes(&app), b"hello");
+        match &app.ui_mode {
+            UiMode::Editor { replace_dialog, .. } => {
+                assert!(replace_dialog.is_none());
+            }
+            _ => panic!("F10 should stay in the editor"),
+        }
+
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "hello");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "bye");
+        tab_until(&mut app, EditorReplaceFocus::Cancel);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"hello");
+        match &app.ui_mode {
+            UiMode::Editor { replace_dialog, .. } => {
+                assert!(replace_dialog.is_none());
+            }
+            _ => panic!("Cancel should stay in the editor"),
+        }
     }
 
     #[test]
@@ -7781,9 +7911,7 @@ mod editor_replace_tests {
             _ => panic!("empty Replace must keep the dialog open"),
         }
         // All with empty needle is also a no-op
-        press(&mut app, KeyCode::Tab); // Replacement
-        press(&mut app, KeyCode::Tab); // Replace
-        press(&mut app, KeyCode::Tab); // All
+        tab_until(&mut app, EditorReplaceFocus::All);
         press(&mut app, KeyCode::Enter);
         assert_eq!(editor_bytes(&app), b"keep me");
         match &app.ui_mode {
@@ -7843,6 +7971,366 @@ mod editor_replace_tests {
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::F(4));
         assert_eq!(replace_dialog(&app).search, "foo");
+        assert!(!replace_dialog(&app).case_sensitive);
+        assert!(!replace_dialog(&app).backwards);
+        assert!(!replace_dialog(&app).whole_words);
+        assert!(!replace_dialog(&app).regular_expression);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Search
+        ));
+    }
+
+    #[test]
+    fn tab_reaches_checkboxes_and_buttons_space_enter_toggle_space_inserts() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "a b");
+        assert_eq!(replace_dialog(&app).search, "a b");
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Replacement
+        ));
+        type_text(&mut app, "x y");
+        assert_eq!(replace_dialog(&app).replacement, "x y");
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::CaseSensitive
+        ));
+        assert!(!replace_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(replace_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::Enter);
+        assert!(!replace_dialog(&app).case_sensitive);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Backwards
+        ));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(replace_dialog(&app).backwards);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::WholeWords
+        ));
+        press(&mut app, KeyCode::Enter);
+        assert!(replace_dialog(&app).whole_words);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::RegularExpression
+        ));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(replace_dialog(&app).regular_expression);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Replace
+        ));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::All
+        ));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Skip
+        ));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Cancel
+        ));
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(
+            replace_dialog(&app).focus,
+            EditorReplaceFocus::Search
+        ));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(replace_dialog(&app).search, "a b ");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(replace_dialog(&app).replacement, "x y ");
+    }
+
+    #[test]
+    fn case_sensitive_on_off_replace_and_all() {
+        let mut app = make_app();
+        open_editor(&mut app, b"Abc abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "X");
+        tab_until(&mut app, EditorReplaceFocus::CaseSensitive);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(replace_dialog(&app).case_sensitive);
+        tab_until(&mut app, EditorReplaceFocus::Replace);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Abc X");
+
+        // All with Case sensitive still off would fold; reopen and All with it on.
+        press(&mut app, KeyCode::Esc);
+        open_editor(&mut app, b"Abc abc Abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "Y");
+        tab_until(&mut app, EditorReplaceFocus::CaseSensitive);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::All);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Abc Y Abc");
+
+        open_editor(&mut app, b"Abc abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "Z");
+        // Case sensitive stays off (GNU default): both match.
+        tab_until(&mut app, EditorReplaceFocus::All);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Z Z");
+    }
+
+    #[test]
+    fn backwards_replace_hits_earlier_match() {
+        let mut app = make_app();
+        open_editor(&mut app, b"cat x cat");
+        // Move cursor to the end so Backwards sees the second "cat" first.
+        for _ in 0..9 {
+            press(&mut app, KeyCode::Right);
+        }
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "cat");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "Y");
+        tab_until(&mut app, EditorReplaceFocus::Backwards);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::Replace);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"cat x Y");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Y x Y");
+    }
+
+    #[test]
+    fn whole_words_replace_skips_category() {
+        let mut app = make_app();
+        open_editor(&mut app, b"category cat");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "cat");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "X");
+        tab_until(&mut app, EditorReplaceFocus::WholeWords);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::Replace);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"category X");
+
+        open_editor(&mut app, b"category cat cat");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "cat");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "X");
+        tab_until(&mut app, EditorReplaceFocus::WholeWords);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::All);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"category X X");
+    }
+
+    #[test]
+    fn regex_replace_and_all_and_invalid() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaab xx aaab");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "a+b");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "Z");
+        tab_until(&mut app, EditorReplaceFocus::RegularExpression);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::Replace);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Z xx aaab");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Z xx Z");
+
+        open_editor(&mut app, b"aaab xx aaab");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "a+b");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "Q");
+        tab_until(&mut app, EditorReplaceFocus::RegularExpression);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::All);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"Q xx Q");
+
+        open_editor(&mut app, b"keep");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "(");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "nope");
+        tab_until(&mut app, EditorReplaceFocus::RegularExpression);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, EditorReplaceFocus::Replace);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"keep");
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                status_msg,
+                ..
+            } => {
+                assert_eq!(status_msg.as_deref(), Some("Not found"));
+            }
+            _ => panic!("invalid regex must keep the dialog open"),
+        }
+    }
+
+    #[test]
+    fn skip_moves_to_next_without_replacing() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc abc");
+        press(&mut app, KeyCode::F(4));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        type_text(&mut app, "X");
+        tab_until(&mut app, EditorReplaceFocus::Skip);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"abc abc");
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), (0, 0));
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                status_msg,
+                ..
+            } => {
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("Skip should keep the dialog open"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"abc abc");
+        assert_eq!((editor_buf(&app).row, editor_buf(&app).col), (0, 4));
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                status_msg,
+                ..
+            } => {
+                assert_eq!(status_msg.as_deref(), Some("Not found"));
+            }
+            _ => panic!("Skip with no further match keeps the dialog open"),
+        }
+        assert_eq!(editor_bytes(&app), b"abc abc");
+    }
+
+    #[test]
+    fn f7_pipe_goto_still_open_and_clear_replace() {
+        let mut app = make_app();
+        open_editor(&mut app, b"aaa\nbbb\nabc abc");
+        press(&mut app, KeyCode::F(4));
+        assert!(matches!(
+            &app.ui_mode,
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                ..
+            }
+        ));
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog: Some(_),
+                replace_dialog,
+                pipe_dialog,
+                goto_dialog,
+                ..
+            } => {
+                assert!(replace_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+                assert!(goto_dialog.is_none());
+            }
+            _ => panic!("F7 must still open Search"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Char('|'));
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog: Some(_),
+                replace_dialog,
+                search_dialog,
+                goto_dialog,
+                ..
+            } => {
+                assert!(replace_dialog.is_none());
+                assert!(search_dialog.is_none());
+                assert!(goto_dialog.is_none());
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("| must open the editor Pipe dialog, not InputDialog {title:?}")
+            }
+            _ => panic!("| must still open the Pipe dialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press_alt(&mut app, 'l');
+        match &app.ui_mode {
+            UiMode::Editor {
+                goto_dialog: Some(_),
+                replace_dialog,
+                search_dialog,
+                pipe_dialog,
+                ..
+            } => {
+                assert!(replace_dialog.is_none());
+                assert!(search_dialog.is_none());
+                assert!(pipe_dialog.is_none());
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("Alt-l must open the editor Goto dialog, not InputDialog {title:?}")
+            }
+            _ => panic!("Alt-l must still open the Goto dialog"),
+        }
+    }
+
+    #[test]
+    fn opening_replace_does_not_clobber_find_file_or_history() {
+        let mut app = make_app();
+        let cwd = app.active_panel().cwd.clone();
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(cwd));
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "F4 in Find File must not switch to Editor Replace"
+        );
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "Alt-h should open History"
+        );
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "F4 in History must not switch to Editor Replace"
+        );
     }
 }
 

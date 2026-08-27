@@ -76,7 +76,7 @@ impl Renderer {
                 search_input.as_deref(),
                 save_as_input.as_deref(),
                 search_dialog.as_deref(),
-                replace_dialog.as_ref(),
+                replace_dialog.as_deref(),
                 pipe_dialog.as_ref(),
                 goto_dialog.as_deref(),
                 confirm_exit.as_ref(),
@@ -2218,7 +2218,7 @@ fn draw_editor_replace_dialog(
 ) {
     use rmc_core::app::EditorReplaceFocus as F;
     let w = (cols as usize).min(66) as u16;
-    let h = 10u16;
+    let h = 12u16;
     if cols < w || rows < h {
         return;
     }
@@ -2282,20 +2282,42 @@ fn draw_editor_replace_dialog(
     ));
     // Replacement field
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 4);
+    p.goto(x + 2, y + 3);
     p.text(&truncate("Enter replacement string:", inner_w));
     if matches!(dlg.focus, F::Replacement) {
         p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     } else {
         p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     }
-    p.goto(x + 2, y + 5);
+    p.goto(x + 2, y + 4);
     let rt = truncate(&dlg.replacement, inner_w);
     p.text(&format!(
         "{rt}{}",
         " ".repeat(inner_w.saturating_sub(rt.len()))
     ));
-    // Buttons: focused `< Replace >`, unfocused `[ Replace ]` (GNU mc / History)
+    let checks: [(F, &str, bool); 4] = [
+        (F::CaseSensitive, "Case sensitive", dlg.case_sensitive),
+        (F::Backwards, "Backwards", dlg.backwards),
+        (F::WholeWords, "Whole words", dlg.whole_words),
+        (
+            F::RegularExpression,
+            "Regular expression",
+            dlg.regular_expression,
+        ),
+    ];
+    for (i, (focus, label, on)) in checks.iter().enumerate() {
+        if dlg.focus == *focus {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, y + 5 + i as u16);
+        p.text(&truncate(
+            &format!("[{}] {}", if *on { 'x' } else { ' ' }, label),
+            inner_w,
+        ));
+    }
+    // Buttons: focused `< Replace >`, unfocused `[ All ]` (GNU mc / Search / History)
     let focus = dlg.focus;
     let sel_btn = |want, txt: &str| {
         if focus == want {
@@ -2306,9 +2328,10 @@ fn draw_editor_replace_dialog(
     };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let btns = format!(
-        "{}  {}  {}",
+        "{}  {}  {}  {}",
         sel_btn(F::Replace, "Replace"),
         sel_btn(F::All, "All"),
+        sel_btn(F::Skip, "Skip"),
         sel_btn(F::Cancel, "Cancel")
     );
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
