@@ -5942,6 +5942,22 @@ fn draw_chown_dialog(
     }
 }
 
+/// GNU mc(1) Command menu labels. Shared with `terminal.rs` so both copies match.
+pub(crate) const COMMAND_MENU_ITEMS: &[&str] = &[
+    "User menu",
+    "Directory tree",
+    "Find file",
+    "Swap panels",
+    "Switch panels on/off",
+    "Compare dirs",
+    "External panelize",
+    "Command history",
+    "Directory hotlist",
+    "Edit extension file",
+    "Edit menu file",
+    "Screen list",
+];
+
 fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selected: usize) {
     // Real top menus and stub items
     let menus: [&[&str]; 5] = [
@@ -5975,15 +5991,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Relative symlink",
             "Quit",
         ],
-        &[
-            "User menu",
-            "Directory tree",
-            "Find file",
-            "Directory hotlist",
-            "Compare dirs",
-            "External panelize",
-            "Screen list",
-        ],
+        COMMAND_MENU_ITEMS,
         &[
             "Configuration",
             "Layout",

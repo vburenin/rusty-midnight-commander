@@ -26,6 +26,12 @@ pub fn try_load_local_menu(cwd: &Path) -> Option<UserMenu> {
     load_menu_file(&cwd.join(".mc.menu"), true)
 }
 
+/// User menu file GNU mc(1) “Edit menu file” opens: `~/.config/mc/menu`.
+pub fn user_menu_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".config").join("mc").join("menu")
+}
+
 /// Load order similar to MC:
 /// 1) ./.mc.menu in the current working directory (safe-only)
 /// 2) ~/.config/mc/menu (safe-only)
@@ -33,8 +39,8 @@ pub fn try_load_local_menu(cwd: &Path) -> Option<UserMenu> {
 pub fn load_menu(cwd: &Path) -> Result<UserMenu> {
     let mut candidates: Vec<(PathBuf, bool)> = Vec::new();
     candidates.push((cwd.join(".mc.menu"), true));
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push((PathBuf::from(home).join(".config/mc/menu"), true));
+    if std::env::var_os("HOME").is_some() {
+        candidates.push((user_menu_file_path(), true));
     }
     // Two repo-relative fallbacks like keymap loader uses
     candidates.push((PathBuf::from("data/mc.menu"), false));
@@ -242,6 +248,18 @@ mod tests {
         assert_eq!(m.entries[0].title, "Echo file");
         assert!(m.entries[0].command.contains("%f"));
         assert_eq!(m.entries[1].hotkey, None);
+    }
+
+    #[test]
+    fn user_menu_file_path_is_config_mc_menu() {
+        let p = user_menu_file_path();
+        assert_eq!(p.file_name().and_then(|n| n.to_str()), Some("menu"));
+        assert!(
+            p.parent()
+                .and_then(|d| d.file_name())
+                .and_then(|n| n.to_str())
+                == Some("mc")
+        );
     }
 
     #[test]

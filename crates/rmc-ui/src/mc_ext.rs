@@ -93,6 +93,15 @@ impl OpenMap {
     }
 }
 
+/// User extension file GNU mc(1) “Edit extension file” opens: `~/.config/mc/mc.ext.ini`.
+pub(crate) fn user_extension_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home)
+        .join(".config")
+        .join("mc")
+        .join("mc.ext.ini")
+}
+
 /// Look up the shipped (or cwd) `[open]` map for `path`.
 pub(crate) fn lookup_open(path: &Path) -> Option<OpenAction> {
     OPEN_MAP.lookup(path)
@@ -331,6 +340,18 @@ lsarc = extfs/ls-archive
             Some(OpenAction::XdgOpen)
         );
         assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
+    }
+
+    #[test]
+    fn user_extension_file_path_is_config_mc_ext_ini() {
+        let p = user_extension_file_path();
+        assert_eq!(p.file_name().and_then(|n| n.to_str()), Some("mc.ext.ini"));
+        assert!(
+            p.parent()
+                .and_then(|d| d.file_name())
+                .and_then(|n| n.to_str())
+                == Some("mc")
+        );
     }
 
     #[test]

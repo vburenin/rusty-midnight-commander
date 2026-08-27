@@ -87,7 +87,8 @@ Misc panel actions:
 - [ ] C-l: full repaint
 - [ ] C-x c: chmod dialog; C-x o: chown dialog
 - [ ] C-x l: hardlink; C-x s: absolute symlink; C-x v: relative symlink
-- [ ] Swap panels, Equalize panels (menu actions; include keys if assigned)
+- [x] Swap panels (Command menu; Action::SwapPanels; honors Options → Panels → Simple swap)
+- [ ] Equalize panels (menu actions; include keys if assigned)
 
 Subshell/screen toggle:
 - [x] C-o: toggle panels vs subshell/output screen (when subshell enabled)
