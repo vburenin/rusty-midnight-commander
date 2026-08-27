@@ -226,6 +226,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::ConfigurationDialog { draft, focus } => {
             draw_configuration_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
         }
+        rmc_core::app::UiMode::VfsOptionsDialog { draft, focus } => {
+            draw_vfs_options_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
+        }
         rmc_core::app::UiMode::PanelOptionsDialog { draft, focus } => {
             draw_panel_options_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
         }
@@ -984,6 +987,146 @@ fn draw_configuration_dialog(
     }
 }
 
+fn draw_vfs_options_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    draft: &rmc_core::app::VfsOptions,
+    focus: rmc_core::app::VfsOptionsFocus,
+    show_shadow: bool,
+) {
+    let title = "Virtual FS";
+    let w = 64u16.min(cols.saturating_sub(2)).max(48);
+    let h = 14u16.min(rows.saturating_sub(2)).max(12);
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Rows: two checkboxes + three inputs
+    use rmc_core::app::VfsOptionsFocus as F;
+    let row0 = y + 2;
+    // Always use ftp proxy [x]
+    if matches!(focus, F::AlwaysUseFtpProxy) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, row0);
+    p.text(&format!(
+        "[{}] Always use ftp proxy",
+        if draft.always_use_ftp_proxy { 'x' } else { ' ' }
+    ));
+    // FTP proxy host: value
+    if matches!(focus, F::FtpProxyHost) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, row0 + 1);
+    let host_label = "FTP proxy host:";
+    p.text(host_label);
+    let max_host = w.saturating_sub(4 + host_label.len() as u16);
+    let shown = truncate(&draft.ftp_proxy_host, max_host as usize);
+    p.goto(x + 2 + host_label.len() as u16 + 1, row0 + 1);
+    p.text(&shown);
+    // Use ~/.netrc
+    if matches!(focus, F::UseNetrc) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, row0 + 2);
+    p.text(&format!(
+        "[{}] Use ~/.netrc",
+        if draft.use_netrc { 'x' } else { ' ' }
+    ));
+    // FTP anonymous password:
+    if matches!(focus, F::FtpAnonPassword) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, row0 + 3);
+    let anon_label = "FTP anonymous password:";
+    p.text(anon_label);
+    let max_pass = w.saturating_sub(4 + anon_label.len() as u16);
+    let shown_pass = truncate(&draft.ftp_anon_password, max_pass as usize);
+    p.goto(x + 2 + anon_label.len() as u16 + 1, row0 + 3);
+    p.text(&shown_pass);
+    // Directory cache timeout:
+    if matches!(focus, F::DirCacheTimeout) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, row0 + 4);
+    let ttl_label = "Directory cache timeout (sec):";
+    p.text(ttl_label);
+    let ttl_str = draft.dir_cache_timeout_secs.to_string();
+    let max_ttl = w.saturating_sub(4 + ttl_label.len() as u16);
+    let shown_ttl = truncate(&ttl_str, max_ttl as usize);
+    p.goto(x + 2 + ttl_label.len() as u16 + 1, row0 + 4);
+    p.text(&shown_ttl);
+    // Buttons
+    let ok_sel = matches!(focus, F::Ok);
+    let cancel_sel = matches!(focus, F::Cancel);
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
+    let cancel_txt = if cancel_sel {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
 #[allow(clippy::too_many_arguments)]
 fn draw_learn_keys_dialog(
     p: &mut Painter,
@@ -4300,6 +4443,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Panels",
             "Confirmations",
             "Appearance",
+            "Virtual FS...",
             "Learn keys",
             "Save setup",
         ],
