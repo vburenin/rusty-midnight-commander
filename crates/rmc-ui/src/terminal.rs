@@ -258,6 +258,133 @@ fn editor_save_to_path(
     Ok(())
 }
 
+fn editor_ui_mode(buf: rmc_edit::EditorBuffer, return_to: Option<Box<UiMode>>) -> UiMode {
+    UiMode::Editor {
+        buf,
+        show_menu: false,
+        status_msg: None,
+        search_input: None,
+        save_as_dialog: None,
+        search_dialog: None,
+        replace_dialog: None,
+        pipe_dialog: None,
+        goto_dialog: None,
+        pending_quit: false,
+        confirm_exit: None,
+        return_to,
+    }
+}
+
+/// GNU mc(1) Internal Diff Viewer: F4 edits the left file; F14 (Shift-F4) the right.
+/// Returns `Some(true)` for the right pane, `Some(false)` for the left.
+fn diff_edit_right_side(key: &KeyEvent) -> Option<bool> {
+    match key.code {
+        KeyCode::F(14) => Some(true),
+        KeyCode::F(4) if key.modifiers.contains(KeyModifiers::SHIFT) => Some(true),
+        KeyCode::F(4) if key.modifiers.is_empty() => Some(false),
+        _ => None,
+    }
+}
+
+fn read_vfs_bytes(app: &App, path: &std::path::Path) -> Vec<u8> {
+    let mut data = Vec::new();
+    if let Ok(mut r) = app.vfs.read_file(path) {
+        use std::io::Read;
+        let _ = r.read_to_end(&mut data);
+    }
+    data
+}
+
+fn read_vfs_text(app: &App, path: &std::path::Path) -> String {
+    String::from_utf8_lossy(&read_vfs_bytes(app, path)).into_owned()
+}
+
+fn write_diff_file(app: &mut App, path: &std::path::Path, lines: &[String]) -> Result<()> {
+    let mut w = app
+        .vfs
+        .write_file(path)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    use std::io::Write;
+    let _ = w.write_all(rmc_diff::join_lines(lines).as_bytes());
+    Ok(())
+}
+
+fn flush_diff_modified(app: &mut App, state: &mut rmc_core::app::DiffState) -> Result<()> {
+    if state.left_modified {
+        write_diff_file(app, &state.left_path, &state.left_lines)?;
+        state.left_modified = false;
+    }
+    if state.right_modified {
+        write_diff_file(app, &state.right_path, &state.right_lines)?;
+        state.right_modified = false;
+    }
+    Ok(())
+}
+
+/// Re-read both sides from disk and rebuild hunks. Cursor hunk is clamped
+/// unless `reset_cursor` (C-r style).
+fn reload_diff_from_disk(app: &mut App, reset_cursor: bool) {
+    let (left_path, right_path) = match &app.ui_mode {
+        UiMode::Diff(s) => (s.left_path.clone(), s.right_path.clone()),
+        _ => return,
+    };
+    let ltxt = read_vfs_text(app, &left_path);
+    let rtxt = read_vfs_text(app, &right_path);
+    let UiMode::Diff(state) = &mut app.ui_mode else {
+        return;
+    };
+    state.left_lines = rmc_diff::split_lines(&ltxt);
+    state.right_lines = rmc_diff::split_lines(&rtxt);
+    state.hunks = rmc_diff::compute_diff(&ltxt, &rtxt).hunks;
+    state.left_modified = false;
+    state.right_modified = false;
+    if reset_cursor {
+        state.current_hunk = 0;
+        state.left_scroll = 0;
+        state.right_scroll = 0;
+    } else if state.hunks.is_empty() {
+        state.current_hunk = 0;
+    } else {
+        state.current_hunk = state.current_hunk.min(state.hunks.len() - 1);
+        TerminalApp::ensure_hunk_visible(state);
+    }
+}
+
+fn leave_editor(app: &mut App) {
+    let prev = match &mut app.ui_mode {
+        UiMode::Editor { return_to, .. } => return_to.take(),
+        _ => None,
+    };
+    match prev {
+        Some(boxed) => {
+            app.ui_mode = *boxed;
+            if matches!(app.ui_mode, UiMode::Diff(_)) {
+                reload_diff_from_disk(app, false);
+            }
+        }
+        None => app.ui_mode = UiMode::Normal,
+    }
+}
+
+fn open_diff_side_in_editor(app: &mut App, right: bool) -> Result<()> {
+    let UiMode::Diff(mut state) = std::mem::replace(&mut app.ui_mode, UiMode::Normal) else {
+        return Ok(());
+    };
+    if let Err(e) = flush_diff_modified(app, &mut state) {
+        app.ui_mode = UiMode::Diff(state);
+        return Err(e);
+    }
+    let path = if right {
+        state.right_path.clone()
+    } else {
+        state.left_path.clone()
+    };
+    let data = read_vfs_bytes(app, &path);
+    let buf = rmc_edit::EditorBuffer::from_bytes(&data, Some(path));
+    app.ui_mode = editor_ui_mode(buf, Some(Box::new(UiMode::Diff(state))));
+    Ok(())
+}
+
 /// GNU mcedit Save as is F12 (and Shift-F2, which terminals often send as F12).
 fn is_editor_save_as_key(key: &KeyEvent) -> bool {
     matches!(key.code, KeyCode::F(12))
@@ -1174,6 +1301,19 @@ impl TerminalApp {
             }
             return Ok(());
         }
+        // GNU mcdiff F4 / F14: open the existing editor on that side, then
+        // return here and rebuild hunks from disk. Skip while Diff overlays
+        // (save-confirm / search / goto) are open so those keep their keys.
+        if let UiMode::Diff(state) = &app.ui_mode {
+            let overlays_idle = state.confirm_exit.is_none()
+                && state.search_prompt.is_none()
+                && state.goto_prompt.is_none();
+            if overlays_idle {
+                if let Some(right) = diff_edit_right_side(&key) {
+                    return open_diff_side_in_editor(app, right);
+                }
+            }
+        }
         // Dialog handling first
         match &mut app.ui_mode {
             UiMode::LearnKeysDialog {
@@ -1279,6 +1419,7 @@ impl TerminalApp {
                 goto_dialog,
                 pending_quit: _,
                 confirm_exit,
+                return_to: _,
             } => {
                 // Confirm-exit overlay (F10/q on dirty)
                 if let Some(c) = confirm_exit {
@@ -1298,7 +1439,7 @@ impl TerminalApp {
                         KeyCode::Enter => {
                             match c.focus {
                                 F::Yes => {
-                                    // Save and exit to panels
+                                    // Save, then restore Diff (or panels).
                                     if let Some(path) = &buf.path {
                                         let mut w = app
                                             .vfs
@@ -1307,10 +1448,10 @@ impl TerminalApp {
                                         use std::io::Write;
                                         let _ = w.write_all(&buf.to_bytes());
                                     }
-                                    app.ui_mode = UiMode::Normal;
+                                    leave_editor(app);
                                 }
                                 F::No => {
-                                    app.ui_mode = UiMode::Normal;
+                                    leave_editor(app);
                                 }
                                 F::Cancel => {
                                     *confirm_exit = None;
@@ -1909,7 +2050,7 @@ impl TerminalApp {
                                 focus: rmc_core::app::YncFocus::Yes,
                             });
                         } else {
-                            app.ui_mode = UiMode::Normal;
+                            leave_editor(app);
                         }
                     }
                     // Basic cursor/editing
@@ -5039,9 +5180,6 @@ impl TerminalApp {
                             state.current_hunk.min(state.hunks.len().saturating_sub(1));
                         Self::ensure_hunk_visible(state);
                     }
-                    KeyCode::F(4) => {
-                        // Disabled for now to avoid losing diff session; leave PARITY unchecked
-                    }
                     KeyCode::F(5) => {
                         if !state.hunks.is_empty() {
                             let idx = state.current_hunk.min(state.hunks.len() - 1);
@@ -6272,19 +6410,7 @@ impl TerminalApp {
                                         &data,
                                         Some(ent.path.clone()),
                                     );
-                                    app.ui_mode = UiMode::Editor {
-                                        buf,
-                                        show_menu: false,
-                                        status_msg: None,
-                                        search_input: None,
-                                        save_as_dialog: None,
-                                        search_dialog: None,
-                                        replace_dialog: None,
-                                        pipe_dialog: None,
-                                        goto_dialog: None,
-                                        pending_quit: false,
-                                        confirm_exit: None,
-                                    };
+                                    app.ui_mode = editor_ui_mode(buf, None);
                                 } else {
                                     // Spawn external editor (EDITOR or VISUAL or vi)
                                     let prog = std::env::var("EDITOR")
@@ -8239,6 +8365,7 @@ mod editor_replace_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
     }
 
@@ -8893,6 +9020,7 @@ mod editor_pipe_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
     }
 
@@ -9121,6 +9249,7 @@ mod editor_goto_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
     }
 
@@ -9424,6 +9553,7 @@ mod editor_search_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
     }
 
@@ -9859,6 +9989,7 @@ mod editor_save_as_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
     }
 
@@ -10990,6 +11121,7 @@ mod viewer_search_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
         press(&mut app, KeyCode::F(7));
         match &app.ui_mode {
@@ -11509,6 +11641,7 @@ mod viewer_display_options_tests {
             goto_dialog: None,
             pending_quit: false,
             confirm_exit: None,
+            return_to: None,
         };
         press(&mut app, KeyCode::F(9));
         match &app.ui_mode {
@@ -11876,6 +12009,347 @@ mod viewer_compressed_filter_tests {
             }
             UiMode::Viewer { .. } => panic!("F4 must open Editor, not Viewer"),
             _ => panic!("expected Editor for F4 on .gz"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod diff_edit_in_place_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::DiffState;
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-diff-edit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_edit = true;
+        app.config_opts.use_internal_view = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn open_diff(app: &mut App, left: std::path::PathBuf, right: std::path::PathBuf) {
+        let ltxt = std::fs::read_to_string(&left).unwrap_or_default();
+        let rtxt = std::fs::read_to_string(&right).unwrap_or_default();
+        app.ui_mode = UiMode::Diff(DiffState {
+            left_path: left,
+            right_path: right,
+            left_lines: rmc_diff::split_lines(&ltxt),
+            right_lines: rmc_diff::split_lines(&rtxt),
+            hunks: rmc_diff::compute_diff(&ltxt, &rtxt).hunks,
+            current_hunk: 0,
+            left_modified: false,
+            right_modified: false,
+            show_line_numbers: true,
+            show_hunk_status: true,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
+            left_scroll: 0,
+            right_scroll: 0,
+            panel_ratio: 0.6,
+            tab_width: 4,
+            merge_target_right: true,
+        });
+    }
+
+    fn diff_state(app: &App) -> &DiffState {
+        match &app.ui_mode {
+            UiMode::Diff(s) => s,
+            _ => panic!("expected Diff"),
+        }
+    }
+
+    fn non_equal_hunks(state: &DiffState) -> usize {
+        state
+            .hunks
+            .iter()
+            .filter(|h| !matches!(h.kind, rmc_diff::HunkKind::Equal))
+            .count()
+    }
+
+    fn editor_path(app: &App) -> std::path::PathBuf {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf.path.clone().expect("editor path"),
+            UiMode::Viewer { .. } => panic!("expected Editor, got Viewer"),
+            UiMode::InputDialog { .. } => panic!("expected Editor, got InputDialog"),
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    #[test]
+    fn f4_from_diff_opens_editor_on_left_path() {
+        let root = temp_workspace();
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        std::fs::write(&left, "aaa\n").unwrap();
+        std::fs::write(&right, "bbb\n").unwrap();
+        let mut app = make_app(&root);
+        open_diff(&mut app, left.clone(), right);
+        press(&mut app, KeyCode::F(4));
+        assert_eq!(editor_path(&app), left);
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog,
+                search_dialog,
+                return_to,
+                ..
+            } => {
+                assert!(replace_dialog.is_none());
+                assert!(search_dialog.is_none());
+                assert!(matches!(return_to.as_deref(), Some(UiMode::Diff(_))));
+            }
+            _ => panic!("F4 must open Editor"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f14_from_diff_opens_editor_on_right_path() {
+        let root = temp_workspace();
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        std::fs::write(&left, "aaa\n").unwrap();
+        std::fs::write(&right, "bbb\n").unwrap();
+        let mut app = make_app(&root);
+        open_diff(&mut app, left, right.clone());
+        press(&mut app, KeyCode::F(14));
+        assert_eq!(editor_path(&app), right);
+
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Diff(_)));
+
+        press_mod(&mut app, KeyCode::F(4), KeyModifiers::SHIFT);
+        assert_eq!(editor_path(&app), right);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_and_quit_returns_to_diff_with_refreshed_hunks() {
+        let root = temp_workspace();
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        std::fs::write(&left, "same\n").unwrap();
+        std::fs::write(&right, "same\n").unwrap();
+        let mut app = make_app(&root);
+        open_diff(&mut app, left.clone(), right.clone());
+        assert_eq!(non_equal_hunks(diff_state(&app)), 0);
+
+        press(&mut app, KeyCode::F(4));
+        press(&mut app, KeyCode::Char('X'));
+        press(&mut app, KeyCode::F(10));
+        press(&mut app, KeyCode::Enter); // Yes: save
+        match &app.ui_mode {
+            UiMode::Diff(state) => {
+                assert_eq!(state.left_path, left);
+                assert_eq!(state.right_path, right);
+                assert!(state.show_line_numbers);
+                assert!((state.panel_ratio - 0.6).abs() < f32::EPSILON);
+                assert!(
+                    non_equal_hunks(state) >= 1,
+                    "saved edit must appear as a hunk"
+                );
+            }
+            _ => panic!("save+quit must return to Diff"),
+        }
+        assert_eq!(std::fs::read_to_string(&left).unwrap(), "Xsame\n");
+        assert_eq!(std::fs::read_to_string(&right).unwrap(), "same\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_making_files_equal_clears_hunks() {
+        let root = temp_workspace();
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        std::fs::write(&left, "x\n").unwrap();
+        std::fs::write(&right, "y\n").unwrap();
+        let mut app = make_app(&root);
+        open_diff(&mut app, left.clone(), right.clone());
+        assert!(non_equal_hunks(diff_state(&app)) >= 1);
+
+        press(&mut app, KeyCode::F(4));
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Char('y'));
+        press(&mut app, KeyCode::F(2));
+        press(&mut app, KeyCode::F(10));
+        match &app.ui_mode {
+            UiMode::Diff(state) => {
+                assert_eq!(
+                    non_equal_hunks(state),
+                    0,
+                    "equal files have no remaining hunks"
+                );
+            }
+            _ => panic!("expected Diff after clean quit"),
+        }
+        assert_eq!(std::fs::read_to_string(&left).unwrap(), "y\n");
+        assert_eq!(std::fs::read_to_string(&right).unwrap(), "y\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discard_dirty_returns_to_diff_with_hunks_unchanged() {
+        let root = temp_workspace();
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        std::fs::write(&left, "aaa\n").unwrap();
+        std::fs::write(&right, "bbb\n").unwrap();
+        let mut app = make_app(&root);
+        open_diff(&mut app, left.clone(), right.clone());
+        let before = diff_state(&app).hunks.clone();
+
+        press(&mut app, KeyCode::F(4));
+        press(&mut app, KeyCode::Char('Z'));
+        press(&mut app, KeyCode::F(10));
+        press(&mut app, KeyCode::Right); // Yes -> No
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Diff(state) => {
+                assert_eq!(state.hunks, before);
+            }
+            _ => panic!("discard must return to Diff"),
+        }
+        assert_eq!(std::fs::read_to_string(&left).unwrap(), "aaa\n");
+        assert_eq!(std::fs::read_to_string(&right).unwrap(), "bbb\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn swap_merge_search_work_after_return() {
+        let root = temp_workspace();
+        let left = root.join("left.txt");
+        let right = root.join("right.txt");
+        std::fs::write(&left, "aaa\n").unwrap();
+        std::fs::write(&right, "bbb\n").unwrap();
+        let mut app = make_app(&root);
+        open_diff(&mut app, left.clone(), right.clone());
+
+        press(&mut app, KeyCode::F(4));
+        press(&mut app, KeyCode::Char('X'));
+        press(&mut app, KeyCode::F(10));
+        press(&mut app, KeyCode::Enter); // save
+        assert!(matches!(app.ui_mode, UiMode::Diff(_)));
+
+        press_mod(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        match &app.ui_mode {
+            UiMode::Diff(state) => {
+                assert_eq!(state.left_path, right);
+                assert_eq!(state.right_path, left);
+                assert!(!state.merge_target_right);
+            }
+            _ => panic!("C-u must stay in Diff"),
+        }
+
+        press(&mut app, KeyCode::F(5));
+        match &app.ui_mode {
+            UiMode::Diff(state) => {
+                assert!(state.left_modified, "F5 merge into current left after swap");
+            }
+            _ => panic!("F5 must stay in Diff"),
+        }
+
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Diff(state) => {
+                assert!(state.search_prompt.is_some());
+            }
+            _ => panic!("F7 must open Diff search"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panel_f4_find_history_viewer_unaffected() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+        let mut app = make_app(&root);
+
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor { buf, return_to, .. } => {
+                assert_eq!(buf.path.as_deref(), Some(file.as_path()));
+                assert!(return_to.is_none(), "panel F4 must not nest Diff");
+            }
+            UiMode::Diff(_) => panic!("panel F4 must open Editor, not Diff"),
+            UiMode::Viewer { .. } => panic!("panel F4 must open Editor, not Viewer"),
+            _ => panic!("panel F4 must open Editor"),
+        }
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "Find File F4 must not steal the Diff edit path"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(matches!(app.ui_mode, UiMode::HistoryDialog { .. }));
+        press(&mut app, KeyCode::F(4));
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "History F4 must not open Diff editor"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        app.ui_mode = UiMode::Normal;
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(3));
+        match &app.ui_mode {
+            UiMode::Viewer { hex, .. } => assert!(!*hex),
+            _ => panic!("F3 must open Viewer"),
+        }
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer { hex, .. } => assert!(*hex, "Viewer F4 toggles hex"),
+            UiMode::Editor { .. } => panic!("Viewer F4 must not open Editor"),
+            _ => panic!("Viewer F4 must stay in Viewer"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
