@@ -81,6 +81,9 @@ fn find_and_panelize_results_restore_on_parent() -> Result<()> {
         find_recursively: true,
         follow_symlinks: false,
         skip_hidden: false,
+        whole_words: false,
+        enable_ignore_dirs: false,
+        ignore_dirs: String::new(),
     };
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hits = search_files(&params, &cancel);
