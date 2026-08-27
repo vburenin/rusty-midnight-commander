@@ -344,6 +344,10 @@ mod tests {
             "darkfar",
             "mc32",
             "xoria256",
+            "classic",
+            "featured",
+            "sand256",
+            "xoria256root",
         ] {
             assert!(
                 listed.iter().any(|s| s == name),
