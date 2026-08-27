@@ -6,6 +6,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rmc_fs::composite::CompositeFs;
+use rmc_fs::pathutil::is_virtual_path;
+use rmc_fs::Vfs;
+
 const DEFAULT_CHUNK_SIZE: usize = 64 * 1024; // 64 KiB
 
 pub type JobId = u64;
@@ -261,9 +265,21 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
         )
     };
 
-    let result = match kind {
-        JobKind::Copy => copy_streaming(job_arc, &src, &dst, &cancel_flag),
-        JobKind::Move => move_with_fallback(job_arc, &src, &dst, &cancel_flag),
+    let result = if is_virtual_path(&src) || is_virtual_path(&dst) {
+        // GNU mc Copy/Move goes through VFS. Local-only `std::fs` cannot open
+        // archive `#` paths or ftp/sftp/extfs URLs. Abort is checked between
+        // files; a non-chunked VFS op (one `vfs.copy`) finishes the current
+        // file before the cancel flag is observed — no live byte counters.
+        let vfs = CompositeFs::new();
+        match kind {
+            JobKind::Copy => vfs_copy_tree(&vfs, job_arc, &src, &dst, &cancel_flag, &mut 0),
+            JobKind::Move => vfs_move(&vfs, &src, &dst, &cancel_flag),
+        }
+    } else {
+        match kind {
+            JobKind::Copy => copy_streaming(job_arc, &src, &dst, &cancel_flag),
+            JobKind::Move => move_with_fallback(job_arc, &src, &dst, &cancel_flag),
+        }
     };
 
     let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
@@ -442,6 +458,93 @@ fn move_with_fallback(
     Ok(())
 }
 
+fn fs_to_io(err: rmc_fs::FsError) -> io::Error {
+    io::Error::other(err.to_string())
+}
+
+/// Copy through [`CompositeFs`] (tar/zip/ftp/sftp/extfs). Directories are
+/// walked so Abort can stop after the current file; a single-file `vfs.copy`
+/// is not byte-chunked, so cancel mid-file finishes that file first.
+fn vfs_copy_tree(
+    vfs: &CompositeFs,
+    job_arc: &Arc<Mutex<JobEntry>>,
+    src: &Path,
+    dst: &Path,
+    cancel_flag: &AtomicBool,
+    overall: &mut u64,
+) -> io::Result<()> {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    match vfs.stat(src) {
+        Ok(meta) if meta.is_dir => {
+            let _ = vfs.mkdir(dst);
+            let entries = match vfs.list_dir(src, true) {
+                Ok(entries) => entries,
+                Err(_) => {
+                    vfs.copy(src, dst).map_err(fs_to_io)?;
+                    return Ok(());
+                }
+            };
+            for entry in entries {
+                if entry.name == ".." || entry.name == "." {
+                    continue;
+                }
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                vfs_copy_tree(
+                    vfs,
+                    job_arc,
+                    &entry.path,
+                    &dst.join(&entry.name),
+                    cancel_flag,
+                    overall,
+                )?;
+            }
+            Ok(())
+        }
+        _ => {
+            vfs.copy(src, dst).map_err(fs_to_io)?;
+            note_vfs_file_done(job_arc, vfs, src, overall);
+            Ok(())
+        }
+    }
+}
+
+fn vfs_move(vfs: &CompositeFs, src: &Path, dst: &Path, cancel_flag: &AtomicBool) -> io::Result<()> {
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    vfs.move_path(src, dst).map_err(fs_to_io)
+}
+
+/// Update file/total counters after a VFS file completes. Not live-during-copy.
+fn note_vfs_file_done(
+    job_arc: &Arc<Mutex<JobEntry>>,
+    vfs: &CompositeFs,
+    src: &Path,
+    overall: &mut u64,
+) {
+    let size = vfs.stat(src).map(|m| m.size).unwrap_or(0);
+    *overall = overall.saturating_add(size);
+    let current_name = src
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+    job.job.files_done = job.job.files_done.saturating_add(1);
+    job.job.file_done = size;
+    job.job.file_total = size;
+    job.job.bytes_done = *overall;
+    if job.job.bytes_total == 0 {
+        job.job.bytes_total = size;
+    }
+    if !current_name.is_empty() {
+        job.job.current_name = current_name;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +691,61 @@ mod tests {
         assert!(dst.exists(), "destination should exist after move");
         let data = fs::read(&dst).unwrap();
         assert_eq!(data, vec![1u8, 2, 3, 4, 5]);
+    }
+
+    fn write_zip(path: &Path, files: &[(&str, &[u8])]) {
+        let f = File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(f);
+        let options = zip::write::FileOptions::default();
+        for (name, data) in files {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn zip_inner(archive: &Path, inner: &str) -> PathBuf {
+        let mut s = archive.as_os_str().to_string_lossy().into_owned();
+        s.push('#');
+        PathBuf::from(s).join(inner)
+    }
+
+    #[test]
+    fn copy_from_zip_archive_uses_vfs_and_writes_dest() {
+        let dir = tempdir().unwrap();
+        let zip_path = dir.path().join("sample.zip");
+        write_zip(&zip_path, &[("hello.txt", b"from-archive")]);
+        let src = zip_inner(&zip_path, "hello.txt");
+        let dst = dir.path().join("out.txt");
+
+        // std::fs cannot open the virtual `#` path; the worker must use vfs.copy.
+        assert!(
+            fs::symlink_metadata(&src).is_err(),
+            "virtual archive path is not a real local file"
+        );
+
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy(&src, &dst);
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(
+            status,
+            JobStatus::Done,
+            "archive copy-out should complete via vfs.copy: {:?}",
+            queue.get(id).and_then(|j| j.error)
+        );
+        assert_eq!(fs::read(&dst).unwrap(), b"from-archive");
+        let snap = queue.snapshot();
+        let j = snap.iter().find(|j| j.id == id).unwrap();
+        assert!(j.files_done >= 1, "VFS copy records the completed file");
     }
 }

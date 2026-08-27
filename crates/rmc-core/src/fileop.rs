@@ -1,7 +1,10 @@
 //! Copy/Move progress helpers honoring GNU mc Options → Configuration flags:
 //! verbose operation, compute totals, and classic progressbar.
 //!
-//! Layout strings match the GNU mc file-operations dialog as closely as the
+//! Local transfers get live 64 KiB job counters. Copy/Move from archive or
+//! remote VFS uses `vfs.copy` / `vfs.move_path`; Abort is honored between
+//! files (a non-chunked VFS op finishes the current file first). Layout
+//! strings match the GNU mc file-operations dialog as closely as the
 //! existing Copy dialog already does. No live TUI is required to test this.
 
 use crate::app::{ConfigOptions, CopyMoveOp};
@@ -65,7 +68,21 @@ impl FileOpProgressState {
         opts: &ConfigOptions,
     ) -> Result<Self> {
         let totals = if opts.compute_totals {
-            Some(scan_totals(vfs, src)?)
+            match scan_totals(vfs, src) {
+                Ok(t) => Some(t),
+                Err(err) => {
+                    // Remote/extfs may not implement `stat`; still open the
+                    // progress dialog and let `vfs.copy` run. Local scan
+                    // failures remain hard errors (missing source).
+                    if rmc_fs::pathutil::is_virtual_path(src)
+                        || rmc_fs::pathutil::is_virtual_path(dst)
+                    {
+                        None
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
         } else {
             None
         };
@@ -270,6 +287,7 @@ mod tests {
     use rmc_fs::local::LocalFs;
     use std::fs;
     use std::io::Write;
+    use std::path::PathBuf;
 
     fn opts(verbose: bool, compute_totals: bool, classic_progressbar: bool) -> ConfigOptions {
         ConfigOptions {
@@ -543,5 +561,44 @@ mod tests {
         assert_eq!(s.bytes_done, 50);
         assert_eq!(s.files_done, 0);
         assert_ne!(s.bytes_done, s.bytes_total.unwrap());
+    }
+
+    fn write_zip(path: &Path, files: &[(&str, &[u8])]) {
+        let f = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(f);
+        let options = zip::write::FileOptions::default();
+        for (name, data) in files {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn prepare_copy_from_zip_archive_opens_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip_path = tmp.path().join("sample.zip");
+        write_zip(&zip_path, &[("hello.txt", b"xyz")]);
+        let mut src = zip_path.as_os_str().to_string_lossy().into_owned();
+        src.push('#');
+        let src = PathBuf::from(src).join("hello.txt");
+        let dst = tmp.path().join("out.txt");
+        let vfs = rmc_fs::composite::CompositeFs::new();
+
+        let state = FileOpProgressState::prepare(
+            &vfs,
+            CopyMoveOp::Copy,
+            &src,
+            &dst,
+            &opts(true, true, true),
+        )
+        .unwrap();
+        assert_eq!(state.source_name, "hello.txt");
+        assert_eq!(state.bytes_total, Some(3));
+        assert_eq!(state.files_total, 1);
+        let v = state.view(default_bar_width(), false);
+        assert_eq!(v.title, "Copy");
+        assert!(v.files_processed.contains("Files processed:"));
+        assert_eq!(v.source_name.as_deref(), Some("hello.txt"));
     }
 }

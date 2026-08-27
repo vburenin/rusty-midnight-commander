@@ -108,6 +108,12 @@ impl CompositeFs {
         Ok(entries)
     }
 
+    /// True when this path is served by local disk, not archive/extfs/remote.
+    /// Same classification CompositeFs uses for `copy` / `stat` routing.
+    pub fn is_local_fs_path(&self, path: &Path) -> bool {
+        matches!(self.route_kind(path), Route::Local { .. })
+    }
+
     fn route_kind<'a>(&self, path: &'a Path) -> Route<'a> {
         if let Some(ap) = parse_archive_path(path) {
             let vfs_root = path; // the full composite path with '#'
@@ -174,6 +180,10 @@ impl Vfs for CompositeFs {
             Some(p) => self.dir_cache_lock().invalidate_path(p),
             None => self.dir_cache_lock().clear(),
         }
+    }
+
+    fn is_local_path(&self, path: &Path) -> bool {
+        self.is_local_fs_path(path)
     }
 
     fn enter_path(&self, path: &Path) -> Option<PathBuf> {
@@ -435,5 +445,23 @@ impl Vfs for CompositeFs {
                 "symlink on remote is not supported".into(),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn is_local_fs_path_matches_composite_routing() {
+        let vfs = CompositeFs::new();
+        assert!(vfs.is_local_fs_path(Path::new("/tmp/file.txt")));
+        assert!(vfs.is_local_path(Path::new("/tmp/file.txt")));
+        assert!(!vfs.is_local_fs_path(Path::new("/tmp/sample.tar#")));
+        assert!(!vfs.is_local_fs_path(Path::new("/tmp/sample.tar#/inner.txt")));
+        assert!(!vfs.is_local_fs_path(Path::new("/tmp/a.zip#/dir/f.txt")));
+        assert!(!vfs.is_local_fs_path(Path::new("ftp://host/pub")));
+        assert!(!vfs.is_local_fs_path(Path::new("sftp://user@host/tmp")));
     }
 }

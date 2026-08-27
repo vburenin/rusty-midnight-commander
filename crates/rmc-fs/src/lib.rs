@@ -71,6 +71,14 @@ pub trait Vfs: Send {
     fn enter_path(&self, _path: &Path) -> Option<PathBuf> {
         None
     }
+    /// Whether this backend treats `path` as local disk (`LocalFs`).
+    ///
+    /// [`composite::CompositeFs`] returns `false` for archive `#` paths,
+    /// extfs anchors, and remote URLs — the same routing as `copy` / `stat`.
+    /// Default is `true` (local-only backends and test doubles).
+    fn is_local_path(&self, _path: &Path) -> bool {
+        true
+    }
     fn mkdir(&self, path: &Path) -> FsResult<()>;
     fn remove(&self, path: &Path, recursive: bool) -> FsResult<()>;
     fn copy(&self, src: &Path, dst: &Path) -> FsResult<()>;

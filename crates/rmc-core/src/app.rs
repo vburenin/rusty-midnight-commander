@@ -1147,8 +1147,11 @@ impl App {
         Ok(())
     }
 
-    /// Open the GNU mc Copy/Move progress dialog and queue the transfer on the
-    /// jobs worker so the event loop can keep drawing and honor Abort.
+    /// Open the GNU mc Copy/Move progress dialog and queue the transfer.
+    /// Local→local uses the jobs worker (64 KiB chunks, live bars, Abort).
+    /// Archive/ftp/sftp/extfs paths use [`rmc_fs::Vfs::copy`] / `move_path`
+    /// on that same worker; Abort is honored between files (a non-chunked
+    /// VFS op finishes the current file first).
     pub fn begin_file_op(&mut self, op: CopyMoveOp, src: PathBuf, dst: PathBuf) -> Result<()> {
         let state = crate::fileop::FileOpProgressState::prepare(
             self.vfs.as_ref(),
@@ -1197,15 +1200,8 @@ impl App {
         }
         match job.status {
             crate::jobs::JobStatus::Queued | crate::jobs::JobStatus::Running => Ok(()),
-            crate::jobs::JobStatus::Done => {
-                self.ui_mode = UiMode::Normal;
-                self.reload_panels()?;
-                Ok(())
-            }
-            crate::jobs::JobStatus::Cancelled => {
-                self.ui_mode = UiMode::Normal;
-                self.reload_panels()?;
-                Ok(())
+            crate::jobs::JobStatus::Done | crate::jobs::JobStatus::Cancelled => {
+                self.finish_file_op_dialog()
             }
             crate::jobs::JobStatus::Failed => {
                 let message = job.error.unwrap_or_else(|| "file operation failed".into());
@@ -1219,8 +1215,25 @@ impl App {
         }
     }
 
+    fn finish_file_op_dialog(&mut self) -> Result<()> {
+        let dst = match &self.ui_mode {
+            UiMode::FileOpProgress { dst, .. } => dst.clone(),
+            _ => {
+                self.ui_mode = UiMode::Normal;
+                self.reload_panels()?;
+                return Ok(());
+            }
+        };
+        self.vfs.invalidate_dir_cache(dst.parent());
+        self.ui_mode = UiMode::Normal;
+        self.reload_panels()?;
+        Ok(())
+    }
+
     /// Cancel an in-flight foreground copy/move (GNU mc Abort). Leaves a
     /// partial destination as the jobs worker does; returns to Normal.
+    /// For VFS (archive/ftp/sftp/extfs) transfers the current `vfs.copy` is
+    /// not byte-chunked: Abort finishes that file, then stops.
     pub fn abort_file_op(&mut self) -> Result<()> {
         let job_id = match &self.ui_mode {
             UiMode::FileOpProgress { job_id, .. } => *job_id,
@@ -1243,6 +1256,7 @@ mod tests {
     use super::*;
     use crate::config::KeyMap;
     use rmc_fs::local::LocalFs;
+    use std::io::Write;
 
     fn app_with_distinct_panes() -> (App, tempfile::TempDir, PathBuf, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
@@ -1463,6 +1477,47 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         wait_until_file_op_settled(&mut app, 10_000);
+    }
+
+    fn write_zip(path: &Path, files: &[(&str, &[u8])]) {
+        let f = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(f);
+        let options = zip::write::FileOptions::default();
+        for (name, data) in files {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn begin_file_op_copy_from_archive_uses_vfs_and_writes_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip_path = tmp.path().join("sample.zip");
+        write_zip(&zip_path, &[("hello.txt", b"archive-hello")]);
+        let mut src = zip_path.as_os_str().to_string_lossy().into_owned();
+        src.push('#');
+        let src = PathBuf::from(src).join("hello.txt");
+        let dst = tmp.path().join("out.txt");
+
+        let vfs = rmc_fs::composite::CompositeFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.compute_totals = true;
+        app.begin_file_op(CopyMoveOp::Copy, src, dst.clone())
+            .unwrap();
+        match &app.ui_mode {
+            UiMode::FileOpProgress { started, state, .. } => {
+                assert!(*started, "progress dialog opens for VFS copy");
+                assert_eq!(state.source_name, "hello.txt");
+                let view = state.view(47, false);
+                assert!(view.files_processed.contains("Files processed:"));
+                assert_eq!(view.title, "Copy");
+            }
+            _ => panic!("expected FileOpProgress"),
+        }
+        wait_until_file_op_settled(&mut app, 5_000);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"archive-hello");
     }
 
     fn wait_until_file_op_settled(app: &mut App, timeout_ms: u64) {

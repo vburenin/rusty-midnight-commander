@@ -162,6 +162,16 @@ pub fn append_anchor(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// True when `path` is an archive/extfs `#` VFS path or a remote URL
+/// (`ftp://`, `sftp://`, `fish://`, `smb://`).
+///
+/// CompositeFs does not treat those as `LocalFs`, so `std::fs` on the raw
+/// path fails. A `#` marker that is neither a known archive nor a remote URL
+/// is still treated as virtual here (extfs uses the same anchor).
+pub fn is_virtual_path(path: &Path) -> bool {
+    parse_anchor_any(path).is_some() || extract_remote_canonical_url(path).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +185,21 @@ mod tests {
         let a2 = parse_anchor_any(&p2).expect("anchor");
         assert_eq!(a2.base, PathBuf::from("/tmp/sample.lsar"));
         assert_eq!(a2.inner, PathBuf::from("a.txt"));
+    }
+
+    #[test]
+    fn is_virtual_path_detects_archive_anchor_and_remote_url() {
+        assert!(
+            !is_virtual_path(Path::new("/tmp/local.txt")),
+            "plain local path is not virtual"
+        );
+        assert!(is_virtual_path(Path::new("/tmp/sample.tar#")));
+        assert!(is_virtual_path(Path::new("/tmp/sample.tar#/inner.txt")));
+        assert!(is_virtual_path(Path::new("/tmp/sample.zip#/dir/a.txt")));
+        assert!(is_virtual_path(Path::new("/tmp/helper.lsar#/a.txt")));
+        assert!(is_virtual_path(Path::new("ftp://host/pub/file")));
+        assert!(is_virtual_path(Path::new("sftp://user@host/tmp")));
+        assert!(is_virtual_path(Path::new("fish://host/tmp")));
+        assert!(is_virtual_path(Path::new("smb://host/share")));
     }
 }
