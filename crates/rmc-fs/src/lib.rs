@@ -12,11 +12,17 @@ pub struct Metadata {
     pub is_executable: bool,
     pub size: u64,
     pub modified: SystemTime,
+    /// Last access time (`st_atime`). Archives, remote, extfs, and `..` copy `modified`.
+    pub accessed: SystemTime,
+    /// Inode status-change time (`st_ctime`). Archives, remote, extfs, and `..` copy `modified`.
+    pub changed: SystemTime,
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
     /// Hard-link count (`st_nlink`). Archives, remote VFS, and `..` markers use 1.
     pub nlink: u64,
+    /// Filesystem inode (`st_ino`). Archives, remote, extfs, and `..` use 0.
+    pub inode: u64,
 }
 
 /// Unix `st_nlink`, or 1 when the OS does not expose a link count.
@@ -30,6 +36,36 @@ pub(crate) fn nlink_from_std(md: &fs::Metadata) -> u64 {
     {
         let _ = md;
         1
+    }
+}
+
+/// `(accessed, changed, inode)` from local `stat()`. Non-Unix: atime=ctime=`modified`, inode=0.
+pub(crate) fn extra_stat_from_std(
+    md: &fs::Metadata,
+    modified: SystemTime,
+) -> (SystemTime, SystemTime, u64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let accessed = md.accessed().unwrap_or(modified);
+        let changed = unix_ctime_to_system_time(md.ctime(), md.ctime_nsec()).unwrap_or(modified);
+        (accessed, changed, md.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        (modified, modified, 0)
+    }
+}
+
+#[cfg(unix)]
+fn unix_ctime_to_system_time(sec: i64, nsec: i64) -> Option<SystemTime> {
+    use std::time::{Duration, UNIX_EPOCH};
+    let nsec = u32::try_from(nsec).ok().filter(|n| *n < 1_000_000_000)?;
+    if sec >= 0 {
+        Some(UNIX_EPOCH + Duration::new(sec as u64, nsec))
+    } else {
+        UNIX_EPOCH.checked_sub(Duration::new(sec.unsigned_abs(), nsec))
     }
 }
 
@@ -176,16 +212,21 @@ pub mod local {
         };
         #[cfg(not(unix))]
         let (owner, group) = (None, None);
+        let modified = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let (accessed, changed, inode) = super::extra_stat_from_std(&md, modified);
         Metadata {
             is_dir: md.is_dir(),
             is_symlink: md.file_type().is_symlink(),
             is_executable: is_exe,
             size: md.len(),
-            modified: md.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            modified,
+            accessed,
+            changed,
             permissions: mode,
             owner,
             group,
             nlink: super::nlink_from_std(&md),
+            inode,
         }
     }
 
@@ -207,10 +248,13 @@ pub mod local {
                         is_executable: false,
                         size: 0,
                         modified: SystemTime::UNIX_EPOCH,
+                        accessed: SystemTime::UNIX_EPOCH,
+                        changed: SystemTime::UNIX_EPOCH,
                         permissions: 0,
                         owner: None,
                         group: None,
                         nlink: 1,
+                        inode: 0,
                     },
                 });
             }

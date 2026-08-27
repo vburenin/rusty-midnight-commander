@@ -111,6 +111,9 @@ fn parent_marker(vfs_root: PathBuf) -> DirEntry {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: SystemTime::UNIX_EPOCH,
+            changed: SystemTime::UNIX_EPOCH,
+            inode: 0,
         },
     }
 }
@@ -939,6 +942,9 @@ pub fn list_dir(url: &RemoteUrl, _vfs_root: &Path, show_hidden: bool) -> FsResul
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: SystemTime::UNIX_EPOCH,
+                changed: SystemTime::UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -1082,6 +1088,9 @@ pub fn list_dir_with_client(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: SystemTime::UNIX_EPOCH,
+                changed: SystemTime::UNIX_EPOCH,
+                inode: 0,
             },
         });
     }

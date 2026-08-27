@@ -66,6 +66,9 @@ pub fn list_dir(
                                 owner: None,
                                 group: None,
                                 nlink: 1,
+                                accessed: UNIX_EPOCH,
+                                changed: UNIX_EPOCH,
+                                inode: 0,
                             },
                         }]);
                     }
@@ -106,6 +109,9 @@ pub fn list_dir(
                             owner: None,
                             group: None,
                             nlink: 1,
+                            accessed: UNIX_EPOCH,
+                            changed: UNIX_EPOCH,
+                            inode: 0,
                         },
                     },
                 );
@@ -125,6 +131,9 @@ pub fn list_dir(
                     owner: None,
                     group: None,
                     nlink: 1,
+                    accessed: UNIX_EPOCH,
+                    changed: UNIX_EPOCH,
+                    inode: 0,
                 },
             });
         }
@@ -144,6 +153,9 @@ pub fn list_dir(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -185,6 +197,9 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let mut f = File::open(archive_path)?;
@@ -203,6 +218,9 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         }),
         Err(_) => Err(FsError::Message(format!(
             "Path not found in ISO: {}",

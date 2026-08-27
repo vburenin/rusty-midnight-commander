@@ -115,11 +115,17 @@ pub struct FileEntry {
     pub is_exe: bool,
     pub size: u64,
     pub modified: SystemTime,
+    /// Last access time (`st_atime`). Archives, remote, and `..` copy `modified`.
+    pub accessed: SystemTime,
+    /// Inode status-change time (`st_ctime`). Archives, remote, and `..` copy `modified`.
+    pub changed: SystemTime,
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
     /// Hard-link count (`st_nlink`). Parent markers and missing stat fall back to 1.
     pub nlink: u64,
+    /// Filesystem inode (`st_ino`). Archives, remote, and `..` use 0.
+    pub inode: u64,
 }
 
 impl FileEntry {
@@ -133,7 +139,15 @@ pub enum SortBy {
     Name,
     Ext,
     Size,
+    /// Modification time (`mtime`).
     Time,
+    /// Access time (`atime`).
+    Atime,
+    /// Change time (`ctime` / inode-status change).
+    Ctime,
+    Inode,
+    /// Listing order from `list_dir` after the `..` marker.
+    Unsorted,
 }
 
 /// Local-directory identity used by GNU mc Fast reload.
@@ -379,38 +393,23 @@ impl PanelState {
         if self.dirs_first {
             let (mut dirs, mut rest): (Vec<_>, Vec<_>) = items.into_iter().partition(|e| e.is_dir);
             // Directories always sort by name; optionally ignore reverse.
+            // Unsorted keeps list_dir order within each group (Reverse still flips).
             let dir_dir = if reverse_files_only {
                 SortDir::Asc
             } else {
                 self.sort_dir
             };
-            match self.sort_by {
-                SortBy::Name => {
-                    sorting::sort_by_name(&mut dirs, dir_dir);
-                    sorting::sort_by_name(&mut rest, self.sort_dir);
-                }
-                SortBy::Ext => {
-                    sorting::sort_by_name(&mut dirs, dir_dir); // dirs by name
-                    sorting::sort_by_ext(&mut rest, self.sort_dir);
-                }
-                SortBy::Size => {
-                    sorting::sort_by_name(&mut dirs, dir_dir); // dirs by name
-                    sorting::sort_by_size(&mut rest, self.sort_dir);
-                }
-                SortBy::Time => {
-                    sorting::sort_by_name(&mut dirs, dir_dir); // dirs by name
-                    sorting::sort_by_time(&mut rest, self.sort_dir);
-                }
+            if matches!(self.sort_by, SortBy::Unsorted) {
+                sorting::sort_unsorted(&mut dirs, dir_dir);
+                sorting::sort_unsorted(&mut rest, self.sort_dir);
+            } else {
+                sorting::sort_by_name(&mut dirs, dir_dir);
+                sorting::sort_entries(&mut rest, self.sort_by, self.sort_dir);
             }
             self.entries = [dirs, rest].concat();
         } else {
             // Mixed directories/files together sorted uniformly (except parent marker)
-            match self.sort_by {
-                SortBy::Name => sorting::sort_by_name(&mut items, self.sort_dir),
-                SortBy::Ext => sorting::sort_by_ext(&mut items, self.sort_dir),
-                SortBy::Size => sorting::sort_by_size(&mut items, self.sort_dir),
-                SortBy::Time => sorting::sort_by_time(&mut items, self.sort_dir),
-            }
+            sorting::sort_entries(&mut items, self.sort_by, self.sort_dir);
             self.entries = items;
         }
         if let Some(pm) = parent_marker {
@@ -899,10 +898,13 @@ mod tests {
             is_exe: false,
             size,
             modified,
+            accessed: modified,
+            changed: modified,
             permissions: 0o755,
             owner: Some("user".into()),
             group: Some("group".into()),
             nlink: 1,
+            inode: 0,
         }
     }
 
@@ -973,6 +975,111 @@ mod tests {
         p.apply_sort_with(false);
         let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["..", "b", "a", "z", "y"]);
+    }
+
+    fn make_entry_full(
+        name: &str,
+        size: u64,
+        modified: SystemTime,
+        accessed: SystemTime,
+        changed: SystemTime,
+        inode: u64,
+        is_dir: bool,
+    ) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            is_dir,
+            is_symlink: false,
+            is_exe: false,
+            size,
+            modified,
+            accessed,
+            changed,
+            permissions: 0o644,
+            owner: None,
+            group: None,
+            nlink: 1,
+            inode,
+        }
+    }
+
+    #[test]
+    fn sort_by_atime_ctime_inode_from_constructed_entries() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + Duration::from_secs(10);
+        let t2 = t0 + Duration::from_secs(20);
+        let mut p = PanelState::new(".");
+        p.dirs_first = false;
+        p.set_entries(vec![
+            make_entry_full("..", 0, t0, t0, t0, 0, true),
+            make_entry_full("late-access", 1, t0, t2, t0, 30, false),
+            make_entry_full("early-access", 1, t2, t1, t2, 10, false),
+            make_entry_full("mid-change", 1, t1, t0, t1, 20, false),
+        ]);
+
+        p.sort_by = SortBy::Atime;
+        p.sort_dir = sorting::SortDir::Asc;
+        p.apply_sort();
+        let names: Vec<_> = p.entries.iter().skip(1).map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["mid-change", "early-access", "late-access"]);
+
+        p.sort_by = SortBy::Ctime;
+        p.apply_sort();
+        let names: Vec<_> = p.entries.iter().skip(1).map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["late-access", "mid-change", "early-access"]);
+
+        p.sort_by = SortBy::Inode;
+        p.apply_sort();
+        let names: Vec<_> = p.entries.iter().skip(1).map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["early-access", "mid-change", "late-access"]);
+    }
+
+    #[test]
+    fn unsorted_keeps_list_dir_order_and_reverse_flips() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.dirs_first = false;
+        p.sort_by = SortBy::Unsorted;
+        p.set_entries(vec![
+            make_entry("..", 0, now, true),
+            make_entry("z", 1, now, false),
+            make_entry("a", 1, now, false),
+            make_entry("m", 1, now, false),
+        ]);
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "z", "a", "m"]);
+        p.sort_dir = sorting::SortDir::Desc;
+        p.apply_sort();
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "m", "a", "z"]);
+    }
+
+    #[test]
+    fn unsorted_reverse_honors_dirs_first_and_reverse_files_only() {
+        let now = SystemTime::now();
+        let listing = vec![
+            make_entry("..", 0, now, true),
+            make_entry("d2", 0, now, true),
+            make_entry("d1", 0, now, true),
+            make_entry("f2", 1, now, false),
+            make_entry("f1", 1, now, false),
+        ];
+        let mut p = PanelState::new(".");
+        p.dirs_first = true;
+        p.sort_by = SortBy::Unsorted;
+        p.sort_dir = sorting::SortDir::Desc;
+        p.set_entries(listing.clone());
+        // reverse_files_only default: dirs keep list order d2,d1; files reverse f1,f2
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "d2", "d1", "f1", "f2"]);
+        // Restore list_dir order, then reverse both groups.
+        p.sort_dir = sorting::SortDir::Asc;
+        p.set_entries(listing);
+        p.sort_dir = sorting::SortDir::Desc;
+        p.apply_sort_with(false);
+        let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["..", "d1", "d2", "f1", "f2"]);
     }
 
     #[test]

@@ -85,6 +85,9 @@ pub fn list_dir_from_bytes(
                                 owner: None,
                                 group: None,
                                 nlink: 1,
+                                accessed: UNIX_EPOCH,
+                                changed: UNIX_EPOCH,
+                                inode: 0,
                             },
                         },
                     );
@@ -107,6 +110,9 @@ pub fn list_dir_from_bytes(
                             owner: None,
                             group: None,
                             nlink: 1,
+                            accessed: UNIX_EPOCH,
+                            changed: UNIX_EPOCH,
+                            inode: 0,
                         },
                     },
                 );
@@ -128,6 +134,9 @@ pub fn list_dir_from_bytes(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -170,6 +179,9 @@ pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let in_norm = norm(inner_full);
@@ -191,6 +203,9 @@ pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             });
         }
         if p.starts_with(&in_norm) {
@@ -208,6 +223,9 @@ pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         })
     } else {
         Err(FsError::Message(format!(
@@ -309,6 +327,9 @@ pub fn list_dir(
                                 owner: None,
                                 group: None,
                                 nlink: 1,
+                                accessed: UNIX_EPOCH,
+                                changed: UNIX_EPOCH,
+                                inode: 0,
                             },
                         },
                     );
@@ -332,6 +353,9 @@ pub fn list_dir(
                             owner: None,
                             group: None,
                             nlink: 1,
+                            accessed: UNIX_EPOCH,
+                            changed: UNIX_EPOCH,
+                            inode: 0,
                         },
                     },
                 );
@@ -353,6 +377,9 @@ pub fn list_dir(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -400,6 +427,9 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let data = load_cpio_bytes(archive_path, kind)?;
@@ -422,6 +452,9 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             });
         }
         if p.starts_with(&in_norm) {
@@ -439,6 +472,9 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         })
     } else {
         Err(FsError::Message(format!(

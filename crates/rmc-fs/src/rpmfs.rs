@@ -118,6 +118,9 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let data = read_payload_bytes(archive_path)?;

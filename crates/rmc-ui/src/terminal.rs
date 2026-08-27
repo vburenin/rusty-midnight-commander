@@ -1500,6 +1500,40 @@ fn fbar_function_from_xy(app: &App, x: u16, y: u16, cols: u16, rows: u16) -> Opt
     None
 }
 
+/// GNU mc(1) eight sort-order radios, then Reverse, Directories first, OK, Cancel.
+const SORT_DIALOG_LEN: usize = 12;
+const SORT_FOCUS_REVERSE: usize = 8;
+const SORT_FOCUS_DIRS_FIRST: usize = 9;
+const SORT_FOCUS_OK: usize = 10;
+const SORT_FOCUS_CANCEL: usize = 11;
+
+fn sort_by_from_radio(index: usize) -> Option<rmc_core::panel::SortBy> {
+    Some(match index {
+        0 => rmc_core::panel::SortBy::Name,
+        1 => rmc_core::panel::SortBy::Ext,
+        2 => rmc_core::panel::SortBy::Time,
+        3 => rmc_core::panel::SortBy::Atime,
+        4 => rmc_core::panel::SortBy::Ctime,
+        5 => rmc_core::panel::SortBy::Size,
+        6 => rmc_core::panel::SortBy::Inode,
+        7 => rmc_core::panel::SortBy::Unsorted,
+        _ => return None,
+    })
+}
+
+fn radio_index_for_sort_by(by: rmc_core::panel::SortBy) -> usize {
+    match by {
+        rmc_core::panel::SortBy::Name => 0,
+        rmc_core::panel::SortBy::Ext => 1,
+        rmc_core::panel::SortBy::Time => 2,
+        rmc_core::panel::SortBy::Atime => 3,
+        rmc_core::panel::SortBy::Ctime => 4,
+        rmc_core::panel::SortBy::Size => 5,
+        rmc_core::panel::SortBy::Inode => 6,
+        rmc_core::panel::SortBy::Unsorted => 7,
+    }
+}
+
 impl TerminalApp {
     fn apply_sort_dialog(
         app: &mut App,
@@ -1508,20 +1542,7 @@ impl TerminalApp {
         reverse: bool,
         dirs_first: bool,
     ) -> Result<()> {
-        let p = if matches!(side, rmc_core::actions::PaneSide::Left) {
-            &mut app.left
-        } else {
-            &mut app.right
-        };
-        p.sort_by = by;
-        p.sort_dir = if reverse {
-            rmc_core::sorting::SortDir::Desc
-        } else {
-            rmc_core::sorting::SortDir::Asc
-        };
-        p.dirs_first = dirs_first;
-        p.apply_sort();
-        Ok(())
+        app.apply_panel_sort(side, by, reverse, dirs_first)
     }
     pub fn run(app: &mut App) -> Result<()> {
         let mut out = stdout();
@@ -4141,7 +4162,7 @@ impl TerminalApp {
                 reverse,
                 dirs_first,
             } => {
-                // Focus order: 0..3 radios; 4 Reverse; 5 Dirs-first; 6 OK; 7 Cancel
+                // Focus: 0..7 radios; 8 Reverse; 9 Dirs-first; 10 OK; 11 Cancel
                 let mut apply: Option<(
                     rmc_core::actions::PaneSide,
                     rmc_core::panel::SortBy,
@@ -4154,10 +4175,10 @@ impl TerminalApp {
                         close_dialog = true;
                     }
                     KeyCode::Tab => {
-                        *focus_index = (*focus_index + 1) % 8;
+                        *focus_index = (*focus_index + 1) % SORT_DIALOG_LEN;
                     }
                     KeyCode::BackTab => {
-                        *focus_index = (*focus_index + 8 - 1) % 8;
+                        *focus_index = (*focus_index + SORT_DIALOG_LEN - 1) % SORT_DIALOG_LEN;
                     }
                     KeyCode::Up => {
                         if *focus_index > 0 {
@@ -4165,61 +4186,49 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Down => {
-                        *focus_index = (*focus_index + 1).min(7);
+                        *focus_index = (*focus_index + 1).min(SORT_DIALOG_LEN - 1);
                     }
+                    KeyCode::Left | KeyCode::Right => {
+                        if *focus_index == SORT_FOCUS_OK {
+                            *focus_index = SORT_FOCUS_CANCEL;
+                        } else if *focus_index == SORT_FOCUS_CANCEL {
+                            *focus_index = SORT_FOCUS_OK;
+                        }
+                    }
+                    // Space on radios/checkboxes/buttons before any generic Char.
                     KeyCode::Char(' ') => {
-                        if *focus_index <= 3 {
-                            *by = match *focus_index {
-                                0 => rmc_core::panel::SortBy::Name,
-                                1 => rmc_core::panel::SortBy::Ext,
-                                2 => rmc_core::panel::SortBy::Time,
-                                3 => rmc_core::panel::SortBy::Size,
-                                _ => *by,
-                            };
-                        } else if *focus_index == 4 {
+                        if let Some(sel) = sort_by_from_radio(*focus_index) {
+                            *by = sel;
+                        } else if *focus_index == SORT_FOCUS_REVERSE {
                             *reverse = !*reverse;
-                        } else if *focus_index == 5 {
+                        } else if *focus_index == SORT_FOCUS_DIRS_FIRST {
                             *dirs_first = !*dirs_first;
-                        } else if *focus_index == 6 {
-                            // OK via space
+                        } else if *focus_index == SORT_FOCUS_OK {
                             apply = Some((*side, *by, *reverse, *dirs_first));
                             close_dialog = true;
-                        } else if *focus_index == 7 {
-                            // Cancel via space
+                        } else if *focus_index == SORT_FOCUS_CANCEL {
                             close_dialog = true;
                         }
                     }
-                    KeyCode::Enter => {
-                        match *focus_index {
-                            0..=3 => {
-                                // select radio
-                                *by = match *focus_index {
-                                    0 => rmc_core::panel::SortBy::Name,
-                                    1 => rmc_core::panel::SortBy::Ext,
-                                    2 => rmc_core::panel::SortBy::Time,
-                                    3 => rmc_core::panel::SortBy::Size,
-                                    _ => *by,
-                                };
+                    KeyCode::Enter => match *focus_index {
+                        i if i < SORT_FOCUS_REVERSE => {
+                            if let Some(sel) = sort_by_from_radio(i) {
+                                *by = sel;
                             }
-                            4 => *reverse = !*reverse,
-                            5 => *dirs_first = !*dirs_first,
-                            6 => {
-                                apply = Some((*side, *by, *reverse, *dirs_first));
-                                close_dialog = true;
-                            }
-                            7 => {
-                                close_dialog = true;
-                            }
-                            _ => {}
                         }
-                    }
+                        SORT_FOCUS_REVERSE => *reverse = !*reverse,
+                        SORT_FOCUS_DIRS_FIRST => *dirs_first = !*dirs_first,
+                        SORT_FOCUS_OK => {
+                            apply = Some((*side, *by, *reverse, *dirs_first));
+                            close_dialog = true;
+                        }
+                        SORT_FOCUS_CANCEL => {
+                            close_dialog = true;
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
-                let _ = side;
-                let _ = focus_index;
-                let _ = by;
-                let _ = reverse;
-                let _ = dirs_first;
                 if let Some((s, b, r, d)) = apply {
                     Self::apply_sort_dialog(app, s, b, r, d)?;
                 }
@@ -6048,7 +6057,7 @@ impl TerminalApp {
                                 };
                                 app.ui_mode = UiMode::SortDialog {
                                     side,
-                                    focus_index: 0,
+                                    focus_index: radio_index_for_sort_by(by),
                                     by,
                                     reverse,
                                     dirs_first,
@@ -18379,6 +18388,440 @@ mod equalize_panels_tests {
         match &app.ui_mode {
             UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
             _ => panic!("File menu Quick cd must still open after Equalize"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod sort_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide, SortBy as SortByAction};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{ListingFormat, SortBy};
+    use rmc_core::sorting::SortDir;
+    use rmc_fs::local::LocalFs;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-sort-dlg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
+        panel.entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    fn file_names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
+        panel
+            .entries
+            .iter()
+            .filter(|e| !e.is_parent_marker())
+            .map(|e| e.name.clone())
+            .collect()
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("aaa.txt"), b"0123456789").unwrap();
+        std::fs::write(left.join("zzz.bin"), b"x").unwrap();
+        std::fs::write(left.join("mid.log"), b"abcd").unwrap();
+        std::fs::create_dir(left.join("adir")).unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        set_mtime(&left.join("aaa.txt"), 1_000);
+        set_mtime(&left.join("mid.log"), 2_000);
+        set_mtime(&left.join("zzz.bin"), 3_000);
+        (left, right)
+    }
+
+    fn set_mtime(path: &std::path::Path, secs: u64) {
+        let t = UNIX_EPOCH + Duration::from_secs(secs);
+        let f = std::fs::File::options().write(true).open(path).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(t))
+            .unwrap();
+    }
+
+    fn seed_app(root: &std::path::Path) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let (left_dir, right_dir) = two_panel_dirs(root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        (app, left_dir, right_dir)
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn sort_dialog(app: &App) -> (PaneSide, usize, SortBy, bool, bool) {
+        match &app.ui_mode {
+            UiMode::SortDialog {
+                side,
+                focus_index,
+                by,
+                reverse,
+                dirs_first,
+            } => (*side, *focus_index, *by, *reverse, *dirs_first),
+            _ => panic!("expected SortDialog"),
+        }
+    }
+
+    fn tab_to(app: &mut App, want: usize) {
+        for _ in 0..SORT_DIALOG_LEN + 2 {
+            if let UiMode::SortDialog { focus_index, .. } = &app.ui_mode {
+                if *focus_index == want {
+                    return;
+                }
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach sort focus {want}");
+    }
+
+    fn tab_to_ok(app: &mut App) {
+        tab_to(app, SORT_FOCUS_OK);
+    }
+
+    fn apply_radio(app: &mut App, radio: usize) {
+        let (_, focus, _, _, _) = sort_dialog(app);
+        if focus < radio {
+            for _ in focus..radio {
+                press(app, KeyCode::Down);
+            }
+        } else if focus > radio {
+            for _ in radio..focus {
+                press(app, KeyCode::Up);
+            }
+        }
+        press(app, KeyCode::Char(' '));
+        tab_to_ok(app);
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn left_menu_sort_order_opens_dialog_for_left() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let right_by = app.right.sort_by;
+        open_left_right_item(&mut app, false, "Sort order...");
+        let (side, focus, by, reverse, dirs_first) = sort_dialog(&app);
+        assert_eq!(side, PaneSide::Left);
+        assert_eq!(by, SortBy::Name);
+        assert!(!reverse);
+        assert!(dirs_first);
+        assert_eq!(focus, 0);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(app.right.sort_by, right_by);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn right_menu_sort_order_opens_dialog_for_right() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, true, "Sort order...");
+        let (side, _, by, _, _) = sort_dialog(&app);
+        assert_eq!(side, PaneSide::Right);
+        assert_eq!(by, SortBy::Name);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sort_ok_name_ext_size_time_unsorted_reorders_that_panel_only() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let right_listing = names(&app.right);
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        let name_order = file_names(&app.left);
+        assert_eq!(name_order, vec!["adir", "aaa.txt", "mid.log", "zzz.bin"]);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 5); // Size
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.sort_by, SortBy::Size);
+        assert_eq!(app.left.sort_dir, SortDir::Asc);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.right), right_listing);
+        assert_eq!(
+            file_names(&app.left),
+            vec!["adir", "zzz.bin", "mid.log", "aaa.txt"]
+        );
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 7); // Unsorted restores list_dir order
+        assert_eq!(app.left.sort_by, SortBy::Unsorted);
+        assert_eq!(file_names(&app.left), name_order);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(names(&app.right), right_listing);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 1); // Ext
+        assert_eq!(app.left.sort_by, SortBy::Ext);
+        assert_eq!(
+            file_names(&app.left),
+            vec!["adir", "zzz.bin", "mid.log", "aaa.txt"]
+        );
+        assert_eq!(names(&app.right), right_listing);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 2); // Modify time
+        assert_eq!(app.left.sort_by, SortBy::Time);
+        assert_eq!(
+            file_names(&app.left),
+            vec!["adir", "aaa.txt", "mid.log", "zzz.bin"]
+        );
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 0); // Name
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        assert_eq!(file_names(&app.left), name_order);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.right), right_listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sort_reverse_checkbox_reverses_files_honoring_dirs_first() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Sort order...");
+        tab_to(&mut app, SORT_FOCUS_REVERSE);
+        let (_, focus, _, reverse, _) = sort_dialog(&app);
+        assert_eq!(focus, SORT_FOCUS_REVERSE);
+        assert!(!reverse);
+        press(&mut app, KeyCode::Char(' ')); // Space before generic Char
+        tab_to_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.left.sort_dir, SortDir::Desc);
+        assert!(app.left.dirs_first);
+        // reverse_files_only default: dirs stay name-asc; files reverse
+        assert_eq!(
+            file_names(&app.left),
+            vec!["adir", "zzz.bin", "mid.log", "aaa.txt"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sort_unsorted_reverse_flips_list_dir_order() {
+        let root = temp_workspace();
+        let (mut app, _, right_dir) = seed_app(&root);
+        let right_listing = names(&app.right);
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 7);
+        assert_eq!(app.left.sort_by, SortBy::Unsorted);
+        let unsorted = file_names(&app.left);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        tab_to(&mut app, SORT_FOCUS_REVERSE);
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.left.sort_by, SortBy::Unsorted);
+        assert_eq!(app.left.sort_dir, SortDir::Desc);
+        // dirs_first + reverse_files_only: dir group stays, files reverse
+        let mut expected = unsorted;
+        let files: Vec<_> = expected
+            .iter()
+            .filter(|n| *n != "adir")
+            .cloned()
+            .rev()
+            .collect();
+        expected = std::iter::once("adir".to_string()).chain(files).collect();
+        assert_eq!(file_names(&app.left), expected);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.right), right_listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sort_esc_and_f10_close_without_applying() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        let before = names(&app.left);
+        assert_eq!(app.left.sort_by, SortBy::Name);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio_select_only(&mut app, 5);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        assert_eq!(names(&app.left), before);
+        assert_eq!(app.left.cwd, left_dir);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio_select_only(&mut app, 5);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.quit);
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        assert_eq!(names(&app.left), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn apply_radio_select_only(app: &mut App, radio: usize) {
+        let (_, focus, _, _, _) = sort_dialog(app);
+        if focus < radio {
+            for _ in focus..radio {
+                press(app, KeyCode::Down);
+            }
+        }
+        press(app, KeyCode::Char(' '));
+        let (_, _, by, _, _) = sort_dialog(app);
+        assert_eq!(by, sort_by_from_radio(radio).unwrap());
+    }
+
+    #[test]
+    fn action_sort_keys_still_work_on_active_panel() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        let right_by = app.right.sort_by;
+        app.handle_action(Action::Sort(SortByAction::Size)).unwrap();
+        assert_eq!(app.left.sort_by, SortBy::Size);
+        assert_eq!(app.right.sort_by, right_by);
+        assert_eq!(
+            file_names(&app.left),
+            vec!["adir", "zzz.bin", "mid.log", "aaa.txt"]
+        );
+        app.handle_action(Action::Sort(SortByAction::Ext)).unwrap();
+        assert_eq!(app.left.sort_by, SortBy::Ext);
+        app.handle_action(Action::Sort(SortByAction::Time)).unwrap();
+        assert_eq!(app.left.sort_by, SortBy::Time);
+        app.handle_action(Action::Sort(SortByAction::Name)).unwrap();
+        assert_eq!(app.left.sort_by, SortBy::Name);
+        assert_eq!(app.right.sort_by, right_by);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sort_access_change_inode_radios_compile_and_apply() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 3); // Access time
+        assert_eq!(app.left.sort_by, SortBy::Atime);
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 4); // Change time
+        assert_eq!(app.left.sort_by, SortBy::Ctime);
+        open_left_right_item(&mut app, false, "Sort order...");
+        apply_radio(&mut app, 6); // Inode
+        assert_eq!(app.left.sort_by, SortBy::Inode);
+        assert!(app.left.entries.iter().any(|e| e.name == "aaa.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_listing_equal_swap_file_help_quick_cd_still_work() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+
+        open_command_item(&mut app, "Swap panels");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+
+        open_left_right_item(&mut app, false, "Filter");
+        assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::User);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Full);
+
+        open_left_right_item(&mut app, false, "Listing mode...");
+        assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        app.layout.panel_ratio = 0.8;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -77,6 +77,9 @@ pub fn list_dir(
                                 owner: None,
                                 group: None,
                                 nlink: 1,
+                                accessed: UNIX_EPOCH,
+                                changed: UNIX_EPOCH,
+                                inode: 0,
                             },
                         },
                     );
@@ -97,10 +100,13 @@ pub fn list_dir(
                             is_executable: (header_mode(entry.header(), false) & 0o111) != 0,
                             size,
                             modified,
+                            accessed: modified,
+                            changed: modified,
                             permissions: header_mode(entry.header(), false),
                             owner: None,
                             group: None,
                             nlink: 1,
+                            inode: 0,
                         },
                     },
                 );
@@ -125,6 +131,9 @@ pub fn list_dir(
                 owner: None,
                 group: None,
                 nlink: 1,
+                accessed: UNIX_EPOCH,
+                changed: UNIX_EPOCH,
+                inode: 0,
             },
         });
     }
@@ -175,6 +184,9 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         });
     }
     let reader = open_tar_reader(archive_path, kind)?;
@@ -196,10 +208,13 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
                 is_executable: (!is_dir) && (mode & 0o111 != 0),
                 size,
                 modified,
+                accessed: modified,
+                changed: modified,
                 permissions: mode,
                 owner: None,
                 group: None,
                 nlink: 1,
+                inode: 0,
             });
         }
         if path.starts_with(&in_norm) {
@@ -218,6 +233,9 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             owner: None,
             group: None,
             nlink: 1,
+            accessed: UNIX_EPOCH,
+            changed: UNIX_EPOCH,
+            inode: 0,
         })
     } else {
         Err(FsError::Message(format!(

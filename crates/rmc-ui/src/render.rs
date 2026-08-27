@@ -3136,10 +3136,10 @@ fn draw_sort_dialog(
 ) {
     let _ = side; // implied by Left/Right menu; title remains generic
     let title = "Sort order";
-    let w = 50u16.min(cols.saturating_sub(2));
-    let h = 10u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let w = 54u16.min(cols.saturating_sub(2));
+    let h = 13u16.min(rows.saturating_sub(2)).max(8);
+    let x = (cols.saturating_sub(w)) / 2;
+    let y = (rows.saturating_sub(h)) / 2;
     // Frame
     p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
     p.goto(x, y);
@@ -3180,7 +3180,11 @@ fn draw_sort_dialog(
         ("Name", rmc_core::panel::SortBy::Name),
         ("Extension", rmc_core::panel::SortBy::Ext),
         ("Modify time", rmc_core::panel::SortBy::Time),
+        ("Access time", rmc_core::panel::SortBy::Atime),
+        ("Change time", rmc_core::panel::SortBy::Ctime),
         ("Size", rmc_core::panel::SortBy::Size),
+        ("Inode", rmc_core::panel::SortBy::Inode),
+        ("Unsorted", rmc_core::panel::SortBy::Unsorted),
     ];
     for (i, (label, kind)) in radios.iter().enumerate() {
         let row_y = y + 2 + i as u16;
@@ -3193,7 +3197,7 @@ fn draw_sort_dialog(
         p.goto(x + 2, row_y);
         p.text(&format!("({sel}) {label}"));
     }
-    // Checkboxes on rows y+2 and y+3, to the right of radios
+    // Checkboxes on the right of the first two radio rows (existing dirs_first wiring)
     let checks = [("Reverse", reverse), ("Directories first", dirs_first)];
     for (j, (label, on)) in checks.iter().enumerate() {
         let idx = radios.len() + j;
@@ -3206,13 +3210,15 @@ fn draw_sort_dialog(
         p.goto(x + 28, row_y);
         p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
     }
-    // Buttons with focus highlight: indices 6=OK, 7=Cancel
+    // Buttons: focused `< txt >`, unfocused `[ txt ]` (History/Replace)
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let ok_txt = if focus_index == 6 { "< OK >" } else { "  OK  " };
-    let cancel_txt = if focus_index == 7 {
-        "[ Cancel ]"
+    let ok_focus = focus_index == radios.len() + 2;
+    let cancel_focus = focus_index == radios.len() + 3;
+    let ok_txt = if ok_focus { "< OK >" } else { "[ OK ]" };
+    let cancel_txt = if cancel_focus {
+        "< Cancel >"
     } else {
-        "  Cancel  "
+        "[ Cancel ]"
     };
     let btns = format!("{ok_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;

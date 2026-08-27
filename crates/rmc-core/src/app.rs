@@ -5,6 +5,7 @@ use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::panel::{FileEntry, PanelState, SortBy};
 use crate::panelize::ExternalPanelizeDialogState;
+use crate::sorting::SortDir;
 use crate::subshell::Subshell;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -1314,12 +1315,60 @@ impl App {
                 is_exe: e.meta.is_executable,
                 size: e.meta.size,
                 modified: e.meta.modified,
+                accessed: e.meta.accessed,
+                changed: e.meta.changed,
                 permissions: e.meta.permissions,
                 owner: e.meta.owner,
                 group: e.meta.group,
                 nlink: e.meta.nlink,
+                inode: e.meta.inode,
             })
             .collect()
+    }
+
+    /// Apply Left/Right → Sort order… to one panel. Unsorted re-lists that panel
+    /// (same cwd) so the order matches `list_dir` after `..`. Other orders re-sort
+    /// the current listing in place.
+    pub fn apply_panel_sort(
+        &mut self,
+        side: PaneSide,
+        by: SortBy,
+        reverse: bool,
+        dirs_first: bool,
+    ) -> Result<()> {
+        let reverse_files_only = self.panel_opts.reverse_files_only;
+        let show_hidden = self.show_hidden;
+        let sort_dir = if reverse { SortDir::Desc } else { SortDir::Asc };
+        if matches!(by, SortBy::Unsorted) {
+            let cwd = if matches!(side, PaneSide::Left) {
+                self.left.cwd.clone()
+            } else {
+                self.right.cwd.clone()
+            };
+            let list = self.vfs.list_dir(&cwd, show_hidden)?;
+            let entries = self.map_dir_entries(list);
+            let p = if matches!(side, PaneSide::Left) {
+                &mut self.left
+            } else {
+                &mut self.right
+            };
+            p.sort_by = by;
+            p.sort_dir = sort_dir;
+            p.dirs_first = dirs_first;
+            p.set_entries_with(entries, reverse_files_only);
+            p.capture_dir_reload_stamp(show_hidden);
+        } else {
+            let p = if matches!(side, PaneSide::Left) {
+                &mut self.left
+            } else {
+                &mut self.right
+            };
+            p.sort_by = by;
+            p.sort_dir = sort_dir;
+            p.dirs_first = dirs_first;
+            p.apply_sort_with(reverse_files_only);
+        }
+        Ok(())
     }
 
     pub fn handle_action(&mut self, action: Action) -> Result<()> {
@@ -1494,11 +1543,11 @@ impl App {
                 }
             }
             Sort(sb) => {
-                let (by, _dir) = match sb {
-                    SortByAction::Name => (SortBy::Name, self.active_panel().sort_dir),
-                    SortByAction::Ext => (SortBy::Ext, self.active_panel().sort_dir),
-                    SortByAction::Size => (SortBy::Size, self.active_panel().sort_dir),
-                    SortByAction::Time => (SortBy::Time, self.active_panel().sort_dir),
+                let by = match sb {
+                    SortByAction::Name => SortBy::Name,
+                    SortByAction::Ext => SortBy::Ext,
+                    SortByAction::Size => SortBy::Size,
+                    SortByAction::Time => SortBy::Time,
                 };
                 let reverse_files_only = self.panel_opts.reverse_files_only;
                 let p = self.active_panel_mut();
@@ -1852,10 +1901,13 @@ impl App {
             is_exe: false,
             size: 0,
             modified: std::time::SystemTime::UNIX_EPOCH,
+            accessed: std::time::SystemTime::UNIX_EPOCH,
+            changed: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0,
             owner: None,
             group: None,
             nlink: 1,
+            inode: 0,
         });
         for p in paths {
             let meta = self.vfs.stat(p)?;
@@ -1876,10 +1928,13 @@ impl App {
                 is_exe: meta.is_executable,
                 size: meta.size,
                 modified: meta.modified,
+                accessed: meta.accessed,
+                changed: meta.changed,
                 permissions: meta.permissions,
                 owner: meta.owner,
                 group: meta.group,
                 nlink: meta.nlink,
+                inode: meta.inode,
             });
         }
         let caption = self.active_panel().cwd.clone();
