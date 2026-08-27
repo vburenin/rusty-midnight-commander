@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod app;
 pub mod config;
+pub mod dirtree;
 pub mod events;
 pub mod fileop;
 pub mod find;
