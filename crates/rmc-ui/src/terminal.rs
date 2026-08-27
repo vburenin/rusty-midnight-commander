@@ -8537,6 +8537,7 @@ fn view_current_file_raw(app: &mut App) -> Result<()> {
 }
 
 /// `pager_override` replaces `$PAGER` when `Some` (tests pass a command that exits immediately).
+#[cfg(test)]
 fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> Result<()> {
     view_current_file_with(app, pager_override, false)
 }
