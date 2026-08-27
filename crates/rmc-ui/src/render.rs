@@ -3,6 +3,7 @@ use crate::filehighlight::{listing_name_color, name_span_in_line};
 use crate::find::draw_find_dialog;
 use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
 use crate::mc_colors::McPalette;
+use crate::panel_preview::{info_lines_for_entry, preview_source_entry, quick_view_directory_line};
 use crate::panelize::draw_external_panelize_dialog;
 use crate::widgets::Painter;
 use anyhow::Result;
@@ -3525,9 +3526,18 @@ fn draw_panel(
         }
         match panel.mode {
             PanelMode::QuickView => {
-                // Show selected file from ACTIVE panel
-                if let Some(ent) = app.active_panel().current_entry() {
-                    if !ent.is_dir {
+                // Selected file on the other (listing) panel — not this panel's
+                // leftover cursor, and not a full UiMode::Viewer (F3) screen.
+                if let Some(ent) = preview_source_entry(app, is_left) {
+                    if let Some(msg) = quick_view_directory_line(ent) {
+                        p.goto(x + 1, content_top);
+                        p.text(&truncate(&msg, (w - 2) as usize));
+                    } else {
+                        let offset = if panel.preview_path.as_ref() == Some(&ent.path) {
+                            panel.preview_offset
+                        } else {
+                            0
+                        };
                         let rr = rmc_view::render_window(
                             &ent.path,
                             rmc_view::ViewOptions {
@@ -3536,7 +3546,7 @@ fn draw_panel(
                                 show_cr: false,
                                 format: false,
                             },
-                            0,
+                            offset,
                             w.saturating_sub(2),
                             content_h,
                         )?;
@@ -3548,36 +3558,16 @@ fn draw_panel(
                             let t = truncate(&line, (w - 2) as usize);
                             p.text(&t);
                         }
-                    } else {
-                        p.goto(x + 1, content_top);
-                        let msg = format!("Directory: {}", ent.name);
-                        p.text(&truncate(&msg, (w - 2) as usize));
                     }
                 }
             }
             PanelMode::Info => {
-                if let Some(ent) = app.active_panel().current_entry() {
-                    let perms = perm_string(ent.permissions, ent.is_dir);
-                    let owner = ent.owner.as_deref().unwrap_or("-");
-                    let group = ent.group.as_deref().unwrap_or("-");
-                    let size = if ent.is_dir { 0 } else { ent.size };
-                    let size_s =
-                        rmc_core::panel::format_byte_size(size, app.panel_opts.kilobyte_si);
-                    let tm: OffsetDateTime = ent.modified.into();
-                    let ts = tm
-                        .format(&time::macros::format_description!(
-                            "[year]-[month repr:numerical]-[day] [hour]:[minute]"
-                        ))
-                        .unwrap_or_default();
-                    let lines = [
-                        format!("Name: {}", ent.name),
-                        format!("Path: {}", ent.path.display()),
-                        format!("Type: {}", if ent.is_dir { "Directory" } else { "File" }),
-                        format!("Size: {size_s}"),
-                        format!("Owner: {owner}  Group: {group}"),
-                        format!("Perms: {perms}"),
-                        format!("Modified: {ts}"),
-                    ];
+                if let Some(ent) = preview_source_entry(app, is_left) {
+                    let lines = info_lines_for_entry(
+                        ent,
+                        app.panel_opts.kilobyte_si,
+                        app.layout.show_free_space,
+                    );
                     for (i, line) in lines.iter().enumerate() {
                         if (i as u16) >= content_h {
                             break;

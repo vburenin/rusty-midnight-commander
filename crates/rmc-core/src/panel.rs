@@ -235,6 +235,10 @@ pub struct PanelState {
     pub dir_reload_filter_regex: bool,
     pub dir_reload_filter_files_only: bool,
     pub dir_reload_filter_case_sensitive: bool,
+    /// Byte offset for the reduced Quick view viewer (panel mode, not F3).
+    pub preview_offset: u64,
+    /// Path last shown in Quick view; used to reset `preview_offset` on change.
+    pub preview_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +278,8 @@ impl PanelState {
             dir_reload_filter_regex: false,
             dir_reload_filter_files_only: false,
             dir_reload_filter_case_sensitive: true,
+            preview_offset: 0,
+            preview_path: None,
         }
     }
 
