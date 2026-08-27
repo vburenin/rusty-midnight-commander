@@ -402,9 +402,9 @@ fn copy_file_chunks(
             job.job.file_done = done;
             job.job.bytes_done = *overall;
         }
-        // Give other threads a chance (useful for tests to trigger cancel).
+        // Let the UI / tests observe live counters between 64 KiB chunks.
+        thread::yield_now();
         if cfg!(test) {
-            thread::yield_now();
             thread::sleep(Duration::from_millis(1));
         }
     }
