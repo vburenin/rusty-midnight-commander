@@ -19,8 +19,8 @@ use rmc_core::app::{
     ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
-    find_dialog_height, find_dialog_list_rows, find_tree_picker_height, find_tree_picker_list_rows,
-    search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
+    find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, search_files_streaming,
+    CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::compute_chrome_geom;
@@ -3602,7 +3602,7 @@ impl TerminalApp {
                     }
                 }
                 if state.tree_picker.is_some() {
-                    handle_find_tree_picker_key(state, key)?;
+                    handle_find_tree_picker_key(state, key, page_rows);
                     return Ok(());
                 }
                 match key.code {
@@ -7822,9 +7822,7 @@ fn open_find_tree_picker(vfs: &dyn rmc_fs::Vfs, state: &mut FindDialogState) {
     state.tree_picker = Some(picker);
 }
 
-fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent) -> Result<()> {
-    let (_c, r) = crossterm::terminal::size()?;
-    let list_rows = find_tree_picker_list_rows(find_tree_picker_height(r)).max(1);
+fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent, page_rows: usize) {
     match key.code {
         KeyCode::Esc | KeyCode::F(10) => {
             state.tree_picker = None;
@@ -7842,7 +7840,7 @@ fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent) -> Re
             if let Some(picker) = state.tree_picker.as_mut() {
                 if picker.selected_index > 0 {
                     picker.selected_index -= 1;
-                    picker.ensure_visible(list_rows);
+                    picker.ensure_visible(tree_picker_list_rows(page_rows));
                 }
             }
         }
@@ -7850,12 +7848,13 @@ fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent) -> Re
             if let Some(picker) = state.tree_picker.as_mut() {
                 if picker.selected_index + 1 < picker.entries.len() {
                     picker.selected_index += 1;
-                    picker.ensure_visible(list_rows);
+                    picker.ensure_visible(tree_picker_list_rows(page_rows));
                 }
             }
         }
         KeyCode::PageUp => {
             if let Some(picker) = state.tree_picker.as_mut() {
+                let list_rows = tree_picker_list_rows(page_rows);
                 picker.selected_index = picker.selected_index.saturating_sub(list_rows);
                 picker.ensure_visible(list_rows);
             }
@@ -7863,6 +7862,7 @@ fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent) -> Re
         KeyCode::PageDown => {
             if let Some(picker) = state.tree_picker.as_mut() {
                 if !picker.entries.is_empty() {
+                    let list_rows = tree_picker_list_rows(page_rows);
                     let max = picker.entries.len() - 1;
                     picker.selected_index =
                         picker.selected_index.saturating_add(list_rows).min(max);
@@ -7873,21 +7873,27 @@ fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent) -> Re
         KeyCode::Home => {
             if let Some(picker) = state.tree_picker.as_mut() {
                 picker.selected_index = 0;
-                picker.ensure_visible(list_rows);
+                picker.ensure_visible(tree_picker_list_rows(page_rows));
             }
         }
         KeyCode::End => {
             if let Some(picker) = state.tree_picker.as_mut() {
                 if !picker.entries.is_empty() {
                     picker.selected_index = picker.entries.len() - 1;
-                    picker.ensure_visible(list_rows);
+                    picker.ensure_visible(tree_picker_list_rows(page_rows));
                 }
             }
         }
         _ => {}
     }
-    Ok(())
 }
+
+/// Overlay list height for movement keys. Uses `page_rows` from `handle_key` so
+/// tests/CI without a TTY never call `crossterm::terminal::size()`.
+fn tree_picker_list_rows(page_rows: usize) -> usize {
+    page_rows.max(1)
+}
+
 impl TerminalApp {
     fn ensure_hunk_visible(state: &mut rmc_core::app::DiffState) {
         if state.hunks.is_empty() {
