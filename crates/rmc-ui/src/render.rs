@@ -7,7 +7,7 @@ use anyhow::Result;
 use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
-use rmc_core::app::{App, LayoutFocus, LayoutOptions};
+use rmc_core::app::{App, EditorMenu, LayoutFocus, LayoutOptions};
 use rmc_core::layout::compute_chrome_geom;
 use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
@@ -1799,7 +1799,7 @@ fn draw_editor(
     rows: u16,
     pal: McPalette,
     buf: &rmc_edit::EditorBuffer,
-    show_menu: bool,
+    show_menu: Option<EditorMenu>,
     status_msg: Option<&str>,
     _search_input: Option<&str>,
     save_as_dialog: Option<&rmc_core::app::EditorSaveAsDialog>,
@@ -1817,7 +1817,7 @@ fn draw_editor(
         p.text(&" ".repeat(cols as usize));
     }
     // Top bar (mcedit menu bar)
-    draw_editor_menu_bar(p, cols, pal);
+    draw_editor_menu_bar(p, cols, pal, show_menu);
     // Status line (bottom-2) and F-bar (bottom-1)
     let status_row = rows.saturating_sub(2);
     let fbar_row = rows.saturating_sub(1);
@@ -1960,9 +1960,9 @@ fn draw_editor(
     }
     // Bottom F-key bar for editor (packed MC style)
     draw_editor_fbar(p, fbar_row, cols, pal);
-    // If show_menu, draw a small stub dropdown
-    if show_menu {
-        draw_editor_menu_dropdown(p, pal);
+    // If show_menu, draw the GNU mcedit drop-down under the active title
+    if let Some(menu) = show_menu {
+        draw_editor_menu_dropdown(p, pal, menu);
     }
     if let Some(dlg) = save_as_dialog {
         draw_editor_save_as_dialog(p, cols, rows, pal, dlg, show_shadow);
@@ -1993,36 +1993,74 @@ fn draw_editor(
     }
 }
 
-fn draw_editor_menu_bar(p: &mut Painter, cols: u16, pal: McPalette) {
+fn draw_editor_menu_bar(p: &mut Painter, cols: u16, pal: McPalette, show_menu: Option<EditorMenu>) {
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(0, 0);
-    let items = [
-        " File ",
-        " Edit ",
-        " Search ",
-        " Command ",
-        " Options ",
-        " Help ",
-    ];
+    let selected = show_menu.map(EditorMenu::index);
     let mut x = 0u16;
-    for it in items.iter() {
-        p.goto(x, 0);
-        p.text(it);
+    for (i, it) in EditorMenu::TITLES.iter().enumerate() {
+        draw_menu_hotkey_label(p, x, 0, it, selected == Some(i), pal, it.len());
         x += it.len() as u16;
     }
     // Fill rest
     if x < cols {
+        p.set_fg_bg(pal.menu_fg, pal.menu_bg);
         p.goto(x, 0);
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
 }
 
-fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette) {
-    // Simple stub dropdown under "File"
-    let x = 0u16;
+/// Menu chrome: default white;cyan, selected white;black, hotkey yellow;cyan
+/// (same pairs as the panel menu bar). First non-space letter is the hotkey.
+fn draw_menu_hotkey_label(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    text: &str,
+    selected: bool,
+    pal: McPalette,
+    width: usize,
+) {
+    p.goto(x, y);
+    let mut line = text.to_string();
+    while line.chars().count() < width {
+        line.push(' ');
+    }
+    if selected {
+        p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
+        p.text(&line.chars().take(width).collect::<String>());
+        return;
+    }
+    let mut hotkey_done = false;
+    let mut drawn = 0usize;
+    for ch in line.chars().take(width) {
+        if !hotkey_done && !ch.is_whitespace() {
+            p.set_fg_bg(pal.menuhot_fg, pal.menuhot_bg);
+            hotkey_done = true;
+        } else {
+            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        }
+        p.text(&ch.to_string());
+        drawn += 1;
+    }
+    if drawn < width {
+        p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        p.text(&" ".repeat(width - drawn));
+    }
+}
+
+fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette, menu: EditorMenu) {
+    let items = menu.items();
+    if items.is_empty() {
+        return;
+    }
+    let mut x = 0u16;
+    for title in EditorMenu::TITLES.iter().take(menu.index()) {
+        x += title.len() as u16;
+    }
     let y = 1u16;
-    let items = ["Save", "Save as", "Quit"];
-    let w = (items.iter().map(|s| s.len()).max().unwrap_or(4) + 4) as u16;
+    let inner = items.iter().map(|s| s.len()).max().unwrap_or(8) + 2;
+    let w = (inner + 2) as u16;
     let h = items.len() as u16 + 2;
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(x, y);
@@ -2037,15 +2075,12 @@ fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette) {
     p.hline(x + 1, y + h - 1, w - 2, '─', pal.menu_fg, pal.menu_bg);
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
+    let selected = menu.selected();
     for (i, it) in items.iter().enumerate() {
         let row = y + 1 + i as u16;
-        p.goto(x + 1, row);
-        let mut line = String::from(" ");
-        line.push_str(it);
-        while line.len() < (w - 2) as usize {
-            line.push(' ');
-        }
-        p.text(&line);
+        let mut label = String::from(" ");
+        label.push_str(it);
+        draw_menu_hotkey_label(p, x + 1, row, &label, i == selected, pal, inner);
     }
 }
 
