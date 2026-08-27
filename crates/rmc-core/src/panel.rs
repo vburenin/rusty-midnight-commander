@@ -1058,20 +1058,25 @@ mod tests {
     #[test]
     fn unsorted_reverse_honors_dirs_first_and_reverse_files_only() {
         let now = SystemTime::now();
-        let mut p = PanelState::new(".");
-        p.dirs_first = true;
-        p.sort_by = SortBy::Unsorted;
-        p.sort_dir = sorting::SortDir::Desc;
-        p.set_entries(vec![
+        let listing = vec![
             make_entry("..", 0, now, true),
             make_entry("d2", 0, now, true),
             make_entry("d1", 0, now, true),
             make_entry("f2", 1, now, false),
             make_entry("f1", 1, now, false),
-        ]);
+        ];
+        let mut p = PanelState::new(".");
+        p.dirs_first = true;
+        p.sort_by = SortBy::Unsorted;
+        p.sort_dir = sorting::SortDir::Desc;
+        p.set_entries(listing.clone());
         // reverse_files_only default: dirs keep list order d2,d1; files reverse f1,f2
         let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["..", "d2", "d1", "f1", "f2"]);
+        // Restore list_dir order, then reverse both groups.
+        p.sort_dir = sorting::SortDir::Asc;
+        p.set_entries(listing);
+        p.sort_dir = sorting::SortDir::Desc;
         p.apply_sort_with(false);
         let names: Vec<_> = p.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["..", "d1", "d2", "f1", "f2"]);
