@@ -1,17 +1,23 @@
 # Apache-2.0 original help text
 = Panels
 
-Rusty Midnight Commander shows two directory panels side by side.
+Two directory panels. The highlighted row is the cursor; the highlighted
+panel is active.
 
-Basics:
-  - The highlighted row is the cursor; the highlighted panel is active.
-  - F9 opens the top menu bar. F10 quits.
-  - Use Up/Down, PageUp/PageDown, Home/End to move.
-  - Enter opens a directory; Backspace goes to parent; Tab switches panel.
-  - F3 views the selected file in the internal viewer.
+  F1 help          F2 user menu       F3 view        F4 edit
+  F5 copy          F6 rename/move     F7 mkdir       F8 delete
+  F9 menu bar      F10 quit
 
-Links:
+  Tab switches panel. Enter opens a directory or archive. Insert marks.
+  C-r refreshes. C-o toggles the subshell screen.
+
+File menu Help (F1) opens this viewer. Command menu items include
+Directory tree, External panelize, Find file, and Screen list.
+
 * Contents -> Contents
-* Viewer -> Viewer
-* File operations and dialogs -> Dialogs
-
+* Help viewer keys -> Keys
+* Find File -> Find File
+* Internal editor -> Editor
+* Internal viewer -> Viewer
+* Virtual file system -> VFS
+* File operations -> Dialogs

@@ -1,14 +1,11 @@
 # Apache-2.0 original help text
 = Copy
 
-Copy (F5) opens a dialog with source mask and destination path.
+Copy (F5) asks for a source mask and a destination (default: the other
+panel). Options cover following links and preserving attributes.
 
-Controls:
-  - Type a destination path or accept the default (other panel)
-  - Space toggles options when a checkbox is focused
-  - Enter on OK begins the copy; Cancel aborts
+Enter on OK starts the copy. A progress box can be aborted with Esc.
 
-Links:
-* Dialogs -> Dialogs
+* File operations -> Dialogs
+* Move -> Move
 * Contents -> Contents
-

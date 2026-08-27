@@ -1,14 +1,9 @@
 # Apache-2.0 original help text
 = Move
 
-Move (F6) renames or moves the selected file or directory.
+Move / rename (F6) uses the same kind of dialog as Copy. The destination
+defaults to the other panel. Esc cancels.
 
-Controls:
-  - Destination defaults to the other panel; edit as needed
-  - Space toggles options when a checkbox is focused
-  - Enter on OK performs the move; Cancel aborts
-
-Links:
-* Dialogs -> Dialogs
+* File operations -> Dialogs
+* Copy -> Copy
 * Contents -> Contents
-

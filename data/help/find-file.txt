@@ -1,14 +1,20 @@
 # Apache-2.0 original help text
 = Find File
 
-The Find File tool searches under a starting directory by name and optionally by content.
+Command menu Find file searches under a start directory by name and,
+optionally, by file content.
 
-Controls:
-  - Start dir, Name pattern, and Content fields define the search
-  - Buttons: Start/Again, Stop, Chdir, Panelize, Quit
-  - Results appear in a list; Enter “Chdir” jumps to the containing directory
+Fields: Start at, Filename, Content, Ignore dirs (colon-separated names
+skipped when that option is on). Checkboxes cover case, whole words,
+regular expressions, recursion, hidden files, and following symlinks.
 
-Links:
-* Dialogs -> Dialogs
+Tree opens a directory-tree picker for the start path. Start/Again runs
+the search. Stop cancels. Chdir jumps to a hit. Panelize loads hits into
+the current panel. Quit closes the dialog.
+
+F1 from Find File opens this node. Leaving help restores Find File.
+
 * Contents -> Contents
-
+* Directory tree -> Directory Tree
+* External panelize -> External panelize
+* Directory panels -> Panels

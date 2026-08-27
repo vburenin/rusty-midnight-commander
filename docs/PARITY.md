@@ -205,7 +205,7 @@ Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “U
 ## 12) Help — Status: Later
 
 From mc(1):
-- [ ] Built-in hypertext help (F1) context-sensitive
+- [x] Built-in hypertext help (F1) context-sensitive
 - [ ] Online manpages: mc, mcedit, mcview, mcdiff
 - [ ] Project website docs
 

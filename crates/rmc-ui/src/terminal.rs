@@ -1,4 +1,4 @@
-use crate::help::{global_index, HelpItem};
+use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::render::{viewer_menu_from_x, Renderer};
 use crate::skin::load_default_palette;
 use anyhow::Result;
@@ -2931,6 +2931,10 @@ impl TerminalApp {
                 }
                 // Base editor keys
                 match key.code {
+                    // GNU mc(1) File menu Help (F1): nest the hypertext viewer.
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                    }
                     // GNU mcedit F9: drop File / Edit / Search / Command / Options
                     KeyCode::F(9) => {
                         *show_menu = Some(EditorMenu::default_open());
@@ -3086,113 +3090,11 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::Help { state, prev } => {
-                // Navigation within help
-                match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => {
-                        let prior = std::mem::replace(&mut **prev, UiMode::Normal);
-                        app.ui_mode = prior;
-                    }
-                    KeyCode::F(2) => {
-                        // Index (Contents)
-                        state.topic = global_index().contents_name();
-                        state.cursor = 0;
-                        state.scroll_top = 0;
-                    }
-                    KeyCode::F(3) => {
-                        // Prev (history back)
-                        if let Some(prev_topic) = state.history.pop() {
-                            state.topic = prev_topic;
-                            state.cursor = 0;
-                            state.scroll_top = 0;
-                        }
-                    }
-                    KeyCode::F(4) => {
-                        // Next (follow selected link)
-                        if let Some(node) = global_index().get(&state.topic) {
-                            let mut cur = 0usize;
-                            for it in &node.items {
-                                if let HelpItem::Link { target, .. } = it {
-                                    if cur == state.cursor {
-                                        state.history.push(state.topic.clone());
-                                        state.topic = target.clone();
-                                        state.cursor = 0;
-                                        state.scroll_top = 0;
-                                        break;
-                                    }
-                                    cur += 1;
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Tab | KeyCode::Down | KeyCode::Right => {
-                        if let Some(node) = global_index().get(&state.topic) {
-                            let links = node
-                                .items
-                                .iter()
-                                .filter(|it| matches!(it, HelpItem::Link { .. }))
-                                .count();
-                            if links > 0 {
-                                state.cursor = (state.cursor + 1) % links;
-                            }
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Left => {
-                        if let Some(node) = global_index().get(&state.topic) {
-                            let links = node
-                                .items
-                                .iter()
-                                .filter(|it| matches!(it, HelpItem::Link { .. }))
-                                .count();
-                            if links > 0 {
-                                let prev_idx = state.cursor as isize - 1;
-                                state.cursor = if prev_idx < 0 {
-                                    links.saturating_sub(1)
-                                } else {
-                                    prev_idx as usize
-                                };
-                            }
-                        }
-                    }
-                    KeyCode::PageDown => {
-                        state.scroll_top = state.scroll_top.saturating_add(page_rows);
-                    }
-                    KeyCode::PageUp => {
-                        state.scroll_top = state.scroll_top.saturating_sub(page_rows);
-                    }
-                    KeyCode::Home => state.scroll_top = 0,
-                    KeyCode::End => {
-                        state.scroll_top = state.scroll_top.saturating_add(10 * page_rows)
-                    }
-                    KeyCode::Enter | KeyCode::Char('\n') => {
-                        if let Some(node) = global_index().get(&state.topic) {
-                            let mut cur = 0usize;
-                            for it in &node.items {
-                                if let HelpItem::Link { target, .. } = it {
-                                    if cur == state.cursor {
-                                        state.history.push(state.topic.clone());
-                                        state.topic = target.clone();
-                                        state.cursor = 0;
-                                        state.scroll_top = 0;
-                                        break;
-                                    }
-                                    cur += 1;
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Backspace | KeyCode::Char('l') => {
-                        if let Some(prev_topic) = state.history.pop() {
-                            state.topic = prev_topic;
-                            state.cursor = 0;
-                            state.scroll_top = 0;
-                        }
-                    }
-                    KeyCode::F(1) => {
-                        state.topic = global_index().contents_name();
-                        state.cursor = 0;
-                        state.scroll_top = 0;
-                    }
-                    _ => {}
+                // GNU mc(1) hypertext help. Uses `page_rows` from handle_key (no TTY size).
+                let action = apply_help_key(state, global_index(), &key, page_rows);
+                if matches!(action, HelpAction::Quit) {
+                    let prior = std::mem::replace(&mut **prev, UiMode::Normal);
+                    app.ui_mode = prior;
                 }
                 return Ok(());
             }
@@ -3569,6 +3471,10 @@ impl TerminalApp {
                 let mut add_new = false;
                 let mut remove = false;
                 match key.code {
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                        return Ok(());
+                    }
                     KeyCode::Esc | KeyCode::F(10) => {
                         close = true;
                     }
@@ -3946,6 +3852,10 @@ impl TerminalApp {
                     return Ok(());
                 }
                 match key.code {
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                        return Ok(());
+                    }
                     KeyCode::Esc => {
                         app.ui_mode = UiMode::Normal;
                     }
@@ -4991,6 +4901,10 @@ impl TerminalApp {
             } => {
                 let mut run_command_text: Option<String> = None;
                 match key.code {
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                        return Ok(());
+                    }
                     KeyCode::Esc | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
                     }
@@ -5629,6 +5543,7 @@ impl TerminalApp {
                         "Filter",
                     ],
                     &[
+                        "Help",
                         "View",
                         "Edit",
                         "Copy",
@@ -5677,6 +5592,10 @@ impl TerminalApp {
                     ],
                 ];
                 match key.code {
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                        return Ok(());
+                    }
                     KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
                     }
@@ -5716,6 +5635,9 @@ impl TerminalApp {
                         }
                         let item = menus[*top_index][*selected_index];
                         match item {
+                            "Help" => {
+                                app.handle_action(Action::ShowHelp)?;
+                            }
                             "Listing mode..." => {
                                 let side = match *top_index {
                                     0 => rmc_core::actions::PaneSide::Left,
@@ -6241,6 +6163,9 @@ impl TerminalApp {
                     return Ok(());
                 }
                 match key.code {
+                    KeyCode::F(1) => {
+                        app.handle_action(Action::ShowHelp)?;
+                    }
                     KeyCode::Char('q') | KeyCode::Esc | KeyCode::F(10) => {
                         if state.left_modified || state.right_modified {
                             state.confirm_exit = Some(rmc_core::app::YncDialog {
@@ -7527,6 +7452,9 @@ impl TerminalApp {
                 }
             }
             match action {
+                Action::ShowHelp => {
+                    app.handle_action(Action::ShowHelp)?;
+                }
                 Action::ViewFile => {
                     view_current_file(app)?;
                 }
@@ -8198,6 +8126,9 @@ fn handle_directory_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
+        KeyCode::F(1) => {
+            app.handle_action(Action::ShowHelp)?;
+        }
         KeyCode::Esc | KeyCode::F(10) => {
             app.ui_mode = UiMode::Normal;
         }
@@ -16353,6 +16284,227 @@ mod screen_selector_tests {
         press_alt(&mut app, '{');
         assert_eq!(editor_name(&app), "a.txt");
         assert_eq!(editor_text(&app), "alpha-buffer");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod help_viewer_tests {
+    use super::*;
+    use crate::help::KEYS_TOPIC;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-help-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn help_topic(app: &App) -> String {
+        match &app.ui_mode {
+            UiMode::Help { state, .. } => state.topic.clone(),
+            UiMode::FindDialog(_) => panic!("expected Help, got FindDialog"),
+            UiMode::DirectoryTree(_) => panic!("expected Help, got DirectoryTree"),
+            _ => panic!("expected Help, got other mode"),
+        }
+    }
+
+    fn help_scroll(app: &App) -> usize {
+        match &app.ui_mode {
+            UiMode::Help { state, .. } => state.scroll_top,
+            _ => panic!("expected Help"),
+        }
+    }
+
+    #[test]
+    fn panel_f1_opens_help_not_find_or_directory_tree() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press(&mut app, KeyCode::F(1));
+        match &app.ui_mode {
+            UiMode::Help { state, prev } => {
+                assert_eq!(state.topic, "Panels");
+                assert!(
+                    matches!(**prev, UiMode::Normal),
+                    "Help must nest over panels"
+                );
+            }
+            UiMode::FindDialog(_) => panic!("panel F1 must not open Find File"),
+            UiMode::DirectoryTree(_) => panic!("panel F1 must not open Directory tree"),
+            _ => panic!("panel F1 must open Help"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_then_enter_follows_a_link_to_a_different_node() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(1));
+        let start = help_topic(&app);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        let dest = help_topic(&app);
+        assert_ne!(dest, start, "Tab+Enter must follow a hypertext link");
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "following a link must stay in Help"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_and_backspace_page_without_quitting() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(1));
+        let s0 = help_scroll(&app);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "Space must page, not quit Help"
+        );
+        let s1 = help_scroll(&app);
+        assert!(s1 > s0, "Space must advance scroll/page");
+        press(&mut app, KeyCode::Backspace);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "Backspace must page, not quit Help"
+        );
+        assert_eq!(help_scroll(&app), s0, "Backspace must page back");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f10_esc_q_leave_help_and_restore_previous_mode() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(1));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(1));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(1));
+        press(&mut app, KeyCode::Char('q'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f1_from_find_file_is_find_node_and_restores_find_on_quit() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        press(&mut app, KeyCode::F(1));
+        match &app.ui_mode {
+            UiMode::Help { state, prev } => {
+                assert!(
+                    state.topic.to_ascii_lowercase().contains("find"),
+                    "F1 from Find File must open a find-related node, got {}",
+                    state.topic
+                );
+                assert!(
+                    matches!(**prev, UiMode::FindDialog(_)),
+                    "Help must nest over Find File"
+                );
+            }
+            UiMode::FindDialog(_) => panic!("F1 must nest Help over Find File"),
+            _ => panic!("F1 from Find File must open Help"),
+        }
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "leaving Help must restore Find File"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f1_while_in_help_opens_keys_node() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(1));
+        assert_eq!(help_topic(&app), "Panels");
+        press(&mut app, KeyCode::F(1));
+        let topic = help_topic(&app);
+        assert_eq!(topic, KEYS_TOPIC);
+        assert!(
+            topic.to_ascii_lowercase().contains("key"),
+            "F1 in Help must open the keys/help-on-help node"
+        );
+        assert!(matches!(app.ui_mode, UiMode::Help { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_menu_help_opens_viewer() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Help { .. } => {}
+            UiMode::FindDialog(_) => panic!("File→Help must not open Find File"),
+            UiMode::Menu { .. } => panic!("File→Help must open the help viewer"),
+            _ => panic!("File→Help must open Help"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f1_from_editor_nests_help_and_restores_editor() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hello").unwrap();
+        let mut app = make_app(&root);
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt")
+            .unwrap();
+        app.active_panel_mut().cursor = idx;
+        press(&mut app, KeyCode::F(4));
+        assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        press(&mut app, KeyCode::F(1));
+        match &app.ui_mode {
+            UiMode::Help { state, prev } => {
+                assert_eq!(state.topic, "Editor");
+                assert!(matches!(**prev, UiMode::Editor { .. }));
+            }
+            UiMode::Editor { .. } => panic!("F1 must nest Help over the editor"),
+            _ => panic!("F1 from editor must open Help"),
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

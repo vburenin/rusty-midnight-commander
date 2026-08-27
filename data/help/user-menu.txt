@@ -1,15 +1,12 @@
 # Apache-2.0 original help text
-= User Menu | User Menu
+= User Menu
 
-The User menu (F2) runs commands defined by the current directory’s `.mc.menu`
-or the user’s `~/.config/mc/menu`. Use it to create quick actions.
+User menu (F2) runs commands from `.mc.menu` in the current directory,
+else `~/.config/mc/menu`, else a system default.
 
-Notes:
-  - Each menu entry defines a command; some macros expand to filenames or paths.
-  - If the local menu file is missing, the user config is used; otherwise system defaults.
+Each entry has a hotkey and a command line. Macros can expand to the
+selected name or path. Esc / F10 closes without running anything.
 
-Links:
 * Contents -> Contents
-* Panels -> Panels
-* Dialogs -> Dialogs
-
+* Directory panels -> Panels
+* File operations -> Dialogs

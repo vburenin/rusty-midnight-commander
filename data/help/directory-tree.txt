@@ -1,0 +1,19 @@
+# Apache-2.0 original help text
+= Directory Tree
+
+Command menu Directory tree opens a navigable tree of directories (not
+the panel Tree listing mode).
+
+  Up/Down, PageUp/PageDown, Home/End  move
+  Left parent                         Right child
+  Enter                               change the current panel to that directory
+  F2 / C-r                            rescan
+  F3                                  forget the highlighted directory
+  F4                                  static vs dynamic navigation
+  Esc / F10                           close without changing directory
+
+Find File has a similar Tree picker for the start directory only.
+
+* Contents -> Contents
+* Find File -> Find File
+* Directory panels -> Panels

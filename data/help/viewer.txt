@@ -1,17 +1,20 @@
 # Apache-2.0 original help text
 = Viewer
 
-The internal viewer displays files in a full‑screen window.
+Internal viewer (mcview). F3 from panels opens the highlighted file.
 
-Keys:
-  - q, F10, or F3: quit the viewer
-  - F4 or h: toggle hex mode (text/hex)
-  - w: toggle word wrap (text mode)
-  - F9: display options (line numbers, CR as ^M, wrap, hex)
-  - Up/Down, PageUp/PageDown, Home/End: navigate
-  - / or F7: start a search; n / N: find next / previous
+  F2 wrap/unwrap          F3 or q or F10 quit
+  F4 hex/text             F5 goto
+  F7 or / search          n or F17 next match
+  F8 parsed vs raw        F9 format/unformat (nroff)
+  | external filter on the viewed bytes
 
-Links:
+Display options cover line numbers, CR as ^M, wrap, and hex. Shift+arrows
+extend a selection. Compressed files may be shown through a filter.
+
+F1 from the viewer opens this node.
+
 * Contents -> Contents
-* Panels -> Panels
-
+* Internal editor -> Editor
+* Virtual file system -> VFS
+* Directory panels -> Panels

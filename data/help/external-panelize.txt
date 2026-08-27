@@ -1,0 +1,15 @@
+# Apache-2.0 original help text
+= External panelize
+
+Command menu External panelize (or C-x !) runs a shell command that
+prints paths, then fills the current panel with those names.
+
+Pick a named command from the list or type one. Panelize runs it. Add
+new saves the current command under a name. Remove drops a saved entry.
+Esc / F10 closes without panelizing.
+
+Return to a normal listing with `..` in the panelized view.
+
+* Contents -> Contents
+* Find File -> Find File
+* Directory panels -> Panels

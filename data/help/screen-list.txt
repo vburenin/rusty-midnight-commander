@@ -1,0 +1,17 @@
+# Apache-2.0 original help text
+= Screen list
+
+Command menu Screen list (Alt-`) lists the file manager plus open
+internal modules (editor, viewer, diff).
+
+  Up/Down     highlight a screen
+  Enter / OK  switch to it
+  Esc / F10   close the list and stay on the current screen
+  Alt-} / Alt-{  cycle next / previous screen without opening the list
+
+Several editor files can be open at once; this list is how you jump
+between them and the panels.
+
+* Contents -> Contents
+* Internal editor -> Editor
+* Directory panels -> Panels
