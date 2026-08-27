@@ -1560,16 +1560,20 @@ impl TerminalApp {
                     qs_active,
                 ),
             ) as usize;
-            // Compute per-panel visible capacity (rows or 2*rows for Brief two-column)
+            // Compute per-panel visible capacity (rows * Brief columns for packed names)
             let mid = cols / 2;
             let left_w = mid;
             let right_w = cols - mid;
-            let left_two_cols =
-                matches!(app.left.listing, rmc_core::panel::ListingFormat::Brief) && left_w >= 30;
-            let right_two_cols =
-                matches!(app.right.listing, rmc_core::panel::ListingFormat::Brief) && right_w >= 30;
-            let left_capacity = left_rows * if left_two_cols { 2 } else { 1 };
-            let right_capacity = right_rows * if right_two_cols { 2 } else { 1 };
+            let left_capacity = rmc_core::panel::listing_page_capacity(
+                app.left.listing,
+                app.left.brief_columns,
+                left_rows,
+            );
+            let right_capacity = rmc_core::panel::listing_page_capacity(
+                app.right.listing,
+                app.right.brief_columns,
+                right_rows,
+            );
             // Ensure cursor visibility based on last-known height
             {
                 let left = &mut app.left;
@@ -1787,22 +1791,23 @@ impl TerminalApp {
                             // Only rows within listing body move the cursor / toggle / enter
                             if my >= content_top && my < content_top.saturating_add(content_h) {
                                 let row_i = (my - content_top) as usize;
-                                // Decide column for Brief two-column format
-                                let (two_cols, per_col_width) = {
-                                    let w = pw;
-                                    if w >= 30
-                                        && matches!(
-                                            if matches!(side, PaneSide::Left) {
-                                                app.left.listing
-                                            } else {
-                                                app.right.listing
-                                            },
-                                            rmc_core::panel::ListingFormat::Brief
-                                        )
-                                    {
-                                        (true, (w - 3) / 2)
+                                // Decide column for Brief packed names (1–9 columns)
+                                let (brief_cols, per_col_width) = {
+                                    let listing = if matches!(side, PaneSide::Left) {
+                                        app.left.listing
                                     } else {
-                                        (false, w - 2)
+                                        app.right.listing
+                                    };
+                                    let brief_n = if matches!(side, PaneSide::Left) {
+                                        app.left.brief_columns
+                                    } else {
+                                        app.right.brief_columns
+                                    };
+                                    if matches!(listing, rmc_core::panel::ListingFormat::Brief) {
+                                        let n = rmc_core::panel::clamp_brief_columns(brief_n);
+                                        (n, rmc_core::panel::brief_column_width(pw, n))
+                                    } else {
+                                        (1, pw.saturating_sub(2))
                                     }
                                 };
                                 // Compute target index
@@ -1812,15 +1817,19 @@ impl TerminalApp {
                                     (app.right.scroll_top, app.right.entries.len())
                                 };
                                 let mut idx: Option<usize> = None;
-                                if two_cols {
+                                if brief_cols > 1 {
                                     let inner_x = mx.saturating_sub(px);
-                                    let right_col_start = 2 + per_col_width;
-                                    let use_right = inner_x >= right_col_start; // >= x+2+per_col_width
-                                    let base = if use_right {
-                                        scroll_top + row_i + content_h as usize
-                                    } else {
-                                        scroll_top + row_i
-                                    };
+                                    let col = rmc_core::panel::brief_column_at_x(
+                                        inner_x,
+                                        per_col_width,
+                                        brief_cols,
+                                    );
+                                    let base = rmc_core::panel::brief_entry_index(
+                                        scroll_top,
+                                        row_i,
+                                        col,
+                                        content_h as usize,
+                                    );
                                     if base < entries_len {
                                         idx = Some(base);
                                     }
@@ -17452,6 +17461,271 @@ mod command_menu_remaining_items_tests {
             UiMode::Help { .. } => panic!("File Quick cd must not open Help"),
             UiMode::Menu { .. } => panic!("File Quick cd must open the dialog"),
             _ => panic!("File menu Quick cd must stay after Delete"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod listing_mode_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::ListingModeFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::ListingFormat;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-listing-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn listing_dialog(app: &App) -> (PaneSide, ListingFormat, &str, ListingModeFocus) {
+        match &app.ui_mode {
+            UiMode::ListingModeDialog {
+                side,
+                listing,
+                user_format,
+                focus,
+            } => (*side, *listing, user_format.as_str(), *focus),
+            _ => panic!("expected ListingModeDialog"),
+        }
+    }
+
+    fn tab_to_ok(app: &mut App) {
+        for _ in 0..8 {
+            if matches!(
+                app.ui_mode,
+                UiMode::ListingModeDialog {
+                    focus: ListingModeFocus::Ok,
+                    ..
+                }
+            ) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach Listing mode OK");
+    }
+
+    /// Left menu: Copy..SMB link (8 items) then Listing mode...
+    fn open_left_listing_mode(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        for _ in 0..8 {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+        let (side, _, _, _) = listing_dialog(app);
+        assert_eq!(side, PaneSide::Left, "Left menu Listing mode is left panel");
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn left_menu_listing_mode_opens_dialog_for_left_panel() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        let right_listing = app.right.listing;
+        open_left_listing_mode(&mut app);
+        let (side, listing, _, focus) = listing_dialog(&app);
+        assert_eq!(side, PaneSide::Left);
+        assert_eq!(listing, ListingFormat::Full);
+        assert_eq!(focus, ListingModeFocus::RadioFull);
+        assert_eq!(app.right.listing, right_listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_long_ok_applies_to_that_panel_only() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        open_left_listing_mode(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down); // RadioLong
+        press(&mut app, KeyCode::Char(' ')); // Space before generic Char
+        tab_to_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_esc_and_f10_leave_listing_unchanged() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_left_listing_mode(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(listing_dialog(&app).1, ListingFormat::Long);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.listing, ListingFormat::Full);
+
+        open_left_listing_mode(&mut app);
+        press(&mut app, KeyCode::Down); // Brief
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn alt_t_cycles_active_panel_through_full_and_long() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::User);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        app.active = PaneSide::Right;
+        press_alt(&mut app, 't');
+        assert_eq!(app.right.listing, ListingFormat::Brief);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_brief_ok() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_left_listing_mode(&mut app);
+        press(&mut app, KeyCode::Down); // Brief
+        press(&mut app, KeyCode::Enter); // Enter on radio selects
+        tab_to_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.left.brief_columns, 2, "Brief default is 2 columns");
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_user_ok_applies_format_string() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        let original = app.left.user_format.clone();
+        assert_ne!(original, "name size");
+        open_left_listing_mode(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down); // RadioUser
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Down); // Input
+                                        // Clear the prefilled GNU-ish default and type a simple spec.
+        for _ in 0..original.len() + 4 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        for c in "name size".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        tab_to_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.left.listing, ListingFormat::User);
+        assert_eq!(app.left.user_format, "name size");
+        assert_eq!(app.right.user_format, original);
+        let tokens = rmc_core::panel::parse_user_listing_format(&app.left.user_format);
+        assert_eq!(
+            tokens,
+            vec![
+                rmc_core::panel::UserFormatToken::Name,
+                rmc_core::panel::UserFormatToken::Size,
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_screen_list_swap_file_help_quick_cd_still_work() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+
+        open_command_item(&mut app, "Screen list");
+        assert!(
+            matches!(app.ui_mode, UiMode::ScreenList { .. }),
+            "Command menu Screen list must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, right);
+        assert_eq!(app.right.cwd, left);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right); // File
+        press(&mut app, KeyCode::Enter); // Help first
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }

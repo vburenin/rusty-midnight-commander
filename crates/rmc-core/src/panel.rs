@@ -35,6 +35,62 @@ pub enum ListingFormat {
     User,
 }
 
+impl ListingFormat {
+    /// GNU mc(1) Alt-t: cycle Full → Brief → Long → User → Full.
+    ///
+    /// Public manpage: switch to brief, long, user-defined, then back to the default (Full).
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Full => Self::Brief,
+            Self::Brief => Self::Long,
+            Self::Long => Self::User,
+            Self::User => Self::Full,
+        }
+    }
+}
+
+/// GNU brief listing packs names into 1–9 side-by-side columns (mc(1) default is 2).
+pub const BRIEF_COLUMNS_DEFAULT: u8 = 2;
+pub const BRIEF_COLUMNS_MAX: u8 = 9;
+
+/// Clamp a Brief column count to the GNU 1–9 range.
+pub fn clamp_brief_columns(n: u8) -> u8 {
+    n.clamp(1, BRIEF_COLUMNS_MAX)
+}
+
+/// Visible listing slots for `page_rows` of panel body height.
+///
+/// Brief multiplies by the column count so PageUp/ensure_visible walk packed names.
+/// Callers must pass `page_rows` from `handle_key` (never `crossterm::terminal::size()`).
+pub fn listing_page_capacity(listing: ListingFormat, brief_columns: u8, page_rows: usize) -> usize {
+    let rows = page_rows.max(1);
+    match listing {
+        ListingFormat::Brief => rows * clamp_brief_columns(brief_columns) as usize,
+        ListingFormat::Full | ListingFormat::Long | ListingFormat::User => rows,
+    }
+}
+
+/// Inner width of one Brief name column (panel width includes the frame).
+pub fn brief_column_width(panel_width: u16, columns: u8) -> u16 {
+    let n = clamp_brief_columns(columns) as u16;
+    let inner = panel_width.saturating_sub(2);
+    let seps = n.saturating_sub(1);
+    inner.saturating_sub(seps) / n.max(1)
+}
+
+/// Column-major Brief cell: fill each column top-to-bottom, then left-to-right.
+pub fn brief_entry_index(scroll_top: usize, row: usize, col: usize, rows: usize) -> usize {
+    scroll_top + row + col * rows
+}
+
+/// Which Brief column contains `inner_x` (x relative to the panel's left edge).
+pub fn brief_column_at_x(inner_x: u16, per_col_width: u16, columns: u8) -> usize {
+    let n = clamp_brief_columns(columns) as usize;
+    let stride = per_col_width.saturating_add(1).max(1);
+    let col = inner_x.saturating_sub(1) / stride;
+    (col as usize).min(n.saturating_sub(1))
+}
+
 /// GNU-ish subset of mc user-defined listing format tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserFormatToken {
@@ -138,6 +194,8 @@ pub struct PanelState {
     pub listing: ListingFormat,
     /// User-defined listing format string used when `listing == ListingFormat::User`.
     pub user_format: String,
+    /// Brief listing column count (GNU 1–9; default 2).
+    pub brief_columns: u8,
     pub selection: Selection,
     // When panelized, entries show a virtual list; pressing `..` or leaving mode restores saved state.
     pub panelized: Option<PanelizeSaved>,
@@ -176,6 +234,7 @@ impl PanelState {
             listing: ListingFormat::Full,
             // GNU-ish default; `half` is ignored by the subset parser.
             user_format: "half type name | size | perm".to_string(),
+            brief_columns: BRIEF_COLUMNS_DEFAULT,
             selection: Selection::default(),
             panelized: None,
             filter_glob: None,
@@ -758,6 +817,26 @@ pub fn format_user_listing_header(tokens: &[UserFormatToken], width: usize) -> S
     join_user_parts(tokens, width, None, false)
 }
 
+/// `ls -l`–like Long listing prefix: perm, nlink, owner, group, size, mtime, trailing spaces.
+/// The file name is painted separately so filehighlight can color it.
+pub fn format_long_listing_prefix(ent: &FileEntry, si: bool) -> String {
+    let perms = user_perm_string(ent.permissions, ent.is_dir);
+    let owner = ent.owner.as_deref().unwrap_or("-");
+    let group = ent.group.as_deref().unwrap_or("-");
+    let size = if ent.is_dir { 0 } else { ent.size };
+    let size_s = format!("{:>8}", format_byte_size(size, si));
+    let tm = user_mtime_string(ent);
+    format!(
+        "{perms} {nlink:>4} {owner:>8} {group:>8} {size_s} {tm}  ",
+        nlink = ent.nlink
+    )
+}
+
+/// Full Long listing line including the file name.
+pub fn format_long_listing_line(ent: &FileEntry, si: bool) -> String {
+    format!("{}{}", format_long_listing_prefix(ent, si), ent.name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1054,5 +1133,62 @@ mod tests {
         assert!(line.contains("   2"), "nlink 2 line={line:?}");
         let header = format_user_listing_header(&tokens, 40);
         assert!(header.contains("Nl"), "header={header:?}");
+    }
+
+    #[test]
+    fn listing_format_cycles_gnu_alt_t_order() {
+        use ListingFormat::*;
+        assert_eq!(Full.cycle(), Brief);
+        assert_eq!(Brief.cycle(), Long);
+        assert_eq!(Long.cycle(), User);
+        assert_eq!(User.cycle(), Full);
+    }
+
+    #[test]
+    fn brief_columns_clamp_and_capacity() {
+        assert_eq!(clamp_brief_columns(0), 1);
+        assert_eq!(clamp_brief_columns(2), 2);
+        assert_eq!(clamp_brief_columns(9), 9);
+        assert_eq!(clamp_brief_columns(10), 9);
+        assert_eq!(
+            listing_page_capacity(ListingFormat::Brief, 2, 10),
+            20,
+            "default Brief is two columns"
+        );
+        assert_eq!(listing_page_capacity(ListingFormat::Brief, 1, 10), 10);
+        assert_eq!(listing_page_capacity(ListingFormat::Brief, 9, 10), 90);
+        assert_eq!(listing_page_capacity(ListingFormat::Full, 9, 10), 10);
+        assert_eq!(listing_page_capacity(ListingFormat::Long, 9, 10), 10);
+        // Column-major: col 1 starts after `rows` entries.
+        assert_eq!(brief_entry_index(0, 0, 0, 10), 0);
+        assert_eq!(brief_entry_index(0, 3, 1, 10), 13);
+        assert_eq!(brief_entry_index(0, 0, 2, 10), 20);
+        assert_eq!(brief_column_width(30, 2), (30 - 3) / 2);
+        assert_eq!(brief_column_at_x(1, 13, 2), 0);
+        assert_eq!(brief_column_at_x(2 + 13, 13, 2), 1);
+        let p = PanelState::new(".");
+        assert_eq!(p.brief_columns, BRIEF_COLUMNS_DEFAULT);
+        assert_eq!(p.listing, ListingFormat::Full);
+    }
+
+    #[test]
+    fn long_listing_includes_perm_nlink_owner_group_size_name() {
+        let mut ent = make_entry("readme.txt", 42, SystemTime::UNIX_EPOCH, false);
+        ent.permissions = 0o644;
+        ent.nlink = 3;
+        ent.owner = Some("alice".into());
+        ent.group = Some("staff".into());
+        let line = format_long_listing_line(&ent, false);
+        assert!(line.contains("rw-r--r--"), "perms line={line:?}");
+        assert!(line.contains("   3"), "nlink line={line:?}");
+        assert!(line.contains("alice"), "owner line={line:?}");
+        assert!(line.contains("staff"), "group line={line:?}");
+        assert!(line.contains("42"), "size line={line:?}");
+        assert!(line.contains("readme.txt"), "name line={line:?}");
+        let prefix = format_long_listing_prefix(&ent, false);
+        assert!(
+            !prefix.contains("readme.txt"),
+            "prefix should omit the name so the renderer can color it"
+        );
     }
 }

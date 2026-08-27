@@ -283,7 +283,7 @@ pub enum OverwriteFocus {
     Append,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListingModeFocus {
     RadioFull,
     RadioBrief,
@@ -1346,13 +1346,8 @@ impl App {
                 self.ui_mode = UiMode::Normal;
             }
             CycleListingFormat => {
-                use crate::panel::ListingFormat::*;
                 let p = self.active_panel_mut();
-                p.listing = match p.listing {
-                    Full => Brief,
-                    Brief => Long,
-                    Long | User => Full,
-                };
+                p.listing = p.listing.cycle();
             }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -2303,5 +2298,22 @@ mod tests {
             Some("Tab spacing"),
             "Down from Auto indent lands on Tab spacing"
         );
+    }
+
+    #[test]
+    fn cycle_listing_format_walks_full_brief_long_user() {
+        use crate::panel::ListingFormat;
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.listing, ListingFormat::User);
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.listing, ListingFormat::Full);
     }
 }
