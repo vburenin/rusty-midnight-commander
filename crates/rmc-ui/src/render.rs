@@ -205,6 +205,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
             draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
         }
+        rmc_core::app::UiMode::ConfirmationsDialog { draft, focus } => {
+            draw_confirmations_dialog(p, cols, rows, pal, draft, *focus);
+        }
         rmc_core::app::UiMode::OverwriteDialog {
             op,
             src_path: _,
@@ -519,6 +522,105 @@ fn draw_overwrite_dialog(
     };
     draw_row(p, pal, x, y + h - 3, w, &row1, focus);
     draw_row(p, pal, x, y + h - 2, w, &row2, focus);
+    // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+fn draw_confirmations_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    draft: &rmc_core::app::ConfirmOptions,
+    focus: rmc_core::app::ConfirmationsFocus,
+) {
+    let title = "Confirmation";
+    let w = 54u16.min(cols.saturating_sub(2));
+    let h = 14u16.min(rows.saturating_sub(2)).max(10);
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Options (checkboxes)
+    use rmc_core::app::ConfirmationsFocus as F;
+    let items: [(&str, bool, F); 6] = [
+        ("Delete", draft.delete, F::Delete),
+        ("Overwrite", draft.overwrite, F::Overwrite),
+        ("Execute", draft.execute, F::Execute),
+        ("Exit", draft.exit, F::Exit),
+        (
+            "Directory hotlist",
+            draft.directory_hotlist,
+            F::DirectoryHotlist,
+        ),
+        ("History cleanup", draft.history_cleanup, F::HistoryCleanup),
+    ];
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for (i, (label, on, lf)) in items.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        if focus == *lf {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
+    }
+    // Buttons
+    let ok_sel = matches!(focus, F::Ok);
+    let cancel_sel = matches!(focus, F::Cancel);
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
+    let cancel_txt = if cancel_sel {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
     // Shadow
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
     p.hline(

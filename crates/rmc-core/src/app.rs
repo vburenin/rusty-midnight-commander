@@ -65,6 +65,29 @@ impl Default for LayoutOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ConfirmOptions {
+    pub delete: bool,
+    pub overwrite: bool,
+    pub execute: bool,
+    pub exit: bool,
+    pub directory_hotlist: bool,
+    pub history_cleanup: bool,
+}
+
+impl Default for ConfirmOptions {
+    fn default() -> Self {
+        Self {
+            delete: true,
+            overwrite: true,
+            execute: false,
+            exit: false,
+            directory_hotlist: false,
+            history_cleanup: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LayoutFocus {
     MenuBar,
@@ -278,6 +301,11 @@ pub enum UiMode {
         draft: LayoutOptions,
         focus: LayoutFocus,
     },
+    /// GNU mc Options → Confirmations dialog
+    ConfirmationsDialog {
+        draft: ConfirmOptions,
+        focus: ConfirmationsFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -348,6 +376,17 @@ pub enum CopyDialogFocus {
     Background,
     Cancel,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationsFocus {
+    Delete,
+    Overwrite,
+    Execute,
+    Exit,
+    DirectoryHotlist,
+    HistoryCleanup,
+    Ok,
+    Cancel,
+}
 pub struct App {
     pub vfs: Box<dyn Vfs>,
     pub keymap: KeyMap,
@@ -367,6 +406,8 @@ pub struct App {
     pub jobs: crate::jobs::JobQueue,
     /// Options controlling UI chrome visibility/layout.
     pub layout: LayoutOptions,
+    /// Options controlling confirmation prompts (GNU mc-style).
+    pub confirm: ConfirmOptions,
 }
 
 impl App {
@@ -388,6 +429,7 @@ impl App {
             quick_search: None,
             jobs: crate::jobs::JobQueue::new(),
             layout: LayoutOptions::default(),
+            confirm: ConfirmOptions::default(),
         };
         app.reload_panels()?;
         Ok(app)
@@ -445,7 +487,20 @@ impl App {
                 let st = HotlistDialogState::new(self.hotlist.entries.clone());
                 self.ui_mode = UiMode::HotlistDialog(st);
             }
-            Quit => self.quit = true,
+            Quit => {
+                if self.confirm.exit {
+                    self.ui_mode = UiMode::DialogConfirm {
+                        title: "Confirmation".to_string(),
+                        message: "Are you sure you want to quit?".to_string(),
+                        on_ok: Box::new(|app| {
+                            app.quit = true;
+                            Ok(())
+                        }),
+                    };
+                } else {
+                    self.quit = true;
+                }
+            }
             Refresh => {
                 self.reload_panels()?;
             }
@@ -690,6 +745,7 @@ impl App {
             UiMode::JobsDialog { .. } => "Panels".to_string(),
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
             UiMode::LayoutDialog { .. } => "Panels".to_string(),
+            UiMode::ConfirmationsDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
