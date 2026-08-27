@@ -123,8 +123,8 @@ Per mcview(1) and mc(1) “Internal File Viewer”:
 - [x] Modes: text, hex, wrap toggle (raw/parsed; format/unformat pending)
 - [x] Navigation: line/page/home/end (goto pending)
 - [x] Search: F7 Search dialog (Enter search string; Case sensitive / Backwards / Whole words / Regular expression), /, n/F17 next
-- [ ] View compressed via filters (e.g., gzip) per extension rules
-- [ ] Display options: show line numbers, underline/bold formatting, show CR as ^M
+- [x] View compressed via filters (e.g., gzip) per extension rules
+- [x] Display options: show line numbers, underline/bold formatting, show CR as ^M
 - [ ] Selection and keybindings parity (F-keys and movement)
 
 ---

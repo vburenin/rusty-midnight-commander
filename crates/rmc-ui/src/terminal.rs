@@ -409,14 +409,30 @@ pub(crate) fn viewer_ensure_view_for(display_path: &std::path::Path) -> std::pat
         .map(|s| s.display_path != display_path)
         .unwrap_or(true);
     if need_new {
-        let view = rmc_view::ViewData::open_view(display_path)
-            .unwrap_or_else(|_| rmc_view::ViewData::from_path(display_path.to_path_buf()));
-        let p = view.path().to_path_buf();
-        *g = Some(ViewerState {
-            display_path: display_path.to_path_buf(),
-            view,
-        });
-        return p;
+        match rmc_view::ViewData::open_view(display_path) {
+            Ok(view) => {
+                let p = view.path().to_path_buf();
+                *g = Some(ViewerState {
+                    display_path: display_path.to_path_buf(),
+                    view,
+                });
+                return p;
+            }
+            Err(_) => {
+                // Filter failed: never stash compressed bytes as if they were text.
+                // view_current_file refuses to enter Viewer in this case.
+                if rmc_view::guess_filter_for_path(display_path).is_none() {
+                    let view = rmc_view::ViewData::from_path(display_path.to_path_buf());
+                    let p = view.path().to_path_buf();
+                    *g = Some(ViewerState {
+                        display_path: display_path.to_path_buf(),
+                        view,
+                    });
+                    return p;
+                }
+                return display_path.to_path_buf();
+            }
+        }
     }
     g.as_ref()
         .map(|s| s.view.path().to_path_buf())
@@ -6650,7 +6666,34 @@ fn view_current_file(app: &mut App) -> Result<()> {
 /// `pager_override` replaces `$PAGER` when `Some` (tests pass a command that exits immediately).
 fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> Result<()> {
     if app.config_opts.use_internal_view {
-        app.handle_action(Action::ViewFile)?;
+        if let Some(ent) = app.active_panel().current_entry().cloned() {
+            if !ent.is_dir {
+                // Archives (.tar.gz / .tgz / …): F3 enters VFS, same as Enter.
+                // Single-file .gz/.bz2/.xz stay in the viewer with decoded bytes.
+                if let Some(entered) = app.vfs.enter_path(&ent.path) {
+                    app.change_dir(&entered)?;
+                    return Ok(());
+                }
+                match rmc_view::ViewData::open_view(&ent.path) {
+                    Ok(view) => {
+                        if let Ok(mut g) = VIEWER_STATE.lock() {
+                            *g = Some(ViewerState {
+                                display_path: ent.path.clone(),
+                                view,
+                            });
+                        }
+                        app.handle_action(Action::ViewFile)?;
+                    }
+                    Err(err) => {
+                        app.ui_mode = UiMode::DialogConfirm {
+                            title: "Error".into(),
+                            message: format!("{err}"),
+                            on_ok: Box::new(|_| Ok(())),
+                        };
+                    }
+                }
+            }
+        }
         return Ok(());
     }
     if let Some(ent) = app.active_panel().current_entry().cloned() {
@@ -11505,6 +11548,334 @@ mod viewer_display_options_tests {
                 assert!(goto_prompt.is_none());
             }
             _ => panic!("F9 must open Display options and clear leftover prompts"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod viewer_compressed_filter_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_fs::composite::CompositeFs;
+    use rmc_fs::local::LocalFs;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const PAYLOAD: &[u8] = b"decoded-gzip-payload-unique\nline-two\n";
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-view-gz-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn make_composite_app(cwd: &std::path::Path) -> App {
+        let vfs = CompositeFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn gzip_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+        if !rmc_view::helper_on_path("gzip") {
+            return false;
+        }
+        let out = match std::fs::File::create(dest) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        Command::new("gzip")
+            .arg("-c")
+            .arg(src)
+            .stdout(Stdio::from(out))
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    fn decoded_bytes(display: &std::path::Path) -> Vec<u8> {
+        let p = viewer_ensure_view_for(display);
+        std::fs::read(p).unwrap()
+    }
+
+    #[test]
+    fn f3_on_gz_shows_decoded_text_not_gzip_magic() {
+        if !rmc_view::helper_on_path("gzip") {
+            return;
+        }
+        let root = temp_workspace();
+        let txt = root.join("notes.txt");
+        std::fs::write(&txt, PAYLOAD).unwrap();
+        let gz = root.join("notes.txt.gz");
+        assert!(gzip_file(&txt, &gz), "gzip -c");
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt.gz");
+        press(&mut app, KeyCode::F(3));
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &gz),
+            _ => panic!("expected Viewer for F3 on notes.txt.gz"),
+        }
+        let bytes = decoded_bytes(&gz);
+        assert!(
+            !bytes.starts_with(&[0x1f, 0x8b]),
+            "viewer must not show gzip magic as text"
+        );
+        assert_eq!(bytes, PAYLOAD);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn viewer_search_hex_wrap_display_work_on_decoded_gz() {
+        if !rmc_view::helper_on_path("gzip") {
+            return;
+        }
+        let root = temp_workspace();
+        let txt = root.join("notes.txt");
+        std::fs::write(&txt, PAYLOAD).unwrap();
+        let gz = root.join("notes.txt.gz");
+        assert!(gzip_file(&txt, &gz), "gzip -c");
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt.gz");
+        view_current_file(&mut app).unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Viewer { .. }));
+
+        press(&mut app, KeyCode::F(7));
+        for c in "decoded-gzip-payload".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                status_msg,
+                search_dialog,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("expected Viewer after Search"),
+        }
+
+        press(&mut app, KeyCode::Char('w'));
+        match &app.ui_mode {
+            UiMode::Viewer { wrap, hex, .. } => {
+                assert!(*wrap);
+                assert!(!*hex);
+            }
+            _ => panic!("expected Viewer wrap"),
+        }
+
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer { hex, wrap, .. } => {
+                assert!(*hex, "F4 hex on decoded stream");
+                assert!(*wrap);
+            }
+            _ => panic!("expected Viewer hex"),
+        }
+        let hex_bytes = decoded_bytes(&gz);
+        assert_eq!(hex_bytes, PAYLOAD, "hex mode still uses decoded bytes");
+        assert!(!hex_bytes.starts_with(&[0x1f, 0x8b]));
+
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                display_dialog: Some(_),
+                ..
+            } => {}
+            _ => panic!("F9 must open Display options on decoded viewer"),
+        }
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f3_on_plain_txt_is_unfiltered() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "plain-text-payload\n").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt");
+        view_current_file(&mut app).unwrap();
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("expected Viewer"),
+        }
+        let bytes = decoded_bytes(&file);
+        assert_eq!(bytes, b"plain-text-payload\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f3_on_targz_archive_enters_vfs() {
+        if !rmc_view::helper_on_path("tar") || !rmc_view::helper_on_path("gzip") {
+            return;
+        }
+        let root = temp_workspace();
+        let src = root.join("archsrc");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("inside.txt"), b"inside-archive").unwrap();
+        let dest = root.join("sample.tar.gz");
+        let status = Command::new("tar")
+            .args([
+                "-czf",
+                dest.to_str().unwrap(),
+                "-C",
+                src.to_str().unwrap(),
+                ".",
+            ])
+            .status()
+            .unwrap();
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let mut app = make_composite_app(&root);
+        select_named(&mut app, "sample.tar.gz");
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "F3 on tar.gz archive must VFS-enter, not open Viewer"
+        );
+        let cwd = app.active_panel().cwd.clone();
+        let cwd_s = cwd.to_string_lossy();
+        assert!(
+            cwd_s.contains("sample.tar.gz#")
+                || cwd
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with('#')),
+            "cwd should be archive VFS anchor, got {cwd:?}"
+        );
+        let names: Vec<_> = app
+            .active_panel()
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "inside.txt" || n == "archsrc" || n == "."),
+            "archive listing should be visible, got {names:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_or_failed_helper_does_not_open_raw_bytes() {
+        let root = temp_workspace();
+        // .zst is in [view] → zstd -dc. Dummy bytes are not a valid zstd stream,
+        // and zstd may be absent: either way Viewer must not open as text.
+        let zst = root.join("log.zst");
+        {
+            let mut f = std::fs::File::create(&zst).unwrap();
+            f.write_all(&[0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00, b'G', b'A', b'R', b'B'])
+                .unwrap();
+        }
+        let mut app = make_app(&root);
+        select_named(&mut app, "log.zst");
+        view_current_file(&mut app).unwrap();
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, message, .. } => {
+                assert_eq!(title, "Error");
+                assert!(
+                    message.contains("Cannot view")
+                        || message.contains("not found")
+                        || message.contains("failed"),
+                    "GNU-like error, got {message}"
+                );
+            }
+            UiMode::Viewer { .. } => panic!("must not open Viewer on failed decompress"),
+            _ => panic!("expected Error dialog, not Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_file_history_editor_do_not_decompress() {
+        if !rmc_view::helper_on_path("gzip") {
+            return;
+        }
+        let root = temp_workspace();
+        let txt = root.join("notes.txt");
+        std::fs::write(&txt, PAYLOAD).unwrap();
+        let gz = root.join("notes.txt.gz");
+        assert!(gzip_file(&txt, &gz), "gzip -c");
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt.gz");
+
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        press(&mut app, KeyCode::F(7));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "Find File must not start decompressing / open Viewer"
+        );
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "History must still open"
+        );
+        press(&mut app, KeyCode::Esc);
+
+        app.ui_mode = UiMode::Normal;
+        select_named(&mut app, "notes.txt.gz");
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => {
+                let bytes = buf.to_bytes();
+                assert!(
+                    bytes.starts_with(&[0x1f, 0x8b]) || bytes != PAYLOAD,
+                    "Editor must read compressed bytes, not decoded payload"
+                );
+                assert_ne!(bytes, PAYLOAD);
+            }
+            UiMode::Viewer { .. } => panic!("F4 must open Editor, not Viewer"),
+            _ => panic!("expected Editor for F4 on .gz"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
