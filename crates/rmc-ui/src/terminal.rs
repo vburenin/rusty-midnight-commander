@@ -1962,12 +1962,8 @@ impl TerminalApp {
                             user_format.pop();
                         }
                     }
-                    KeyCode::Char(c) if key.modifiers.is_empty() => {
-                        if matches!(*focus, F::Input) {
-                            user_format.push(c);
-                        }
-                    }
-                    KeyCode::Char(' ') | KeyCode::Enter => match *focus {
+                    // Handle Enter on radios/buttons before generic Char handler
+                    KeyCode::Enter => match *focus {
                         F::RadioFull => *listing = rmc_core::panel::ListingFormat::Full,
                         F::RadioBrief => *listing = rmc_core::panel::ListingFormat::Brief,
                         F::RadioLong => *listing = rmc_core::panel::ListingFormat::Long,
@@ -1977,8 +1973,25 @@ impl TerminalApp {
                             app.ui_mode = UiMode::Normal;
                             return Ok(());
                         }
-                        F::Input => { /* editing handled above */ }
+                        F::Input => { /* no-op on Enter while editing */ }
                     },
+                    // Space picks a radio/OK/Cancel; when editing Input, let it fall through to push(' ')
+                    KeyCode::Char(' ') if !matches!(*focus, F::Input) => match *focus {
+                        F::RadioFull => *listing = rmc_core::panel::ListingFormat::Full,
+                        F::RadioBrief => *listing = rmc_core::panel::ListingFormat::Brief,
+                        F::RadioLong => *listing = rmc_core::panel::ListingFormat::Long,
+                        F::RadioUser => *listing = rmc_core::panel::ListingFormat::User,
+                        F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        F::Input => { /* unreachable due to guard */ }
+                    },
+                    // Generic character input only when the one-line format field is focused
+                    KeyCode::Char(c) if key.modifiers.is_empty() && matches!(*focus, F::Input) => {
+                        user_format.push(c);
+                    }
                     _ => {}
                 }
                 if apply {
