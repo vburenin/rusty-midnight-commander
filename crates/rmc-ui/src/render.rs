@@ -93,7 +93,8 @@ impl Renderer {
             offset,
             show_line_numbers,
             show_cr,
-            search_prompt,
+            search_dialog,
+            status_msg,
             goto_prompt,
             ..
         } = &app.ui_mode
@@ -109,7 +110,8 @@ impl Renderer {
                 *offset,
                 *show_line_numbers,
                 *show_cr,
-                search_prompt,
+                search_dialog.as_deref(),
+                status_msg.as_deref(),
                 goto_prompt,
                 app.shadows,
             )?;
@@ -2836,7 +2838,8 @@ fn draw_viewer(
     offset: u64,
     show_line_numbers: bool,
     show_cr: bool,
-    search_prompt: &Option<String>,
+    search_dialog: Option<&rmc_core::app::ViewerSearchDialog>,
+    status_msg: Option<&str>,
     goto_prompt: &Option<String>,
     show_shadow: bool,
 ) -> Result<()> {
@@ -2956,22 +2959,17 @@ fn draw_viewer(
             status.push_str(&format!("  Ln {}", cur_ln));
         }
     }
+    if let Some(msg) = status_msg {
+        status.push_str("  ");
+        status.push_str(msg);
+    }
     let st = truncate(&status, cols as usize);
     p.text(&st);
     // Viewer F-bar (white-on-black numbers, black-on-cyan labels)
     draw_viewer_fbar(p, rows.saturating_sub(1), cols, pal);
-    // Search prompt overlay (MC-style input dialog)
-    if let Some(current) = search_prompt {
-        draw_dialog_box(
-            p,
-            cols,
-            rows,
-            pal,
-            "Search",
-            current,
-            &["< OK >", "Cancel"],
-            show_shadow,
-        );
+    // GNU mcview F7 Search dialog (same chrome as mcedit Search)
+    if let Some(dlg) = search_dialog {
+        draw_editor_search_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
     // Goto prompt overlay (MC-style input dialog)
     if let Some(current) = goto_prompt {

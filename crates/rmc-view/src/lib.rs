@@ -624,6 +624,285 @@ pub fn nav_end(path: &Path, cols: u16, rows: u16, wrap: bool) -> Result<u64> {
     }
 }
 
+/// GNU mcview Search-dialog flags (same four checkboxes as mcedit Search).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    pub case_sensitive: bool,
+    pub backwards: bool,
+    pub whole_words: bool,
+    pub regexp: bool,
+}
+
+/// Search with GNU mcview Search-dialog options. Empty needle is a no-op.
+/// Invalid regular expressions do not panic; they yield no match.
+/// Hex mode still searches the underlying file bytes (this replica's existing
+/// viewer search); GNU quoted-hex syntax is not implemented here.
+pub fn search_with_options(
+    path: &Path,
+    start_offset: u64,
+    needle: &str,
+    opts: SearchOptions,
+    wrap: bool,
+) -> Result<Option<u64>> {
+    search_impl(path, start_offset, needle, opts, wrap, false)
+}
+
+/// Repeat a search from `start_offset`, skipping a match that begins there.
+pub fn search_next_with_options(
+    path: &Path,
+    start_offset: u64,
+    needle: &str,
+    opts: SearchOptions,
+    wrap: bool,
+) -> Result<Option<u64>> {
+    search_impl(path, start_offset, needle, opts, wrap, true)
+}
+
+fn search_impl(
+    path: &Path,
+    start_offset: u64,
+    needle: &str,
+    opts: SearchOptions,
+    wrap: bool,
+    skip_current: bool,
+) -> Result<Option<u64>> {
+    if needle.is_empty() {
+        return Ok(None);
+    }
+    let hay = std::fs::read(path)?;
+    let len = hay.len() as u64;
+    let needle_b = needle.as_bytes();
+    let re = if opts.regexp {
+        match compile_search_regex(needle_b, !opts.case_sensitive, opts.whole_words) {
+            Some(re) => Some(re),
+            None => return Ok(None),
+        }
+    } else {
+        None
+    };
+
+    let orig = start_offset.min(len);
+    let from = if skip_current {
+        if opts.backwards {
+            orig
+        } else {
+            orig.saturating_add(1)
+        }
+    } else {
+        orig
+    };
+
+    if let Some(pos) = find_in_hay(&hay, needle_b, from, opts, re.as_ref(), skip_current) {
+        return Ok(Some(pos));
+    }
+    if wrap {
+        if opts.backwards {
+            if let Some(pos) = find_in_hay(&hay, needle_b, len, opts, re.as_ref(), false) {
+                if pos >= orig {
+                    return Ok(Some(pos));
+                }
+            }
+        } else if let Some(pos) = find_in_hay(&hay, needle_b, 0, opts, re.as_ref(), false) {
+            if pos <= orig {
+                return Ok(Some(pos));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn find_in_hay(
+    hay: &[u8],
+    needle: &[u8],
+    from: u64,
+    opts: SearchOptions,
+    re: Option<&regex::bytes::Regex>,
+    backwards_exclusive: bool,
+) -> Option<u64> {
+    if opts.backwards {
+        // Next-match from offset 0 has nothing earlier in the file.
+        if backwards_exclusive && from == 0 {
+            return None;
+        }
+        let limit = from as usize;
+        let max_start = if backwards_exclusive {
+            limit.saturating_sub(1)
+        } else {
+            limit.min(hay.len())
+        };
+        find_last_match(hay, needle, max_start, opts, re)
+    } else {
+        let start = (from as usize).min(hay.len());
+        find_first_match(hay, needle, start, opts, re)
+    }
+}
+
+fn find_first_match(
+    hay: &[u8],
+    needle: &[u8],
+    start: usize,
+    opts: SearchOptions,
+    re: Option<&regex::bytes::Regex>,
+) -> Option<u64> {
+    if let Some(re) = re {
+        return re.find_at(hay, start).map(|m| m.start() as u64);
+    }
+    let mut pos = start;
+    loop {
+        let found = if opts.case_sensitive {
+            find_bytes(hay, needle, pos)
+        } else {
+            find_bytes_ascii_ci(hay, needle, pos)
+        }?;
+        if !opts.whole_words || is_whole_word_at(hay, found, needle.len()) {
+            return Some(found as u64);
+        }
+        pos = found.saturating_add(1);
+    }
+}
+
+fn find_last_match(
+    hay: &[u8],
+    needle: &[u8],
+    max_start: usize,
+    opts: SearchOptions,
+    re: Option<&regex::bytes::Regex>,
+) -> Option<u64> {
+    if let Some(re) = re {
+        let mut last = None;
+        let mut pos = 0usize;
+        while pos <= hay.len() {
+            match re.find_at(hay, pos) {
+                Some(m) if m.start() <= max_start => {
+                    last = Some(m.start() as u64);
+                    let next = m.start().saturating_add(1);
+                    if next == pos {
+                        break;
+                    }
+                    pos = next;
+                }
+                Some(_) | None => break,
+            }
+        }
+        return last;
+    }
+    let mut cap = max_start;
+    loop {
+        let found = if opts.case_sensitive {
+            rfind_bytes(hay, needle, cap)
+        } else {
+            rfind_bytes_ascii_ci(hay, needle, cap)
+        }?;
+        if !opts.whole_words || is_whole_word_at(hay, found, needle.len()) {
+            return Some(found as u64);
+        }
+        if found == 0 {
+            return None;
+        }
+        cap = found - 1;
+    }
+}
+
+fn is_ascii_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_whole_word_at(hay: &[u8], start: usize, len: usize) -> bool {
+    let before_ok = start == 0 || !is_ascii_word_byte(hay[start - 1]);
+    let end = start.saturating_add(len);
+    let after_ok = end >= hay.len() || !is_ascii_word_byte(hay[end]);
+    before_ok && after_ok
+}
+
+fn compile_search_regex(
+    needle: &[u8],
+    case_insensitive: bool,
+    whole_words: bool,
+) -> Option<regex::bytes::Regex> {
+    let pat = std::str::from_utf8(needle).ok()?;
+    let wrapped = if whole_words {
+        format!(r"\b(?:{pat})\b")
+    } else {
+        pat.to_string()
+    };
+    regex::bytes::RegexBuilder::new(&wrapped)
+        .case_insensitive(case_insensitive)
+        .unicode(false)
+        .build()
+        .ok()
+}
+
+fn ascii_lower(b: u8) -> u8 {
+    b.to_ascii_lowercase()
+}
+
+fn find_bytes(hay: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let start = start.min(hay.len());
+    hay[start..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| start + i)
+}
+
+fn find_bytes_ascii_ci(hay: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let start = start.min(hay.len());
+    hay[start..]
+        .windows(needle.len())
+        .position(|w| {
+            w.iter()
+                .zip(needle)
+                .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
+        })
+        .map(|i| start + i)
+}
+
+fn rfind_bytes(hay: &[u8], needle: &[u8], max_start: usize) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let last = hay.len() - needle.len();
+    let mut i = max_start.min(last);
+    loop {
+        if &hay[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}
+
+fn rfind_bytes_ascii_ci(hay: &[u8], needle: &[u8], max_start: usize) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let last = hay.len() - needle.len();
+    let mut i = max_start.min(last);
+    loop {
+        let mut ok = true;
+        for j in 0..needle.len() {
+            if ascii_lower(hay[i + j]) != ascii_lower(needle[j]) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return Some(i);
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    }
+}
+
 /// Forward search for UTF-8 `needle` starting at or after `start_offset`.
 /// Returns the byte offset of the match when found.
 pub fn search_forward(path: &Path, start_offset: u64, needle: &str) -> Result<Option<u64>> {
@@ -772,6 +1051,121 @@ mod tests {
         assert!(second > first);
         let back = search_backward(&path, second, "abc").unwrap().unwrap();
         assert_eq!(back, first);
+    }
+
+    fn so(case_sensitive: bool, backwards: bool, whole_words: bool, regexp: bool) -> SearchOptions {
+        SearchOptions {
+            case_sensitive,
+            backwards,
+            whole_words,
+            regexp,
+        }
+    }
+
+    #[test]
+    fn search_options_case_sensitive() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"Abc").unwrap();
+        let path = f.path().to_path_buf();
+        assert_eq!(
+            search_with_options(&path, 0, "abc", so(false, false, false, false), false).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            search_with_options(&path, 0, "abc", so(true, false, false, false), false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn search_options_backwards() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"cat x cat").unwrap();
+        let path = f.path().to_path_buf();
+        // Inclusive first search still sees the match under the start offset.
+        assert_eq!(
+            search_with_options(&path, 6, "cat", so(true, true, false, false), false).unwrap(),
+            Some(6)
+        );
+        assert_eq!(
+            search_next_with_options(&path, 6, "cat", so(true, true, false, false), false).unwrap(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn search_options_whole_words() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"category").unwrap();
+        let path = f.path().to_path_buf();
+        assert_eq!(
+            search_with_options(&path, 0, "cat", so(true, false, true, false), false).unwrap(),
+            None
+        );
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"category cat").unwrap();
+        let path = f.path().to_path_buf();
+        assert_eq!(
+            search_with_options(&path, 0, "cat", so(true, false, true, false), false).unwrap(),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn search_options_regex_and_invalid() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"aaab").unwrap();
+        let path = f.path().to_path_buf();
+        assert_eq!(
+            search_with_options(&path, 0, "a+b", so(true, false, false, true), false).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            search_with_options(&path, 0, "(", so(true, false, false, true), false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn search_next_honors_stored_options_and_wrap() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"cat category cat").unwrap();
+        let path = f.path().to_path_buf();
+        let opts = so(true, false, true, false);
+        assert_eq!(
+            search_with_options(&path, 0, "cat", opts, true).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            search_next_with_options(&path, 0, "cat", opts, true).unwrap(),
+            Some(13)
+        );
+        assert_eq!(
+            search_next_with_options(&path, 13, "cat", opts, true).unwrap(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn search_empty_is_noop() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"abc").unwrap();
+        let path = f.path().to_path_buf();
+        assert_eq!(
+            search_with_options(&path, 0, "", so(false, false, false, false), true).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn search_hex_file_bytes() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(&[0x00, 0x41, 0x42, 0x00]).unwrap();
+        let path = f.path().to_path_buf();
+        assert_eq!(
+            search_with_options(&path, 0, "AB", so(true, false, false, false), false).unwrap(),
+            Some(1)
+        );
     }
 
     #[test]

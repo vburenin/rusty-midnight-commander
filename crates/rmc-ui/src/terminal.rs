@@ -14,7 +14,7 @@ use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog,
     EditorReplaceFocus, EditorSearchDialog, EditorSearchFocus, HistoryDialogFocus, LayoutFocus,
-    UiMode,
+    UiMode, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
@@ -169,6 +169,76 @@ fn editor_search_run(buf: &mut rmc_edit::EditorBuffer, dlg: &EditorSearchDialog)
     ) {
         Some(_) => Some("Found".into()),
         None => Some("Not found".into()),
+    }
+}
+
+fn viewer_search_opts(
+    case_sensitive: bool,
+    backwards: bool,
+    whole_words: bool,
+    regexp: bool,
+) -> rmc_view::SearchOptions {
+    rmc_view::SearchOptions {
+        case_sensitive,
+        backwards,
+        whole_words,
+        regexp,
+    }
+}
+
+/// Run a viewer Search-dialog query. Empty needle is a no-op (no offset change).
+/// On success/failure returns the GNU status line (`Found` / `Not found`).
+#[allow(clippy::too_many_arguments)]
+fn viewer_search_run(
+    path: &std::path::Path,
+    offset: &mut u64,
+    search: &mut Option<String>,
+    case_sensitive: &mut bool,
+    backwards: &mut bool,
+    whole_words: &mut bool,
+    regexp: &mut bool,
+    dlg: &ViewerSearchDialog,
+) -> anyhow::Result<Option<String>> {
+    if dlg.search.is_empty() {
+        return Ok(None);
+    }
+    *search = Some(dlg.search.clone());
+    *case_sensitive = dlg.case_sensitive;
+    *backwards = dlg.backwards;
+    *whole_words = dlg.whole_words;
+    *regexp = dlg.regular_expression;
+    let cpath = crate::terminal::viewer_ensure_view_for(path);
+    let opts = viewer_search_opts(
+        dlg.case_sensitive,
+        dlg.backwards,
+        dlg.whole_words,
+        dlg.regular_expression,
+    );
+    match rmc_view::search_with_options(&cpath, *offset, &dlg.search, opts, true)? {
+        Some(pos) => {
+            *offset = pos;
+            Ok(Some("Found".into()))
+        }
+        None => Ok(Some("Not found".into())),
+    }
+}
+
+fn viewer_search_next(
+    path: &std::path::Path,
+    offset: &mut u64,
+    needle: &str,
+    opts: rmc_view::SearchOptions,
+) -> anyhow::Result<Option<String>> {
+    if needle.is_empty() {
+        return Ok(None);
+    }
+    let cpath = crate::terminal::viewer_ensure_view_for(path);
+    match rmc_view::search_next_with_options(&cpath, *offset, needle, opts, true)? {
+        Some(pos) => {
+            *offset = pos;
+            Ok(Some("Found".into()))
+        }
+        None => Ok(Some("Not found".into())),
     }
 }
 
@@ -4935,42 +5005,107 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
-                // Then handle search overlay
+                // GNU mcview F7 Search dialog (stays in Viewer).
                 if let UiMode::Viewer {
                     path,
                     offset,
                     search,
-                    search_prompt: Some(prompt),
+                    search_case_sensitive,
+                    search_backwards,
+                    search_whole_words,
+                    search_regexp,
+                    status_msg,
+                    search_dialog,
                     ..
                 } = &mut app.ui_mode
                 {
-                    match key.code {
-                        KeyCode::Esc | KeyCode::F(10) => {
-                            *prompt = String::new();
-                            if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
-                                *search_prompt = None;
+                    if let Some(dlg) = search_dialog {
+                        use ViewerSearchFocus as F;
+                        let order = [
+                            F::Search,
+                            F::CaseSensitive,
+                            F::Backwards,
+                            F::WholeWords,
+                            F::RegularExpression,
+                            F::Ok,
+                            F::Cancel,
+                        ];
+                        let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                        match key.code {
+                            KeyCode::Esc | KeyCode::F(10) => {
+                                *search_dialog = None;
                             }
-                        }
-                        KeyCode::Enter => {
-                            let q = prompt.clone();
-                            let cpath = crate::terminal::viewer_ensure_view_for(path);
-                            if let Some(pos) = rmc_view::search_forward(&cpath, *offset, &q)? {
-                                *offset = pos;
+                            KeyCode::F(7) => {
+                                // Already open: do not nest.
                             }
-                            *search = if q.is_empty() { None } else { Some(q) };
-                            if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
-                                *search_prompt = None;
+                            KeyCode::Tab | KeyCode::Down => {
+                                idx = (idx + 1) % order.len();
+                                dlg.focus = order[idx];
                             }
+                            KeyCode::BackTab | KeyCode::Up => {
+                                idx = (idx + order.len() - 1) % order.len();
+                                dlg.focus = order[idx];
+                            }
+                            KeyCode::Left | KeyCode::Right
+                                if matches!(dlg.focus, F::Ok | F::Cancel) =>
+                            {
+                                dlg.focus = if matches!(dlg.focus, F::Ok) {
+                                    F::Cancel
+                                } else {
+                                    F::Ok
+                                };
+                            }
+                            KeyCode::Backspace if matches!(dlg.focus, F::Search) => {
+                                dlg.search.pop();
+                            }
+                            // Space toggles checkboxes before generic Char so typing
+                            // still inserts a space into the search field.
+                            KeyCode::Char(' ')
+                                if key.modifiers.is_empty() && dlg.focus.is_checkbox() =>
+                            {
+                                let _ = dlg.toggle_focused_checkbox();
+                            }
+                            KeyCode::Enter if dlg.focus.is_checkbox() => {
+                                let _ = dlg.toggle_focused_checkbox();
+                            }
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if matches!(dlg.focus, F::Ok | F::Cancel)
+                                    || matches!(key.code, KeyCode::Enter) =>
+                            {
+                                match dlg.focus {
+                                    F::Cancel => {
+                                        *search_dialog = None;
+                                    }
+                                    F::Search | F::Ok => {
+                                        if let Some(msg) = viewer_search_run(
+                                            path,
+                                            offset,
+                                            search,
+                                            search_case_sensitive,
+                                            search_backwards,
+                                            search_whole_words,
+                                            search_regexp,
+                                            dlg,
+                                        )? {
+                                            *status_msg = Some(msg);
+                                        }
+                                        *search_dialog = None;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            KeyCode::Char(c)
+                                if !key
+                                    .modifiers
+                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                    && matches!(dlg.focus, F::Search) =>
+                            {
+                                dlg.search.push(c);
+                            }
+                            _ => {}
                         }
-                        KeyCode::Backspace => {
-                            prompt.pop();
-                        }
-                        KeyCode::Char(c) if key.modifiers.is_empty() => {
-                            prompt.push(c);
-                        }
-                        _ => {}
+                        return Ok(());
                     }
-                    return Ok(());
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) => {
@@ -5004,11 +5139,26 @@ impl TerminalApp {
                                         message: format!("{e}"),
                                         on_ok: Box::new(|_| Ok(())),
                                     };
-                                } else if let UiMode::Viewer { offset, search, .. } =
-                                    &mut app.ui_mode
+                                } else if let UiMode::Viewer {
+                                    offset,
+                                    search,
+                                    search_case_sensitive,
+                                    search_backwards,
+                                    search_whole_words,
+                                    search_regexp,
+                                    search_dialog,
+                                    status_msg,
+                                    ..
+                                } = &mut app.ui_mode
                                 {
                                     *offset = 0;
                                     *search = None;
+                                    *search_case_sensitive = false;
+                                    *search_backwards = false;
+                                    *search_whole_words = false;
+                                    *search_regexp = false;
+                                    *search_dialog = None;
+                                    *status_msg = None;
                                 }
                                 Ok(())
                             }),
@@ -5149,24 +5299,45 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Char('/') | KeyCode::F(7) => {
-                        if let UiMode::Viewer { search_prompt, .. } = &mut app.ui_mode {
-                            *search_prompt = Some(String::new());
+                        if let UiMode::Viewer {
+                            search,
+                            search_dialog,
+                            search_prompt,
+                            goto_prompt,
+                            status_msg,
+                            ..
+                        } = &mut app.ui_mode
+                        {
+                            *search_prompt = None;
+                            *goto_prompt = None;
+                            *status_msg = None;
+                            *search_dialog = Some(Box::new(ViewerSearchDialog::from_last_search(
+                                search.as_deref().unwrap_or("").as_bytes(),
+                            )));
                         }
                     }
-                    KeyCode::Char('n') => {
+                    KeyCode::Char('n') | KeyCode::F(17) | KeyCode::F(19) => {
                         if let UiMode::Viewer {
                             path,
                             offset,
                             search,
+                            search_case_sensitive,
+                            search_backwards,
+                            search_whole_words,
+                            search_regexp,
+                            status_msg,
                             ..
                         } = &mut app.ui_mode
                         {
                             if let Some(q) = search.clone() {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                if let Some(pos) =
-                                    rmc_view::search_forward(&cpath, offset.saturating_add(1), &q)?
-                                {
-                                    *offset = pos;
+                                let opts = viewer_search_opts(
+                                    *search_case_sensitive,
+                                    *search_backwards,
+                                    *search_whole_words,
+                                    *search_regexp,
+                                );
+                                if let Some(msg) = viewer_search_next(path, offset, &q, opts)? {
+                                    *status_msg = Some(msg);
                                 }
                             }
                         }
@@ -5176,13 +5347,25 @@ impl TerminalApp {
                             path,
                             offset,
                             search,
+                            search_case_sensitive,
+                            search_backwards,
+                            search_whole_words,
+                            search_regexp,
+                            status_msg,
                             ..
                         } = &mut app.ui_mode
                         {
                             if let Some(q) = search.clone() {
-                                let cpath = crate::terminal::viewer_ensure_view_for(path);
-                                if let Some(pos) = rmc_view::search_backward(&cpath, *offset, &q)? {
-                                    *offset = pos;
+                                // GNU mcview: N temporarily flips direction without
+                                // persisting the opposite Backwards flag.
+                                let opts = viewer_search_opts(
+                                    *search_case_sensitive,
+                                    !*search_backwards,
+                                    *search_whole_words,
+                                    *search_regexp,
+                                );
+                                if let Some(msg) = viewer_search_next(path, offset, &q, opts)? {
+                                    *status_msg = Some(msg);
                                 }
                             }
                         }
@@ -9412,6 +9595,579 @@ mod find_file_dialog_tests {
             rmc_core::find::NamePattern::Glob(s) => assert_eq!(s, "* "),
         }
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod viewer_search_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ViewerSearchFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-viewer-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn open_viewer(app: &mut App, path: std::path::PathBuf) {
+        app.ui_mode = UiMode::Viewer {
+            path,
+            hex: false,
+            wrap: false,
+            offset: 0,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            show_line_numbers: false,
+            show_cr: false,
+            search_dialog: None,
+            search_case_sensitive: false,
+            search_backwards: false,
+            search_whole_words: false,
+            search_regexp: false,
+            status_msg: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn type_text(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn search_dialog(app: &App) -> &ViewerSearchDialog {
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog: Some(dlg),
+                search_prompt,
+                ..
+            } => {
+                assert!(
+                    search_prompt.is_none(),
+                    "F7 must not use the inline search prompt"
+                );
+                dlg
+            }
+            UiMode::Viewer {
+                search_prompt: Some(_),
+                ..
+            } => panic!("expected Search dialog, got inline search_prompt"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected viewer Search dialog, got InputDialog {title:?}")
+            }
+            _ => panic!("expected Viewer Search dialog"),
+        }
+    }
+
+    fn viewer_offset(app: &App) -> u64 {
+        match &app.ui_mode {
+            UiMode::Viewer { offset, .. } => *offset,
+            _ => panic!("expected Viewer"),
+        }
+    }
+
+    #[test]
+    fn f7_opens_search_dialog_defaults_stay_viewer() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog: Some(dlg),
+                search_prompt,
+                goto_prompt,
+                ..
+            } => {
+                assert!(search_prompt.is_none(), "F7 must not use the inline prompt");
+                assert!(goto_prompt.is_none());
+                assert!(dlg.search.is_empty());
+                assert!(!dlg.case_sensitive);
+                assert!(!dlg.backwards);
+                assert!(!dlg.whole_words);
+                assert!(!dlg.regular_expression);
+                assert!(matches!(dlg.focus, ViewerSearchFocus::Search));
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("F7 must stay in Viewer, not InputDialog {title:?}")
+            }
+            _ => panic!("F7 must open the Search dialog in Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f7_prefills_last_search_resets_checkboxes() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "foo bar foo").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "foo");
+        press(&mut app, KeyCode::Tab); // Case sensitive
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(search_dialog(&app).search, "foo");
+        assert!(!search_dialog(&app).case_sensitive);
+        assert!(!search_dialog(&app).backwards);
+        assert!(!search_dialog(&app).whole_words);
+        assert!(!search_dialog(&app).regular_expression);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_reaches_checkboxes_and_buttons_space_enter_toggle_space_inserts() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "a b");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::CaseSensitive);
+        assert!(!search_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).case_sensitive);
+        press(&mut app, KeyCode::Enter);
+        assert!(!search_dialog(&app).case_sensitive);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::Backwards);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).backwards);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::WholeWords);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).whole_words);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            search_dialog(&app).focus,
+            ViewerSearchFocus::RegularExpression
+        );
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).regular_expression);
+
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(search_dialog(&app).focus, ViewerSearchFocus::Ok));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::Cancel);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::Search);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(search_dialog(&app).search, "a b ");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_ok_on_known_needle_jumps_found() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "xx abc yy").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog,
+                search_prompt,
+                offset,
+                status_msg,
+                search,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert!(search_prompt.is_none());
+                assert_eq!(*offset, 3);
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+                assert_eq!(search.as_deref(), Some("abc"));
+            }
+            _ => panic!("expected Viewer after Search"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ok_button_missing_needle_not_found() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "zzz");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // Ok
+        assert!(matches!(search_dialog(&app).focus, ViewerSearchFocus::Ok));
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog,
+                offset,
+                status_msg,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert_eq!(*offset, 0);
+                assert_eq!(status_msg.as_deref(), Some("Not found"));
+            }
+            _ => panic!("expected Viewer after OK"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn esc_f10_cancel_leave_offset_unmoved() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        match &mut app.ui_mode {
+            UiMode::Viewer { offset, .. } => *offset = 1,
+            _ => panic!("expected Viewer"),
+        }
+        let start = viewer_offset(&app);
+
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(viewer_offset(&app), start);
+        match &app.ui_mode {
+            UiMode::Viewer { search_dialog, .. } => assert!(search_dialog.is_none()),
+            UiMode::Normal => panic!("Esc must stay in the viewer"),
+            _ => panic!("Esc should stay in the viewer"),
+        }
+
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::F(10));
+        assert_eq!(viewer_offset(&app), start);
+        match &app.ui_mode {
+            UiMode::Viewer { search_dialog, .. } => assert!(search_dialog.is_none()),
+            _ => panic!("F10 should stay in the viewer"),
+        }
+
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Tab); // Cancel
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::Cancel);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), start);
+        match &app.ui_mode {
+            UiMode::Viewer { search_dialog, .. } => assert!(search_dialog.is_none()),
+            _ => panic!("Cancel should stay in the viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_ok_is_noop_close() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "keep me").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                search_dialog,
+                offset,
+                status_msg,
+                search,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert_eq!(*offset, 0);
+                assert!(status_msg.is_none());
+                assert!(search.is_none());
+            }
+            _ => panic!("expected Viewer after empty Search"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checkboxes_change_search_behavior() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "Abc abc category cat").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+
+        // Case sensitive on: "abc" skips "Abc"
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "abc");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab); // back to the field
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 4);
+
+        // Backwards + case sensitive from there: inclusive match still at 4
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Tab); // case
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Tab); // backwards
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab); // back to the field
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 4);
+
+        // Whole words: "cat" skips "category"
+        match &mut app.ui_mode {
+            UiMode::Viewer { offset, search, .. } => {
+                *offset = 0;
+                *search = None;
+            }
+            _ => panic!("expected Viewer"),
+        }
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "cat");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // Whole words
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab); // back to the field
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 17);
+
+        // Regular expression
+        match &mut app.ui_mode {
+            UiMode::Viewer { offset, search, .. } => {
+                *offset = 0;
+                *search = None;
+            }
+            _ => panic!("expected Viewer"),
+        }
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "A.c");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // regexp
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab); // back to the field
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn next_match_honors_stored_options() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "cat category cat").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "cat");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' ')); // case sensitive
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' ')); // whole words
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab); // back to the field
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 0);
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(viewer_offset(&app), 13);
+        press(&mut app, KeyCode::F(17));
+        assert_eq!(viewer_offset(&app), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f7_while_open_does_not_nest() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "ab");
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(search_dialog(&app).search, "ab");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f7_in_find_file_history_editor_does_not_open_viewer_search() {
+        let mut app = make_app();
+        let cwd = app.active_panel().cwd.clone();
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(cwd));
+        press(&mut app, KeyCode::F(7));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "F7 in Find File must not open viewer Search"
+        );
+
+        app.ui_mode = UiMode::ShellInput;
+        press_alt(&mut app, 'h');
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "Alt-h should open History"
+        );
+        press(&mut app, KeyCode::F(7));
+        assert!(
+            matches!(app.ui_mode, UiMode::HistoryDialog { .. }),
+            "F7 in History must not open viewer Search"
+        );
+
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(b"abc", None),
+            show_menu: false,
+            status_msg: None,
+            search_input: None,
+            save_as_input: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+        };
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog: Some(_),
+                ..
+            } => {}
+            UiMode::Viewer { .. } => panic!("F7 in Editor must not switch to Viewer"),
+            _ => panic!("F7 in Editor must open editor Search"),
+        }
+    }
+
+    #[test]
+    fn hex_wrap_goto_still_work() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\nworld\n").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex, search_dialog, ..
+            } => {
+                assert!(*hex);
+                assert!(search_dialog.is_none());
+            }
+            _ => panic!("F4 must toggle hex in Viewer"),
+        }
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "el");
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex,
+                offset,
+                status_msg,
+                search_dialog,
+                ..
+            } => {
+                assert!(*hex, "Search must not leave hex mode");
+                assert_eq!(*offset, 1);
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+                assert!(search_dialog.is_none());
+            }
+            _ => panic!("expected Viewer after hex Search"),
+        }
+
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer { hex, .. } => assert!(!*hex),
+            _ => panic!("expected Viewer"),
+        }
+
+        press(&mut app, KeyCode::Char('w'));
+        match &app.ui_mode {
+            UiMode::Viewer { wrap, hex, .. } => {
+                assert!(*wrap);
+                assert!(!*hex);
+            }
+            _ => panic!("expected Viewer"),
+        }
+
+        press(&mut app, KeyCode::F(5));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                goto_prompt: Some(_),
+                search_dialog,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+            }
+            _ => panic!("F5 must open goto"),
+        }
+        press(&mut app, KeyCode::Char('2'));
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                goto_prompt,
+                offset,
+                ..
+            } => {
+                assert!(goto_prompt.is_none());
+                assert!(*offset > 0, "goto line 2 should move off start");
+            }
+            _ => panic!("expected Viewer after Goto"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

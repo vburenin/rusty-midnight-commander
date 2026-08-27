@@ -312,6 +312,14 @@ pub enum UiMode {
         goto_prompt: Option<String>,
         show_line_numbers: bool,
         show_cr: bool,
+        /// GNU mcview F7 Search dialog (None while viewing).
+        search_dialog: Option<Box<ViewerSearchDialog>>,
+        /// Last Search-dialog flags, used by n / F17.
+        search_case_sensitive: bool,
+        search_backwards: bool,
+        search_whole_words: bool,
+        search_regexp: bool,
+        status_msg: Option<String>,
     },
     Diff(DiffState),
     // Sort order dialog for Left/Right panel
@@ -562,7 +570,7 @@ pub struct YncDialog {
 }
 
 /// Focus within the GNU mcedit F7 Search dialog.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum EditorSearchFocus {
     #[default]
     Search,
@@ -595,6 +603,13 @@ pub struct EditorSearchDialog {
     pub regular_expression: bool,
     pub focus: EditorSearchFocus,
 }
+
+/// GNU mcview F7 Search dialog: same chrome, labels, and defaults as mcedit Search
+/// (title ` Search `, prompt `Enter search string:`, four checkboxes all off).
+/// All charsets is omitted, as on editor Search.
+pub type ViewerSearchDialog = EditorSearchDialog;
+/// Focus order matches editor Search: field → four checkboxes → OK → Cancel.
+pub type ViewerSearchFocus = EditorSearchFocus;
 
 impl EditorSearchDialog {
     /// Prefill the search field from the editor's last Search needle.
@@ -1160,6 +1175,12 @@ impl App {
                             goto_prompt: None,
                             show_line_numbers: false,
                             show_cr: false,
+                            search_dialog: None,
+                            search_case_sensitive: false,
+                            search_backwards: false,
+                            search_whole_words: false,
+                            search_regexp: false,
+                            status_msg: None,
                         };
                     }
                 }

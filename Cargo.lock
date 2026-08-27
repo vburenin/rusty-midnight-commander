@@ -1788,6 +1788,7 @@ name = "rmc-view"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "regex 1.13.1",
  "rmc-core",
  "rmc-fs",
  "tempfile",
