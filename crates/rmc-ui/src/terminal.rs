@@ -6764,7 +6764,9 @@ mod file_op_abort_keys_tests {
             if start.elapsed() > Duration::from_millis(5_000) {
                 panic!("job never started running");
             }
-            std::thread::sleep(Duration::from_millis(2));
+            // Tight poll: a 4 MiB local copy can finish in a couple of ms, so a
+            // 2 ms sleep here would miss the Running window.
+            std::thread::yield_now();
         }
     }
 
