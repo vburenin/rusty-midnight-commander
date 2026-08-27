@@ -159,6 +159,29 @@ impl KeyMap {
         m.bind(new_event(KeyCode::F(8)), Delete);
         m.bind(new_event(KeyCode::F(9)), FocusMenu);
         m.bind(new_event(KeyCode::F(10)), Quit);
+        // GNU mc(1) File menu Shift-F / F13–F20 (terminals send F(13) or Shift+F3).
+        m.bind(new_event(KeyCode::F(13)), Action::FunctionKey(13));
+        m.bind(
+            KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT),
+            Action::FunctionKey(13),
+        );
+        m.bind(new_event(KeyCode::F(14)), Action::FunctionKey(14));
+        m.bind(
+            KeyEvent::new(KeyCode::F(4), KeyModifiers::SHIFT),
+            Action::FunctionKey(14),
+        );
+        m.bind(new_event(KeyCode::F(15)), Action::FunctionKey(15));
+        m.bind(
+            KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT),
+            Action::FunctionKey(15),
+        );
+        m.bind(new_event(KeyCode::F(16)), Action::FunctionKey(16));
+        m.bind(
+            KeyEvent::new(KeyCode::F(6), KeyModifiers::SHIFT),
+            Action::FunctionKey(16),
+        );
+        m.bind(new_event(KeyCode::F(20)), Quit);
+        m.bind(KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT), Quit);
         // Selection group keys
         m.bind(new_event(KeyCode::Char('+')), Action::SelectGroup);
         m.bind(new_event(KeyCode::Char('\\')), Action::UnselectGroup);
@@ -285,6 +308,10 @@ fn parse_key(s: &str) -> Option<KeyEvent> {
     if rem.to_ascii_lowercase().starts_with("alt-") || rem.to_ascii_lowercase().starts_with("m-") {
         rem = &rem[4..];
         mods |= KeyModifiers::ALT;
+    }
+    if rem.to_ascii_lowercase().starts_with("s-") {
+        rem = &rem[2..];
+        mods |= KeyModifiers::SHIFT;
     }
     // Names
     let lc = rem.to_ascii_lowercase();
@@ -443,6 +470,9 @@ fn format_key(ev: &KeyEvent) -> String {
     }
     if ev.modifiers.contains(KeyModifiers::ALT) {
         out.push_str("Alt-");
+    }
+    if ev.modifiers.contains(KeyModifiers::SHIFT) {
+        out.push_str("S-");
     }
     match ev.code {
         KeyCode::Up => out.push_str("Up"),
@@ -789,6 +819,22 @@ mod tests {
         ));
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE)),
+            Some(Action::Quit)
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(13), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(13))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(13))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),
+            Some(Action::Quit)
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT)),
             Some(Action::Quit)
         ));
         let _ = std::fs::remove_file(&p);
