@@ -2545,30 +2545,25 @@ impl TerminalApp {
                             &buf.last_search,
                         )));
                     }
-                    // GNU mcedit: Ctrl-R start/stop macro recording (toggle)
+                    // GNU mcedit: Ctrl-R start/stop macro recording (toggle).
                     KeyCode::Char('r')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
                     {
                         if buf.start_macro_record() {
-                            *status_msg = Some("Macro recording".into());
+                            *status_msg = Some("Macro recording started".into());
                         } else {
-                            let n = buf.stop_macro_record();
-                            *status_msg = Some(match n {
-                                Some(cnt) => format!("Macro recorded ({cnt} events)"),
-                                None => "Macro recording stopped".into(),
-                            });
+                            let _ = buf.stop_macro_record();
+                            *status_msg = Some("Macro recording stopped".into());
                         }
                     }
-                    // GNU mcedit: Ctrl-A execute last macro
+                    // GNU mcedit / cooledit: Ctrl-A execute last macro.
                     KeyCode::Char('a')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
                     {
                         if !buf.replay_macro() {
-                            *status_msg = Some("No macro available".into());
+                            *status_msg = Some("No macro defined".into());
                         }
                     }
                     // Shift-F7 (F19) or 'n': next match with wrap
@@ -11858,6 +11853,307 @@ mod editor_ins_autoindent_tab_tests {
                 assert!(tab_spacing_dialog.is_none());
             }
             _ => panic!("Search overlay must keep keys"),
+        }
+    }
+
+    #[test]
+    fn viewer_f9_panel_pulldn_diff_f4_unchanged() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+        let other = root.join("other.txt");
+        std::fs::write(&other, "world\n").unwrap();
+
+        let mut app = make_app_at(&root);
+        app.ui_mode = UiMode::new_viewer(file.clone());
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                format_nroff,
+                display_dialog,
+                viewer_menu,
+                ..
+            } => {
+                assert!(*format_nroff, "Viewer F9 still toggles format");
+                assert!(display_dialog.is_none());
+                assert!(viewer_menu.is_none());
+            }
+            UiMode::Editor { .. } => panic!("Viewer F9 must not open Editor"),
+            _ => panic!("Viewer F9 must stay in Viewer"),
+        }
+
+        app.ui_mode = UiMode::Normal;
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Menu { .. } => {}
+            UiMode::Editor { .. } => panic!("panel F9 must stay PullDn, not Editor"),
+            _ => panic!("panel F9 must open PullDn"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        let ltxt = "hello\n";
+        let rtxt = "world\n";
+        app.ui_mode = UiMode::Diff(DiffState {
+            left_path: file,
+            right_path: other,
+            left_lines: rmc_diff::split_lines(ltxt),
+            right_lines: rmc_diff::split_lines(rtxt),
+            hunks: rmc_diff::compute_diff(ltxt, rtxt).hunks,
+            current_hunk: 0,
+            left_modified: false,
+            right_modified: false,
+            show_line_numbers: true,
+            show_hunk_status: true,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
+            left_scroll: 0,
+            right_scroll: 0,
+            panel_ratio: 0.6,
+            tab_width: 4,
+            merge_target_right: true,
+        });
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                return_to,
+                replace_dialog,
+                tab_spacing_dialog,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(replace_dialog.is_none(), "Diff F4 must not open Replace");
+                assert!(tab_spacing_dialog.is_none());
+                assert!(
+                    matches!(return_to.as_deref(), Some(UiMode::Diff(_))),
+                    "Diff F4 still nests editor"
+                );
+            }
+            _ => panic!("Diff F4 must nest editor"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod editor_macro_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::DiffState;
+    use rmc_core::config::KeyMap;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-editor-macro-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_edit = true;
+        app.config_opts.use_internal_view = true;
+        app
+    }
+
+    fn make_app_at(cwd: &std::path::Path) -> App {
+        let mut app = make_app();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, None),
+            show_menu: None,
+            status_msg: None,
+            search_input: None,
+            save_as_dialog: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            tab_spacing_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+            return_to: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn editor_buf(app: &App) -> &EditorBuffer {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    #[test]
+    fn ctrl_r_type_ab_ctrl_r_ctrl_a_replays() {
+        let mut app = make_app();
+        open_editor(&mut app, b"");
+        press_mod(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        match &app.ui_mode {
+            UiMode::Editor {
+                status_msg, buf, ..
+            } => {
+                assert!(buf.is_macro_recording());
+                assert_eq!(status_msg.as_deref(), Some("Macro recording started"));
+                assert!(buf.status_text().contains("REC"));
+            }
+            _ => panic!("expected Editor"),
+        }
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(editor_buf(&app).to_bytes(), b"ab");
+        press_mod(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        match &app.ui_mode {
+            UiMode::Editor {
+                status_msg, buf, ..
+            } => {
+                assert!(!buf.is_macro_recording());
+                assert_eq!(status_msg.as_deref(), Some("Macro recording stopped"));
+                assert!(!buf.status_text().contains("REC"));
+                assert_eq!(buf.to_bytes(), b"ab", "second Ctrl-R must not insert r");
+            }
+            _ => panic!("expected Editor"),
+        }
+        press_mod(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(editor_buf(&app).to_bytes(), b"abab");
+    }
+
+    #[test]
+    fn ctrl_a_without_macro_sets_status_and_leaves_buffer() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press_mod(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        match &app.ui_mode {
+            UiMode::Editor {
+                status_msg, buf, ..
+            } => {
+                assert_eq!(status_msg.as_deref(), Some("No macro defined"));
+                assert_eq!(buf.to_bytes(), b"hello");
+            }
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    #[test]
+    fn second_ctrl_r_stops_and_further_typing_is_not_recorded() {
+        let mut app = make_app();
+        open_editor(&mut app, b"");
+        press_mod(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('b'));
+        press_mod(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(!editor_buf(&app).is_macro_recording());
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(editor_buf(&app).to_bytes(), b"abxy");
+        press_mod(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(editor_buf(&app).to_bytes(), b"abxyab");
+    }
+
+    #[test]
+    fn search_overlay_ctrl_r_does_not_start_recording() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(7));
+        press_mod(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog: Some(_),
+                buf,
+                status_msg,
+                show_menu,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(
+                    !buf.is_macro_recording(),
+                    "Ctrl-R must not start under Search"
+                );
+                assert_ne!(status_msg.as_deref(), Some("Macro recording started"));
+            }
+            _ => panic!("Search overlay must keep keys"),
+        }
+    }
+
+    #[test]
+    fn f9_menu_ctrl_r_does_not_start_recording() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        press_mod(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu: Some(_),
+                buf,
+                status_msg,
+                ..
+            } => {
+                assert!(!buf.is_macro_recording(), "Ctrl-R must not start under F9");
+                assert_ne!(status_msg.as_deref(), Some("Macro recording started"));
+            }
+            _ => panic!("F9 menu must keep keys"),
+        }
+    }
+
+    #[test]
+    fn esc_f10_on_f9_menu_close_without_quitting() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu: Some(_), ..
+            } => {}
+            _ => panic!("F9 must open the menu"),
+        }
+        press(&mut app, KeyCode::Esc);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                confirm_exit,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(confirm_exit.is_none(), "Esc on the menu must not quit");
+            }
+            UiMode::Normal => panic!("Esc on the menu must not quit the editor"),
+            _ => panic!("Esc on the menu must stay in Editor"),
+        }
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::F(10));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                confirm_exit,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(confirm_exit.is_none(), "F10 on the menu must not quit");
+            }
+            UiMode::Normal => panic!("F10 on the menu must not quit the editor"),
+            _ => panic!("F10 on the menu must stay in Editor"),
         }
     }
 

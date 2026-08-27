@@ -861,7 +861,7 @@ impl EditorBuffer {
         }
     }
 
-    /// Human-friendly status line: "path  Ln x, Col y  [INS|OVR]  [* if dirty]"
+    /// Human-friendly status line: "path  Ln x, Col y  [INS|OVR][ REC][* if dirty]"
     pub fn status_text(&self) -> String {
         let name = self
             .path
@@ -871,8 +871,9 @@ impl EditorBuffer {
         let ln = self.row + 1;
         let col = self.col + 1;
         let mode = if self.overwrite { "OVR" } else { "INS" };
+        let rec = if self.macro_recording { " REC" } else { "" };
         let dirty = if self.dirty { " *" } else { "" };
-        format!("{name}  Ln {ln}, Col {col}  [{mode}]{dirty}")
+        format!("{name}  Ln {ln}, Col {col}  [{mode}]{rec}{dirty}")
     }
 
     /// Begin block selection at current cursor (mark start).
@@ -1539,6 +1540,11 @@ impl EditorBuffer {
         true
     }
 
+    /// True while a Ctrl-R recording session is active.
+    pub fn is_macro_recording(&self) -> bool {
+        self.macro_recording
+    }
+
     fn record_action(&mut self, action: EditorAction) {
         if self.macro_recording && !self.macro_replaying {
             self.macro_current.push(action);
@@ -1994,12 +2000,14 @@ mod tests {
     fn macro_record_replay_insert_and_move() {
         let mut b = EditorBuffer::new_empty();
         assert!(b.start_macro_record());
+        assert!(b.is_macro_recording());
         b.insert_bytes(b"a");
         b.insert_bytes(b"b");
         // Buffer now: "ab", cursor at end
         b.move_left(); // cursor after 'a'
         b.insert_bytes(b"X"); // "aXb"
         let n = b.stop_macro_record().expect("was recording");
+        assert!(!b.is_macro_recording());
         assert_eq!(n, 4); // Insert 'a', Insert 'b', MoveLeft, Insert 'X'
         assert_eq!(b.to_bytes(), b"aXb");
         // Replay macro once more at end -> append same transformation
@@ -2013,8 +2021,10 @@ mod tests {
     fn macro_empty_is_noop() {
         let mut b = EditorBuffer::new_empty();
         assert!(b.start_macro_record());
+        assert!(b.is_macro_recording());
         // Stop immediately => empty macro recorded
         let n = b.stop_macro_record().expect("was recording");
+        assert!(!b.is_macro_recording());
         assert_eq!(n, 0);
         // Replay should succeed but not change content
         let before = b.to_bytes();
