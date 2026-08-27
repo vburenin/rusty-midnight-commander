@@ -283,7 +283,7 @@ pub enum OverwriteFocus {
     Append,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListingModeFocus {
     RadioFull,
     RadioBrief,
