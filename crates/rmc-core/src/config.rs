@@ -11,6 +11,9 @@ pub struct KeyMap {
     // Map of KeyEvent signature to Action
     #[serde(skip)]
     bindings: Vec<(KeyEvent, Action)>,
+    /// GNU `C-x <key>` prefix chords (second key after Control-x).
+    #[serde(skip)]
+    ctrl_x_bindings: Vec<(KeyEvent, Action)>,
 }
 
 impl KeyMap {
@@ -35,9 +38,22 @@ impl KeyMap {
 
     /// Load keymap from a given file path.
     pub fn load_from_file(path: &Path) -> Result<Self> {
+        let (km, warnings) = Self::load_from_file_with_warnings(path)?;
+        for w in &warnings {
+            eprintln!("Warning: {w}");
+        }
+        Ok(km)
+    }
+
+    /// Load keymap and return parse warnings instead of printing them.
+    ///
+    /// Warning strings match the startup `eprintln!` text without the `Warning: `
+    /// prefix: `could not parse keymap at line N: <raw>`.
+    pub fn load_from_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>)> {
         let f = File::open(path)?;
         // Start from defaults and overlay file bindings (file wins)
         let mut km = Self::mc_defaults();
+        let mut warnings = Vec::new();
         let mut in_section_main = true; // top-level allowed
         for (lineno, line) in BufReader::new(f).lines().enumerate() {
             let raw = line?;
@@ -58,33 +74,27 @@ impl KeyMap {
                 None => continue, // ignore invalid
             };
             // Accept either "Key = Action" (current) or "Action = key" (MC-like)
-            let parse_key_then_action = || -> Option<(KeyEvent, Action)> {
-                let key = parse_key(lhs)?;
-                let act = parse_action(rhs)?;
-                Some((key, act))
-            };
-            let parse_action_then_key = || -> Option<(KeyEvent, Action)> {
-                let act = parse_action(lhs)?;
-                let key = parse_key(rhs)?;
-                Some((key, act))
-            };
-            if let Some((key, action)) = parse_key_then_action().or_else(parse_action_then_key) {
-                km.set_binding(key, action);
+            if let Some((spec, action)) = parse_binding_line(lhs, rhs) {
+                match spec {
+                    KeySpec::Simple(key) => km.set_binding(key, action),
+                    KeySpec::CtrlX(key) => km.set_ctrl_x_binding(key, action),
+                }
             } else {
-                eprintln!(
-                    "Warning: could not parse keymap at line {}: {}",
+                warnings.push(format!(
+                    "could not parse keymap at line {}: {}",
                     lineno + 1,
                     raw
-                );
+                ));
             }
         }
-        Ok(km)
+        Ok((km, warnings))
     }
 
     pub fn mc_defaults() -> Self {
         use Action::*;
         let mut m = Self {
             bindings: Vec::new(),
+            ctrl_x_bindings: Vec::new(),
         };
         m.bind(new_event(KeyCode::Up), MoveUp);
         m.bind(new_event(KeyCode::Down), MoveDown);
@@ -206,6 +216,17 @@ impl KeyMap {
         m.bind(new_event(KeyCode::Char('+')), Action::SelectGroup);
         m.bind(new_event(KeyCode::Char('\\')), Action::UnselectGroup);
         m.bind(new_event(KeyCode::Char('*')), Action::InvertSelection);
+        // GNU mc(1) Directory Panels: C-\ directory hotlist.
+        m.bind(
+            KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL),
+            OpenHotlist,
+        );
+        // GNU mc(1) C-x prefix chords (UI still consumes Control-x as a prefix).
+        m.set_ctrl_x_binding(new_event(KeyCode::Char('c')), Chmod);
+        m.set_ctrl_x_binding(new_event(KeyCode::Char('o')), Chown);
+        m.set_ctrl_x_binding(new_event(KeyCode::Char('l')), LinkHard);
+        m.set_ctrl_x_binding(new_event(KeyCode::Char('s')), SymlinkAbs);
+        m.set_ctrl_x_binding(new_event(KeyCode::Char('v')), SymlinkRel);
         // GNU mc(1) Quick search: C-s / Alt-s. Sort by size stays on the Sort order dialog.
         m.bind(
             KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
@@ -251,9 +272,25 @@ impl KeyMap {
         self.bind(key, action);
     }
 
+    /// Overwrite any existing C-x chord for this second key, then set it.
+    pub fn set_ctrl_x_binding(&mut self, key: KeyEvent, action: Action) {
+        self.ctrl_x_bindings.retain(|(k, _)| *k != key);
+        self.ctrl_x_bindings.push((key, action));
+    }
+
     pub fn resolve(&self, ev: &KeyEvent) -> Option<Action> {
         // Simple resolution by exact match
         for (k, a) in &self.bindings {
+            if k == ev {
+                return Some(a.clone());
+            }
+        }
+        None
+    }
+
+    /// Resolve the second key of a GNU `C-x <key>` chord.
+    pub fn resolve_ctrl_x(&self, ev: &KeyEvent) -> Option<Action> {
+        for (k, a) in &self.ctrl_x_bindings {
             if k == ev {
                 return Some(a.clone());
             }
@@ -303,17 +340,76 @@ impl KeyMap {
             let a = format_action(action);
             writeln!(f, "{k} = {a}")?;
         }
+        for (key, action) in &self.ctrl_x_bindings {
+            if matches!(
+                action,
+                Action::MouseClick { .. } | Action::MouseScroll { .. }
+            ) {
+                continue;
+            }
+            let k = format_key(key);
+            if k == "Unknown" {
+                continue;
+            }
+            let a = format_action(action);
+            writeln!(f, "C-x {k} = {a}")?;
+        }
         Ok(())
     }
 
     /// Remove all bindings associated with the given action.
     pub fn remove_action_bindings(&mut self, action: &Action) {
         self.bindings.retain(|(_, a)| a != action);
+        self.ctrl_x_bindings.retain(|(_, a)| a != action);
     }
 }
 
 fn new_event(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+enum KeySpec {
+    Simple(KeyEvent),
+    /// GNU `C-x <key>` two-key chord; value is the second key.
+    CtrlX(KeyEvent),
+}
+
+fn parse_binding_line(lhs: &str, rhs: &str) -> Option<(KeySpec, Action)> {
+    if let Some(spec) = parse_key_spec(lhs) {
+        if let Some(act) = parse_action(rhs) {
+            return Some((spec, act));
+        }
+    }
+    if let Some(act) = parse_action(lhs) {
+        if let Some(spec) = parse_key_spec(rhs) {
+            return Some((spec, act));
+        }
+    }
+    None
+}
+
+/// Parse a keymap key token, including GNU `C-x c` chords and `C-\\` / `\\`.
+fn parse_key_spec(s: &str) -> Option<KeySpec> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(idx) = s.find(char::is_whitespace) {
+        let first = s[..idx].trim();
+        let rest = s[idx..].trim();
+        if rest.is_empty() {
+            return parse_key(first).map(KeySpec::Simple);
+        }
+        let prefix = parse_key(first)?;
+        let second = parse_key(rest)?;
+        if matches!(prefix.code, KeyCode::Char('x') | KeyCode::Char('X'))
+            && prefix.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return Some(KeySpec::CtrlX(second));
+        }
+        return None;
+    }
+    parse_key(s).map(KeySpec::Simple)
 }
 
 fn parse_key(s: &str) -> Option<KeyEvent> {
@@ -349,6 +445,8 @@ fn parse_key(s: &str) -> Option<KeyEvent> {
         "backspace" => KeyCode::Backspace,
         "insert" => KeyCode::Insert,
         "space" => KeyCode::Char(' '),
+        // GNU mc.keymap writes backslash as `\\` (and `C-\\`).
+        "\\" | "\\\\" => KeyCode::Char('\\'),
         // Function keys
         s if s.starts_with('f') => {
             if let Ok(n) = s[1..].parse::<u8>() {
@@ -508,6 +606,7 @@ fn format_key(ev: &KeyEvent) -> String {
         KeyCode::Backspace => out.push_str("Backspace"),
         KeyCode::Insert => out.push_str("Insert"),
         KeyCode::Char(' ') => out.push_str("Space"),
+        KeyCode::Char('\\') => out.push_str("\\\\"),
         KeyCode::Char(ch) => out.push(ch),
         KeyCode::F(n) => out.push_str(&format!("F{n}")),
         _ => out.push_str("Unknown"),
@@ -751,7 +850,11 @@ mod tests {
     #[test]
     fn resolve_some_default_keymap() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
-        let km = KeyMap::load_from_file(&path).expect("load keymap");
+        let (km, warnings) = KeyMap::load_from_file_with_warnings(&path).expect("load keymap");
+        assert!(
+            warnings.is_empty(),
+            "data/mc.keymap must parse without warnings, got {warnings:?}"
+        );
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
             Some(Action::MoveUp)
@@ -836,6 +939,66 @@ mod tests {
             km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),
             Some(Action::Sort(SortBy::Size))
         ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL)),
+            Some(Action::OpenHotlist)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
+            Some(Action::UnselectGroup)
+        ));
+        assert!(matches!(
+            km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+            Some(Action::Chmod)
+        ));
+        assert!(matches!(
+            km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
+            Some(Action::Chown)
+        ));
+        assert!(matches!(
+            km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+            Some(Action::LinkHard)
+        ));
+        assert!(matches!(
+            km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            Some(Action::SymlinkAbs)
+        ));
+        assert!(matches!(
+            km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+            Some(Action::SymlinkRel)
+        ));
+    }
+
+    #[test]
+    fn default_keymap_file_parses_gnu_backslash_and_ctrl_x_chords() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
+        let (km, warnings) = KeyMap::load_from_file_with_warnings(&path).expect("load keymap");
+        assert_eq!(warnings, Vec::<String>::new());
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL)),
+            Some(Action::OpenHotlist)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
+            Some(Action::UnselectGroup)
+        ));
+        for (ch, want) in [
+            ('c', "Chmod"),
+            ('o', "Chown"),
+            ('l', "LinkHard"),
+            ('s', "SymlinkAbs"),
+            ('v', "SymlinkRel"),
+        ] {
+            let a = km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            match (ch, a) {
+                ('c', Some(Action::Chmod)) => {}
+                ('o', Some(Action::Chown)) => {}
+                ('l', Some(Action::LinkHard)) => {}
+                ('s', Some(Action::SymlinkAbs)) => {}
+                ('v', Some(Action::SymlinkRel)) => {}
+                other => panic!("C-x {ch} must bind {want}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

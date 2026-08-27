@@ -45,7 +45,9 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
-        // Clear screen
+        // Clear to core default (lightgray;blue). Crossterm Clear uses the current
+        // background; without this, the previous F-bar cyan floods unpainted cells.
+        painter.set_fg_bg(self.palette.core_default_fg, self.palette.core_default_bg);
         painter.out.queue(Clear(ClearType::All))?;
         // Full-screen subshell/output view short-circuit
         if app.subshell.show_output_screen {
@@ -3634,6 +3636,8 @@ fn draw_panel(
     is_left: bool,
     pal: McPalette,
 ) -> Result<()> {
+    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
+        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
     // Frame single-line, with path caption in the top frame
     let frame_fg = pal.frame_fg;
     let frame_bg = pal.frame_bg;
@@ -3691,6 +3695,9 @@ fn draw_panel(
         }
     };
     let cap_x = x + ((w.saturating_sub(path_str_display.len() as u16)) / 2);
+    // GNU: active panel path is selected (black;cyan); inactive stays on the frame.
+    let (path_fg, path_bg) = panel_path_caption_colors(&pal, is_active_panel);
+    p.set_fg_bg(path_fg, path_bg);
     p.goto(cap_x.max(x + 1), y);
     p.text(&path_str_display);
 
@@ -3754,9 +3761,6 @@ fn draw_panel(
             }
             PanelMode::Tree => {
                 if let Some(tree) = &panel.tree {
-                    let is_active_panel = (is_left
-                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
-                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
                     let status = rmc_core::panel::tree_panel_mini_status(
                         tree,
                         app.panel_opts.show_mini_status,
@@ -3812,10 +3816,11 @@ fn draw_panel(
         return Ok(());
     }
 
-    // Headers
-    let header_fg = pal.header_fg;
-    let header_bg = pal.header_bg;
+    // Headers: GNU `header` yellow;blue on the blue panel background — not cyan.
+    let (header_fg, header_bg) = panel_header_colors(&pal);
     p.set_fg_bg(header_fg, header_bg);
+    p.goto(x + 1, y + 1);
+    p.text(&" ".repeat(w.saturating_sub(2) as usize));
     let panel = if is_left { &app.left } else { &app.right };
     let user_tokens = if matches!(panel.listing, rmc_core::panel::ListingFormat::User) {
         rmc_core::panel::parse_user_listing_format(&panel.user_format)
@@ -3877,8 +3882,6 @@ fn draw_panel(
     // Mini-status occupies the row above the bottom frame. When it is off, listing
     // uses that row so the frame stays closed (no empty gap). Quick search still
     // borrows the same row on the active panel.
-    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
-        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
     let reserve_status = rmc_core::panel::reserve_panel_mini_status(
         app.panel_opts.show_mini_status,
         is_active_panel,
@@ -4086,7 +4089,7 @@ fn draw_panel(
 }
 
 fn draw_gauge(p: &mut Painter, y: u16, cols: u16, pal: McPalette, app: &App) {
-    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(0, y);
     let path = &app.active_panel().cwd;
     let text = match (fs2::available_space(path), fs2::total_space(path)) {
@@ -4804,6 +4807,21 @@ fn paint_line_with_name_color(
         p.set_fg_bg(row_fg, row_bg);
         p.text(line);
     }
+}
+
+/// GNU default skin: active panel path caption uses `selected` (black;cyan);
+/// inactive path stays on the frame (lightgray;blue).
+pub(crate) fn panel_path_caption_colors(pal: &McPalette, active: bool) -> (Color, Color) {
+    if active {
+        (pal.selected_fg, pal.selected_bg)
+    } else {
+        (pal.frame_fg, pal.frame_bg)
+    }
+}
+
+/// Column titles (Name / Size / Modify time) use `header` (yellow;blue), never selected/cyan.
+pub(crate) fn panel_header_colors(pal: &McPalette) -> (Color, Color) {
+    (pal.header_fg, pal.header_bg)
 }
 
 fn format_entry_name(ent: &FileEntry) -> String {
@@ -6889,5 +6907,66 @@ mod editor_syntax_style_tests {
         assert_eq!(s_bg, pal.edit_linestate_bg);
         assert_ne!((s_fg, s_bg), (c_fg, c_bg));
         assert_ne!((s_fg, s_bg), (pal.edit_bold_fg, pal.edit_bold_bg));
+    }
+}
+
+#[cfg(test)]
+mod gnu_default_chrome_colors_tests {
+    use super::{panel_header_colors, panel_path_caption_colors};
+    use crate::mc_colors::McPalette;
+    use crate::skin::load_from_file;
+    use crossterm::style::Color;
+    use std::path::Path;
+
+    #[test]
+    fn active_path_uses_selected_inactive_uses_frame() {
+        let pal = McPalette::default();
+        let (afg, abg) = panel_path_caption_colors(&pal, true);
+        assert_eq!((afg, abg), (pal.selected_fg, pal.selected_bg));
+        assert_eq!((afg, abg), (Color::Black, Color::Cyan));
+        let (ifg, ibg) = panel_path_caption_colors(&pal, false);
+        assert_eq!((ifg, ibg), (pal.frame_fg, pal.frame_bg));
+        assert_eq!(ibg, Color::Blue);
+        assert_ne!(
+            abg, ibg,
+            "active path caption must differ from inactive (cyan vs blue frame)"
+        );
+        assert_ne!(
+            afg,
+            Color::White,
+            "active path is black on cyan, not light-on-cyan"
+        );
+        assert_ne!(
+            afg,
+            Color::Grey,
+            "active path must not use frame lightgray on cyan"
+        );
+    }
+
+    #[test]
+    fn column_headers_use_header_yellow_blue_not_cyan() {
+        let pal = McPalette::default();
+        let (fg, bg) = panel_header_colors(&pal);
+        assert_eq!((fg, bg), (Color::Yellow, Color::Blue));
+        assert_eq!((fg, bg), (pal.header_fg, pal.header_bg));
+        assert_ne!(bg, pal.selected_bg, "headers must not use selected cyan");
+        assert_ne!(bg, pal.menu_bg, "headers must not use menu cyan");
+        assert_ne!(bg, pal.statusbar_bg, "headers must not use statusbar cyan");
+    }
+
+    #[test]
+    fn default_ini_palette_matches_gnu_header_and_selected() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/skins/default.ini");
+        let pal = load_from_file(&path).expect("load default.ini");
+        assert_eq!(pal.header_fg, Color::Yellow);
+        assert_eq!(pal.header_bg, Color::Blue);
+        assert_eq!(pal.selected_fg, Color::Black);
+        assert_eq!(pal.selected_bg, Color::Cyan);
+        let (hfg, hbg) = panel_header_colors(&pal);
+        assert_eq!((hfg, hbg), (Color::Yellow, Color::Blue));
+        let (afg, abg) = panel_path_caption_colors(&pal, true);
+        assert_eq!((afg, abg), (Color::Black, Color::Cyan));
+        let (ifg, ibg) = panel_path_caption_colors(&pal, false);
+        assert_eq!((ifg, ibg), (pal.frame_fg, pal.frame_bg));
     }
 }

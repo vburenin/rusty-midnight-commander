@@ -174,4 +174,60 @@ fn resolves_mc_defaults() {
         ),
         "S-F10 == F20 Quit"
     );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL)),
+            Some(Action::OpenHotlist)
+        ),
+        "C-\\\\ OpenHotlist"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
+            Some(Action::UnselectGroup)
+        ),
+        "\\\\ UnselectGroup"
+    );
+    assert!(matches!(
+        km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+        Some(Action::Chmod)
+    ));
+}
+
+#[test]
+fn data_mc_keymap_loads_with_zero_warnings_and_gnu_chords() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
+    let (km, warnings) = KeyMap::load_from_file_with_warnings(&path).expect("load data/mc.keymap");
+    assert!(
+        warnings.is_empty(),
+        "data/mc.keymap must parse with zero warnings, got {warnings:?}"
+    );
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL)),
+        Some(Action::OpenHotlist)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
+        Some(Action::UnselectGroup)
+    ));
+    assert!(matches!(
+        km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+        Some(Action::Chmod)
+    ));
+    assert!(matches!(
+        km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
+        Some(Action::Chown)
+    ));
+    assert!(matches!(
+        km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)),
+        Some(Action::LinkHard)
+    ));
+    assert!(matches!(
+        km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+        Some(Action::SymlinkAbs)
+    ));
+    assert!(matches!(
+        km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+        Some(Action::SymlinkRel)
+    ));
 }

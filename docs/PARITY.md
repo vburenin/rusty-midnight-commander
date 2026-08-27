@@ -20,18 +20,18 @@ Note: Keys are shown using MC conventions: C- for Ctrl, Alt- for Meta/Alt, S- fo
 ## 1) Screen chrome and layout — Status: Foundation
 
 Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”, “Directory Panels”, and function key labels:
-- [ ] Menu bar top row, toggled with F9; menus: Left, File, Command, Options, Right
-- [ ] Dual directory panels (current/other), selection bar indicates active panel
+- [x] Menu bar top row, toggled with F9; menus: Left, File, Command, Options, Right
+- [x] Dual directory panels (current/other), selection bar indicates active panel
 - [ ] Mini-status line (per-panel) showing selected file info and symlink targets
-- [ ] Hint line (context/help hints when enabled)
-- [ ] Shell command line (second line from bottom)
-- [ ] Bottom F-key label bar (F1…F10)
+- [x] Hint line (context/help hints when enabled)
+- [x] Shell command line (second line from bottom)
+- [x] Bottom F-key label bar (F1…F10)
 - [x] Default F-bar labels: Help, Menu, View, Edit, Copy, RenMov, Mkdir, Delete, PullDn, Quit
 - [x] Horizontal and vertical panel split layouts (Left/Right; Above/Below nomenclature)
 - [x] Screen repaint: C-l
 
 Visual spec: Default skin colors (summarized from misc/skins/default.ini; names are foreground;background)
-- [ ] Core: default lightgray;blue, selected black;cyan, marked yellow;blue, mark+selected yellow;cyan, header yellow;blue, frame lightgray;blue
+- [x] Core: default lightgray;blue, selected black;cyan, marked yellow;blue, mark+selected yellow;cyan, header yellow;blue, frame lightgray;blue
 - [ ] Dialogs: default black;lightgray, focus black;cyan, title blue;lightgray
 - [ ] Menus: default white;cyan, selected white;black, hotkey yellow;cyan, hotkey+selected yellow;black
 - [ ] Errors: default white;red (focus black;lightgray)

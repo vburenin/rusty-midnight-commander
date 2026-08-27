@@ -778,6 +778,10 @@ pub fn panel_listing_content_rows(panel_h: u16, reserve_mini_status: bool) -> u1
 
 /// Current-entry mini-status: perms, owner, group, size ([`format_byte_size`]), mtime.
 pub fn format_mini_status(ent: &FileEntry, si: bool) -> String {
+    // GNU mc(1): parent `..` mini-status is UP--DIR, not a fake Unix-epoch stat line.
+    if ent.is_parent_marker() {
+        return "UP--DIR".to_string();
+    }
     let perms = user_perm_string(ent.permissions, ent.is_dir);
     let owner = ent.owner.as_deref().unwrap_or("-");
     let group = ent.group.as_deref().unwrap_or("-");
@@ -1538,6 +1542,18 @@ mod tests {
             "1024-based size {size:?} in mini-status: {line:?}"
         );
         assert_eq!(line, format_mini_status(&ent, false));
+        // Parent `..` is GNU UP--DIR, never d--------- / Jan 1 00:00 from UNIX_EPOCH.
+        let parent = make_entry("..", 0, SystemTime::UNIX_EPOCH, true);
+        let parent_line = panel_mini_status_line(true, true, None, Some(&parent), false)
+            .expect("parent mini-status");
+        assert_eq!(parent_line, "UP--DIR");
+        assert_eq!(format_mini_status(&parent, false), "UP--DIR");
+        assert!(
+            !parent_line.contains("d---------")
+                && !parent_line.contains("Jan")
+                && !parent_line.contains("00:00"),
+            "parent mini-status must not be epoch zeros: {parent_line:?}"
+        );
         // SI size units still apply when the line is shown.
         let si_line = panel_mini_status_line(true, false, None, Some(&ent), true)
             .expect("inactive panel still draws mini-status when option is on");
