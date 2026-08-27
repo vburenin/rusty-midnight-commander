@@ -5,11 +5,16 @@
 
 use anyhow::{bail, Result};
 use std::cmp::min;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
+
+/// Baked Apache-2.0 `data/mc.ext.ini` `[view]` helpers (not GPL GNU mc.ext.ini).
+const SHIPPED_EXT_INI: &str = include_str!("../../../data/mc.ext.ini");
 
 /// Maximum bytes to read per window. Large enough for wrapping but bounded.
 const WINDOW_BYTES: usize = 256 * 1024; // 256 KiB
@@ -87,8 +92,12 @@ impl ViewData {
     pub fn from_path(path: PathBuf) -> Self {
         Self { path, _tmp: None }
     }
-    /// Open a view for `path`, auto-applying a known external filter for supported
-    /// filename extensions (e.g. .gz, .bz2, .xz, .zst). Falls back to the raw file.
+    /// Open a view for `path`, applying a decompress filter from `mc.ext.ini`
+    /// `[view]` when the extension matches (e.g. `.gz` → `gzip -dc`).
+    ///
+    /// Archive paths (`.tar.gz`, `.tgz`, …) are not filtered. If a helper is
+    /// missing or the filter exits non-zero, returns `Err` — callers must not
+    /// treat the compressed bytes as text.
     pub fn open_view(path: &Path) -> Result<Self> {
         if let Some(filter) = guess_filter_for_path(path) {
             return ViewData::from_filter(path, &filter);
@@ -113,10 +122,14 @@ impl ViewData {
 
 /// Run the external filter command against `src` and capture its stdout into a temporary file.
 /// Returns an owned temporary file that will be cleaned up on drop.
+/// Errors if the helper is missing or the command fails (never returns compressed garbage).
 pub fn apply_external_filter_to_temp(
     src: &Path,
     filter: &ExternalFilter,
 ) -> Result<tempfile::NamedTempFile> {
+    if !helper_on_path(&filter.program) {
+        bail!("Cannot view: {} not found", filter.program);
+    }
     // Prepare the temporary destination first
     let tmp = tempfile::Builder::new()
         .prefix("rmc-view-filter-")
@@ -143,47 +156,100 @@ pub fn apply_external_filter_to_temp(
     cmd.stdout(Stdio::from(out_file));
     // Silence stderr to avoid polluting test output/terminal
     cmd.stderr(Stdio::null());
-    let status = cmd.status()?;
+    let status = match cmd.status() {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("Cannot view: {} not found", filter.program);
+        }
+        Err(e) => return Err(e.into()),
+    };
     if !status.success() {
-        bail!("filter {:?} exited with {}", filter.program, status);
+        bail!("Cannot view: {} failed", filter.program);
     }
     Ok(tmp)
 }
 
-/// Best-effort guess of an external filter based on filename extension.
-/// Conservative by design — only maps to standard decoder names:
-/// - .gz  -> gzip -dc
-/// - .bz2 -> bzip2 -dc
-/// - .xz  -> xz -dc
-/// - .zst -> zstd -dc
+/// True when `program` is an executable file on `PATH`.
+pub fn helper_on_path(program: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| {
+        let p = dir.join(program);
+        p.is_file()
+    })
+}
+
+fn normalize_view_ext(key: &str) -> String {
+    let k = key.trim().to_ascii_lowercase();
+    if k.starts_with('.') {
+        k
+    } else {
+        format!(".{k}")
+    }
+}
+
+fn parse_view_filters(text: &str) -> HashMap<String, ExternalFilter> {
+    let mut section = String::new();
+    let mut by_ext = HashMap::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].trim().to_ascii_lowercase();
+            continue;
+        }
+        if section != "view" {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = normalize_view_ext(k);
+        let cmd = v.trim();
+        if key.is_empty() || cmd.is_empty() {
+            continue;
+        }
+        let mut parts = cmd.split_whitespace();
+        let Some(program) = parts.next() else {
+            continue;
+        };
+        let args: Vec<String> = parts.map(str::to_string).collect();
+        by_ext.insert(
+            key,
+            ExternalFilter::new(program)
+                .with_args(args)
+                .with_input(FilterInput::ArgPath),
+        );
+    }
+    by_ext
+}
+
+fn view_filter_map() -> &'static HashMap<String, ExternalFilter> {
+    static MAP: OnceLock<HashMap<String, ExternalFilter>> = OnceLock::new();
+    MAP.get_or_init(|| parse_view_filters(SHIPPED_EXT_INI))
+}
+
+/// Filter from `mc.ext.ini` `[view]` for this filename extension.
+/// Conservative: archives (`.tar.gz`, `.tgz`, `.cpio.gz`, …) are not filtered
+/// so F3/Enter can still VFS-enter them. Maps GNU-documented helpers:
+/// - .gz   -> gzip -dc
+/// - .bz2  -> bzip2 -dc
+/// - .xz / .lzma -> xz -dc
+/// - .zst  -> zstd -dc
+/// - .lz4  -> lz4 -dc
+/// - .lz   -> lzip -dc
 pub fn guess_filter_for_path(path: &Path) -> Option<ExternalFilter> {
+    if rmc_fs::pathutil::detect_archive_kind(path).is_some() {
+        return None;
+    }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())?;
-    match ext.as_str() {
-        "gz" => Some(
-            ExternalFilter::new("gzip")
-                .with_args(["-dc"])
-                .with_input(FilterInput::ArgPath),
-        ),
-        "bz2" => Some(
-            ExternalFilter::new("bzip2")
-                .with_args(["-dc"])
-                .with_input(FilterInput::ArgPath),
-        ),
-        "xz" => Some(
-            ExternalFilter::new("xz")
-                .with_args(["-dc"])
-                .with_input(FilterInput::ArgPath),
-        ),
-        "zst" => Some(
-            ExternalFilter::new("zstd")
-                .with_args(["-dc"])
-                .with_input(FilterInput::ArgPath),
-        ),
-        _ => None,
-    }
+    view_filter_map().get(&format!(".{ext}")).cloned()
 }
 
 pub fn file_len(path: &Path) -> Result<u64> {
@@ -1224,14 +1290,7 @@ mod tests {
 
     #[test]
     fn auto_filter_gzip_by_extension() {
-        // Skip test when gzip is not available on PATH
-        let gzip_ok = Command::new("gzip")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if gzip_ok.is_err() {
-            eprintln!("skipping: gzip not installed");
+        if !helper_on_path("gzip") {
             return;
         }
 
@@ -1257,7 +1316,6 @@ mod tests {
             .status()
             .unwrap();
         if !status.success() {
-            eprintln!("skipping: gzip -c failed");
             return;
         }
 
@@ -1278,5 +1336,84 @@ mod tests {
         let joined = r.lines.join("\n");
         assert!(joined.contains("hello"));
         assert!(joined.contains("world"));
+
+        // Hex mode is the decoded payload, not the gzip header.
+        let hx = render_window(
+            view.path(),
+            ViewOptions {
+                hex: true,
+                wrap: false,
+                show_cr: false,
+            },
+            0,
+            80,
+            4,
+        )
+        .unwrap();
+        let hex_joined = hx.lines.join("\n");
+        assert!(
+            !hex_joined.contains("1F 8B"),
+            "hex of .gz must be decompressed payload, not gzip magic"
+        );
+        assert!(hex_joined.contains("hello") || hex_joined.to_ascii_uppercase().contains("68 65"));
+    }
+
+    #[test]
+    fn guess_filter_skips_archives_and_plain_text() {
+        assert!(guess_filter_for_path(Path::new("notes.txt")).is_none());
+        assert!(guess_filter_for_path(Path::new("archive.tar.gz")).is_none());
+        assert!(guess_filter_for_path(Path::new("archive.tgz")).is_none());
+        assert!(guess_filter_for_path(Path::new("notes.txt.gz")).is_some());
+        assert!(guess_filter_for_path(Path::new("log.BZ2")).is_some());
+        assert!(guess_filter_for_path(Path::new("file.xz")).is_some());
+        let gz = guess_filter_for_path(Path::new("a.gz")).expect("gz filter");
+        assert_eq!(gz.program, "gzip");
+        assert_eq!(gz.args, vec!["-dc"]);
+    }
+
+    #[test]
+    fn missing_helper_does_not_return_raw_bytes() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(&[0x1f, 0x8b, 0x08, 0x00]).unwrap();
+        let src = f.path().to_path_buf();
+        let filter = ExternalFilter::new("rmc-missing-decompressor-xyz")
+            .with_args(["-dc"])
+            .with_input(FilterInput::ArgPath);
+        let err = ViewData::from_filter(&src, &filter).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not found") || msg.contains("Cannot view"),
+            "missing helper must error, got {msg}"
+        );
+    }
+
+    #[test]
+    fn shipped_view_section_maps_gnu_helpers() {
+        let map = parse_view_filters(SHIPPED_EXT_INI);
+        assert_eq!(map.get(".gz").map(|f| f.program.as_str()), Some("gzip"));
+        assert_eq!(map.get(".bz2").map(|f| f.program.as_str()), Some("bzip2"));
+        assert_eq!(map.get(".xz").map(|f| f.program.as_str()), Some("xz"));
+    }
+
+    #[test]
+    fn open_view_plain_file_is_unfiltered() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "plain-notes").unwrap();
+        let path = f.path().to_path_buf();
+        let view = ViewData::open_view(&path).unwrap();
+        assert_eq!(view.path(), path.as_path());
+        let r = render_window(
+            view.path(),
+            ViewOptions {
+                hex: false,
+                wrap: false,
+                show_cr: false,
+            },
+            0,
+            80,
+            5,
+        )
+        .unwrap();
+        assert!(r.lines.iter().any(|l| l.contains("plain-notes")));
     }
 }
