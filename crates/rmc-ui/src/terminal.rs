@@ -5669,7 +5669,9 @@ fn try_open_by_extension(app: &mut App) -> Result<bool> {
             run_desktop_open(&path, &app.active_panel().cwd);
             Ok(true)
         }
-        None => Ok(false),
+        // Listed so lookup is non-empty for archives; VFS enter already ran above
+        // when `enter_path` succeeded. Returning false lets core Enter try.
+        Some(crate::mc_ext::OpenAction::Enter) | None => Ok(false),
     }
 }
 
@@ -6022,6 +6024,21 @@ mod enter_open_tests {
         match &app.ui_mode {
             UiMode::Viewer { path, .. } => assert_eq!(path, &file),
             _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_csv_uses_internal_viewer() {
+        let root = temp_workspace();
+        let file = root.join("data.csv");
+        std::fs::write(&file, "a,b\n1,2\n").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "data.csv");
+        press_enter(&mut app);
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("expected Viewer for mapped .csv"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
