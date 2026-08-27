@@ -23,6 +23,8 @@ pub enum Action {
     SwapPanels,
     /// GNU mc Left/Right → Equal panel size (Alt-=). 50/50 split; does not swap.
     EqualizePanels,
+    /// GNU mc Layout Alt-, (Alt-comma): toggle Vertical ↔ Horizontal panel split.
+    TogglePanelSplit,
     /// Open the MC-style User Menu (F2)
     ShowUserMenu,
     FocusMenu,

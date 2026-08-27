@@ -8,9 +8,69 @@ pub struct ChromeGeom {
     pub fbar_row: Option<u16>,
 }
 
+/// Rectangle of one directory panel inside the chrome content area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelRect {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
 impl ChromeGeom {
     pub fn mid_col(cols: u16) -> u16 {
         panel_split(cols, 0.5)
+    }
+}
+
+/// GNU mc(1) menu bar titles. First and last become ` Above ` / ` Below `
+/// when the horizontal panel split is chosen (Left and Right Menus).
+pub fn menu_bar_titles(horizontal_split: bool) -> [&'static str; 5] {
+    if horizontal_split {
+        [" Above ", " File ", " Command ", " Options ", " Below "]
+    } else {
+        [" Left ", " File ", " Command ", " Options ", " Right "]
+    }
+}
+
+/// Dual-pane rectangles inside the chrome content area.
+/// Vertical (default): side-by-side columns (Left | Right).
+/// Horizontal: stacked rows (Above / Below), split by [`panel_split`] on height.
+pub fn dual_panel_rects(
+    cols: u16,
+    chrome: &ChromeGeom,
+    opt: &crate::app::LayoutOptions,
+) -> (PanelRect, PanelRect) {
+    let y = chrome.panel_top;
+    let h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+    if opt.horizontal_split {
+        let top_h = panel_split(h, opt.panel_ratio);
+        let bot_h = h.saturating_sub(top_h);
+        (
+            PanelRect {
+                x: 0,
+                y,
+                w: cols,
+                h: top_h,
+            },
+            PanelRect {
+                x: 0,
+                y: y.saturating_add(top_h),
+                w: cols,
+                h: bot_h,
+            },
+        )
+    } else {
+        let mid = panel_split(cols, opt.panel_ratio);
+        (
+            PanelRect { x: 0, y, w: mid, h },
+            PanelRect {
+                x: mid,
+                y,
+                w: cols.saturating_sub(mid),
+                h,
+            },
+        )
     }
 }
 
@@ -90,7 +150,8 @@ pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions
 
 #[cfg(test)]
 mod tests {
-    use super::panel_split;
+    use super::{compute_chrome_geom, dual_panel_rects, menu_bar_titles, panel_split};
+    use crate::app::LayoutOptions;
 
     #[test]
     fn equal_ratio_matches_integer_half() {
@@ -102,5 +163,76 @@ mod tests {
     fn unequal_ratio_moves_the_split() {
         assert_eq!(panel_split(80, 0.8), 64);
         assert_eq!(panel_split(80, 0.2), 16);
+    }
+
+    #[test]
+    fn menu_bar_titles_left_right_when_vertical() {
+        assert_eq!(
+            menu_bar_titles(false),
+            [" Left ", " File ", " Command ", " Options ", " Right "]
+        );
+    }
+
+    #[test]
+    fn menu_bar_titles_above_below_when_horizontal() {
+        assert_eq!(
+            menu_bar_titles(true),
+            [" Above ", " File ", " Command ", " Options ", " Below "]
+        );
+    }
+
+    #[test]
+    fn default_layout_is_vertical_side_by_side() {
+        let opt = LayoutOptions::default();
+        assert!(!opt.horizontal_split);
+        let chrome = compute_chrome_geom(80, 24, &opt);
+        let (left, right) = dual_panel_rects(80, &chrome, &opt);
+        let content_h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+        assert_eq!(left.w, panel_split(80, opt.panel_ratio));
+        assert_eq!(right.w, 80 - left.w);
+        assert_eq!(left.h, content_h);
+        assert_eq!(right.h, content_h);
+        assert_eq!(left.y, right.y);
+        assert_eq!(left.x, 0);
+        assert_eq!(right.x, left.w);
+    }
+
+    #[test]
+    fn horizontal_split_uses_panel_split_for_rows() {
+        let opt = LayoutOptions {
+            horizontal_split: true,
+            panel_ratio: 0.5,
+            ..LayoutOptions::default()
+        };
+        let chrome = compute_chrome_geom(80, 24, &opt);
+        let content_h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+        let (above, below) = dual_panel_rects(80, &chrome, &opt);
+        assert_eq!(above.h, panel_split(content_h, 0.5));
+        assert_eq!(below.h, content_h - above.h);
+        assert_eq!(above.y, chrome.panel_top);
+        assert_eq!(below.y, chrome.panel_top + above.h);
+        assert_eq!(above.w, 80);
+        assert_eq!(below.w, 80);
+        assert_eq!(above.x, 0);
+        assert_eq!(below.x, 0);
+    }
+
+    #[test]
+    fn horizontal_unequal_ratio_moves_the_row_split() {
+        let opt = LayoutOptions {
+            horizontal_split: true,
+            panel_ratio: 0.8,
+            equal_split: false,
+            ..LayoutOptions::default()
+        };
+        let chrome = compute_chrome_geom(80, 24, &opt);
+        let content_h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+        let (above, below) = dual_panel_rects(80, &chrome, &opt);
+        assert_eq!(above.h, panel_split(content_h, 0.8));
+        assert_eq!(below.h, content_h - above.h);
+        assert!(
+            above.h > below.h,
+            "0.8 ratio should give the top pane more rows"
+        );
     }
 }

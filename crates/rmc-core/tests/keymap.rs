@@ -11,4 +11,6 @@ fn resolves_mc_defaults() {
     assert!(matches!(a, Some(Action::ToggleHidden)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('='), KeyModifiers::ALT));
     assert!(matches!(a, Some(Action::EqualizePanels)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT));
+    assert!(matches!(a, Some(Action::TogglePanelSplit)));
 }

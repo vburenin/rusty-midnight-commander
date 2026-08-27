@@ -115,6 +115,11 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('='), KeyModifiers::ALT),
             EqualizePanels,
         );
+        // GNU mc Layout Panel split toggle: Alt-, (Alt-comma)
+        m.bind(
+            KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
+            TogglePanelSplit,
+        );
         m.bind(
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
             Refresh,
@@ -297,6 +302,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "ToggleHidden" => Some(ToggleHidden),
         "SwapPanels" => Some(SwapPanels),
         "EqualizePanels" => Some(EqualizePanels),
+        "TogglePanelSplit" => Some(TogglePanelSplit),
         "ShowUserMenu" | "UserMenu" => Some(ShowUserMenu),
         "FocusMenu" => Some(FocusMenu),
         "ShowHelp" => Some(ShowHelp),
@@ -352,6 +358,7 @@ fn format_action(a: &Action) -> String {
         ToggleHidden => "ToggleHidden",
         SwapPanels => "SwapPanels",
         EqualizePanels => "EqualizePanels",
+        TogglePanelSplit => "TogglePanelSplit",
         ShowUserMenu => "ShowUserMenu",
         FocusMenu => "FocusMenu",
         ShowHelp => "ShowHelp",
@@ -448,6 +455,8 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "xterm_title={}", app.layout.xterm_title)?;
     writeln!(f, "show_free_space={}", app.layout.show_free_space)?;
     writeln!(f, "panel_ratio={}", app.layout.panel_ratio)?;
+    writeln!(f, "horizontal_split={}", app.layout.horizontal_split)?;
+    writeln!(f, "equal_split={}", app.layout.equal_split)?;
     // [confirm]
     writeln!(f, "\n[confirm]")?;
     writeln!(f, "delete={}", app.confirm.delete)?;
@@ -557,6 +566,8 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                             app.layout.panel_ratio = n.clamp(0.2, 0.8);
                         }
                     }
+                    "horizontal_split" => app.layout.horizontal_split = vb(&v),
+                    "equal_split" => app.layout.equal_split = vb(&v),
                     _ => {}
                 },
                 "confirm" => match k.as_str() {

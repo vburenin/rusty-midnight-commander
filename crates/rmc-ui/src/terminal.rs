@@ -29,7 +29,7 @@ use rmc_core::find::{
     CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
-use rmc_core::layout::{compute_chrome_geom, panel_split};
+use rmc_core::layout::{compute_chrome_geom, dual_panel_rects, menu_bar_titles};
 use rmc_core::panelize::{
     ExternalPanelizeDialogState, ExternalPanelizeFocus as EPF, PanelizeStore,
 };
@@ -1395,10 +1395,9 @@ fn run_compare_dirs(app: &mut App, mode: rmc_core::app::CompareDirsMode) -> anyh
 }
 
 // Hit-test helpers mirroring render.rs packing logic
-fn menu_top_index_from_x(x: u16) -> Option<usize> {
-    // Labels: " Left ", " File ", " Command ", " Options ", " Right "
-    // Placed sequentially starting at x=0
-    let items = [" Left ", " File ", " Command ", " Options ", " Right "];
+fn menu_top_index_from_x(x: u16, horizontal_split: bool) -> Option<usize> {
+    // Titles: Left/Right or Above/Below, placed sequentially starting at x=0
+    let items = menu_bar_titles(horizontal_split);
     let mut cur = 0u16;
     for (i, it) in items.iter().enumerate() {
         let start = cur;
@@ -1565,12 +1564,10 @@ impl TerminalApp {
             // Compute content rows for page/scroll visibility (shared geometry)
             let (cols, rows) = crossterm::terminal::size()?;
             let geom = compute_chrome_geom(cols, rows, &app.layout);
-            let panel_top = geom.panel_top;
-            let content_bottom = geom.content_bottom;
-            let panel_h = content_bottom - panel_top;
+            let (left_pr, right_pr) = dual_panel_rects(cols, &geom, &app.layout);
             let qs_active = app.quick_search.is_some();
             let left_rows = rmc_core::panel::panel_listing_content_rows(
-                panel_h,
+                left_pr.h,
                 rmc_core::panel::reserve_panel_mini_status(
                     app.panel_opts.show_mini_status,
                     matches!(app.active, PaneSide::Left),
@@ -1578,17 +1575,13 @@ impl TerminalApp {
                 ),
             ) as usize;
             let right_rows = rmc_core::panel::panel_listing_content_rows(
-                panel_h,
+                right_pr.h,
                 rmc_core::panel::reserve_panel_mini_status(
                     app.panel_opts.show_mini_status,
                     matches!(app.active, PaneSide::Right),
                     qs_active,
                 ),
             ) as usize;
-            // Compute per-panel visible capacity (rows * Brief columns for packed names)
-            let mid = panel_split(cols, app.layout.panel_ratio);
-            let left_w = mid;
-            let right_w = cols - mid;
             let left_capacity = rmc_core::panel::listing_page_capacity(
                 app.left.listing,
                 app.left.brief_columns,
@@ -1723,7 +1716,9 @@ impl TerminalApp {
                         let my = mev.row;
                         // Top menu bar click: open the corresponding top menu
                         if app.layout.menubar_visible && my == 0 {
-                            if let Some(top_idx) = menu_top_index_from_x(mx) {
+                            if let Some(top_idx) =
+                                menu_top_index_from_x(mx, app.layout.horizontal_split)
+                            {
                                 if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
                                     app.ui_mode = UiMode::Menu {
                                         top_index: top_idx,
@@ -1747,10 +1742,9 @@ impl TerminalApp {
                             }
                             continue;
                         }
-                        // Panel rectangles
-                        let mid = panel_split(cols, app.layout.panel_ratio);
-                        let left_rect = (0u16, panel_top, left_w, (content_bottom - panel_top));
-                        let right_rect = (mid, panel_top, right_w, (content_bottom - panel_top));
+                        // Panel rectangles (same geometry as render.rs)
+                        let left_rect = (left_pr.x, left_pr.y, left_pr.w, left_pr.h);
+                        let right_rect = (right_pr.x, right_pr.y, right_pr.w, right_pr.h);
                         let in_rect =
                             |x: u16, y: u16, rx: u16, ry: u16, rw: u16, rh: u16| -> bool {
                                 x >= rx
@@ -4532,8 +4526,11 @@ impl TerminalApp {
             }
             UiMode::LayoutDialog { draft, focus } => {
                 use LayoutFocus as F;
-                // Focus order: checkboxes then buttons
+                // Focus order: Panel split radios, Equal split, other checkboxes, buttons
                 let order = [
+                    F::SplitVertical,
+                    F::SplitHorizontal,
+                    F::EqualSplit,
                     F::MenuBar,
                     F::CommandPrompt,
                     F::KeyBar,
@@ -4569,8 +4566,13 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Left | KeyCode::Right => {
-                        // Only toggle between buttons when the focus is on a button
-                        if matches!(*focus, F::Ok | F::Cancel) {
+                        if matches!(*focus, F::SplitVertical | F::SplitHorizontal) {
+                            *focus = if matches!(*focus, F::SplitVertical) {
+                                F::SplitHorizontal
+                            } else {
+                                F::SplitVertical
+                            };
+                        } else if matches!(*focus, F::Ok | F::Cancel) {
                             *focus = if matches!(*focus, F::Ok) {
                                 F::Cancel
                             } else {
@@ -4578,16 +4580,33 @@ impl TerminalApp {
                             };
                         }
                     }
+                    // Space on radios/checkboxes before generic Char
                     KeyCode::Char(' ') => match *focus {
+                        F::SplitVertical => draft.horizontal_split = false,
+                        F::SplitHorizontal => draft.horizontal_split = true,
+                        F::EqualSplit => {
+                            draft.equal_split = !draft.equal_split;
+                            if draft.equal_split {
+                                draft.panel_ratio = 0.5;
+                            }
+                        }
                         F::MenuBar => draft.menubar_visible = !draft.menubar_visible,
                         F::CommandPrompt => draft.command_prompt = !draft.command_prompt,
                         F::KeyBar => draft.keybar_visible = !draft.keybar_visible,
                         F::HintBar => draft.hintbar_visible = !draft.hintbar_visible,
                         F::XtermTitle => draft.xterm_title = !draft.xterm_title,
                         F::ShowFreeSpace => draft.show_free_space = !draft.show_free_space,
-                        _ => {}
+                        F::Ok | F::Cancel => {}
                     },
                     KeyCode::Enter => match *focus {
+                        F::SplitVertical => draft.horizontal_split = false,
+                        F::SplitHorizontal => draft.horizontal_split = true,
+                        F::EqualSplit => {
+                            draft.equal_split = !draft.equal_split;
+                            if draft.equal_split {
+                                draft.panel_ratio = 0.5;
+                            }
+                        }
                         F::MenuBar => draft.menubar_visible = !draft.menubar_visible,
                         F::CommandPrompt => draft.command_prompt = !draft.command_prompt,
                         F::KeyBar => draft.keybar_visible = !draft.keybar_visible,
@@ -4595,6 +4614,9 @@ impl TerminalApp {
                         F::XtermTitle => draft.xterm_title = !draft.xterm_title,
                         F::ShowFreeSpace => draft.show_free_space = !draft.show_free_space,
                         F::Ok => {
+                            if draft.equal_split {
+                                draft.panel_ratio = 0.5;
+                            }
                             app.layout = *draft;
                             app.ui_mode = UiMode::Normal;
                         }
@@ -5852,7 +5874,7 @@ impl TerminalApp {
                                 let draft = app.layout;
                                 app.ui_mode = UiMode::LayoutDialog {
                                     draft,
-                                    focus: LayoutFocus::MenuBar,
+                                    focus: LayoutFocus::SplitVertical,
                                 };
                             }
                             "Appearance" => {
@@ -20497,6 +20519,320 @@ mod alt_tab_completion_tests {
         assert_eq!(app.right.mode, PanelMode::QuickView);
 
         assert_eq!(app.left.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_split_layout_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::app::{App, LayoutFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::layout::menu_bar_titles;
+    use rmc_core::panel::PanelMode;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-split-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+    }
+
+    fn press_alt_tab(app: &mut App) {
+        press_mod(app, KeyCode::Tab, KeyModifiers::ALT);
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("zzalpha.txt"), b"a").unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        (left, right)
+    }
+
+    fn seed_app(root: &std::path::Path) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let (left_dir, right_dir) = two_panel_dirs(root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        (app, left_dir, right_dir)
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_layout(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        for _ in 0..3 {
+            press(app, KeyCode::Right);
+        }
+        press(app, KeyCode::Down); // Configuration → Layout
+        press(app, KeyCode::Enter);
+    }
+
+    fn layout_focus(app: &App) -> LayoutFocus {
+        match &app.ui_mode {
+            UiMode::LayoutDialog { focus, .. } => *focus,
+            _ => panic!("expected LayoutDialog"),
+        }
+    }
+
+    fn tab_to_layout_ok(app: &mut App) {
+        for _ in 0..16 {
+            if matches!(
+                app.ui_mode,
+                UiMode::LayoutDialog {
+                    focus: LayoutFocus::Ok,
+                    ..
+                }
+            ) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach Layout OK, focus={:?}", layout_focus(app));
+    }
+
+    #[test]
+    fn default_is_vertical_alt_comma_toggles_and_back() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        assert!(!app.layout.horizontal_split);
+        assert_eq!(
+            menu_bar_titles(app.layout.horizontal_split),
+            [" Left ", " File ", " Command ", " Options ", " Right "]
+        );
+        assert!(matches!(
+            KeyMap::mc_defaults().resolve(&KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT)),
+            Some(Action::TogglePanelSplit)
+        ));
+        press_alt(&mut app, ',');
+        assert!(app.layout.horizontal_split);
+        assert_eq!(
+            menu_bar_titles(app.layout.horizontal_split),
+            [" Above ", " File ", " Command ", " Options ", " Below "]
+        );
+        press_alt(&mut app, ',');
+        assert!(!app.layout.horizontal_split);
+        assert_eq!(
+            menu_bar_titles(app.layout.horizontal_split),
+            [" Left ", " File ", " Command ", " Options ", " Right "]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn layout_dialog_radios_ok_apply_orientation() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        assert!(!app.layout.horizontal_split);
+        open_layout(&mut app);
+        assert_eq!(layout_focus(&app), LayoutFocus::SplitVertical);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(layout_focus(&app), LayoutFocus::SplitHorizontal);
+        press(&mut app, KeyCode::Char(' ')); // Space before generic Char
+        tab_to_layout_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.layout.horizontal_split);
+        assert_eq!(
+            menu_bar_titles(true)[0],
+            " Above ",
+            "horizontal titles keep GNU padded style"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn layout_esc_does_not_apply_pending_orientation() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_layout(&mut app);
+        press(&mut app, KeyCode::Down); // Horizontal radio
+        press(&mut app, KeyCode::Char(' '));
+        match &app.ui_mode {
+            UiMode::LayoutDialog { draft, .. } => assert!(draft.horizontal_split),
+            _ => panic!("expected LayoutDialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.layout.horizontal_split);
+
+        open_layout(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.layout.horizontal_split);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn layout_equal_split_on_sets_ratio_without_forcing_horizontal() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        app.layout.panel_ratio = 0.8;
+        app.layout.equal_split = false;
+        open_layout(&mut app);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // Equal split
+        assert_eq!(layout_focus(&app), LayoutFocus::EqualSplit);
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_layout_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.layout.horizontal_split);
+        assert!(app.layout.equal_split);
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn horizontal_above_below_menus_keep_left_right_items() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        press_alt(&mut app, ',');
+        assert!(app.layout.horizontal_split);
+        assert_eq!(menu_bar_titles(true)[0], " Above ");
+        assert_eq!(menu_bar_titles(true)[4], " Below ");
+
+        open_left_right_item(&mut app, false, "Filter");
+        assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        assert!(matches!(app.ui_mode, UiMode::SortDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, true, "Tree");
+        assert_eq!(app.right.mode, PanelMode::Tree);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.right.mode, PanelMode::Listing);
+
+        app.layout.panel_ratio = 0.65;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+        assert!(app.layout.horizontal_split);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_swap_quick_view_alt_tab_help_quick_cd_after_split_toggle() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        press_alt(&mut app, ',');
+        assert!(app.layout.horizontal_split);
+
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+
+        // Alt-Tab completion still works on the command line
+        press(&mut app, KeyCode::Esc);
+        for c in "zza".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
+
+        app.ui_mode = UiMode::Normal;
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open after split toggle"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
