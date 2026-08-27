@@ -1,6 +1,6 @@
 //! App wiring: live VFS timeout, C-r invalidates, change_dir reuses cache.
 use anyhow::Result;
-use rmc_core::actions::Action;
+use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::App;
 use rmc_core::config::KeyMap;
 use rmc_fs::composite::CompositeFs;
@@ -108,18 +108,23 @@ fn live_timeout_is_pushed_refresh_invalidates_chdir_does_not() -> Result<()> {
     assert_eq!(timeout.load(Ordering::SeqCst), 42);
 
     let left = app.left.cwd.clone();
+    let other = tempdir()?;
+    app.active = PaneSide::Right;
+    app.change_dir(other.path())?;
+    app.active = PaneSide::Left;
     let right = app.right.cwd.clone();
+    assert_ne!(left, right, "panels must be in different directories");
     invalidates.lock().unwrap().clear();
     app.handle_action(Action::Refresh)?;
     {
         let v = invalidates.lock().unwrap();
         assert!(
             v.iter().any(|p| p.as_ref() == Some(&left)),
-            "Refresh must invalidate the left panel cwd: {v:?}"
+            "Refresh must invalidate the active panel cwd: {v:?}"
         );
         assert!(
-            v.iter().any(|p| p.as_ref() == Some(&right)),
-            "Refresh must invalidate the right panel cwd: {v:?}"
+            !v.iter().any(|p| p.as_ref() == Some(&right)),
+            "Refresh must not invalidate the inactive panel cwd: {v:?}"
         );
     }
 

@@ -391,6 +391,34 @@ impl PanelState {
         }
     }
 
+    /// After a directory re-list: keep the cursor on the same name when it still
+    /// exists, otherwise clamp to the previous index (nearest remaining entry).
+    /// Re-bind Insert marks by name so added/removed files do not shift tags.
+    pub fn restore_selection_after_reload(
+        &mut self,
+        cursor_name: Option<&str>,
+        cursor_idx: usize,
+        marked_names: &[String],
+    ) {
+        if let Some(name) = cursor_name {
+            if let Some(idx) = self.entries.iter().position(|e| e.name == name) {
+                self.cursor = idx;
+            } else {
+                self.cursor = cursor_idx.min(self.entries.len().saturating_sub(1));
+            }
+        }
+        // No previous name (empty listing): keep the index `set_entries_with` already clamped.
+        if self.cursor < self.scroll_top {
+            self.scroll_top = self.cursor;
+        }
+        self.selection.clear();
+        for name in marked_names {
+            if let Some(idx) = self.entries.iter().position(|e| e.name == *name) {
+                self.selection.select(idx);
+            }
+        }
+    }
+
     /// Default-true wrapper: GNU mc `reverse_files_only` defaults on.
     pub fn apply_sort(&mut self) {
         self.apply_sort_with(true);
@@ -1001,6 +1029,59 @@ mod tests {
         assert!(p.entries.is_empty());
         assert_eq!(p.cursor, 0);
         assert_eq!(p.scroll_top, 0);
+    }
+
+    #[test]
+    fn restore_selection_after_reload_keeps_name_and_marks() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.set_entries(vec![
+            make_entry("alpha.txt", 1, now, false),
+            make_entry("beta.txt", 2, now, false),
+            make_entry("gamma.txt", 3, now, false),
+        ]);
+        let beta = p.entries.iter().position(|e| e.name == "beta.txt").unwrap();
+        p.cursor = beta;
+        p.selection.select(beta);
+
+        p.set_entries(vec![
+            make_entry("aaa.txt", 0, now, false),
+            make_entry("alpha.txt", 1, now, false),
+            make_entry("beta.txt", 2, now, false),
+            make_entry("gamma.txt", 3, now, false),
+        ]);
+        p.restore_selection_after_reload(Some("beta.txt"), beta, &["beta.txt".to_string()]);
+        assert_eq!(p.current_entry().map(|e| e.name.as_str()), Some("beta.txt"));
+        let marked: Vec<_> = p
+            .selection
+            .iter()
+            .filter_map(|i| p.entries.get(i).map(|e| e.name.as_str()))
+            .collect();
+        assert_eq!(marked, ["beta.txt"]);
+    }
+
+    #[test]
+    fn restore_selection_after_reload_clamps_when_name_gone() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.set_entries(vec![
+            make_entry("alpha.txt", 1, now, false),
+            make_entry("beta.txt", 2, now, false),
+            make_entry("gamma.txt", 3, now, false),
+        ]);
+        let beta = p.entries.iter().position(|e| e.name == "beta.txt").unwrap();
+        p.cursor = beta;
+        p.set_entries(vec![
+            make_entry("alpha.txt", 1, now, false),
+            make_entry("gamma.txt", 3, now, false),
+        ]);
+        p.restore_selection_after_reload(Some("beta.txt"), beta, &[]);
+        assert_eq!(
+            p.cursor,
+            beta.min(p.entries.len().saturating_sub(1)),
+            "missing name keeps relative index, clamped"
+        );
+        assert!(p.selection.is_empty());
     }
 
     #[test]

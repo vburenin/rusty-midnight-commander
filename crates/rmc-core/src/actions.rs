@@ -19,6 +19,9 @@ pub enum SortBy {
 pub enum Action {
     // High level UI mode changes
     Quit,
+    /// GNU mc(1) C-r / Left-Right → Reread: force-reload the **active** panel listing.
+    /// Distinct from C-l Repaint (screen redraw only). Always `list_dir`s even when
+    /// Fast directory reload would skip an automatic reload.
     Refresh,
     /// GNU mc(1) C-l: full terminal repaint. Does not re-list directories (that is Refresh / C-r).
     Repaint,

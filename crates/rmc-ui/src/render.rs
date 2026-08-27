@@ -6223,6 +6223,7 @@ pub(crate) const LEFT_RIGHT_MENU_ITEMS: &[&str] = &[
     "Sort order...",
     "Tree",
     "Filter",
+    "Reread",
     "Equal panel size",
 ];
 
