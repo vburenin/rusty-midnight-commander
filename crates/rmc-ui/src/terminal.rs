@@ -3376,7 +3376,10 @@ impl TerminalApp {
                     }
                     KeyCode::Up => {
                         if state.focus.is_checkbox()
-                            || matches!(state.focus, FF::StartDir | FF::NamePattern | FF::Content)
+                            || matches!(
+                                state.focus,
+                                FF::StartDir | FF::NamePattern | FF::Content | FF::IgnoreDirs
+                            )
                         {
                             if !matches!(state.focus, FF::StartDir) {
                                 state.focus = state.focus.prev();
@@ -3397,7 +3400,10 @@ impl TerminalApp {
                     }
                     KeyCode::Down => {
                         if state.focus.is_checkbox()
-                            || matches!(state.focus, FF::StartDir | FF::NamePattern | FF::Content)
+                            || matches!(
+                                state.focus,
+                                FF::StartDir | FF::NamePattern | FF::Content | FF::IgnoreDirs
+                            )
                         {
                             let n = state.focus.next();
                             // Do not wrap from the last form widget back to Start at.
@@ -3450,10 +3456,13 @@ impl TerminalApp {
                                 }
                             }
                         }
+                        FF::IgnoreDirs => {
+                            state.params.ignore_dirs.pop();
+                        }
                         _ => {}
                     },
                     // Space toggles checkboxes before generic Char so typing still
-                    // inserts spaces into Start at / Filename / Content.
+                    // inserts spaces into Start at / Filename / Content / Ignore dirs.
                     KeyCode::Char(' ') if key.modifiers.is_empty() && state.focus.is_checkbox() => {
                         let _ = state.toggle_focused_checkbox();
                     }
@@ -3478,6 +3487,9 @@ impl TerminalApp {
                                     } else {
                                         state.params.content_substring = Some(c.to_string());
                                     }
+                                }
+                                FF::IgnoreDirs if !c.is_control() => {
+                                    state.params.ignore_dirs.push(c);
                                 }
                                 _ => {}
                             }
@@ -12305,6 +12317,9 @@ mod find_file_dialog_tests {
         assert!(!st.params.follow_symlinks);
         assert!(!st.params.skip_hidden);
         assert!(!st.params.case_sensitive);
+        assert!(!st.params.whole_words);
+        assert!(!st.params.enable_ignore_dirs);
+        assert!(st.params.ignore_dirs.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -12314,8 +12329,17 @@ mod find_file_dialog_tests {
         let mut app = make_app(&root);
         app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
 
-        // NamePattern -> Content -> Case sensitive
+        // NamePattern -> Content -> Whole words -> Case sensitive
         press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::Content);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::WholeWords);
+        assert!(!find_state(&app).params.whole_words);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.whole_words);
+        press(&mut app, KeyCode::Enter);
+        assert!(!find_state(&app).params.whole_words);
+
         press(&mut app, KeyCode::Tab);
         assert_eq!(find_state(&app).focus, FF::CaseSensitive);
         assert!(!find_state(&app).params.case_sensitive);
@@ -12345,14 +12369,39 @@ mod find_file_dialog_tests {
         press(&mut app, KeyCode::Char(' '));
         assert!(find_state(&app).params.skip_hidden);
 
-        press(&mut app, KeyCode::BackTab);
-        assert_eq!(find_state(&app).focus, FF::FollowSymlinks);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
+        assert!(!find_state(&app).params.enable_ignore_dirs);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.enable_ignore_dirs);
+        press(&mut app, KeyCode::Enter);
+        assert!(!find_state(&app).params.enable_ignore_dirs);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.enable_ignore_dirs);
 
-        // Down/Up also walk the checkbox row.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::IgnoreDirs);
+        press(&mut app, KeyCode::Char('.'));
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(find_state(&app).params.ignore_dirs, ".git ");
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(find_state(&app).params.ignore_dirs, ".git");
+
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
+
+        // Down/Up also walk the checkbox row and ignore-dirs field.
         press(&mut app, KeyCode::Down);
-        assert_eq!(find_state(&app).focus, FF::SkipHidden);
+        assert_eq!(find_state(&app).focus, FF::IgnoreDirs);
         press(&mut app, KeyCode::Up);
-        assert_eq!(find_state(&app).focus, FF::FollowSymlinks);
+        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(find_state(&app).focus, FF::SkipHidden);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
 
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);

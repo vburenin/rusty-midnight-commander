@@ -111,11 +111,20 @@ pub fn draw_find_dialog(
         matches!(st.focus, F::Content),
         pal,
     );
-    // GNU Find File checkboxes (order matches src/filemanager/find.c)
+    // GNU Find File checkboxes (public mc(1) "Find File" labels and order)
     draw_checkbox(
         p,
         x + 3,
         y + 8,
+        st.params.whole_words,
+        matches!(st.focus, F::WholeWords),
+        "Whole words",
+        pal,
+    );
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 9,
         st.params.case_sensitive,
         matches!(st.focus, F::CaseSensitive),
         "Case sensitive",
@@ -124,7 +133,7 @@ pub fn draw_find_dialog(
     draw_checkbox(
         p,
         x + 3,
-        y + 9,
+        y + 10,
         st.params.regular_expression,
         matches!(st.focus, F::RegularExpression),
         "Regular expression",
@@ -133,7 +142,7 @@ pub fn draw_find_dialog(
     draw_checkbox(
         p,
         x + 3,
-        y + 10,
+        y + 11,
         st.params.find_recursively,
         matches!(st.focus, F::FindRecursively),
         "Find recursively",
@@ -142,7 +151,7 @@ pub fn draw_find_dialog(
     draw_checkbox(
         p,
         x + 3,
-        y + 11,
+        y + 12,
         st.params.follow_symlinks,
         matches!(st.focus, F::FollowSymlinks),
         "Follow symlinks",
@@ -151,15 +160,33 @@ pub fn draw_find_dialog(
     draw_checkbox(
         p,
         x + 3,
-        y + 12,
+        y + 13,
         st.params.skip_hidden,
         matches!(st.focus, F::SkipHidden),
         "Skip hidden",
         pal,
     );
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 14,
+        st.params.enable_ignore_dirs,
+        matches!(st.focus, F::EnableIgnoreDirs),
+        "Enable ignore directories",
+        pal,
+    );
+    draw_field(
+        p,
+        x + 3,
+        y + 15,
+        field_w.saturating_sub(1),
+        &st.params.ignore_dirs,
+        matches!(st.focus, F::IgnoreDirs),
+        pal,
+    );
     // Status line
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 13);
+    p.goto(x + 2, y + 16);
     let n = st.results.paths.len();
     let status = if st.running {
         format!("Searching... {n} matches")

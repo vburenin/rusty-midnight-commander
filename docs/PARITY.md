@@ -136,7 +136,7 @@ From mcedit(1):
 - [x] Editing: block copy/move/delete/cut/paste; undo; insert/overwrite; autoindent; tab width
 - [x] Syntax highlighting for common types
 - [x] Macros; external filters (pipe regions to commands)
-- [ ] Search/replace with regex
+- [x] Search/replace with regex
 - [x] Menu via F9
 - [x] F2 save; F10 quit (and Esc Esc)
 
@@ -160,7 +160,7 @@ From README and mc(1):
 
 Per mc(1) “Find File” and “External panelize”:
 - [ ] Find File dialog: start dir (tree picker), filename pattern (glob/regex), content search string, case sensitivity, whole words
-- [ ] Exclude/ignore directories list (colon-separated), follow symlinks options
+- [x] Exclude/ignore directories list (colon-separated), follow symlinks options
 - [ ] Buttons: OK, Stop/Start, Again, Chdir, Panelize, Quit
 - [x] Panelize results into panel; return to normal listing with “..” or switching mode
 - [ ] External Panelize: Ctrl-x !; run arbitrary shell command producing path list; save named commands; re-panelize results
