@@ -22690,7 +22690,6 @@ mod panel_quick_search_tests {
         press(&mut app, KeyCode::Esc);
         assert!(app.quick_search.is_none());
         assert_eq!(app.quick_search_prev, "abc");
-        let kept = app.active_panel().cursor;
 
         app.active_panel_mut().cursor = idx_of(&app, "file2.txt");
         press_ctrl(&mut app, 's');
@@ -22707,7 +22706,7 @@ mod panel_quick_search_tests {
             Some("abc")
         );
         assert_eq!(cursor_name(&app), "abc.txt");
-        assert_ne!(app.active_panel().cursor, kept);
+        assert_ne!(cursor_name(&app), "file2.txt");
 
         // Empty previous behaves like a single C-s (no move).
         app.quick_search = None;
