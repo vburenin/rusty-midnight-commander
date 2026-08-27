@@ -5443,11 +5443,13 @@ impl TerminalApp {
                                 let exists = app.vfs.stat(&dst).is_ok();
                                 if exists {
                                     if app.confirm.overwrite {
+                                        let skip = app.dont_overwrite_with_zero;
                                         app.ui_mode = UiMode::OverwriteDialog {
                                             op,
                                             src_path: src,
                                             dst_path: dst,
                                             focus: rmc_core::app::OverwriteFocus::Yes,
+                                            skip_zero_length: skip,
                                         };
                                     } else {
                                         let _ = app.vfs.remove(&dst, false);
@@ -5567,85 +5569,60 @@ impl TerminalApp {
                 src_path,
                 dst_path,
                 focus,
+                skip_zero_length,
             } => {
-                use rmc_core::app::OverwriteFocus as OF;
+                use rmc_core::app::{
+                    cycle_overwrite_focus, overwrite_tab_order, skip_zero_length_overwrite,
+                    OverwriteFocus as OF,
+                };
+                let src_size = app.vfs.stat(src_path).map(|m| m.size).unwrap_or(0);
+                let dst_size = app.vfs.stat(dst_path).map(|m| m.size).unwrap_or(0);
+                let order = overwrite_tab_order(*op, src_size, dst_size);
                 match key.code {
                     KeyCode::Esc | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Tab => {
-                        *focus = match *focus {
-                            OF::Yes => OF::No,
-                            OF::No => OF::All,
-                            OF::All => OF::Older,
-                            OF::Older => OF::None,
-                            OF::None => OF::Smaller,
-                            OF::Smaller => OF::SizeDiffers,
-                            OF::SizeDiffers => OF::Append,
-                            OF::Append => OF::Yes,
-                        };
+                        *focus = cycle_overwrite_focus(*focus, &order, false);
                     }
                     KeyCode::BackTab => {
-                        *focus = match *focus {
-                            OF::Yes => OF::Append,
-                            OF::No => OF::Yes,
-                            OF::All => OF::No,
-                            OF::Older => OF::All,
-                            OF::None => OF::Older,
-                            OF::Smaller => OF::None,
-                            OF::SizeDiffers => OF::Smaller,
-                            OF::Append => OF::SizeDiffers,
-                        };
+                        *focus = cycle_overwrite_focus(*focus, &order, true);
+                    }
+                    KeyCode::Char(' ') if *focus == OF::ZeroLength => {
+                        *skip_zero_length = !*skip_zero_length;
+                        app.dont_overwrite_with_zero = *skip_zero_length;
+                    }
+                    KeyCode::Enter if *focus == OF::ZeroLength => {
+                        *skip_zero_length = !*skip_zero_length;
+                        app.dont_overwrite_with_zero = *skip_zero_length;
+                    }
+                    KeyCode::Enter if *focus == OF::Abort => {
+                        app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Enter => {
-                        // Apply selection
-                        let act_yes = match *focus {
-                            OF::Yes | OF::All => true,
-                            OF::No | OF::None => false,
-                            OF::Older => {
-                                if let (Ok(s), Ok(d)) =
-                                    (app.vfs.stat(src_path), app.vfs.stat(dst_path))
-                                {
-                                    s.modified > d.modified
-                                } else {
-                                    false
-                                }
-                            }
-                            OF::Smaller => {
-                                if let (Ok(s), Ok(d)) =
-                                    (app.vfs.stat(src_path), app.vfs.stat(dst_path))
-                                {
-                                    s.size < d.size
-                                } else {
-                                    false
-                                }
-                            }
-                            OF::SizeDiffers => {
-                                if let (Ok(s), Ok(d)) =
-                                    (app.vfs.stat(src_path), app.vfs.stat(dst_path))
-                                {
-                                    s.size != d.size
-                                } else {
-                                    false
-                                }
-                            }
-                            OF::Append => false,
+                        let focus = *focus;
+                        let skip_zero = *skip_zero_length;
+                        let op = *op;
+                        let src = src_path.clone();
+                        let dst = dst_path.clone();
+                        let src_mtime_newer = match (app.vfs.stat(&src), app.vfs.stat(&dst)) {
+                            (Ok(s), Ok(d)) => s.modified > d.modified,
+                            _ => false,
                         };
-                        if *focus == OF::Append {
-                            use std::fs::OpenOptions;
-                            use std::io::{Read, Write};
-                            let res = (|| -> anyhow::Result<()> {
-                                let mut rdr = app.vfs.read_file(src_path)?;
-                                let mut f = OpenOptions::new()
-                                    .create(true)
-                                    .append(true)
-                                    .open(dst_path)?;
-                                let mut buf = Vec::new();
-                                rdr.read_to_end(&mut buf)?;
-                                f.write_all(&buf)?;
-                                Ok(())
-                            })();
-                            match res {
+                        let act_yes = match focus {
+                            OF::Yes | OF::All => true,
+                            OF::No
+                            | OF::None
+                            | OF::Append
+                            | OF::Reget
+                            | OF::Abort
+                            | OF::ZeroLength => false,
+                            OF::Older => src_mtime_newer,
+                            OF::Smaller => src_size < dst_size,
+                            OF::SizeDiffers => src_size != dst_size,
+                        };
+                        if focus == OF::Append {
+                            match rmc_core::fileop::append_file(app.vfs.as_ref(), &src, &dst) {
                                 Ok(()) => {
                                     app.ui_mode = UiMode::Normal;
                                     app.reload_panels()?;
@@ -5658,10 +5635,25 @@ impl TerminalApp {
                                     };
                                 }
                             }
+                        } else if focus == OF::Reget {
+                            match rmc_core::fileop::reget_copy(app.vfs.as_ref(), &src, &dst) {
+                                Ok(()) => {
+                                    app.ui_mode = UiMode::Normal;
+                                    app.reload_panels()?;
+                                }
+                                Err(err) => {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: format!("{err}"),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                }
+                            }
+                        } else if act_yes
+                            && skip_zero_length_overwrite(skip_zero, src_size, dst_size)
+                        {
+                            app.ui_mode = UiMode::Normal;
                         } else if act_yes {
-                            let op = *op;
-                            let src = src_path.clone();
-                            let dst = dst_path.clone();
                             let _ = app.vfs.remove(&dst, false);
                             app.ui_mode = Self::file_op_progress_mode(
                                 app.vfs.as_ref(),
@@ -8625,6 +8617,7 @@ fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_
         stable_symlinks: false,
         focus: rmc_core::app::CopyDialogFocus::To,
     };
+    app.dont_overwrite_with_zero = false;
 }
 
 /// F3 / `[open] = view`: internal viewer when configured, else $PAGER / view / less.
@@ -9462,6 +9455,7 @@ fn directory_tree_copy_move(app: &mut App, copy: bool) {
         stable_symlinks: false,
         focus: rmc_core::app::CopyDialogFocus::To,
     };
+    app.dont_overwrite_with_zero = false;
 }
 
 fn directory_tree_delete(app: &mut App) {
@@ -10864,6 +10858,450 @@ mod file_op_abort_keys_tests {
             drop(app);
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+}
+
+#[cfg(test)]
+mod overwrite_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::{overwrite_tab_order, CopyMoveOp, OverwriteFocus};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+    use std::time::{Duration, Instant};
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-overwrite-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn overwrite_focus(app: &App) -> OverwriteFocus {
+        match &app.ui_mode {
+            UiMode::OverwriteDialog { focus, .. } => *focus,
+            _ => panic!("expected OverwriteDialog, got other mode"),
+        }
+    }
+
+    fn skip_zero(app: &App) -> bool {
+        match &app.ui_mode {
+            UiMode::OverwriteDialog {
+                skip_zero_length, ..
+            } => *skip_zero_length,
+            _ => panic!("expected OverwriteDialog"),
+        }
+    }
+
+    fn open_overwrite(
+        app: &mut App,
+        op: CopyMoveOp,
+        src: std::path::PathBuf,
+        dst: std::path::PathBuf,
+    ) {
+        let skip = app.dont_overwrite_with_zero;
+        app.ui_mode = UiMode::OverwriteDialog {
+            op,
+            src_path: src,
+            dst_path: dst,
+            focus: OverwriteFocus::Yes,
+            skip_zero_length: skip,
+        };
+    }
+
+    fn tab_until(app: &mut App, want: OverwriteFocus) {
+        for _ in 0..24 {
+            if overwrite_focus(app) == want {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("never focused {want:?}");
+    }
+
+    fn collect_tab_order(app: &mut App) -> Vec<OverwriteFocus> {
+        let start = overwrite_focus(app);
+        let mut v = vec![start];
+        loop {
+            press(app, KeyCode::Tab);
+            let f = overwrite_focus(app);
+            if f == start {
+                break;
+            }
+            v.push(f);
+            assert!(v.len() < 24, "tab order did not wrap: {v:?}");
+        }
+        v
+    }
+
+    fn wait_until_idle(app: &mut App) {
+        let start = Instant::now();
+        loop {
+            app.poll_file_op_progress().unwrap();
+            if !matches!(app.ui_mode, UiMode::FileOpProgress { .. }) {
+                return;
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                panic!("file op did not finish");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn reget_offered_for_copy_when_dest_is_shorter_partial() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, vec![1u8; 80]).unwrap();
+        std::fs::write(&dst, vec![2u8; 30]).unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst);
+        let order = collect_tab_order(&mut app);
+        assert!(
+            order.contains(&OverwriteFocus::Reget),
+            "Reget missing from tab order: {order:?}"
+        );
+        assert!(order.contains(&OverwriteFocus::Abort));
+        assert!(order.contains(&OverwriteFocus::ZeroLength));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reget_hidden_when_dest_empty_or_not_shorter() {
+        for dest_len in [0usize, 80, 120] {
+            let root = temp_workspace();
+            let src = root.join("src.bin");
+            let dst = root.join("dst.bin");
+            std::fs::write(&src, vec![1u8; 80]).unwrap();
+            std::fs::write(&dst, vec![2u8; dest_len]).unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst);
+            let order = collect_tab_order(&mut app);
+            assert!(
+                !order.contains(&OverwriteFocus::Reget),
+                "Reget must be hidden for dest_len={dest_len}: {order:?}"
+            );
+            let expected = overwrite_tab_order(CopyMoveOp::Copy, 80, dest_len as u64);
+            assert_eq!(order, expected);
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn reget_not_offered_for_move() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, vec![1u8; 80]).unwrap();
+        std::fs::write(&dst, vec![2u8; 30]).unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Move, src, dst);
+        let order = collect_tab_order(&mut app);
+        assert!(
+            !order.contains(&OverwriteFocus::Reget),
+            "Reget must not be offered on Move: {order:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reget_copies_remainder_preserving_dest_prefix() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        let full: Vec<u8> = (0u8..120).collect();
+        std::fs::write(&src, &full).unwrap();
+        std::fs::write(&dst, &full[..40]).unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src.clone(), dst.clone());
+        tab_until(&mut app, OverwriteFocus::Reget);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn append_still_appends_whole_source() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, b"XYZ").unwrap();
+        std::fs::write(&dst, b"AB").unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+        tab_until(&mut app, OverwriteFocus::Append);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"ABXYZ");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn yes_still_overwrites() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, b"NEWDATA").unwrap();
+        std::fs::write(&dst, b"old").unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+        assert_eq!(overwrite_focus(&app), OverwriteFocus::Yes);
+        press(&mut app, KeyCode::Enter);
+        wait_until_idle(&mut app);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"NEWDATA");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checkbox_off_zero_length_source_does_overwrite() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, b"").unwrap();
+        std::fs::write(&dst, b"keep-me-not").unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+        assert!(!skip_zero(&app));
+        press(&mut app, KeyCode::Enter);
+        wait_until_idle(&mut app);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checkbox_on_zero_length_source_does_not_replace() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, b"").unwrap();
+        std::fs::write(&dst, b"keep-me").unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+        tab_until(&mut app, OverwriteFocus::ZeroLength);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(skip_zero(&app));
+        assert!(app.dont_overwrite_with_zero);
+        tab_until(&mut app, OverwriteFocus::Yes);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"keep-me");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_toggles_checkbox_esc_does_not_reget() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        let full: Vec<u8> = (0u8..50).collect();
+        std::fs::write(&src, &full).unwrap();
+        let dest_prefix = full[..20].to_vec();
+        std::fs::write(&dst, &dest_prefix).unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+        tab_until(&mut app, OverwriteFocus::ZeroLength);
+        assert!(!skip_zero(&app));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(skip_zero(&app));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!skip_zero(&app));
+        tab_until(&mut app, OverwriteFocus::Reget);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), dest_prefix);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checkbox_persists_for_same_file_op_and_resets_on_new_copy() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, vec![1u8; 80]).unwrap();
+        std::fs::write(&dst, vec![2u8; 30]).unwrap();
+        std::fs::write(root.join("notes.txt"), b"hello").unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src.clone(), dst.clone());
+        tab_until(&mut app, OverwriteFocus::ZeroLength);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.dont_overwrite_with_zero);
+        press(&mut app, KeyCode::Esc);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst);
+        assert!(skip_zero(&app), "checkbox persists in the same file-op");
+        press(&mut app, KeyCode::Esc);
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt")
+            .expect("notes.txt");
+        app.active_panel_mut().cursor = idx;
+        press(&mut app, KeyCode::F(5));
+        assert!(
+            !app.dont_overwrite_with_zero,
+            "new Copy dialog resets file-op context"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn all_older_none_smaller_size_differs_keep_existing_semantics() {
+        let root = temp_workspace();
+        let vfs_now = std::time::SystemTime::now();
+
+        // All: overwrite this file
+        {
+            let src = root.join("all-src.bin");
+            let dst = root.join("all-dst.bin");
+            std::fs::write(&src, b"ALL").unwrap();
+            std::fs::write(&dst, b"old").unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::All);
+            press(&mut app, KeyCode::Enter);
+            wait_until_idle(&mut app);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"ALL");
+        }
+
+        // None: skip
+        {
+            let src = root.join("none-src.bin");
+            let dst = root.join("none-dst.bin");
+            std::fs::write(&src, b"NEW").unwrap();
+            std::fs::write(&dst, b"keep").unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::None);
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"keep");
+        }
+
+        // Older: overwrite only if source is newer
+        {
+            let src = root.join("older-src.bin");
+            let dst = root.join("older-dst.bin");
+            std::fs::write(&src, b"newer-src").unwrap();
+            std::fs::write(&dst, b"older-dst").unwrap();
+            let src_f = std::fs::File::open(&src).unwrap();
+            src_f
+                .set_modified(vfs_now + Duration::from_secs(60))
+                .unwrap();
+            let dst_f = std::fs::File::open(&dst).unwrap();
+            dst_f
+                .set_modified(vfs_now - Duration::from_secs(60))
+                .unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::Older);
+            press(&mut app, KeyCode::Enter);
+            wait_until_idle(&mut app);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"newer-src");
+        }
+        {
+            let src = root.join("older2-src.bin");
+            let dst = root.join("older2-dst.bin");
+            std::fs::write(&src, b"old-src").unwrap();
+            std::fs::write(&dst, b"new-dst").unwrap();
+            let src_f = std::fs::File::open(&src).unwrap();
+            src_f
+                .set_modified(vfs_now - Duration::from_secs(60))
+                .unwrap();
+            let dst_f = std::fs::File::open(&dst).unwrap();
+            dst_f
+                .set_modified(vfs_now + Duration::from_secs(60))
+                .unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::Older);
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"new-dst");
+        }
+
+        // Smaller: overwrite only if source size < dest size
+        {
+            let src = root.join("sm-src.bin");
+            let dst = root.join("sm-dst.bin");
+            std::fs::write(&src, b"xy").unwrap();
+            std::fs::write(&dst, b"abcd").unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::Smaller);
+            press(&mut app, KeyCode::Enter);
+            wait_until_idle(&mut app);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"xy");
+        }
+        {
+            let src = root.join("sm2-src.bin");
+            let dst = root.join("sm2-dst.bin");
+            std::fs::write(&src, b"abcdef").unwrap();
+            std::fs::write(&dst, b"ab").unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::Smaller);
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"ab");
+        }
+
+        // Size differs: overwrite when sizes differ; skip when equal
+        {
+            let src = root.join("sd-src.bin");
+            let dst = root.join("sd-dst.bin");
+            std::fs::write(&src, b"abc").unwrap();
+            std::fs::write(&dst, b"ab").unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::SizeDiffers);
+            press(&mut app, KeyCode::Enter);
+            wait_until_idle(&mut app);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"abc");
+        }
+        {
+            let src = root.join("sd2-src.bin");
+            let dst = root.join("sd2-dst.bin");
+            std::fs::write(&src, b"aaa").unwrap();
+            std::fs::write(&dst, b"bbb").unwrap();
+            let mut app = make_app(&root);
+            open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+            tab_until(&mut app, OverwriteFocus::SizeDiffers);
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(std::fs::read(&dst).unwrap(), b"bbb");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn abort_button_closes_without_changing_dest() {
+        let root = temp_workspace();
+        let src = root.join("src.bin");
+        let dst = root.join("dst.bin");
+        std::fs::write(&src, b"src").unwrap();
+        std::fs::write(&dst, b"dst").unwrap();
+        let mut app = make_app(&root);
+        open_overwrite(&mut app, CopyMoveOp::Copy, src, dst.clone());
+        tab_until(&mut app, OverwriteFocus::Abort);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(std::fs::read(&dst).unwrap(), b"dst");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

@@ -9,8 +9,10 @@
 
 use crate::app::{ConfigOptions, CopyMoveOp};
 use crate::panel::format_byte_size;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rmc_fs::Vfs;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// Pre-scan result used as the progress-bar denominator when Compute totals is on.
@@ -278,6 +280,76 @@ pub fn maybe_scan_totals(
 /// GNU mc's original text-mode gauge inner width (before the dialog grew with the screen).
 pub fn default_bar_width() -> usize {
     47
+}
+
+/// Append the whole source file to the target (GNU replace-dialog Append).
+pub fn append_file(vfs: &dyn Vfs, src: &Path, dst: &Path) -> Result<()> {
+    let mut rdr = vfs.read_file(src)?;
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dst)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut buf = Vec::new();
+    rdr.read_to_end(&mut buf)?;
+    f.write_all(&buf)?;
+    Ok(())
+}
+
+/// Resume copy: keep the first `dest_size` bytes of dest, then write the rest
+/// of source starting at that offset. Does **not** clone or preallocate the
+/// whole file (Reget is a remainder append, not an ordinary overwrite).
+///
+/// Local dest is required (seek without truncate). Non-local dest returns a
+/// clean error. Non-local source is supported by skipping `dest_size` bytes.
+pub fn reget_copy(vfs: &dyn Vfs, src: &Path, dst: &Path) -> Result<()> {
+    let src_meta = vfs.stat(src)?;
+    let dst_meta = vfs.stat(dst)?;
+    let dest_size = dst_meta.size;
+    if dest_size == 0 || dest_size >= src_meta.size {
+        bail!("Reget is only valid when the target size is non-zero and smaller than the source");
+    }
+    if !vfs.is_local_path(dst) {
+        bail!("Reget is not supported on this filesystem");
+    }
+
+    let mut dst_f = OpenOptions::new()
+        .write(true)
+        .open(dst)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    dst_f
+        .seek(SeekFrom::Start(dest_size))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if vfs.is_local_path(src) {
+        let mut src_f = File::open(src).map_err(|e| anyhow::anyhow!("{e}"))?;
+        src_f
+            .seek(SeekFrom::Start(dest_size))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        io::copy(&mut src_f, &mut dst_f).map_err(|e| anyhow::anyhow!("{e}"))?;
+    } else {
+        let mut rdr = vfs.read_file(src)?;
+        skip_bytes(&mut rdr, dest_size).map_err(|e| anyhow::anyhow!("{e}"))?;
+        io::copy(&mut rdr, &mut dst_f).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    dst_f.flush().map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(())
+}
+
+fn skip_bytes(r: &mut dyn Read, mut n: u64) -> io::Result<()> {
+    let mut buf = [0u8; 8192];
+    while n > 0 {
+        let chunk = n.min(buf.len() as u64) as usize;
+        let got = r.read(&mut buf[..chunk])?;
+        if got == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "source shorter than Reget offset",
+            ));
+        }
+        n -= got as u64;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -608,5 +680,58 @@ mod tests {
         assert_eq!(v.title, "Copy");
         assert!(v.files_processed.contains("Files processed:"));
         assert_eq!(v.source_name.as_deref(), Some("hello.txt"));
+    }
+
+    #[test]
+    fn reget_copy_preserves_prefix_and_matches_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        let full: Vec<u8> = (0u8..=200).collect();
+        fs::write(&src, &full).unwrap();
+        fs::write(&dst, &full[..80]).unwrap();
+        let vfs = LocalFs::new();
+        reget_copy(&vfs, &src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), full);
+    }
+
+    #[test]
+    fn append_file_appends_whole_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        fs::write(&src, b"XYZ").unwrap();
+        fs::write(&dst, b"AB").unwrap();
+        let vfs = LocalFs::new();
+        append_file(&vfs, &src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"ABXYZ");
+    }
+
+    #[test]
+    fn reget_copy_errors_when_dest_not_shorter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        fs::write(&src, b"abcd").unwrap();
+        fs::write(&dst, b"abcd").unwrap();
+        let vfs = LocalFs::new();
+        assert!(reget_copy(&vfs, &src, &dst).is_err());
+        fs::write(&dst, b"").unwrap();
+        assert!(reget_copy(&vfs, &src, &dst).is_err());
+    }
+
+    #[test]
+    fn reget_copy_from_zip_source_onto_local_partial() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zip_path = tmp.path().join("sample.zip");
+        write_zip(&zip_path, &[("hello.txt", b"hello-world")]);
+        let mut src = zip_path.as_os_str().to_string_lossy().into_owned();
+        src.push('#');
+        let src = PathBuf::from(src).join("hello.txt");
+        let dst = tmp.path().join("partial.txt");
+        fs::write(&dst, b"hello").unwrap();
+        let vfs = rmc_fs::composite::CompositeFs::new();
+        reget_copy(&vfs, &src, &dst).unwrap();
+        assert_eq!(fs::read(&dst).unwrap(), b"hello-world");
     }
 }
