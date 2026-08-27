@@ -2056,11 +2056,11 @@ mod tests {
         assert_eq!(EditorMenu::Edit { selected: 0 }.items()[0], "Undo");
         assert_eq!(
             EditorMenu::Search { selected: 0 }.items(),
-            ["Search", "Replace"][..]
+            &["Search", "Replace"][..]
         );
         assert_eq!(
             EditorMenu::Command { selected: 0 }.items(),
-            ["Go to line", "Pipe"][..]
+            &["Go to line", "Pipe"][..]
         );
         assert!(
             EditorMenu::Options { selected: 0 }.items().is_empty(),
