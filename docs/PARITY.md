@@ -174,7 +174,7 @@ From mcdiff(1) and mc(1) “Internal Diff Viewer”:
 - [x] Navigate hunks: next/prev; goto line; search (n continues)
 - [x] Merge current hunk (F5); swap sides (C-u); refresh (C-r)
 - [x] Show hunk status; toggle line numbers; adjust panel widths
-- [ ] Edit in place: open left/right in editor; diffs update dynamically
+- [x] Edit in place: open left/right in editor; diffs update dynamically
 
 ---
 

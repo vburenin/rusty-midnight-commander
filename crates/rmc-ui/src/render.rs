@@ -4179,7 +4179,8 @@ fn draw_diff(
 }
 
 fn draw_diff_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    // F1 Help, F2 Save, F4 Edit, F5 Merge, F7 Search, F10 Quit; keep Menu on F9
+    // F1 Help, F2 Save, F4 Edit left, F5 Merge, F7 Search, F10 Quit.
+    // F14 (Shift-F4) edits the right file (GNU mc(1) Internal Diff Viewer).
     let labels = [
         "Help", "Save", "", "Edit", "Merge", "", "Search", "", "Menu", "Quit",
     ];

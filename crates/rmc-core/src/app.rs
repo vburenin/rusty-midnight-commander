@@ -356,6 +356,9 @@ pub enum UiMode {
         goto_dialog: Option<Box<EditorGotoDialog>>,
         pending_quit: bool,
         confirm_exit: Option<YncDialog>,
+        /// When the editor was opened from mcdiff, restore this mode on quit
+        /// (Help uses the same nesting). Diff hunks are rebuilt from disk.
+        return_to: Option<Box<UiMode>>,
     },
     Menu {
         top_index: usize,
