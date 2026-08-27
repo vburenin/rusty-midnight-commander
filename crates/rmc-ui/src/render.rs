@@ -147,7 +147,11 @@ impl Renderer {
         }
         // Menu bar
         if app.layout.menubar_visible {
-            draw_menu_bar(&mut painter, cols, self.palette);
+            let selected_top = match &app.ui_mode {
+                rmc_core::app::UiMode::Menu { top_index, .. } => Some(*top_index),
+                _ => None,
+            };
+            draw_menu_bar(&mut painter, cols, self.palette, selected_top);
         }
         // Panels area layout (shared geometry with terminal.rs for mouse hit-tests)
         // rows: [menu?] + 1 frame top + content + frame bottom + [gauge?] + [hint?] + [cmd?] + [fbar?]
@@ -198,17 +202,23 @@ impl Renderer {
     }
 }
 
-fn draw_menu_bar(p: &mut Painter, cols: u16, pal: McPalette) {
+fn draw_menu_bar(p: &mut Painter, cols: u16, pal: McPalette, selected: Option<usize>) {
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(0, 0);
     let items = [" Left ", " File ", " Command ", " Options ", " Right "];
     let mut x = 0u16;
-    for it in items.iter() {
+    for (i, it) in items.iter().enumerate() {
+        if selected == Some(i) {
+            p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
+        } else {
+            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        }
         p.goto(x, 0);
         p.text(it);
         x += it.len() as u16;
     }
     // Fill rest
+    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(x, 0);
     let rest = " ".repeat(cols.saturating_sub(x) as usize);
     p.text(&rest);
@@ -495,8 +505,11 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::Menu {
             top_index,
             selected_index,
+            dropped,
         } => {
-            draw_menu_dropdown(p, pal, *top_index, *selected_index);
+            if *dropped {
+                draw_menu_dropdown(p, pal, *top_index, *selected_index);
+            }
         }
         rmc_core::app::UiMode::JobsDialog {
             selected_index,
