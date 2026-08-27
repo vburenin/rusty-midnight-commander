@@ -77,6 +77,10 @@ fn find_and_panelize_results_restore_on_parent() -> Result<()> {
         name_pattern: NamePattern::Glob("*.txt".into()),
         content_substring: Some("HELLO".into()),
         case_sensitive: false,
+        regular_expression: false,
+        find_recursively: true,
+        follow_symlinks: false,
+        skip_hidden: false,
     };
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hits = search_files(&params, &cancel);

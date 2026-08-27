@@ -1,3 +1,4 @@
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -6,6 +7,24 @@ use std::sync::{
     Arc,
 };
 use walkdir::WalkDir;
+
+/// Dialog height lower bound so five GNU checkboxes plus the results list fit.
+pub const FIND_DIALOG_MIN_H: u16 = 20;
+/// Dialog height upper bound (terminal-relative, same slack as before + 4 checkbox rows).
+pub const FIND_DIALOG_MAX_H: u16 = 26;
+/// Rows from the top of the dialog to the results list (fields, 5 checkboxes, status).
+pub const FIND_DIALOG_LIST_TOP: u16 = 14;
+/// `list_h = dialog_h - FIND_DIALOG_LIST_CHROME` (list top + button/border chrome).
+pub const FIND_DIALOG_LIST_CHROME: u16 = 16;
+
+pub fn find_dialog_height(rows: u16) -> u16 {
+    rows.saturating_sub(4)
+        .clamp(FIND_DIALOG_MIN_H, FIND_DIALOG_MAX_H)
+}
+
+pub fn find_dialog_list_rows(dialog_h: u16) -> usize {
+    dialog_h.saturating_sub(FIND_DIALOG_LIST_CHROME) as usize
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NamePattern {
@@ -18,6 +37,13 @@ pub struct FindParams {
     pub name_pattern: NamePattern,
     pub content_substring: Option<String>,
     pub case_sensitive: bool,
+    /// Filename and Content are regexes when set; otherwise glob + substring.
+    pub regular_expression: bool,
+    /// When false, only immediate children of `start_dir` are searched.
+    pub find_recursively: bool,
+    pub follow_symlinks: bool,
+    /// Skip names starting with `.` (except `..`); hidden dirs are not descended.
+    pub skip_hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,12 +52,67 @@ pub enum FindDialogFocus {
     NamePattern,
     Content,
     CaseSensitive,
+    RegularExpression,
+    FindRecursively,
+    FollowSymlinks,
+    SkipHidden,
     ButtonStart,
     ButtonAgain,
     ButtonStop,
     ButtonChdir,
     ButtonPanelize,
     ButtonQuit,
+}
+
+impl FindDialogFocus {
+    pub fn next(self) -> Self {
+        match self {
+            Self::StartDir => Self::NamePattern,
+            Self::NamePattern => Self::Content,
+            Self::Content => Self::CaseSensitive,
+            Self::CaseSensitive => Self::RegularExpression,
+            Self::RegularExpression => Self::FindRecursively,
+            Self::FindRecursively => Self::FollowSymlinks,
+            Self::FollowSymlinks => Self::SkipHidden,
+            Self::SkipHidden => Self::ButtonStart,
+            Self::ButtonStart => Self::ButtonStop,
+            Self::ButtonStop => Self::ButtonChdir,
+            Self::ButtonChdir => Self::ButtonAgain,
+            Self::ButtonAgain => Self::ButtonPanelize,
+            Self::ButtonPanelize => Self::ButtonQuit,
+            Self::ButtonQuit => Self::StartDir,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::StartDir => Self::ButtonQuit,
+            Self::NamePattern => Self::StartDir,
+            Self::Content => Self::NamePattern,
+            Self::CaseSensitive => Self::Content,
+            Self::RegularExpression => Self::CaseSensitive,
+            Self::FindRecursively => Self::RegularExpression,
+            Self::FollowSymlinks => Self::FindRecursively,
+            Self::SkipHidden => Self::FollowSymlinks,
+            Self::ButtonStart => Self::SkipHidden,
+            Self::ButtonStop => Self::ButtonStart,
+            Self::ButtonChdir => Self::ButtonStop,
+            Self::ButtonAgain => Self::ButtonChdir,
+            Self::ButtonPanelize => Self::ButtonAgain,
+            Self::ButtonQuit => Self::ButtonPanelize,
+        }
+    }
+
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Self::CaseSensitive
+                | Self::RegularExpression
+                | Self::FindRecursively
+                | Self::FollowSymlinks
+                | Self::SkipHidden
+        )
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -89,6 +170,10 @@ impl FindDialogState {
                 name_pattern: NamePattern::Glob("*".into()),
                 content_substring: None,
                 case_sensitive: false,
+                regular_expression: false,
+                find_recursively: true,
+                follow_symlinks: false,
+                skip_hidden: false,
             },
             start_dir_edit: start_dir.display().to_string(),
             focus: FindDialogFocus::NamePattern,
@@ -98,6 +183,33 @@ impl FindDialogState {
             results_rx: None,
             selected_index: 0,
             scroll_top: 0,
+        }
+    }
+
+    /// Toggle the focused GNU checkbox. Returns true if a checkbox was focused.
+    pub fn toggle_focused_checkbox(&mut self) -> bool {
+        match self.focus {
+            FindDialogFocus::CaseSensitive => {
+                self.params.case_sensitive = !self.params.case_sensitive;
+                true
+            }
+            FindDialogFocus::RegularExpression => {
+                self.params.regular_expression = !self.params.regular_expression;
+                true
+            }
+            FindDialogFocus::FindRecursively => {
+                self.params.find_recursively = !self.params.find_recursively;
+                true
+            }
+            FindDialogFocus::FollowSymlinks => {
+                self.params.follow_symlinks = !self.params.follow_symlinks;
+                true
+            }
+            FindDialogFocus::SkipHidden => {
+                self.params.skip_hidden = !self.params.skip_hidden;
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -113,14 +225,40 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
     cancel: &Arc<AtomicBool>,
     mut on_hit: F,
 ) {
-    // Prepare name matcher (basic glob with * and ?)
-    let matcher = GlobMatcher::new(match &params.name_pattern {
-        NamePattern::Glob(s) => s,
-    });
-    let content_query = params.content_substring.clone();
-    let case_sensitive = params.case_sensitive;
+    let name_pat = match &params.name_pattern {
+        NamePattern::Glob(s) => s.as_str(),
+    };
+
+    let name_re = if params.regular_expression {
+        match RegexBuilder::new(name_pat)
+            .case_insensitive(!params.case_sensitive)
+            .build()
+        {
+            Ok(re) => Some(re),
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
+    let glob = if params.regular_expression {
+        None
+    } else {
+        Some(GlobMatcher::new(name_pat, params.case_sensitive))
+    };
+
+    let content_filter = compile_content_filter(params);
+
     let root = params.start_dir.clone();
-    for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+    let skip_hidden = params.skip_hidden;
+    let mut walker = WalkDir::new(&root).follow_links(params.follow_symlinks);
+    if !params.find_recursively {
+        walker = walker.max_depth(1);
+    }
+    for entry in walker
+        .into_iter()
+        .filter_entry(move |e| keep_walk_entry(e, skip_hidden))
+        .filter_map(Result::ok)
+    {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -129,26 +267,78 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
         if p == root {
             continue;
         }
-        let is_dir = entry.file_type().is_dir();
         let name = entry.file_name().to_string_lossy();
-        if !matcher.is_match(&name) {
+        let name_ok = if let Some(re) = &name_re {
+            re.is_match(&name)
+        } else if let Some(g) = &glob {
+            g.is_match(&name)
+        } else {
+            false
+        };
+        if !name_ok {
             continue;
         }
-        // If content search requested, only check regular files
-        if let Some(q) = &content_query {
-            if is_dir {
-                continue;
+        match &content_filter {
+            ContentFilter::None => on_hit(p.to_path_buf()),
+            ContentFilter::InvalidRegex => {}
+            ContentFilter::Substring(q) => {
+                if entry.file_type().is_file() && file_contains(p, q, params.case_sensitive) {
+                    on_hit(p.to_path_buf());
+                }
             }
-            if file_contains(p, q, case_sensitive) {
-                on_hit(p.to_path_buf());
+            ContentFilter::Regex(re) => {
+                if entry.file_type().is_file() && file_contains_regex(p, re) {
+                    on_hit(p.to_path_buf());
+                }
             }
-        } else {
-            on_hit(p.to_path_buf());
         }
     }
 }
 
+fn keep_walk_entry(entry: &walkdir::DirEntry, skip_hidden: bool) -> bool {
+    if !skip_hidden || entry.depth() == 0 {
+        return true;
+    }
+    let name = entry.file_name().to_string_lossy();
+    !(name.starts_with('.') && name.as_ref() != "..")
+}
+
+enum ContentFilter<'a> {
+    None,
+    Substring(&'a str),
+    Regex(Regex),
+    InvalidRegex,
+}
+
+fn compile_content_filter(params: &FindParams) -> ContentFilter<'_> {
+    match params.content_substring.as_deref() {
+        None => ContentFilter::None,
+        Some(q) if params.regular_expression => match RegexBuilder::new(q)
+            .case_insensitive(!params.case_sensitive)
+            .build()
+        {
+            Ok(re) => ContentFilter::Regex(re),
+            Err(_) => ContentFilter::InvalidRegex,
+        },
+        Some(q) => ContentFilter::Substring(q),
+    }
+}
+
 fn file_contains(path: &Path, needle: &str, case_sensitive: bool) -> bool {
+    for_each_line(path, |buf| {
+        if case_sensitive {
+            buf.contains(needle)
+        } else {
+            buf.to_lowercase().contains(&needle.to_lowercase())
+        }
+    })
+}
+
+fn file_contains_regex(path: &Path, re: &Regex) -> bool {
+    for_each_line(path, |buf| re.is_match(buf))
+}
+
+fn for_each_line(path: &Path, mut pred: impl FnMut(&str) -> bool) -> bool {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
     let file = match File::open(path) {
@@ -157,17 +347,12 @@ fn file_contains(path: &Path, needle: &str, case_sensitive: bool) -> bool {
     };
     let mut buf = String::new();
     let mut reader = BufReader::new(file);
-    // Simple line-by-line scan
     loop {
         buf.clear();
         match reader.read_line(&mut buf) {
             Ok(0) => break,
             Ok(_) => {
-                if case_sensitive {
-                    if buf.contains(needle) {
-                        return true;
-                    }
-                } else if buf.to_lowercase().contains(&needle.to_lowercase()) {
+                if pred(&buf) {
                     return true;
                 }
             }
@@ -180,29 +365,39 @@ fn file_contains(path: &Path, needle: &str, case_sensitive: bool) -> bool {
 // Very small glob matcher supporting * and ?
 struct GlobMatcher {
     pat: String,
+    case_sensitive: bool,
 }
 
 impl GlobMatcher {
-    fn new(pat: &str) -> Self {
+    fn new(pat: &str, case_sensitive: bool) -> Self {
         Self {
             pat: pat.to_string(),
+            case_sensitive,
         }
     }
     fn is_match(&self, name: &str) -> bool {
-        glob_match_simple(&self.pat, name)
+        glob_match_simple(&self.pat, name, self.case_sensitive)
     }
 }
 
-fn glob_match_simple(pattern: &str, text: &str) -> bool {
-    glob_match_bytes(pattern.as_bytes(), text.as_bytes())
+fn glob_match_simple(pattern: &str, text: &str, case_sensitive: bool) -> bool {
+    glob_match_bytes(pattern.as_bytes(), text.as_bytes(), case_sensitive)
 }
 
-fn glob_match_bytes(pat: &[u8], text: &[u8]) -> bool {
+fn glob_byte_eq(a: u8, b: u8, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        a == b
+    } else {
+        a.eq_ignore_ascii_case(&b)
+    }
+}
+
+fn glob_match_bytes(pat: &[u8], text: &[u8], case_sensitive: bool) -> bool {
     // Classic backtracking matcher for '*' and '?' only
     let (mut pi, mut ti) = (0usize, 0usize);
     let (mut star_idx, mut match_idx) = (None, 0usize);
     while ti < text.len() {
-        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == text[ti]) {
+        if pi < pat.len() && (pat[pi] == b'?' || glob_byte_eq(pat[pi], text[ti], case_sensitive)) {
             pi += 1;
             ti += 1;
         } else if pi < pat.len() && pat[pi] == b'*' {
@@ -227,12 +422,32 @@ fn glob_match_bytes(pat: &[u8], text: &[u8]) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn params(root: PathBuf) -> FindParams {
+        FindParams {
+            start_dir: root,
+            name_pattern: NamePattern::Glob("*".into()),
+            content_substring: None,
+            case_sensitive: true,
+            regular_expression: false,
+            find_recursively: true,
+            follow_symlinks: false,
+            skip_hidden: false,
+        }
+    }
+
+    fn hits(p: &FindParams) -> Vec<PathBuf> {
+        search_files(p, &Arc::new(AtomicBool::new(false)))
+    }
+
     #[test]
     fn test_glob_match() {
-        assert!(glob_match_simple("*.rs", "main.rs"));
-        assert!(glob_match_simple("m?in.rs", "main.rs"));
-        assert!(!glob_match_simple("*.rs", "main.c"));
-        assert!(glob_match_simple("*", "anything"));
+        assert!(glob_match_simple("*.rs", "main.rs", true));
+        assert!(glob_match_simple("m?in.rs", "main.rs", true));
+        assert!(!glob_match_simple("*.rs", "main.c", true));
+        assert!(glob_match_simple("*", "anything", true));
+        assert!(glob_match_simple("*.txt", "FOO.TXT", false));
+        assert!(!glob_match_simple("*.txt", "FOO.TXT", true));
     }
 
     #[test]
@@ -243,14 +458,11 @@ mod tests {
         let bar = root.join("bar.log");
         std::fs::write(&foo, "Hello World").unwrap();
         std::fs::write(&bar, "nothing here").unwrap();
-        let params = FindParams {
-            start_dir: root.to_path_buf(),
-            name_pattern: NamePattern::Glob("*.txt".into()),
-            content_substring: Some("world".into()),
-            case_sensitive: false,
-        };
-        let cancel = Arc::new(AtomicBool::new(false));
-        let res = search_files(&params, &cancel);
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*.txt".into());
+        p.content_substring = Some("world".into());
+        p.case_sensitive = false;
+        let res = hits(&p);
         assert_eq!(res.len(), 1);
         assert_eq!(res[0], foo);
     }
@@ -259,16 +471,159 @@ mod tests {
     fn root_dir_not_included_for_star() {
         let dir = tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        // create a file to ensure traversal visits children
         std::fs::write(root.join("x"), "x").unwrap();
-        let params = FindParams {
-            start_dir: root.clone(),
-            name_pattern: NamePattern::Glob("*".into()),
-            content_substring: None,
-            case_sensitive: true,
-        };
-        let cancel = Arc::new(AtomicBool::new(false));
-        let hits = search_files(&params, &cancel);
-        assert!(!hits.iter().any(|p| p == &root));
+        let p = params(root.clone());
+        let found = hits(&p);
+        assert!(!found.iter().any(|h| h == &root));
+    }
+
+    #[test]
+    fn glob_txt_with_regex_off() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let txt = root.join("note.txt");
+        let log = root.join("note.log");
+        std::fs::write(&txt, "a").unwrap();
+        std::fs::write(&log, "b").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*.txt".into());
+        p.regular_expression = false;
+        let res = hits(&p);
+        assert_eq!(res, vec![txt]);
+    }
+
+    #[test]
+    fn regex_filename_foo_dot_star_txt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let foo = root.join("foo_bar.txt");
+        let other = root.join("x.txt");
+        std::fs::write(&foo, "a").unwrap();
+        std::fs::write(&other, "b").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob(r"foo.*\.txt".into());
+        p.regular_expression = true;
+        let res = hits(&p);
+        assert_eq!(res, vec![foo]);
+        assert!(!res.contains(&other));
+    }
+
+    #[test]
+    fn content_substring_vs_regex() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let f = root.join("n.txt");
+        std::fs::write(&f, "hello world\n").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*".into());
+        p.content_substring = Some("wor.d".into());
+        p.regular_expression = false;
+        assert!(
+            hits(&p).is_empty(),
+            "substring must not treat '.' as any char"
+        );
+        p.name_pattern = NamePattern::Glob(".*".into());
+        p.regular_expression = true;
+        assert_eq!(hits(&p), vec![f]);
+    }
+
+    #[test]
+    fn skip_hidden_dot_secret() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let visible = root.join("visible.txt");
+        let secret = root.join(".secret");
+        std::fs::write(&visible, "a").unwrap();
+        std::fs::write(&secret, "b").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*".into());
+        p.skip_hidden = true;
+        let hidden_on = hits(&p);
+        assert!(hidden_on.contains(&visible));
+        assert!(!hidden_on.contains(&secret));
+        p.skip_hidden = false;
+        let hidden_off = hits(&p);
+        assert!(hidden_off.contains(&visible));
+        assert!(hidden_off.contains(&secret));
+    }
+
+    #[test]
+    fn skip_hidden_does_not_descend_dot_dir() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let hidden_dir = root.join(".hid");
+        std::fs::create_dir(&hidden_dir).unwrap();
+        let nested = hidden_dir.join("inside.txt");
+        std::fs::write(&nested, "x").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*.txt".into());
+        p.skip_hidden = true;
+        assert!(!hits(&p).contains(&nested));
+        p.skip_hidden = false;
+        assert!(hits(&p).contains(&nested));
+    }
+
+    #[test]
+    fn follow_symlinks_descends_symlink_dir() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let start = root.join("start");
+        let target = root.join("target");
+        std::fs::create_dir(&start).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        let child = start.join("child.txt");
+        let inside = target.join("inside.txt");
+        std::fs::write(&child, "c").unwrap();
+        std::fs::write(&inside, "i").unwrap();
+        let link = start.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let mut p = params(start.clone());
+        p.name_pattern = NamePattern::Glob("*.txt".into());
+        p.follow_symlinks = false;
+        let off = hits(&p);
+        assert!(off.contains(&child));
+        assert!(!off.iter().any(|h| h.ends_with("inside.txt")));
+
+        p.follow_symlinks = true;
+        let on = hits(&p);
+        assert!(on.contains(&child));
+        assert!(
+            on.iter().any(|h| h.ends_with("inside.txt")),
+            "symlink-to-dir must be descended when Follow symlinks is on: {on:?}"
+        );
+    }
+
+    #[test]
+    fn recursively_off_skips_nested() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let child = root.join("child.txt");
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let nested = sub.join("nested.txt");
+        std::fs::write(&child, "c").unwrap();
+        std::fs::write(&nested, "n").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*.txt".into());
+        p.find_recursively = false;
+        let res = hits(&p);
+        assert!(res.contains(&child));
+        assert!(!res.contains(&nested));
+        p.find_recursively = true;
+        let rec = hits(&p);
+        assert!(rec.contains(&child));
+        assert!(rec.contains(&nested));
+    }
+
+    #[test]
+    fn invalid_filename_regex_yields_zero_hits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("foo.txt"), "x").unwrap();
+        let mut p = params(root.to_path_buf());
+        p.name_pattern = NamePattern::Glob("*".into());
+        p.regular_expression = true;
+        assert!(hits(&p).is_empty());
     }
 }
