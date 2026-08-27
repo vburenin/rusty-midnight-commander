@@ -64,7 +64,7 @@ C-s   = QuickSearch
 Alt-s = QuickSearch
 # Sorting shortcuts (Alt variants)
 Alt-n = SortName
-# Alt-t cycles listing formats (Brief/Long/Full) as in MC
+# GNU mc(1) Alt-t: cycle listing format Full → Brief → Long → User → Full
 Alt-t = CycleListingFormat
 # GNU mc Layout: Alt-, toggles Vertical ↔ Horizontal panel split
 Alt-, = TogglePanelSplit

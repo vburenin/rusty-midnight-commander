@@ -3,7 +3,10 @@ use crate::config::KeyMap;
 use crate::dirtree::DirectoryTreeState;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
-use crate::panel::{FileEntry, PanelMode, PanelState, SortBy};
+use crate::panel::{
+    listing_page_capacity, FileEntry, ListingFormat, PanelMode, PanelState, SortBy,
+    DEFAULT_USER_LISTING_FORMAT,
+};
 use crate::panelize::ExternalPanelizeDialogState;
 use crate::sorting::SortDir;
 use crate::subshell::Subshell;
@@ -1603,11 +1606,9 @@ impl App {
                 self.ui_mode = UiMode::Normal;
             }
             CycleListingFormat => {
-                let p = self.active_panel_mut();
-                p.listing = p.listing.cycle();
-                // GNU: applying a listing format restores Listing panel mode
-                // (Quick view / Info / Tree → listing). Alt-t is the same path.
-                p.mode = PanelMode::Listing;
+                // Tests without a TTY pass a dummy page size; handle_key uses
+                // the real `page_rows` via `cycle_listing_format_by`.
+                self.cycle_listing_format_by(10);
             }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -2208,6 +2209,23 @@ impl App {
     pub fn page_down_by(&mut self, rows: usize) {
         self.active_panel_mut().page_down(rows);
         self.sync_other_preview_target();
+    }
+
+    /// GNU mc(1) Alt-t: cycle the **active** panel listing format
+    /// (Full → Brief → Long → User → Full) and keep the cursor in view.
+    /// Uses `page_rows` from `handle_key` (never `crossterm::terminal::size()`).
+    ///
+    /// Quick view / Info / Tree: GNU applying a listing format restores Listing
+    /// mode, then shows the next format. Alt-t is the same path.
+    pub fn cycle_listing_format_by(&mut self, page_rows: usize) {
+        let p = self.active_panel_mut();
+        p.listing = p.listing.cycle();
+        if matches!(p.listing, ListingFormat::User) && p.user_format.trim().is_empty() {
+            p.user_format = DEFAULT_USER_LISTING_FORMAT.to_string();
+        }
+        p.mode = PanelMode::Listing;
+        let cap = listing_page_capacity(p.listing, p.brief_columns, page_rows);
+        p.ensure_visible(cap);
     }
 
     /// GNU mc(1) Alt-g: top visible listing row. Uses `page_rows` from `handle_key`.
@@ -2981,15 +2999,75 @@ mod tests {
         let (mut app, _tmp, _, _) = app_with_distinct_panes();
         assert_eq!(app.left.listing, ListingFormat::Full);
         assert_eq!(app.right.listing, ListingFormat::Full);
+        let want = [
+            ListingFormat::Brief,
+            ListingFormat::Long,
+            ListingFormat::User,
+            ListingFormat::Full,
+        ];
+        for next in want {
+            app.handle_action(Action::CycleListingFormat).unwrap();
+            assert_eq!(app.left.listing, next);
+            assert_eq!(
+                app.right.listing,
+                ListingFormat::Full,
+                "inactive panel must stay Full across the GNU Alt-t cycle"
+            );
+        }
+    }
+
+    #[test]
+    fn cycle_listing_format_right_panel_only() {
+        use crate::panel::ListingFormat;
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.active = PaneSide::Right;
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.right.listing, ListingFormat::Brief);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.right.listing, ListingFormat::Long);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+    }
+
+    #[test]
+    fn cycle_listing_format_survives_panel_switch() {
+        use crate::panel::ListingFormat;
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        app.handle_action(Action::SwitchPanel).unwrap();
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        app.handle_action(Action::SwitchPanel).unwrap();
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+    }
+
+    #[test]
+    fn cycle_listing_format_empty_user_string_uses_dialog_default() {
+        use crate::panel::{ListingFormat, DEFAULT_USER_LISTING_FORMAT};
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.left.user_format.clear();
+        app.left.listing = ListingFormat::Long;
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.listing, ListingFormat::User);
+        assert_eq!(app.left.user_format, DEFAULT_USER_LISTING_FORMAT);
+    }
+
+    #[test]
+    fn cycle_listing_format_horizontal_split_still_active_panel_only() {
+        use crate::panel::ListingFormat;
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.layout.horizontal_split = true;
         app.handle_action(Action::CycleListingFormat).unwrap();
         assert_eq!(app.left.listing, ListingFormat::Brief);
         assert_eq!(app.right.listing, ListingFormat::Full);
+        app.active = PaneSide::Right;
         app.handle_action(Action::CycleListingFormat).unwrap();
-        assert_eq!(app.left.listing, ListingFormat::Long);
-        app.handle_action(Action::CycleListingFormat).unwrap();
-        assert_eq!(app.left.listing, ListingFormat::User);
-        app.handle_action(Action::CycleListingFormat).unwrap();
-        assert_eq!(app.left.listing, ListingFormat::Full);
+        assert_eq!(app.right.listing, ListingFormat::Brief);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
     }
 
     #[test]

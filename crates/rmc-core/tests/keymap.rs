@@ -19,6 +19,8 @@ fn resolves_mc_defaults() {
     assert!(matches!(a, Some(Action::PanelJumpMiddle)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
     assert!(matches!(a, Some(Action::PanelJumpBottom)));
+    let a = km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT));
+    assert!(matches!(a, Some(Action::CycleListingFormat)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
     assert!(matches!(a, Some(Action::QuickSearch)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT));
