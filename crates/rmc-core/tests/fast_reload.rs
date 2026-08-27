@@ -84,17 +84,17 @@ fn seed_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create `name` and ensure the directory Fast-reload stamp changes.
-/// Overlay/lazytime often keeps dir mtime/ctime/nlink/size the same after a
-/// same-second create; GNU mc Fast reload keys off that stamp, so bump mtime
-/// the way a conventional local disk would.
+/// Create `name` and advance the directory Fast-reload stamp.
+/// Overlay/lazytime often keeps dir mtime unchanged after a same-second create;
+/// `touch -d +1 second` forces the mtime change GNU mc Fast reload keys off.
 fn create_file_changing_dir_stamp(dir: &Path, name: &str) -> Result<()> {
     let before = DirReloadStamp::from_local_dir(dir);
     File::create(dir.join(name))?;
-    if DirReloadStamp::from_local_dir(dir) == before {
-        let status = std::process::Command::new("touch").arg(dir).status()?;
-        anyhow::ensure!(status.success(), "touch {dir:?} failed: {status}");
-    }
+    let status = std::process::Command::new("touch")
+        .args(["-d", "+1 second"])
+        .arg(dir)
+        .status()?;
+    anyhow::ensure!(status.success(), "touch {dir:?} failed: {status}");
     anyhow::ensure!(
         DirReloadStamp::from_local_dir(dir) != before,
         "directory stamp must change after creating {name}"
