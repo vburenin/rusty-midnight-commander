@@ -1,6 +1,8 @@
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
-use rmc_core::find::{FindDialogFocus as F, FindDialogState};
+use rmc_core::find::{
+    find_dialog_height, FindDialogFocus as F, FindDialogState, FIND_DIALOG_LIST_TOP,
+};
 
 pub fn draw_find_dialog(
     p: &mut Painter,
@@ -10,8 +12,8 @@ pub fn draw_find_dialog(
     st: &FindDialogState,
 ) {
     let w = (cols as usize).min(76) as u16;
-    // Flexible height to fit a results list
-    let h = rows.saturating_sub(4).clamp(16, 22);
+    // Flexible height to fit GNU checkboxes plus a results list
+    let h = find_dialog_height(rows);
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
@@ -56,8 +58,6 @@ pub fn draw_find_dialog(
     p.text("Filename:");
     p.goto(x + 2, y + 6);
     p.text("Content:");
-    p.goto(x + 2, y + 8);
-    p.text("[ ] Case sensitive");
     // Fields
     let draw_field =
         |p: &mut Painter, xx: u16, yy: u16, w: u16, text: &str, focus: bool, pal: McPalette| {
@@ -111,28 +111,55 @@ pub fn draw_find_dialog(
         matches!(st.focus, F::Content),
         pal,
     );
-    // Case checkbox
-    p.set_fg_bg(
-        if matches!(st.focus, F::CaseSensitive) {
-            pal.dfocus_fg
-        } else {
-            pal.dialog_default_fg
-        },
-        if matches!(st.focus, F::CaseSensitive) {
-            pal.dfocus_bg
-        } else {
-            pal.dialog_default_bg
-        },
+    // GNU Find File checkboxes (order matches src/filemanager/find.c)
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 8,
+        st.params.case_sensitive,
+        matches!(st.focus, F::CaseSensitive),
+        "Case sensitive",
+        pal,
     );
-    p.goto(x + 3, y + 8);
-    p.text(if st.params.case_sensitive {
-        "[x] Case sensitive"
-    } else {
-        "[ ] Case sensitive"
-    });
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 9,
+        st.params.regular_expression,
+        matches!(st.focus, F::RegularExpression),
+        "Regular expression",
+        pal,
+    );
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 10,
+        st.params.find_recursively,
+        matches!(st.focus, F::FindRecursively),
+        "Find recursively",
+        pal,
+    );
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 11,
+        st.params.follow_symlinks,
+        matches!(st.focus, F::FollowSymlinks),
+        "Follow symlinks",
+        pal,
+    );
+    draw_checkbox(
+        p,
+        x + 3,
+        y + 12,
+        st.params.skip_hidden,
+        matches!(st.focus, F::SkipHidden),
+        "Skip hidden",
+        pal,
+    );
     // Status line
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 9);
+    p.goto(x + 2, y + 13);
     let n = st.results.paths.len();
     let status = if st.running {
         format!("Searching... {n} matches")
@@ -142,7 +169,7 @@ pub fn draw_find_dialog(
     let t = truncate(&status, (w - 4) as usize);
     p.text(&t);
     // Results list area
-    let list_top = y + 10;
+    let list_top = y + FIND_DIALOG_LIST_TOP;
     let list_bottom = y + h - 3;
     let list_h = list_bottom.saturating_sub(list_top).saturating_add(1);
     for i in 0..list_h {
@@ -203,6 +230,31 @@ pub fn draw_find_dialog(
         pal.shadow_bg,
     );
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
+fn draw_checkbox(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    checked: bool,
+    focused: bool,
+    label: &str,
+    pal: McPalette,
+) {
+    p.set_fg_bg(
+        if focused {
+            pal.dfocus_fg
+        } else {
+            pal.dialog_default_fg
+        },
+        if focused {
+            pal.dfocus_bg
+        } else {
+            pal.dialog_default_bg
+        },
+    );
+    p.goto(x, y);
+    p.text(&format!("[{}] {label}", if checked { 'x' } else { ' ' }));
 }
 
 fn truncate(s: &str, max: usize) -> String {

@@ -16,7 +16,8 @@ use rmc_core::app::{
     EditorReplaceFocus, HistoryDialogFocus, LayoutFocus, UiMode,
 };
 use rmc_core::find::{
-    search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
+    find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
+    FindDialogFocus as FF, FindDialogState,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::compute_chrome_geom;
@@ -2140,48 +2141,53 @@ impl TerminalApp {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Tab => {
-                        state.focus = match state.focus {
-                            FF::StartDir => FF::NamePattern,
-                            FF::NamePattern => FF::Content,
-                            FF::Content => FF::CaseSensitive,
-                            FF::CaseSensitive => FF::ButtonStart,
-                            FF::ButtonStart => FF::ButtonStop,
-                            FF::ButtonStop => FF::ButtonChdir,
-                            FF::ButtonChdir => FF::ButtonAgain,
-                            FF::ButtonAgain => FF::ButtonPanelize,
-                            FF::ButtonPanelize => FF::ButtonQuit,
-                            FF::ButtonQuit => FF::StartDir,
-                        };
+                        state.focus = state.focus.next();
+                    }
+                    KeyCode::BackTab => {
+                        state.focus = state.focus.prev();
                     }
                     KeyCode::Up => {
-                        if state.selected_index > 0 {
+                        if state.focus.is_checkbox()
+                            || matches!(state.focus, FF::StartDir | FF::NamePattern | FF::Content)
+                        {
+                            if !matches!(state.focus, FF::StartDir) {
+                                state.focus = state.focus.prev();
+                            }
+                        } else if state.selected_index > 0 {
                             state.selected_index -= 1;
-                        }
-                        // ensure visible
-                        let (_c, r) = crossterm::terminal::size()?;
-                        let h = r.saturating_sub(4).clamp(16, 22);
-                        let list_rows = (h - 12) as usize;
-                        if state.selected_index < state.scroll_top {
-                            state.scroll_top = state.selected_index;
-                        } else if state.selected_index >= state.scroll_top + list_rows {
-                            state.scroll_top = state
-                                .selected_index
-                                .saturating_sub(list_rows.saturating_sub(1));
+                            let (_c, r) = crossterm::terminal::size()?;
+                            let h = find_dialog_height(r);
+                            let list_rows = find_dialog_list_rows(h);
+                            if state.selected_index < state.scroll_top {
+                                state.scroll_top = state.selected_index;
+                            } else if state.selected_index >= state.scroll_top + list_rows {
+                                state.scroll_top = state
+                                    .selected_index
+                                    .saturating_sub(list_rows.saturating_sub(1));
+                            }
                         }
                     }
                     KeyCode::Down => {
-                        if state.selected_index + 1 < state.results.paths.len() {
+                        if state.focus.is_checkbox()
+                            || matches!(state.focus, FF::StartDir | FF::NamePattern | FF::Content)
+                        {
+                            let n = state.focus.next();
+                            // Do not wrap from the last form widget back to Start at.
+                            if !matches!(n, FF::StartDir) {
+                                state.focus = n;
+                            }
+                        } else if state.selected_index + 1 < state.results.paths.len() {
                             state.selected_index += 1;
-                        }
-                        let (_c, r) = crossterm::terminal::size()?;
-                        let h = r.saturating_sub(4).clamp(16, 22);
-                        let list_rows = (h - 12) as usize;
-                        if state.selected_index < state.scroll_top {
-                            state.scroll_top = state.selected_index;
-                        } else if state.selected_index >= state.scroll_top + list_rows {
-                            state.scroll_top = state
-                                .selected_index
-                                .saturating_sub(list_rows.saturating_sub(1));
+                            let (_c, r) = crossterm::terminal::size()?;
+                            let h = find_dialog_height(r);
+                            let list_rows = find_dialog_list_rows(h);
+                            if state.selected_index < state.scroll_top {
+                                state.scroll_top = state.selected_index;
+                            } else if state.selected_index >= state.scroll_top + list_rows {
+                                state.scroll_top = state
+                                    .selected_index
+                                    .saturating_sub(list_rows.saturating_sub(1));
+                            }
                         }
                     }
                     KeyCode::Home => {
@@ -2192,8 +2198,8 @@ impl TerminalApp {
                         if !state.results.paths.is_empty() {
                             state.selected_index = state.results.paths.len() - 1;
                             let (_c, r) = crossterm::terminal::size()?;
-                            let h = r.saturating_sub(4).clamp(16, 22);
-                            let list_rows = (h - 12) as usize;
+                            let h = find_dialog_height(r);
+                            let list_rows = find_dialog_list_rows(h);
                             state.scroll_top = state
                                 .selected_index
                                 .saturating_sub(list_rows.saturating_sub(1));
@@ -2218,6 +2224,11 @@ impl TerminalApp {
                         }
                         _ => {}
                     },
+                    // Space toggles checkboxes before generic Char so typing still
+                    // inserts spaces into Start at / Filename / Content.
+                    KeyCode::Char(' ') if key.modifiers.is_empty() && state.focus.is_checkbox() => {
+                        let _ = state.toggle_focused_checkbox();
+                    }
                     KeyCode::Char(c) => {
                         if key.modifiers.is_empty() {
                             match state.focus {
@@ -2240,9 +2251,6 @@ impl TerminalApp {
                                         state.params.content_substring = Some(c.to_string());
                                     }
                                 }
-                                FF::CaseSensitive if c == ' ' => {
-                                    state.params.case_sensitive = !state.params.case_sensitive;
-                                }
                                 _ => {}
                             }
                         } else if key
@@ -2257,6 +2265,9 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Enter => {
+                        if state.toggle_focused_checkbox() {
+                            return Ok(());
+                        }
                         match state.focus {
                             FF::ButtonStart | FF::ButtonAgain => {
                                 if !state.running {
@@ -8243,5 +8254,136 @@ mod editor_goto_tests {
             }
             _ => panic!("| must still open the Pipe dialog"),
         }
+    }
+}
+
+#[cfg(test)]
+mod find_file_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::{FindDialogFocus as FF, FindDialogState};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-find-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn find_state(app: &App) -> &FindDialogState {
+        match &app.ui_mode {
+            UiMode::FindDialog(st) => st,
+            _ => panic!("expected FindDialog"),
+        }
+    }
+
+    fn find_state_mut(app: &mut App) -> &mut FindDialogState {
+        match &mut app.ui_mode {
+            UiMode::FindDialog(st) => st,
+            _ => panic!("expected FindDialog"),
+        }
+    }
+
+    fn open_find_via_command_menu(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn command_menu_opens_find_file() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_find_via_command_menu(&mut app);
+        let st = find_state(&app);
+        assert_eq!(st.focus, FF::NamePattern);
+        assert!(!st.params.regular_expression);
+        assert!(st.params.find_recursively);
+        assert!(!st.params.follow_symlinks);
+        assert!(!st.params.skip_hidden);
+        assert!(!st.params.case_sensitive);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_and_arrows_reach_gnu_checkboxes_and_space_toggles() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+
+        // NamePattern -> Content -> Case sensitive
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::CaseSensitive);
+        assert!(!find_state(&app).params.case_sensitive);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.case_sensitive);
+        press(&mut app, KeyCode::Enter);
+        assert!(!find_state(&app).params.case_sensitive);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::RegularExpression);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.regular_expression);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::FindRecursively);
+        assert!(find_state(&app).params.find_recursively);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!find_state(&app).params.find_recursively);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::FollowSymlinks);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.follow_symlinks);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::SkipHidden);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.skip_hidden);
+
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(find_state(&app).focus, FF::FollowSymlinks);
+
+        // Down/Up also walk the checkbox row.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(find_state(&app).focus, FF::SkipHidden);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(find_state(&app).focus, FF::FollowSymlinks);
+
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::ButtonStart);
+
+        // Typing still goes to Filename when that field is focused; Space inserts.
+        find_state_mut(&mut app).focus = FF::NamePattern;
+        press(&mut app, KeyCode::Char(' '));
+        match &find_state(&app).params.name_pattern {
+            rmc_core::find::NamePattern::Glob(s) => assert_eq!(s, "* "),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
