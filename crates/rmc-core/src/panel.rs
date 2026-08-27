@@ -1018,6 +1018,108 @@ mod tests {
     }
 
     #[test]
+    fn listing_cursor_moves_one_entry_without_wrap() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.set_entries(vec![
+            make_entry("..", 0, now, true),
+            make_entry("a.txt", 1, now, false),
+            make_entry("b.txt", 1, now, false),
+        ]);
+        assert_eq!(p.cursor, 0);
+        p.move_up();
+        assert_eq!(p.cursor, 0, "Up on the first entry stays there");
+        p.move_down();
+        assert_eq!(p.cursor, 1);
+        p.move_down();
+        assert_eq!(p.cursor, 2);
+        p.move_down();
+        assert_eq!(p.cursor, 2, "Down on the last entry stays there");
+        p.move_up();
+        assert_eq!(p.cursor, 1);
+    }
+
+    #[test]
+    fn listing_home_end_and_empty_are_noops() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.entries.clear();
+        p.cursor = 0;
+        p.scroll_top = 0;
+        p.move_up();
+        p.move_down();
+        p.page_up(5);
+        p.page_down(5);
+        p.home();
+        p.end();
+        assert!(p.entries.is_empty());
+        assert_eq!(p.cursor, 0);
+        assert_eq!(p.scroll_top, 0);
+
+        p.set_entries(vec![
+            make_entry("..", 0, now, true),
+            make_entry("z.txt", 1, now, false),
+            make_entry("a.txt", 1, now, false),
+        ]);
+        p.cursor = 2;
+        p.home();
+        assert_eq!(p.cursor, 0);
+        assert_eq!(p.entries[0].name, "..", "Home lands on .. when present");
+        p.end();
+        assert_eq!(p.cursor, p.entries.len() - 1);
+        assert_eq!(p.current_entry().map(|e| e.name.as_str()), Some("z.txt"));
+    }
+
+    #[test]
+    fn listing_page_and_ensure_visible_use_capacity() {
+        let now = SystemTime::now();
+        let mut p = PanelState::new(".");
+        p.listing = ListingFormat::Full;
+        p.entries = (0..30)
+            .map(|i| make_entry(&format!("f{i:02}"), 1, now, false))
+            .collect();
+        p.cursor = 0;
+        p.scroll_top = 0;
+        let page_rows = 5;
+        let cap = listing_page_capacity(p.listing, p.brief_columns, page_rows);
+        assert_eq!(cap, 5, "Full page is page_rows");
+        p.page_down(cap);
+        p.ensure_visible(cap);
+        assert_eq!(p.cursor, 5);
+        assert_eq!(p.scroll_top, 1, "cursor stays in the drawn window");
+        p.page_up(cap);
+        p.ensure_visible(cap);
+        assert_eq!(p.cursor, 0);
+        assert_eq!(p.scroll_top, 0);
+        p.cursor = 28;
+        p.page_down(cap);
+        assert_eq!(p.cursor, 29, "PageDown clamps to last; never wraps");
+        p.home();
+        p.ensure_visible(cap);
+        assert_eq!(p.cursor, 0);
+        assert_eq!(p.scroll_top, 0);
+        p.end();
+        p.ensure_visible(cap);
+        assert_eq!(p.cursor, 29);
+        assert_eq!(p.scroll_top, 29 - (cap - 1));
+
+        p.listing = ListingFormat::Brief;
+        p.brief_columns = 2;
+        p.cursor = 0;
+        p.scroll_top = 0;
+        let brief_cap = listing_page_capacity(p.listing, p.brief_columns, page_rows);
+        assert_eq!(brief_cap, 10, "Brief 2-col page is page_rows * 2");
+        p.page_down(brief_cap);
+        p.ensure_visible(brief_cap);
+        assert_eq!(p.cursor, 10);
+        p.page_down(brief_cap);
+        p.page_down(brief_cap);
+        assert_eq!(p.cursor, 29, "Brief PageDown clamps, never wraps");
+        p.page_up(brief_cap);
+        assert_eq!(p.cursor, 19);
+    }
+
+    #[test]
     fn jump_visible_empty_listing_is_noop() {
         let mut p = PanelState::new(".");
         p.entries.clear();

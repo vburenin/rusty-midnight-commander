@@ -92,6 +92,21 @@ impl KeyMap {
         m.bind(new_event(KeyCode::PageDown), PageDown);
         m.bind(new_event(KeyCode::Home), Home);
         m.bind(new_event(KeyCode::End), End);
+        // GNU mc(1) Directory Panels: C-p / C-n / Alt-v / C-v aliases.
+        // Not Emacs cmdline keys (history stays Alt-p / Alt-n).
+        m.bind(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            MoveUp,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            MoveDown,
+        );
+        m.bind(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT), PageUp);
+        m.bind(
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            PageDown,
+        );
         // GNU mc(1) Directory Panels: Alt-g/r/j jump to top/middle/bottom visible file.
         m.bind(
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT),
@@ -780,6 +795,26 @@ mod tests {
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
             Some(Action::ToggleSelect)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            Some(Action::MoveUp)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            Some(Action::MoveDown)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT)),
+            Some(Action::PageUp)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+            Some(Action::PageDown)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Action::MoveUp)
         ));
         assert!(!matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),

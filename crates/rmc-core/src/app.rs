@@ -1700,30 +1700,24 @@ impl App {
                 };
             }
             MoveUp => {
-                self.active_panel_mut().move_up();
-                self.sync_other_preview_target();
+                // Tests / mouse without a TTY pass a dummy page size; handle_key
+                // uses the real `page_rows` via `move_up_by`.
+                self.move_up_by(10);
             }
             MoveDown => {
-                self.active_panel_mut().move_down();
-                self.sync_other_preview_target();
+                self.move_down_by(10);
             }
             PageUp => {
-                let page = 10;
-                self.active_panel_mut().page_up(page);
-                self.sync_other_preview_target();
+                self.page_up_by(10);
             }
             PageDown => {
-                let page = 10;
-                self.active_panel_mut().page_down(page);
-                self.sync_other_preview_target();
+                self.page_down_by(10);
             }
             Home => {
-                self.active_panel_mut().home();
-                self.sync_other_preview_target();
+                self.home_by(10);
             }
             End => {
-                self.active_panel_mut().end();
-                self.sync_other_preview_target();
+                self.end_by(10);
             }
             PanelJumpTop => self.jump_visible_top_by(10),
             PanelJumpMiddle => self.jump_visible_middle_by(10),
@@ -2229,13 +2223,49 @@ impl App {
             UiMode::PauseAfterRun => "Panels".to_string(),
         }
     }
-    pub fn page_up_by(&mut self, rows: usize) {
-        self.active_panel_mut().page_up(rows);
+    /// GNU mc(1) listing movement. `page_rows` is panel body rows from
+    /// `handle_key` (never `crossterm::terminal::size()`). Page size is
+    /// [`listing_page_capacity`]: Full/Long/User = `page_rows`; Brief =
+    /// `page_rows * brief_columns`. After the move, `ensure_visible` keeps the
+    /// cursor in the drawn window. Empty listings are no-ops.
+    fn apply_listing_move(&mut self, page_rows: usize, op: impl FnOnce(&mut PanelState, usize)) {
+        {
+            let p = self.active_panel_mut();
+            let cap = listing_page_capacity(p.listing, p.brief_columns, page_rows);
+            op(p, cap);
+            p.ensure_visible(cap);
+        }
         self.sync_other_preview_target();
     }
-    pub fn page_down_by(&mut self, rows: usize) {
-        self.active_panel_mut().page_down(rows);
-        self.sync_other_preview_target();
+
+    /// GNU mc(1) Up / C-p: one listing entry backward. Does not wrap.
+    pub fn move_up_by(&mut self, page_rows: usize) {
+        self.apply_listing_move(page_rows, |p, _| p.move_up());
+    }
+
+    /// GNU mc(1) Down / C-n: one listing entry forward. Does not wrap.
+    pub fn move_down_by(&mut self, page_rows: usize) {
+        self.apply_listing_move(page_rows, |p, _| p.move_down());
+    }
+
+    /// GNU mc(1) Prev Page / Page Up / Alt-v.
+    pub fn page_up_by(&mut self, page_rows: usize) {
+        self.apply_listing_move(page_rows, |p, cap| p.page_up(cap));
+    }
+
+    /// GNU mc(1) Next Page / Page Down / C-v. Clamps to the last entry.
+    pub fn page_down_by(&mut self, page_rows: usize) {
+        self.apply_listing_move(page_rows, |p, cap| p.page_down(cap));
+    }
+
+    /// GNU mc(1) Home / A1: first listing entry (`..` when present).
+    pub fn home_by(&mut self, page_rows: usize) {
+        self.apply_listing_move(page_rows, |p, _| p.home());
+    }
+
+    /// GNU mc(1) End / C1: last listing entry.
+    pub fn end_by(&mut self, page_rows: usize) {
+        self.apply_listing_move(page_rows, |p, _| p.end());
     }
 
     /// GNU mc(1) Alt-t: cycle the **active** panel listing format

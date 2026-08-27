@@ -37,6 +37,46 @@ fn resolves_mc_defaults() {
     assert!(matches!(a, Some(Action::Repaint)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     assert!(matches!(a, Some(Action::Refresh)));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        Some(Action::MoveUp)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        Some(Action::MoveDown)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+        Some(Action::PageUp)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+        Some(Action::PageDown)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        Some(Action::Home)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        Some(Action::End)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+        Some(Action::MoveUp)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+        Some(Action::MoveDown)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT)),
+        Some(Action::PageUp)
+    ));
+    assert!(matches!(
+        km.resolve(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+        Some(Action::PageDown)
+    ));
     for (n, want) in [
         (1, "ShowHelp"),
         (2, "ShowUserMenu"),
