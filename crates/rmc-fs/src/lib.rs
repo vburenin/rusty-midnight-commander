@@ -55,6 +55,15 @@ pub type FsResult<T> = Result<T, FsError>;
 pub trait Vfs: Send {
     fn cwd(&self) -> FsResult<PathBuf>;
     fn list_dir(&self, path: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>>;
+    /// Directory listing cache timeout in seconds (`0` = do not cache).
+    /// Default is a no-op; [`composite::CompositeFs`] honors this for
+    /// remote/archive/extfs listings (not local disk).
+    fn set_dir_cache_timeout_secs(&self, _secs: u32) {}
+    /// Drop cached directory listings. `None` clears the whole cache;
+    /// `Some(path)` drops that directory (both hidden and non-hidden variants).
+    /// Callers use this for C-r (Reload). Re-entering a directory within the
+    /// timeout reuses the cache and does not invalidate.
+    fn invalidate_dir_cache(&self, _path: Option<&Path>) {}
     /// Given a filesystem path, return a virtual directory path to enter if this
     /// path is an “enterable container” (e.g., an archive or remote location).
     /// Returns None when the path cannot be entered specially (regular files).
@@ -107,6 +116,7 @@ pub mod arfs;
 pub mod composite;
 pub mod cpiofs;
 pub mod debfs;
+pub mod dir_cache;
 pub mod extfs;
 pub mod isofs;
 pub mod pathutil;

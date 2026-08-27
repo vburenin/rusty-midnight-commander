@@ -1,3 +1,4 @@
+use crate::dir_cache::{DirListingCache, DEFAULT_DIR_CACHE_TIMEOUT_SECS};
 use crate::extfs::{ExtfsPath, ExtfsRegistry};
 use crate::local::LocalFs;
 use crate::pathutil::{append_anchor, parse_archive_path, ArchiveKind};
@@ -6,6 +7,9 @@ use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 
 /// Composite virtual filesystem that routes operations to:
 /// - Local filesystem
@@ -14,6 +18,9 @@ use std::path::{Path, PathBuf};
 pub struct CompositeFs {
     local: LocalFs,
     extfs: ExtfsRegistry,
+    /// Listing cache for remote / archive / extfs only (GNU mc dir timeout).
+    dir_cache: Mutex<DirListingCache>,
+    dir_cache_timeout_secs: AtomicU32,
 }
 
 impl CompositeFs {
@@ -21,7 +28,84 @@ impl CompositeFs {
         Self {
             local: LocalFs::new(),
             extfs: ExtfsRegistry::load_default(),
+            dir_cache: Mutex::new(DirListingCache::new()),
+            dir_cache_timeout_secs: AtomicU32::new(DEFAULT_DIR_CACHE_TIMEOUT_SECS),
         }
+    }
+
+    fn dir_cache_lock(&self) -> std::sync::MutexGuard<'_, DirListingCache> {
+        self.dir_cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn is_cacheable(&self, path: &Path) -> bool {
+        !matches!(self.route_kind(path), Route::Local { .. })
+    }
+
+    fn invalidate_parent_listing(&self, path: &Path) {
+        let parent = path.parent().unwrap_or(path);
+        self.dir_cache_lock().invalidate_path(parent);
+    }
+
+    fn list_dir_uncached(&self, path: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
+        match self.route_kind(path) {
+            Route::Local { path } => self.local.list_dir(path, show_hidden),
+            Route::Archive { ap, vfs_root } => match ap.kind {
+                ArchiveKind::Tar | ArchiveKind::TarGz => {
+                    crate::tarfs::list_dir(&ap.archive, ap.kind, &ap.inner, vfs_root, show_hidden)
+                }
+                ArchiveKind::Zip => {
+                    crate::zipfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Cpio | ArchiveKind::CpioGz => {
+                    crate::cpiofs::list_dir(&ap.archive, ap.kind, &ap.inner, vfs_root, show_hidden)
+                }
+                ArchiveKind::Ar => {
+                    crate::arfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Deb => {
+                    crate::debfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Rpm => {
+                    crate::rpmfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::SevenZ => {
+                    crate::sevenzfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Iso => {
+                    crate::isofs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Rar => {
+                    crate::rarfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+            },
+            Route::Extfs { xp, vfs_root } => crate::extfs::list_dir(
+                &xp.helper_cmd,
+                &xp.archive,
+                &xp.inner,
+                vfs_root,
+                show_hidden,
+            ),
+            Route::Remote { url } => crate::remote::list_dir(&url, path, show_hidden),
+        }
+    }
+
+    fn list_dir_cached(&self, path: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
+        let timeout = self.dir_cache_timeout_secs.load(Ordering::Relaxed);
+        let now = Instant::now();
+        if timeout > 0 {
+            if let Some(hit) = self
+                .dir_cache_lock()
+                .lookup(path, show_hidden, timeout, now)
+            {
+                return Ok(hit);
+            }
+        }
+        let entries = self.list_dir_uncached(path, show_hidden)?;
+        if timeout > 0 {
+            self.dir_cache_lock()
+                .store(path, show_hidden, entries.clone(), now);
+        }
+        Ok(entries)
     }
 
     fn route_kind<'a>(&self, path: &'a Path) -> Route<'a> {
@@ -71,45 +155,24 @@ impl Vfs for CompositeFs {
     }
 
     fn list_dir(&self, path: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
-        match self.route_kind(path) {
-            Route::Local { path } => self.local.list_dir(path, show_hidden),
-            Route::Archive { ap, vfs_root } => match ap.kind {
-                ArchiveKind::Tar | ArchiveKind::TarGz => {
-                    crate::tarfs::list_dir(&ap.archive, ap.kind, &ap.inner, vfs_root, show_hidden)
-                }
-                ArchiveKind::Zip => {
-                    crate::zipfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-                ArchiveKind::Cpio | ArchiveKind::CpioGz => {
-                    crate::cpiofs::list_dir(&ap.archive, ap.kind, &ap.inner, vfs_root, show_hidden)
-                }
-                ArchiveKind::Ar => {
-                    crate::arfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-                ArchiveKind::Deb => {
-                    crate::debfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-                ArchiveKind::Rpm => {
-                    crate::rpmfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-                ArchiveKind::SevenZ => {
-                    crate::sevenzfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-                ArchiveKind::Iso => {
-                    crate::isofs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-                ArchiveKind::Rar => {
-                    crate::rarfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
-                }
-            },
-            Route::Extfs { xp, vfs_root } => crate::extfs::list_dir(
-                &xp.helper_cmd,
-                &xp.archive,
-                &xp.inner,
-                vfs_root,
-                show_hidden,
-            ),
-            Route::Remote { url } => crate::remote::list_dir(&url, path, show_hidden),
+        if self.is_cacheable(path) {
+            self.list_dir_cached(path, show_hidden)
+        } else {
+            self.local.list_dir(path, show_hidden)
+        }
+    }
+
+    fn set_dir_cache_timeout_secs(&self, secs: u32) {
+        self.dir_cache_timeout_secs.store(secs, Ordering::Relaxed);
+        if secs == 0 {
+            self.dir_cache_lock().clear();
+        }
+    }
+
+    fn invalidate_dir_cache(&self, path: Option<&Path>) {
+        match path {
+            Some(p) => self.dir_cache_lock().invalidate_path(p),
+            None => self.dir_cache_lock().clear(),
         }
     }
 
@@ -140,7 +203,8 @@ impl Vfs for CompositeFs {
     }
 
     fn mkdir(&self, path: &Path) -> FsResult<()> {
-        match self.route_kind(path) {
+        let cacheable = self.is_cacheable(path);
+        let result = match self.route_kind(path) {
             Route::Local { path } => self.local.mkdir(path),
             Route::Archive { .. } => Err(FsError::Message(
                 "mkdir inside archive is not supported".into(),
@@ -149,11 +213,16 @@ impl Vfs for CompositeFs {
                 "mkdir inside extfs is not supported".into(),
             )),
             Route::Remote { url, .. } => crate::remote::mkdir(&url),
+        };
+        if result.is_ok() && cacheable {
+            self.invalidate_parent_listing(path);
         }
+        result
     }
 
     fn remove(&self, path: &Path, recursive: bool) -> FsResult<()> {
-        match self.route_kind(path) {
+        let cacheable = self.is_cacheable(path);
+        let result = match self.route_kind(path) {
             Route::Local { path } => self.local.remove(path, recursive),
             Route::Archive { .. } => Err(FsError::Message(
                 "remove inside archive is not supported".into(),
@@ -162,11 +231,17 @@ impl Vfs for CompositeFs {
                 "remove inside extfs is not supported".into(),
             )),
             Route::Remote { url, .. } => crate::remote::remove(&url, recursive),
+        };
+        if result.is_ok() && cacheable {
+            self.invalidate_parent_listing(path);
         }
+        result
     }
 
     fn copy(&self, src: &Path, dst: &Path) -> FsResult<()> {
-        match (self.route_kind(src), self.route_kind(dst)) {
+        let src_cacheable = self.is_cacheable(src);
+        let dst_cacheable = self.is_cacheable(dst);
+        let result = match (self.route_kind(src), self.route_kind(dst)) {
             (Route::Local { path: s }, Route::Local { path: d }) => self.local.copy(s, d),
             (Route::Archive { ap, .. }, Route::Local { path: d }) => match ap.kind {
                 ArchiveKind::Tar | ArchiveKind::TarGz => {
@@ -209,7 +284,16 @@ impl Vfs for CompositeFs {
             _ => Err(FsError::Message(
                 "copy between different VFS backends is not supported".into(),
             )),
+        };
+        if result.is_ok() {
+            if src_cacheable {
+                self.invalidate_parent_listing(src);
+            }
+            if dst_cacheable {
+                self.invalidate_parent_listing(dst);
+            }
         }
+        result
     }
 
     fn move_path(&self, src: &Path, dst: &Path) -> FsResult<()> {
@@ -250,7 +334,8 @@ impl Vfs for CompositeFs {
     }
 
     fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>> {
-        match self.route_kind(path) {
+        let cacheable = self.is_cacheable(path);
+        let result: FsResult<Box<dyn Write + Send>> = match self.route_kind(path) {
             Route::Local { path } => self.local.write_file(path),
             Route::Archive { .. } => Err(FsError::Message(
                 "write into an archive is not supported".into(),
@@ -262,7 +347,11 @@ impl Vfs for CompositeFs {
                 let w = crate::remote::RemoteWrite::new(url)?;
                 Ok(Box::new(w))
             }
+        };
+        if result.is_ok() && cacheable {
+            self.invalidate_parent_listing(path);
         }
+        result
     }
 
     fn stat(&self, path: &Path) -> FsResult<Metadata> {
