@@ -342,7 +342,8 @@ pub enum UiMode {
         show_menu: bool,
         status_msg: Option<String>,
         search_input: Option<String>,
-        save_as_input: Option<String>,
+        /// GNU mcedit Save as dialog (F12 / Shift-F2). None while editing.
+        save_as_dialog: Option<Box<EditorSaveAsDialog>>,
         /// GNU mcedit F7 Search dialog (None while editing).
         search_dialog: Option<Box<EditorSearchDialog>>,
         /// GNU mcedit F4 Replace dialog (None while editing).
@@ -761,6 +762,38 @@ impl EditorGotoDialog {
         Self {
             line: (row + 1).to_string(),
             focus: EditorGotoFocus::Line,
+        }
+    }
+}
+
+/// Focus within the GNU mcedit Save as dialog.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum EditorSaveAsFocus {
+    #[default]
+    Filename,
+    Ok,
+    Cancel,
+}
+
+/// GNU mcedit-style Save as dialog: filename field and OK / Cancel.
+/// Title ` Save as `, prompt `Enter file name:` (public mcedit File menu / Save as).
+#[derive(Clone)]
+pub struct EditorSaveAsDialog {
+    pub filename: String,
+    pub focus: EditorSaveAsFocus,
+    /// GNU overwrite confirm when the destination already exists.
+    pub overwrite: Option<YncDialog>,
+}
+
+impl EditorSaveAsDialog {
+    /// Prefill the filename field from the buffer's current path (empty if unnamed).
+    pub fn from_buffer_path(path: Option<&Path>) -> Self {
+        Self {
+            filename: path
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            focus: EditorSaveAsFocus::Filename,
+            overwrite: None,
         }
     }
 }
