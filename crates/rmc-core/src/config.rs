@@ -106,6 +106,11 @@ impl KeyMap {
             PanelJumpBottom,
         );
         m.bind(new_event(KeyCode::Tab), SwitchPanel);
+        // GNU mc(1) Directory Panels: C-i is the same ChangePanel as Tab.
+        m.bind(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL),
+            SwitchPanel,
+        );
         m.bind(new_event(KeyCode::Enter), Enter);
         m.bind(
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),

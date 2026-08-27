@@ -69,7 +69,7 @@ Function keys (File menu shortcuts; Esc-1..0 emulates F1..F10):
 - [x] Shift-F variants (F13..F20) where relevant (e.g., F13 view-raw, F16 move to selected panel)
 
 Directory panels (selection, navigation, layout):
-- [ ] Tab / C-i / Left/Right: switch active panel
+- [x] Tab / C-i / Left/Right: switch active panel
 - [ ] Up/Down, PageUp/PageDown, Home/End movement
 - [x] Insert / C-t: toggle mark; “Mark moves down” option
 - [x] Alt-g / Alt-r / Alt-j: jump to top/middle/bottom item

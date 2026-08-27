@@ -3208,8 +3208,13 @@ impl TerminalApp {
                         return Ok(());
                     }
                     // GNU mc(1) Alt-g/r/j go to the directory panel, not the input line.
+                    // Tab / C-i still switch panels (not completion; Alt-Tab is completion).
                     if let Some(action) = app.keymap.resolve(&key) {
                         if apply_panel_visible_jump(app, &action, page_rows) {
+                            return Ok(());
+                        }
+                        if matches!(action, Action::SwitchPanel) {
+                            app.handle_action(Action::SwitchPanel)?;
                             return Ok(());
                         }
                     }
@@ -7574,8 +7579,8 @@ impl TerminalApp {
             app.pending_esc = Some(Instant::now());
             return Ok(());
         }
-        // Lynx-like motion (Options → Panels): Left = parent, Right = panel Enter
-        // (dirs / archives / executables / mc.ext Open). Listing mode only.
+        // Listing Left/Right: Lynx-like ON → parent / Enter; OFF → SwitchPanel.
+        // Listing mode only; Tree / Quick view / Info keep their own arrows.
         if matches!(app.ui_mode, UiMode::Normal)
             && key.modifiers.is_empty()
             && matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing)
@@ -8335,15 +8340,22 @@ fn request_history_clear(
     }
 }
 
-/// Map Left/Right to ParentDir/Enter when GNU mc Lynx-like motion is enabled.
-/// When the flag is off, Left/Right stay unbound (today's listing-mode behavior).
+/// GNU mc(1) listing Left/Right.
+/// Lynx-like ON: Left = parent, Right = panel Enter.
+/// Lynx-like OFF (GNU default): both switch the active panel (`Action::SwitchPanel`).
+/// Tree / Quick view / Info must not call this (they keep their own arrows).
 fn lynx_like_arrow_action(lynx_like: bool, code: KeyCode) -> Option<Action> {
-    if !lynx_like {
-        return None;
-    }
     match code {
-        KeyCode::Left => Some(Action::ParentDir),
-        KeyCode::Right => Some(Action::Enter),
+        KeyCode::Left => Some(if lynx_like {
+            Action::ParentDir
+        } else {
+            Action::SwitchPanel
+        }),
+        KeyCode::Right => Some(if lynx_like {
+            Action::Enter
+        } else {
+            Action::SwitchPanel
+        }),
         _ => None,
     }
 }
@@ -9822,10 +9834,16 @@ mod lynx_like_motion_tests {
     }
 
     #[test]
-    fn maps_arrows_only_when_lynx_like_is_on() {
+    fn maps_arrows_to_lynx_or_switch_panel() {
         use rmc_core::actions::Action;
-        assert_eq!(lynx_like_arrow_action(false, KeyCode::Left), None);
-        assert_eq!(lynx_like_arrow_action(false, KeyCode::Right), None);
+        assert_eq!(
+            lynx_like_arrow_action(false, KeyCode::Left),
+            Some(Action::SwitchPanel)
+        );
+        assert_eq!(
+            lynx_like_arrow_action(false, KeyCode::Right),
+            Some(Action::SwitchPanel)
+        );
         assert_eq!(
             lynx_like_arrow_action(true, KeyCode::Left),
             Some(Action::ParentDir)
@@ -9835,6 +9853,7 @@ mod lynx_like_motion_tests {
             Some(Action::Enter)
         );
         assert_eq!(lynx_like_arrow_action(true, KeyCode::Up), None);
+        assert_eq!(lynx_like_arrow_action(false, KeyCode::Up), None);
     }
 
     #[test]
@@ -9896,18 +9915,29 @@ mod lynx_like_motion_tests {
     }
 
     #[test]
-    fn arrows_do_nothing_when_flag_is_off() {
+    fn arrows_switch_panel_without_chdir_when_flag_is_off() {
+        use rmc_core::actions::PaneSide;
         let root = temp_workspace();
         let sub = root.join("sub");
         std::fs::create_dir(&sub).unwrap();
         let mut app = make_app(&sub);
         app.panel_opts.lynx_like = false;
+        let left_cwd = app.left.cwd.clone();
+        let right_cwd = app.right.cwd.clone();
+        assert_eq!(app.active, PaneSide::Left);
         press(&mut app, KeyCode::Left);
-        assert_eq!(app.active_panel().cwd, sub);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.cwd, left_cwd);
+        assert_eq!(app.right.cwd, right_cwd);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.cwd, left_cwd);
+        assert_eq!(app.right.cwd, right_cwd);
         app.change_dir(&root).unwrap();
         select_named(&mut app, "sub");
         press(&mut app, KeyCode::Right);
-        assert_eq!(app.active_panel().cwd, root);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.cwd, root, "Lynx-like off: Right does not enter");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -24380,6 +24410,295 @@ mod panel_function_keys_tests {
         assert!(app.quick_search.is_none());
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert!(!app.quit);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_switch_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-panel-switch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.panel_opts.lynx_like = false;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn make_split_app(left: &std::path::Path, right: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.panel_opts.lynx_like = false;
+        app.change_dir(left).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(right).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::ALT, 10);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn goto_name(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn marked_names(app: &App) -> Vec<String> {
+        let p = app.active_panel();
+        p.selection
+            .iter()
+            .filter_map(|i| p.entries.get(i).map(|e| e.name.clone()))
+            .collect()
+    }
+
+    fn viewer_path(app: &App) -> std::path::PathBuf {
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => path.clone(),
+            _ => panic!("expected Viewer, got other mode"),
+        }
+    }
+
+    #[test]
+    fn keymap_binds_tab_and_c_i_to_switch_panel() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(Action::SwitchPanel)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)),
+            Some(Action::SwitchPanel)
+        ));
+        assert!(
+            !matches!(
+                km.resolve(&KeyEvent::new(KeyCode::Tab, KeyModifiers::ALT)),
+                Some(Action::SwitchPanel)
+            ),
+            "Alt-Tab must stay completion, not SwitchPanel"
+        );
+    }
+
+    #[test]
+    fn tab_empty_cmdline_switches_left_right_and_back() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        assert!(app.subshell.cmdline.is_empty());
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn c_i_switches_left_right_and_back() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        assert_eq!(app.active, PaneSide::Left);
+        press_ctrl(&mut app, 'i');
+        assert_eq!(app.active, PaneSide::Right);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press_ctrl(&mut app, 'i');
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_nonempty_cmdline_still_switches_not_completion() {
+        let root = temp_workspace();
+        std::fs::write(root.join("zzalpha.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "echo hi");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.subshell.cmdline, "echo hi", "Tab must not insert a tab");
+        assert!(
+            !matches!(app.ui_mode, UiMode::CompletionList { .. }),
+            "panel Tab is not completion"
+        );
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.subshell.cmdline, "echo hi");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lynx_like_off_left_right_switch_cwd_unchanged() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        app.panel_opts.lynx_like = false;
+        let left_cwd = app.left.cwd.clone();
+        let right_cwd = app.right.cwd.clone();
+        goto_name(&mut app, "sub");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.cwd, left_cwd);
+        assert_eq!(app.right.cwd, right_cwd);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.cwd, left_cwd);
+        assert_eq!(app.right.cwd, right_cwd);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lynx_like_on_left_parent_right_enter_does_not_switch() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("notes.txt"), b"hi").unwrap();
+        let mut app = make_app(&sub);
+        app.panel_opts.lynx_like = true;
+        assert_eq!(app.active, PaneSide::Left);
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(
+            app.active,
+            PaneSide::Left,
+            "Lynx-like ON: Left does not switch"
+        );
+        assert_eq!(app.left.cwd, root);
+        goto_name(&mut app, "sub");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.active,
+            PaneSide::Left,
+            "Lynx-like ON: Right does not switch"
+        );
+        assert_eq!(app.left.cwd, sub);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_input_left_right_do_not_switch_panels() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        type_str(&mut app, "hello");
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.subshell.cursor(), 5);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.subshell.cursor(), 4);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.subshell.cursor(), 5);
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_tab_switch_insert_c_s_f3_alt_g_use_new_panel() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("left.txt"), b"L").unwrap();
+        std::fs::write(right.join("right.txt"), b"R").unwrap();
+        let mut app = make_split_app(&left, &right);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "left.txt");
+        assert_eq!(app.active, PaneSide::Left);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        goto_name(&mut app, "right.txt");
+
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(marked_names(&app), vec!["right.txt".to_string()]);
+        assert!(app.left.selection.is_empty(), "Insert marks the new panel");
+
+        press_ctrl(&mut app, 's');
+        assert!(app.quick_search.is_some(), "C-s on newly active panel");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+
+        press(&mut app, KeyCode::F(3));
+        assert_eq!(viewer_path(&app), right.join("right.txt"));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active, PaneSide::Right);
+
+        press_alt(&mut app, 'g');
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.active_panel().cursor, 0);
+        assert_eq!(app.active_panel().entries[0].name, "..");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn horizontal_split_tab_still_toggles_active_panel() {
+        let root = temp_workspace();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        app.layout.horizontal_split = true;
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        assert!(app.layout.horizontal_split);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
