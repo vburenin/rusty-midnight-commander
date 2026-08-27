@@ -151,6 +151,33 @@ impl Default for ConfigOptions {
     }
 }
 
+/// GNU mc Options → Virtual FS
+#[derive(Clone, Debug)]
+pub struct VfsOptions {
+    /// Always use ftp proxy
+    pub always_use_ftp_proxy: bool,
+    /// FTP proxy host (host[:port])
+    pub ftp_proxy_host: String,
+    /// Use ~/.netrc for FTP login
+    pub use_netrc: bool,
+    /// Default password for anonymous FTP
+    pub ftp_anon_password: String,
+    /// Directory cache timeout in seconds (stored; not currently applied)
+    pub dir_cache_timeout_secs: u32,
+}
+
+impl Default for VfsOptions {
+    fn default() -> Self {
+        Self {
+            always_use_ftp_proxy: false,
+            ftp_proxy_host: String::new(),
+            use_netrc: true,
+            ftp_anon_password: "anonymous@".to_string(),
+            dir_cache_timeout_secs: 900,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LayoutFocus {
     MenuBar,
@@ -437,6 +464,11 @@ pub enum UiMode {
         draft: ConfigOptions,
         focus: ConfigOptionsFocus,
     },
+    /// GNU mc Options → Virtual FS dialog
+    VfsOptionsDialog {
+        draft: VfsOptions,
+        focus: VfsOptionsFocus,
+    },
 }
 
 // Simple glob matcher supporting '*' (any sequence) and '?' (single char).
@@ -540,6 +572,17 @@ pub enum AppearanceFocus {
     Ok,
     Cancel,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum VfsOptionsFocus {
+    AlwaysUseFtpProxy,
+    FtpProxyHost,
+    UseNetrc,
+    FtpAnonPassword,
+    DirCacheTimeout,
+    Ok,
+    Cancel,
+}
 pub struct App {
     pub vfs: Box<dyn Vfs>,
     pub keymap: KeyMap,
@@ -565,6 +608,8 @@ pub struct App {
     pub panel_opts: PanelOptions,
     /// GNU mc-style Options → Configuration
     pub config_opts: ConfigOptions,
+    /// GNU mc-style Options → Virtual FS
+    pub vfs_opts: VfsOptions,
     /// Selected skin name (e.g., "default")
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
@@ -593,6 +638,7 @@ impl App {
             confirm: ConfirmOptions::default(),
             panel_opts: PanelOptions::default(),
             config_opts: ConfigOptions::default(),
+            vfs_opts: VfsOptions::default(),
             skin_name: "default".to_string(),
             shadows: true,
         };
@@ -930,6 +976,7 @@ impl App {
             UiMode::LearnKeysDialog { .. } => "Panels".to_string(),
             UiMode::AppearanceDialog { .. } => "Panels".to_string(),
             UiMode::ConfigurationDialog { .. } => "Panels".to_string(),
+            UiMode::VfsOptionsDialog { .. } => "Panels".to_string(),
         }
     }
     pub fn page_up_by(&mut self, rows: usize) {
