@@ -509,6 +509,7 @@ impl TerminalApp {
                                     app.ui_mode = UiMode::Menu {
                                         top_index: top_idx,
                                         selected_index: 0,
+                                        dropped: true,
                                     };
                                 }
                             }
@@ -3397,6 +3398,7 @@ impl TerminalApp {
             UiMode::Menu {
                 top_index,
                 selected_index,
+                dropped,
             } => {
                 let menus: [&[&str]; 5] = [
                     &[
@@ -3476,17 +3478,27 @@ impl TerminalApp {
                         *selected_index = 0;
                     }
                     KeyCode::Up => {
-                        if *selected_index > 0 {
+                        if *dropped && *selected_index > 0 {
                             *selected_index -= 1;
                         }
                     }
                     KeyCode::Down => {
-                        let max = menus[*top_index].len().saturating_sub(1);
-                        if *selected_index < max {
-                            *selected_index += 1;
+                        if !*dropped {
+                            *dropped = true;
+                            *selected_index = 0;
+                        } else {
+                            let max = menus[*top_index].len().saturating_sub(1);
+                            if *selected_index < max {
+                                *selected_index += 1;
+                            }
                         }
                     }
                     KeyCode::Enter => {
+                        if !*dropped {
+                            *dropped = true;
+                            *selected_index = 0;
+                            return Ok(());
+                        }
                         let item = menus[*top_index][*selected_index];
                         match item {
                             "Listing mode..." => {
@@ -6521,6 +6533,122 @@ mod mkdir_autoname_tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert!(root.join("notes.txt_d").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod drop_menus_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-drop-menus-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn assert_menu(app: &App, top: usize, sel: usize, dropped: bool) {
+        match &app.ui_mode {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped: d,
+            } => {
+                assert_eq!(*top_index, top, "top_index");
+                assert_eq!(*selected_index, sel, "selected_index");
+                assert_eq!(*d, dropped, "dropped");
+            }
+            _ => panic!("expected UiMode::Menu"),
+        }
+    }
+
+    #[test]
+    fn flag_false_f9_is_menu_bar_only() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = false;
+        press(&mut app, KeyCode::F(9));
+        assert_menu(&app, 0, 0, false);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_f9_drops_left_menu_with_item_selected() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        assert_menu(&app, 0, 0, true);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_false_down_or_enter_drops_current_menu() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = false;
+        press(&mut app, KeyCode::F(9));
+        assert_menu(&app, 0, 0, false);
+        press(&mut app, KeyCode::Down);
+        assert_menu(&app, 0, 0, true);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        assert_menu(&app, 1, 0, false);
+        press(&mut app, KeyCode::Enter);
+        assert_menu(&app, 1, 0, true);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn left_right_switch_top_menus_while_dropped() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        assert_menu(&app, 2, 0, true);
+        // Command menu still includes External panelize (index 4).
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_menu(&app, 2, 4, true);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => {
+                assert_eq!(title, "External panelize");
+            }
+            _ => panic!("expected External panelize InputDialog"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

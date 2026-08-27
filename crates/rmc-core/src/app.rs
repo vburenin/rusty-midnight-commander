@@ -138,7 +138,10 @@ pub struct ConfigOptions {
     /// shell globs (`*.c`, `?`, `[abc]`). When false, those patterns are regexes.
     pub shell_patterns: bool,
     pub auto_menus: bool, // default false; store only
-    pub drop_menus: bool, // default false; store only
+    /// GNU mc Options → Configuration → Drop down menus. When true, F9
+    /// immediately opens the current top-level pull-down (item 0 selected).
+    /// When false (default), F9 highlights the menu bar until Down or Enter.
+    pub drop_menus: bool,
     /// GNU mc Options → Configuration → Mkdir autoname. When true, F7 prefills
     /// the Mkdir name with the current panel entry (not `..`). Default false.
     pub mkdir_autoname: bool,
@@ -317,6 +320,9 @@ pub enum UiMode {
     Menu {
         top_index: usize,
         selected_index: usize,
+        /// False: menu-bar highlight only (GNU mc drop_menus off).
+        /// True: pull-down is open with `selected_index` on an item.
+        dropped: bool,
     },
     // Find File dialog state (UI renders and drives this)
     FindDialog(FindDialogState),
@@ -812,6 +818,7 @@ impl App {
                 self.ui_mode = UiMode::Menu {
                     top_index: 0,
                     selected_index: 0,
+                    dropped: self.config_opts.drop_menus,
                 }
             }
             ShowHelp => {
@@ -1115,5 +1122,41 @@ mod tests {
         assert_eq!(app.left.cwd, right_dir);
         assert_eq!(app.right.cwd, left_dir);
         assert_eq!(app.active, PaneSide::Left);
+    }
+
+    fn assert_menu(app: &App, top: usize, sel: usize, dropped: bool) {
+        match &app.ui_mode {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped: d,
+            } => {
+                assert_eq!(*top_index, top, "top_index");
+                assert_eq!(*selected_index, sel, "selected_index");
+                assert_eq!(*d, dropped, "dropped");
+            }
+            _ => panic!("expected UiMode::Menu"),
+        }
+    }
+
+    #[test]
+    fn drop_menus_default_is_false() {
+        assert!(!ConfigOptions::default().drop_menus);
+    }
+
+    #[test]
+    fn focus_menu_bar_only_when_drop_menus_false() {
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.config_opts.drop_menus = false;
+        app.handle_action(Action::FocusMenu).unwrap();
+        assert_menu(&app, 0, 0, false);
+    }
+
+    #[test]
+    fn focus_menu_drops_left_when_drop_menus_true() {
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.config_opts.drop_menus = true;
+        app.handle_action(Action::FocusMenu).unwrap();
+        assert_menu(&app, 0, 0, true);
     }
 }
