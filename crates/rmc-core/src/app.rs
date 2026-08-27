@@ -336,6 +336,8 @@ pub enum UiMode {
         save_as_input: Option<String>,
         /// GNU mcedit F4 Replace dialog (None while editing).
         replace_dialog: Option<EditorReplaceDialog>,
+        /// GNU mcedit `|` Pipe dialog (None while editing).
+        pipe_dialog: Option<EditorPipeDialog>,
         pending_quit: bool,
         confirm_exit: Option<YncDialog>,
     },
@@ -583,6 +585,22 @@ impl EditorReplaceDialog {
             focus: EditorReplaceFocus::Search,
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorPipeFocus {
+    #[default]
+    Command,
+    Ok,
+    Cancel,
+}
+
+/// GNU mcedit-style Pipe dialog: filter the selection (or whole buffer)
+/// through `sh -c <command>` and replace it with stdout.
+#[derive(Clone, Default)]
+pub struct EditorPipeDialog {
+    pub command: String,
+    pub focus: EditorPipeFocus,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CopyDialogFocus {

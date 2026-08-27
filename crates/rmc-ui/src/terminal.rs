@@ -12,7 +12,8 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
-    App, EditorReplaceDialog, EditorReplaceFocus, HistoryDialogFocus, LayoutFocus, UiMode,
+    App, EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus,
+    HistoryDialogFocus, LayoutFocus, UiMode,
 };
 use rmc_core::find::{
     search_files_streaming, CancelHandle, FindDialogFocus as FF, FindDialogState,
@@ -81,6 +82,20 @@ fn editor_replace_all(
         replacement.as_bytes(),
         buf.last_search_case_insensitive,
     ))
+}
+
+/// Pipe selection (or whole buffer) through `cmd`. Empty command is a no-op
+/// (does not wipe the file). On failure `pipe_selection` leaves the buffer
+/// unchanged and the error text is returned for `status_msg`.
+fn editor_pipe_run(buf: &mut rmc_edit::EditorBuffer, cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return None;
+    }
+    match buf.pipe_selection(cmd) {
+        Ok(()) => None,
+        Err(e) => Some(format!("{e}")),
+    }
 }
 
 // Encode key events into bytes suitable for a typical xterm-compatible PTY.
@@ -986,6 +1001,7 @@ impl TerminalApp {
                 search_input,
                 save_as_input,
                 replace_dialog,
+                pipe_dialog,
                 pending_quit: _,
                 confirm_exit,
             } => {
@@ -1109,6 +1125,64 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // GNU mcedit `|` Pipe dialog (filter selection / whole buffer).
+                if let Some(dlg) = pipe_dialog {
+                    use EditorPipeFocus as F;
+                    let order = [F::Command, F::Ok, F::Cancel];
+                    let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            *pipe_dialog = None;
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            idx = (idx + 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::BackTab | KeyCode::Up => {
+                            idx = (idx + order.len() - 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::Left | KeyCode::Right
+                            if matches!(dlg.focus, F::Ok | F::Cancel) =>
+                        {
+                            dlg.focus = if matches!(dlg.focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                        KeyCode::Backspace if matches!(dlg.focus, F::Command) => {
+                            dlg.command.pop();
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ')
+                            if matches!(dlg.focus, F::Ok | F::Cancel)
+                                || matches!(key.code, KeyCode::Enter) =>
+                        {
+                            match dlg.focus {
+                                F::Cancel => {
+                                    *pipe_dialog = None;
+                                }
+                                F::Command | F::Ok => {
+                                    let cmd = dlg.command.clone();
+                                    *pipe_dialog = None;
+                                    if let Some(msg) = editor_pipe_run(buf, &cmd) {
+                                        *status_msg = Some(msg);
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && matches!(dlg.focus, F::Command) =>
+                        {
+                            dlg.command.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
                 // Inline "Find:" overlay
                 if let Some(q) = search_input {
                     match key.code {
@@ -1207,70 +1281,18 @@ impl TerminalApp {
                     KeyCode::F(4) => {
                         *search_input = None;
                         *save_as_input = None;
+                        *pipe_dialog = None;
                         *status_msg = None;
                         *replace_dialog =
                             Some(EditorReplaceDialog::from_last_search(&buf.last_search));
                     }
-                    // Pipe selection (or whole buffer) through external command (GNU mcedit behavior)
+                    // Pipe selection (or whole buffer) through external command (GNU mcedit).
                     KeyCode::Char('|') => {
-                        let buf_snapshot = buf.clone();
-                        app.ui_mode = UiMode::InputDialog {
-                            title: "Pipe command".into(),
-                            prompt: "Enter shell command:".into(),
-                            value: String::new(),
-                            focus_ok: false,
-                            on_submit: Box::new(move |app, input| {
-                                let cmd = input.trim();
-                                // Always return to editor; empty command is a no-op.
-                                if cmd.is_empty() {
-                                    app.ui_mode = UiMode::Editor {
-                                        buf: buf_snapshot,
-                                        show_menu: false,
-                                        status_msg: None,
-                                        search_input: None,
-                                        save_as_input: None,
-                                        replace_dialog: None,
-                                        pending_quit: false,
-                                        confirm_exit: None,
-                                    };
-                                    return Ok(());
-                                }
-                                // Apply pipe to a working copy of the buffer; on success update editor, on error show dialog and restore.
-                                let mut new_buf = buf_snapshot.clone();
-                                if let Err(e) = new_buf.pipe_selection(cmd) {
-                                    let restore_buf = buf_snapshot;
-                                    app.ui_mode = UiMode::DialogConfirm {
-                                        title: "Error".into(),
-                                        message: format!("{e}"),
-                                        on_ok: Box::new(move |app| {
-                                            app.ui_mode = UiMode::Editor {
-                                                buf: restore_buf,
-                                                show_menu: false,
-                                                status_msg: None,
-                                                search_input: None,
-                                                save_as_input: None,
-                                                replace_dialog: None,
-                                                pending_quit: false,
-                                                confirm_exit: None,
-                                            };
-                                            Ok(())
-                                        }),
-                                    };
-                                } else {
-                                    app.ui_mode = UiMode::Editor {
-                                        buf: new_buf,
-                                        show_menu: false,
-                                        status_msg: None,
-                                        search_input: None,
-                                        save_as_input: None,
-                                        replace_dialog: None,
-                                        pending_quit: false,
-                                        confirm_exit: None,
-                                    };
-                                }
-                                Ok(())
-                            }),
-                        };
+                        *search_input = None;
+                        *save_as_input = None;
+                        *replace_dialog = None;
+                        *status_msg = None;
+                        *pipe_dialog = Some(EditorPipeDialog::default());
                     }
                     // Block ops
                     KeyCode::F(3) => {
@@ -5465,6 +5487,7 @@ impl TerminalApp {
                                         search_input: None,
                                         save_as_input: None,
                                         replace_dialog: None,
+                                        pipe_dialog: None,
                                         pending_quit: false,
                                         confirm_exit: None,
                                     };
@@ -7389,6 +7412,7 @@ mod editor_replace_tests {
             search_input: None,
             save_as_input: None,
             replace_dialog: None,
+            pipe_dialog: None,
             pending_quit: false,
             confirm_exit: None,
         };
@@ -7602,5 +7626,231 @@ mod editor_replace_tests {
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::F(4));
         assert_eq!(replace_dialog(&app).search, "foo");
+    }
+}
+
+#[cfg(test)]
+mod editor_pipe_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::EditorPipeFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_edit::EditorBuffer;
+    use rmc_fs::local::LocalFs;
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap()
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, None),
+            show_menu: false,
+            status_msg: None,
+            search_input: None,
+            save_as_input: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn type_text(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn editor_buf(app: &App) -> &EditorBuffer {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn editor_bytes(app: &App) -> Vec<u8> {
+        editor_buf(app).to_bytes()
+    }
+
+    fn pipe_dialog(app: &App) -> &EditorPipeDialog {
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog: Some(dlg),
+                ..
+            } => dlg,
+            UiMode::Editor {
+                save_as_input: Some(_),
+                ..
+            } => panic!("expected Pipe dialog, got Save-as"),
+            UiMode::Editor {
+                search_input: Some(_),
+                ..
+            } => panic!("expected Pipe dialog, got Search"),
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                ..
+            } => panic!("expected Pipe dialog, got Replace"),
+            UiMode::InputDialog { title, .. } => {
+                panic!("expected editor Pipe dialog, got InputDialog {title:?}")
+            }
+            _ => panic!("expected Editor Pipe dialog"),
+        }
+    }
+
+    #[test]
+    fn pipe_key_opens_pipe_not_save_as_search_or_replace() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::Char('|'));
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog: Some(dlg),
+                search_input,
+                save_as_input,
+                replace_dialog,
+                ..
+            } => {
+                assert!(search_input.is_none(), "| must not open Search");
+                assert!(save_as_input.is_none(), "| must not open Save-as");
+                assert!(replace_dialog.is_none(), "| must not open Replace");
+                assert!(dlg.command.is_empty());
+                assert!(matches!(dlg.focus, EditorPipeFocus::Command));
+            }
+            UiMode::InputDialog { title, .. } => {
+                panic!("| must open the editor Pipe dialog, not InputDialog {title:?}")
+            }
+            _ => panic!("| must open the Pipe dialog"),
+        }
+    }
+
+    #[test]
+    fn enter_tr_uppercases_whole_buffer() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::Char('|'));
+        type_text(&mut app, "tr a-z A-Z");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"HELLO");
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog,
+                search_input,
+                save_as_input,
+                replace_dialog,
+                ..
+            } => {
+                assert!(pipe_dialog.is_none());
+                assert!(search_input.is_none());
+                assert!(save_as_input.is_none());
+                assert!(replace_dialog.is_none());
+            }
+            _ => panic!("expected Editor after Pipe"),
+        }
+    }
+
+    #[test]
+    fn esc_leaves_buffer_unchanged() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::Char('|'));
+        type_text(&mut app, "tr a-z A-Z");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(editor_bytes(&app), b"hello");
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(pipe_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            UiMode::Normal => panic!("Esc must stay in the editor, not return to panels"),
+            _ => panic!("Esc should stay in the editor"),
+        }
+    }
+
+    #[test]
+    fn empty_command_does_not_wipe_file() {
+        let mut app = make_app();
+        open_editor(&mut app, b"keep me");
+        press(&mut app, KeyCode::Char('|'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"keep me");
+        match &app.ui_mode {
+            UiMode::Editor { pipe_dialog, .. } => {
+                assert!(pipe_dialog.is_none());
+            }
+            _ => panic!("expected Editor after empty Pipe"),
+        }
+    }
+
+    #[test]
+    fn failed_command_sets_status_and_leaves_buffer() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::Char('|'));
+        type_text(&mut app, "false");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"hello");
+        match &app.ui_mode {
+            UiMode::Editor {
+                pipe_dialog,
+                status_msg,
+                ..
+            } => {
+                assert!(pipe_dialog.is_none());
+                let msg = status_msg.as_deref().expect("status_msg after failed pipe");
+                assert!(
+                    !msg.is_empty(),
+                    "failed pipe must surface an error in status_msg"
+                );
+            }
+            _ => panic!("expected Editor after failed Pipe"),
+        }
+    }
+
+    #[test]
+    fn f4_replace_still_opens_replace() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc abc");
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                replace_dialog: Some(_),
+                pipe_dialog,
+                search_input,
+                ..
+            } => {
+                assert!(pipe_dialog.is_none());
+                assert!(search_input.is_none());
+            }
+            _ => panic!("F4 must still open the Replace dialog"),
+        }
+    }
+
+    #[test]
+    fn cancel_button_leaves_buffer_unchanged() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        press(&mut app, KeyCode::Char('|'));
+        type_text(&mut app, "tr a-z A-Z");
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Tab); // Cancel
+        assert!(matches!(pipe_dialog(&app).focus, EditorPipeFocus::Cancel));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_bytes(&app), b"hello");
+        match &app.ui_mode {
+            UiMode::Editor { pipe_dialog, .. } => {
+                assert!(pipe_dialog.is_none());
+            }
+            _ => panic!("Cancel should stay in the editor"),
+        }
     }
 }

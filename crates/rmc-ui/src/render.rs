@@ -58,6 +58,7 @@ impl Renderer {
             search_input,
             save_as_input,
             replace_dialog,
+            pipe_dialog,
             confirm_exit,
             ..
         } = &app.ui_mode
@@ -73,6 +74,7 @@ impl Renderer {
                 search_input.as_deref(),
                 save_as_input.as_deref(),
                 replace_dialog.as_ref(),
+                pipe_dialog.as_ref(),
                 confirm_exit.as_ref(),
                 app.shadows,
             );
@@ -1784,6 +1786,7 @@ fn draw_editor(
     search_input: Option<&str>,
     save_as_input: Option<&str>,
     replace_dialog: Option<&rmc_core::app::EditorReplaceDialog>,
+    pipe_dialog: Option<&rmc_core::app::EditorPipeDialog>,
     confirm: Option<&rmc_core::app::YncDialog>,
     show_shadow: bool,
 ) {
@@ -1950,6 +1953,9 @@ fn draw_editor(
     }
     if let Some(dlg) = replace_dialog {
         draw_editor_replace_dialog(p, cols, rows, pal, dlg, show_shadow);
+    }
+    if let Some(dlg) = pipe_dialog {
+        draw_editor_pipe_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
     if let Some(c) = confirm {
         draw_dialog_ync(
@@ -2175,6 +2181,105 @@ fn draw_editor_replace_dialog(
         sel_btn(F::All, "All"),
         sel_btn(F::Cancel, "Cancel")
     );
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+fn draw_editor_pipe_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    dlg: &rmc_core::app::EditorPipeDialog,
+    show_shadow: bool,
+) {
+    use rmc_core::app::EditorPipeFocus as F;
+    let w = (cols as usize).min(66) as u16;
+    let h = 8u16;
+    if cols < w || rows < h {
+        return;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title — GNU mcedit wording
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title = " Pipe ";
+    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(title);
+    // Inner fill
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for i in 1..h - 1 {
+        p.goto(x + 1, y + i);
+        p.text(&" ".repeat((w - 2) as usize));
+    }
+    let inner_w = (w - 4) as usize;
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 1);
+    p.text(&truncate("Enter pipe command:", inner_w));
+    if matches!(dlg.focus, F::Command) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 2);
+    let ct = truncate(&dlg.command, inner_w);
+    p.text(&format!(
+        "{ct}{}",
+        " ".repeat(inner_w.saturating_sub(ct.len()))
+    ));
+    // Buttons: focused `< OK >`, unfocused `[ Cancel ]` (GNU mc / History / Replace)
+    let focus = dlg.focus;
+    let sel_btn = |want, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);
