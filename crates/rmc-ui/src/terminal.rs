@@ -2031,6 +2031,104 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::PanelOptionsDialog { draft, focus } => {
+                use rmc_core::app::PanelOptionsFocus as F;
+                // Focus order: checkboxes then buttons
+                let order = [
+                    F::ShowHidden,
+                    F::MixAllFiles,
+                    F::MarkMovesDown,
+                    F::ShowMiniStatus,
+                    F::UseSiUnits,
+                    F::FastReload,
+                    F::ReverseFilesOnly,
+                    F::SimpleSwap,
+                    F::AutoSaveSetup,
+                    F::LynxLikeMotion,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        // Only swap buttons when a button is focused
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Char(' ') => match *focus {
+                        F::ShowHidden => draft.show_hidden = !draft.show_hidden,
+                        F::MixAllFiles => draft.mix_all_files = !draft.mix_all_files,
+                        F::MarkMovesDown => draft.mark_moves_down = !draft.mark_moves_down,
+                        F::ShowMiniStatus => draft.show_mini_status = !draft.show_mini_status,
+                        F::UseSiUnits => draft.kilobyte_si = !draft.kilobyte_si,
+                        F::FastReload => draft.fast_reload = !draft.fast_reload,
+                        F::ReverseFilesOnly => draft.reverse_files_only = !draft.reverse_files_only,
+                        F::SimpleSwap => draft.simple_swap = !draft.simple_swap,
+                        F::AutoSaveSetup => draft.auto_save_setup = !draft.auto_save_setup,
+                        F::LynxLikeMotion => draft.lynx_like = !draft.lynx_like,
+                        _ => {}
+                    },
+                    KeyCode::Enter => match *focus {
+                        F::ShowHidden => draft.show_hidden = !draft.show_hidden,
+                        F::MixAllFiles => draft.mix_all_files = !draft.mix_all_files,
+                        F::MarkMovesDown => draft.mark_moves_down = !draft.mark_moves_down,
+                        F::ShowMiniStatus => draft.show_mini_status = !draft.show_mini_status,
+                        F::UseSiUnits => draft.kilobyte_si = !draft.kilobyte_si,
+                        F::FastReload => draft.fast_reload = !draft.fast_reload,
+                        F::ReverseFilesOnly => draft.reverse_files_only = !draft.reverse_files_only,
+                        F::SimpleSwap => draft.simple_swap = !draft.simple_swap,
+                        F::AutoSaveSetup => draft.auto_save_setup = !draft.auto_save_setup,
+                        F::LynxLikeMotion => draft.lynx_like = !draft.lynx_like,
+                        F::Ok => {
+                            let new_opts = *draft;
+                            // Close dialog before applying to avoid borrow issues
+                            app.ui_mode = UiMode::Normal;
+                            // Apply options
+                            app.panel_opts = new_opts;
+                            // Mix all files -> dirs_first = !mix
+                            app.left.dirs_first = !new_opts.mix_all_files;
+                            app.right.dirs_first = !new_opts.mix_all_files;
+                            // Show hidden files
+                            app.show_hidden = new_opts.show_hidden;
+                            // Reload listings (applies sorting with new dirs_first as well)
+                            let _ = app.reload_panels();
+                        }
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    },
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::MkdirDialog { value, focus_ok } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
@@ -2789,6 +2887,13 @@ impl TerminalApp {
                                 app.ui_mode = UiMode::LayoutDialog {
                                     draft,
                                     focus: LayoutFocus::MenuBar,
+                                };
+                            }
+                            "Panels" => {
+                                let draft = app.panel_opts;
+                                app.ui_mode = UiMode::PanelOptionsDialog {
+                                    draft,
+                                    focus: rmc_core::app::PanelOptionsFocus::ShowHidden,
                                 };
                             }
                             "Confirmations" => {
