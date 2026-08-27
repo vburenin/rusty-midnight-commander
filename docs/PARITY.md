@@ -159,7 +159,7 @@ From README and mc(1):
 ## 8) Find file, content search, external panelize — Status: Later
 
 Per mc(1) “Find File” and “External panelize”:
-- [ ] Find File dialog: start dir (tree picker), filename pattern (glob/regex), content search string, case sensitivity, whole words
+- [x] Find File dialog: start dir (tree picker), filename pattern (glob/regex), content search string, case sensitivity, whole words
 - [x] Exclude/ignore directories list (colon-separated), follow symlinks options
 - [ ] Buttons: OK, Stop/Start, Again, Chdir, Panelize, Quit
 - [x] Panelize results into panel; return to normal listing with “..” or switching mode
