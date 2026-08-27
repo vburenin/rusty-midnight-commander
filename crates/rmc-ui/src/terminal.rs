@@ -17699,7 +17699,6 @@ mod shell_cmdline_helpers_tests {
 mod shell_cmdline_editing_tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rmc_core::actions::PaneSide;
     use rmc_core::app::{App, UiMode};
     use rmc_core::config::KeyMap;
     use rmc_core::subshell::shell_quote;
