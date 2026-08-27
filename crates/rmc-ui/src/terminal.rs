@@ -4985,14 +4985,17 @@ impl TerminalApp {
                 return Ok(());
             }
         }
-        // Lynx-like motion (Options → Panels): Left = parent, Right = enter.
-        // Only in Normal listing mode; reuse ParentDir / Enter (do not open viewer).
+        // Lynx-like motion (Options → Panels): Left = parent, Right = panel Enter
+        // (dirs / archives / executables / mc.ext Open). Listing mode only.
         if matches!(app.ui_mode, UiMode::Normal)
             && key.modifiers.is_empty()
             && matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing)
         {
             if let Some(action) = lynx_like_arrow_action(app.panel_opts.lynx_like, key.code) {
-                app.handle_action(action)?;
+                match action {
+                    Action::Enter => handle_panel_enter(app)?,
+                    other => app.handle_action(other)?,
+                }
                 return Ok(());
             }
         }
@@ -5944,6 +5947,25 @@ mod enter_open_tests {
         select_named(&mut app, "shot.png");
         assert!(try_open_by_extension(&mut app).unwrap());
         assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn executable_mapped_file_still_runs_execute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_workspace();
+        let script = root.join("notes.txt");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt");
+        press_enter(&mut app);
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, .. } => assert_eq!(title, "Execute command"),
+            _ => panic!("expected execute confirm, not Open/view"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
