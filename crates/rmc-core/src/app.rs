@@ -363,8 +363,9 @@ pub enum UiMode {
         src: PathBuf,
         dst: PathBuf,
         state: crate::fileop::FileOpProgressState,
-        /// False until `App::drive_pending_file_op` starts the transfer.
+        /// True once the transfer has been queued on [`crate::jobs::JobQueue`].
         started: bool,
+        job_id: crate::jobs::JobId,
     },
     /// Overwrite/Replace dialog shown when destination exists for Copy/Move.
     OverwriteDialog {
@@ -1146,9 +1147,8 @@ impl App {
         Ok(())
     }
 
-    /// Open the GNU mc Copy/Move progress dialog for `src` → `dst`.
-    /// Honors verbose / compute_totals / classic_progressbar. The transfer runs
-    /// on the next [`App::drive_pending_file_op`] so the dialog can paint first.
+    /// Open the GNU mc Copy/Move progress dialog and queue the transfer on the
+    /// jobs worker so the event loop can keep drawing and honor Abort.
     pub fn begin_file_op(&mut self, op: CopyMoveOp, src: PathBuf, dst: PathBuf) -> Result<()> {
         let state = crate::fileop::FileOpProgressState::prepare(
             self.vfs.as_ref(),
@@ -1157,52 +1157,84 @@ impl App {
             &dst,
             &self.config_opts,
         )?;
+        let job_id = match op {
+            CopyMoveOp::Copy => self.jobs.spawn_copy(&src, &dst),
+            CopyMoveOp::Move => self.jobs.spawn_move(&src, &dst),
+        };
         self.ui_mode = UiMode::FileOpProgress {
             op,
             src,
             dst,
             state,
-            started: false,
+            started: true,
+            job_id,
         };
         Ok(())
     }
 
-    /// If a Copy/Move progress dialog is waiting, run the transfer once.
-    pub fn drive_pending_file_op(&mut self) -> Result<()> {
-        let (op, src, dst, started) = match &self.ui_mode {
+    /// Apply the jobs worker snapshot into the progress dialog. Never blocks on
+    /// the whole copy: the worker copies in 64 KiB chunks with a cancel flag.
+    pub fn poll_file_op_progress(&mut self) -> Result<()> {
+        let job_id = match &self.ui_mode {
             UiMode::FileOpProgress {
-                op,
-                src,
-                dst,
-                started,
+                started: true,
+                job_id,
                 ..
-            } => (*op, src.clone(), dst.clone(), *started),
+            } => *job_id,
             _ => return Ok(()),
         };
-        if started {
+        let Some(job) = self.jobs.get(job_id) else {
             return Ok(());
-        }
-        if let UiMode::FileOpProgress { started, .. } = &mut self.ui_mode {
-            *started = true;
-        }
-        let res = match op {
-            CopyMoveOp::Copy => self.vfs.copy(&src, &dst),
-            CopyMoveOp::Move => self.vfs.move_path(&src, &dst),
         };
-        match res {
-            Ok(()) => {
+        if let UiMode::FileOpProgress { state, .. } = &mut self.ui_mode {
+            state.apply_counters(
+                job.file_done,
+                job.file_total,
+                job.bytes_done,
+                job.files_done,
+                &job.current_name,
+            );
+        }
+        match job.status {
+            crate::jobs::JobStatus::Queued | crate::jobs::JobStatus::Running => Ok(()),
+            crate::jobs::JobStatus::Done => {
                 self.ui_mode = UiMode::Normal;
                 self.reload_panels()?;
+                Ok(())
             }
-            Err(err) => {
+            crate::jobs::JobStatus::Cancelled => {
+                self.ui_mode = UiMode::Normal;
+                self.reload_panels()?;
+                Ok(())
+            }
+            crate::jobs::JobStatus::Failed => {
+                let message = job.error.unwrap_or_else(|| "file operation failed".into());
                 self.ui_mode = UiMode::DialogConfirm {
                     title: "Error".into(),
-                    message: format!("{err}"),
+                    message,
                     on_ok: Box::new(|_| Ok(())),
                 };
+                Ok(())
             }
         }
+    }
+
+    /// Cancel an in-flight foreground copy/move (GNU mc Abort). Leaves a
+    /// partial destination as the jobs worker does; returns to Normal.
+    pub fn abort_file_op(&mut self) -> Result<()> {
+        let job_id = match &self.ui_mode {
+            UiMode::FileOpProgress { job_id, .. } => *job_id,
+            _ => return Ok(()),
+        };
+        self.jobs.cancel(job_id);
+        self.ui_mode = UiMode::Normal;
+        self.reload_panels()?;
         Ok(())
+    }
+
+    /// Back-compat name used by the UI loop: non-blocking poll of the worker.
+    pub fn drive_pending_file_op(&mut self) -> Result<()> {
+        self.poll_file_op_progress()
     }
 }
 
@@ -1296,7 +1328,7 @@ mod tests {
             UiMode::FileOpProgress { state, started, .. } => {
                 assert_eq!(state.bytes_total, Some(1800));
                 assert_eq!(state.source_name, "src.bin");
-                assert!(!*started);
+                assert!(*started, "transfer is queued on the jobs worker");
                 let view = state.view(47, false);
                 assert_eq!(view.source_name.as_deref(), Some("src.bin"));
             }
@@ -1323,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn drive_pending_file_op_copies_and_returns_to_normal() {
+    fn poll_file_op_progress_copies_and_returns_to_normal() {
         let (mut app, tmp, _, _) = app_with_distinct_panes();
         let src = tmp.path().join("src.bin");
         let dst = tmp.path().join("dst.bin");
@@ -1331,9 +1363,122 @@ mod tests {
         app.config_opts.compute_totals = true;
         app.begin_file_op(CopyMoveOp::Copy, src.clone(), dst.clone())
             .unwrap();
-        app.drive_pending_file_op().unwrap();
+        wait_until_file_op_settled(&mut app, 5_000);
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert_eq!(std::fs::read(&dst).unwrap(), b"hello-progress");
         assert_eq!(std::fs::read(&src).unwrap(), b"hello-progress");
+    }
+
+    #[test]
+    fn abort_accepted_while_started_in_flight() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("big.bin");
+        let dst = tmp.path().join("big.dst");
+        std::fs::write(&src, vec![0xABu8; 4 * 1024 * 1024]).unwrap();
+        app.begin_file_op(CopyMoveOp::Copy, src.clone(), dst.clone())
+            .unwrap();
+        let job_id = match &app.ui_mode {
+            UiMode::FileOpProgress {
+                started, job_id, ..
+            } => {
+                assert!(*started);
+                *job_id
+            }
+            _ => panic!("expected FileOpProgress"),
+        };
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(j) = app.jobs.get(job_id) {
+                if j.status == crate::jobs::JobStatus::Running && j.bytes_done > 0 {
+                    break;
+                }
+                if matches!(
+                    j.status,
+                    crate::jobs::JobStatus::Done
+                        | crate::jobs::JobStatus::Failed
+                        | crate::jobs::JobStatus::Cancelled
+                ) {
+                    panic!("job finished before abort: {:?}", j.status);
+                }
+            }
+            if start.elapsed() > std::time::Duration::from_millis(5_000) {
+                panic!("job never started running");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        match &app.ui_mode {
+            UiMode::FileOpProgress { started: true, .. } => {}
+            _ => panic!("dialog must still be in-flight"),
+        }
+        app.abort_file_op().unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(j) = app.jobs.get(job_id) {
+                if j.status != crate::jobs::JobStatus::Running
+                    && j.status != crate::jobs::JobStatus::Queued
+                {
+                    assert_eq!(j.status, crate::jobs::JobStatus::Cancelled);
+                    break;
+                }
+            }
+            if start.elapsed() > std::time::Duration::from_millis(5_000) {
+                panic!("cancel did not land");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if let Ok(meta) = std::fs::metadata(&dst) {
+            let src_len = std::fs::metadata(&src).unwrap().len();
+            assert!(
+                meta.len() < src_len,
+                "aborted destination should be incomplete"
+            );
+        }
+    }
+
+    #[test]
+    fn counters_advance_before_completion() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("mid.bin");
+        let dst = tmp.path().join("mid.dst");
+        std::fs::write(&src, vec![0xCDu8; 4 * 1024 * 1024]).unwrap();
+        app.config_opts.compute_totals = true;
+        app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+        let start = std::time::Instant::now();
+        let mut saw = false;
+        loop {
+            app.poll_file_op_progress().unwrap();
+            match &app.ui_mode {
+                UiMode::FileOpProgress { state, started, .. } => {
+                    assert!(*started);
+                    if state.bytes_done > 0 {
+                        assert!(state.bytes_done < state.bytes_total.unwrap_or(u64::MAX));
+                        saw = true;
+                        break;
+                    }
+                }
+                _ => panic!("dialog closed before counters advanced"),
+            }
+            if start.elapsed() > std::time::Duration::from_millis(5_000) {
+                panic!("bytes_done never advanced");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(saw, "must observe in-flight counters before completion");
+        wait_until_file_op_settled(&mut app, 10_000);
+    }
+
+    fn wait_until_file_op_settled(app: &mut App, timeout_ms: u64) {
+        let start = std::time::Instant::now();
+        loop {
+            app.poll_file_op_progress().unwrap();
+            if !matches!(app.ui_mode, UiMode::FileOpProgress { .. }) {
+                return;
+            }
+            if start.elapsed() > std::time::Duration::from_millis(timeout_ms) {
+                panic!("file op did not settle");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 }

@@ -95,6 +95,27 @@ impl FileOpProgressState {
         })
     }
 
+    /// Fold live job counters into the dialog. Keeps a Compute-totals pre-scan
+    /// denominator; current-file name updates for Verbose operation.
+    pub fn apply_counters(
+        &mut self,
+        file_done: u64,
+        file_total: u64,
+        bytes_done: u64,
+        files_done: u64,
+        current_name: &str,
+    ) {
+        if !current_name.is_empty() {
+            self.source_name = current_name.to_string();
+        }
+        self.file_done = file_done;
+        if file_total > 0 {
+            self.file_total = file_total;
+        }
+        self.bytes_done = bytes_done;
+        self.files_done = files_done;
+    }
+
     /// Dialog lines for the current flags and counters.
     pub fn view(&self, bar_width: usize, si: bool) -> FileOpProgressView {
         let title = match self.op {
@@ -496,5 +517,31 @@ mod tests {
                 files: 1
             }
         );
+    }
+
+    #[test]
+    fn apply_counters_advances_bars_before_completion() {
+        let mut s = copy_state(
+            "a.bin",
+            opts(true, true, true),
+            SampleProgress {
+                file_done: 0,
+                file_total: 100,
+                bytes_done: 0,
+                bytes_total: Some(100),
+            },
+        );
+        let before = s.view(default_bar_width(), false);
+        assert!(
+            !before.classic_bar.as_deref().unwrap().contains('*'),
+            "0% has no fill"
+        );
+        s.apply_counters(50, 100, 50, 0, "a.bin");
+        let mid = s.view(default_bar_width(), false);
+        assert!(mid.classic_bar.as_deref().unwrap().contains('*'));
+        assert!(mid.classic_bar.as_deref().unwrap().ends_with(" 50%"));
+        assert_eq!(s.bytes_done, 50);
+        assert_eq!(s.files_done, 0);
+        assert_ne!(s.bytes_done, s.bytes_total.unwrap());
     }
 }
