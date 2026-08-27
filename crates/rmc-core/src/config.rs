@@ -464,6 +464,10 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "simple_swap={}", app.panel_opts.simple_swap)?;
     writeln!(f, "auto_save_setup={}", app.panel_opts.auto_save_setup)?;
     writeln!(f, "lynx_like={}", app.panel_opts.lynx_like)?;
+    // [appearance]
+    writeln!(f, "\n[appearance]")?;
+    writeln!(f, "skin={}", app.skin_name)?;
+    writeln!(f, "shadows={}", app.shadows)?;
     // Save keymap
     let keymap_path = dir.join("keymap");
     app.keymap.save_to_file(&keymap_path)?;
@@ -530,6 +534,11 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                     "simple_swap" => app.panel_opts.simple_swap = vb(&v),
                     "auto_save_setup" => app.panel_opts.auto_save_setup = vb(&v),
                     "lynx_like" => app.panel_opts.lynx_like = vb(&v),
+                    _ => {}
+                },
+                "appearance" => match k.as_str() {
+                    "skin" => app.skin_name = v,
+                    "shadows" => app.shadows = vb(&v),
                     _ => {}
                 },
                 _ => {}

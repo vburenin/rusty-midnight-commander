@@ -313,6 +313,7 @@ impl TerminalApp {
         execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
         let palette = load_default_palette();
         let mut renderer = Renderer::new(palette);
+        let mut current_skin = app.skin_name.clone();
         let mut last_draw = Instant::now();
         // pending_ctrl_x lives on App; no local flag here
         // Double-click detection for listing rows
@@ -396,6 +397,25 @@ impl TerminalApp {
                             }
                         }
                     }
+                }
+            }
+            // Apply pending skin change by reloading palette
+            if app.skin_name != current_skin {
+                if let Some(path) = crate::skin::find_skin_path_by_name(&app.skin_name) {
+                    if let Ok(pal) = crate::skin::load_from_file(&path) {
+                        renderer.set_palette(pal);
+                        current_skin = app.skin_name.clone();
+                    } else {
+                        // Fallback: default palette
+                        let pal = crate::skin::load_default_palette();
+                        renderer.set_palette(pal);
+                        current_skin = app.skin_name.clone();
+                    }
+                } else {
+                    // "default" or unknown -> default loader (handles MC_SKIN first)
+                    let pal = crate::skin::load_default_palette();
+                    renderer.set_palette(pal);
+                    current_skin = app.skin_name.clone();
                 }
             }
             if last_draw.elapsed() > Duration::from_millis(33) {
@@ -2220,6 +2240,78 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::AppearanceDialog {
+                draft_skin,
+                draft_shadows,
+                skins,
+                selected,
+                focus,
+            } => {
+                use rmc_core::app::AppearanceFocus as F;
+                // Focus order per spec
+                let order = [F::SkinList, F::Shadows, F::Ok, F::Cancel];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if matches!(*focus, F::SkinList) && *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if matches!(*focus, F::SkinList) {
+                            let max = skins.len().saturating_sub(1);
+                            if *selected < max {
+                                *selected += 1;
+                            }
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        if *focus == F::Shadows {
+                            *draft_shadows = !*draft_shadows;
+                        }
+                    }
+                    KeyCode::Enter => match *focus {
+                        F::SkinList => {
+                            if let Some(name) = skins.get(*selected) {
+                                *draft_skin = name.clone();
+                            }
+                        }
+                        F::Shadows => {
+                            *draft_shadows = !*draft_shadows;
+                        }
+                        F::Ok => {
+                            app.skin_name = draft_skin.clone();
+                            app.shadows = *draft_shadows;
+                            app.ui_mode = UiMode::Normal;
+                        }
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                    },
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::MkdirDialog { value, focus_ok } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
@@ -2931,6 +3023,7 @@ impl TerminalApp {
                         "Layout",
                         "Panels",
                         "Confirmations",
+                        "Appearance",
                         "Learn keys",
                         "Save setup",
                     ],
@@ -2984,6 +3077,28 @@ impl TerminalApp {
                                 app.ui_mode = UiMode::LayoutDialog {
                                     draft,
                                     focus: LayoutFocus::MenuBar,
+                                };
+                            }
+                            "Appearance" => {
+                                // Build list of available skins; always include default
+                                let mut skins = crate::skin::list_available_skins();
+                                if skins.is_empty() {
+                                    skins.push("default".to_string());
+                                }
+                                // Prefill selection from current app.skin_name
+                                let mut selected = 0usize;
+                                for (i, s) in skins.iter().enumerate() {
+                                    if s == &app.skin_name {
+                                        selected = i;
+                                        break;
+                                    }
+                                }
+                                app.ui_mode = UiMode::AppearanceDialog {
+                                    draft_skin: app.skin_name.clone(),
+                                    draft_shadows: app.shadows,
+                                    skins,
+                                    selected,
+                                    focus: rmc_core::app::AppearanceFocus::SkinList,
                                 };
                             }
                             "Learn keys" => {

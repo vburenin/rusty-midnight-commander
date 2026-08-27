@@ -27,6 +27,10 @@ impl Renderer {
         }
     }
 
+    pub fn set_palette(&mut self, palette: McPalette) {
+        self.palette = palette;
+    }
+
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
@@ -60,6 +64,7 @@ impl Renderer {
                 search_input.as_deref(),
                 save_as_input.as_deref(),
                 confirm_exit.as_ref(),
+                app.shadows,
             );
             painter.out.flush()?;
             return Ok(());
@@ -90,6 +95,7 @@ impl Renderer {
                 *show_cr,
                 search_prompt,
                 goto_prompt,
+                app.shadows,
             )?;
             painter.out.flush()?;
             return Ok(());
@@ -98,7 +104,7 @@ impl Renderer {
         crate::terminal::viewer_clear_state();
         // Full-screen diff viewer short-circuit
         if let rmc_core::app::UiMode::Diff(state) = &app.ui_mode {
-            draw_diff(&mut painter, cols, rows, self.palette, state)?;
+            draw_diff(&mut painter, cols, rows, self.palette, state, app.shadows)?;
             painter.out.flush()?;
             return Ok(());
         }
@@ -203,13 +209,22 @@ fn draw_menu_bar(p: &mut Painter, cols: u16, pal: McPalette) {
 fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalette) -> Result<()> {
     match &app.ui_mode {
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
-            draw_dialog_box(p, cols, rows, pal, title, message, &["< OK >", "Cancel"]);
+            draw_dialog_box(
+                p,
+                cols,
+                rows,
+                pal,
+                title,
+                message,
+                &["< OK >", "Cancel"],
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::ConfirmationsDialog { draft, focus } => {
-            draw_confirmations_dialog(p, cols, rows, pal, draft, *focus);
+            draw_confirmations_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
         }
         rmc_core::app::UiMode::PanelOptionsDialog { draft, focus } => {
-            draw_panel_options_dialog(p, cols, rows, pal, draft, *focus);
+            draw_panel_options_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
         }
         rmc_core::app::UiMode::OverwriteDialog {
             op,
@@ -217,7 +232,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             dst_path,
             focus,
         } => {
-            draw_overwrite_dialog(p, cols, rows, pal, *op, dst_path, *focus);
+            draw_overwrite_dialog(p, cols, rows, pal, *op, dst_path, *focus, app.shadows);
         }
         rmc_core::app::UiMode::InputDialog {
             title,
@@ -226,7 +241,17 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             focus_ok,
             ..
         } => {
-            draw_input_dialog(p, cols, rows, pal, title, prompt, value, *focus_ok);
+            draw_input_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                title,
+                prompt,
+                value,
+                *focus_ok,
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::FtpConnectDialog {
             scheme,
@@ -253,10 +278,31 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *anonymous,
                 *focus_index,
                 *focus_ok,
+                app.shadows,
             );
         }
         rmc_core::app::UiMode::LayoutDialog { draft, focus } => {
-            draw_layout_dialog(p, cols, rows, pal, draft, *focus);
+            draw_layout_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
+        }
+        rmc_core::app::UiMode::AppearanceDialog {
+            draft_skin,
+            draft_shadows,
+            skins,
+            selected,
+            focus,
+        } => {
+            draw_appearance_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                draft_skin,
+                *draft_shadows,
+                skins,
+                *selected,
+                *focus,
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::Help { .. } => {
             // Full-screen; nothing overlays
@@ -285,6 +331,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *by,
                 *reverse,
                 *dirs_first,
+                app.shadows,
             );
         }
         rmc_core::app::UiMode::FindDialog(state) => {
@@ -295,10 +342,19 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         }
         rmc_core::app::UiMode::PromptInput { title, value, .. } => {
             let msg = value.to_string();
-            draw_dialog_box(p, cols, rows, pal, title, &msg, &["< OK >", "Cancel"]);
+            draw_dialog_box(
+                p,
+                cols,
+                rows,
+                pal,
+                title,
+                &msg,
+                &["< OK >", "Cancel"],
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::MkdirDialog { value, focus_ok } => {
-            draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok);
+            draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok, app.shadows);
         }
         rmc_core::app::UiMode::DeleteDialog { name, .. } => {
             draw_dialog_box(
@@ -309,6 +365,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 "Delete",
                 &format!("Delete \"{name}\"?"),
                 &["< Yes >", "No"],
+                app.shadows,
             );
         }
         rmc_core::app::UiMode::CopyDialog {
@@ -339,6 +396,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 *dive_into_subdir,
                 *stable_symlinks,
                 *focus,
+                app.shadows,
             );
         }
         rmc_core::app::UiMode::ChmodDialog {
@@ -372,6 +430,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 (*suid, *sgid, *sticky),
                 *recursive,
                 *focus_index,
+                app.shadows,
             );
         }
         rmc_core::app::UiMode::ChownDialog {
@@ -380,7 +439,17 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             recursive,
             focus_index,
         } => {
-            draw_chown_dialog(p, cols, rows, pal, owner, group, *recursive, *focus_index);
+            draw_chown_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                owner,
+                group,
+                *recursive,
+                *focus_index,
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::Menu {
             top_index,
@@ -392,10 +461,19 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             selected_index,
             focus,
         } => {
-            draw_jobs_dialog(p, cols, rows, pal, app, *selected_index, *focus);
+            draw_jobs_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                app,
+                *selected_index,
+                *focus,
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::CompareDirsDialog { mode, focus } => {
-            draw_compare_dirs_dialog(p, cols, rows, pal, *mode, *focus);
+            draw_compare_dirs_dialog(p, cols, rows, pal, *mode, *focus, app.shadows);
         }
         rmc_core::app::UiMode::LearnKeysDialog {
             draft,
@@ -403,7 +481,17 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             capturing,
             focus_ok,
         } => {
-            draw_learn_keys_dialog(p, cols, rows, pal, draft, *selected, *capturing, *focus_ok);
+            draw_learn_keys_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                draft,
+                *selected,
+                *capturing,
+                *focus_ok,
+                app.shadows,
+            );
         }
         _ => {}
     }
@@ -417,6 +505,7 @@ fn draw_panel_options_dialog(
     pal: McPalette,
     draft: &rmc_core::app::PanelOptions,
     focus: rmc_core::app::PanelOptionsFocus,
+    show_shadow: bool,
 ) {
     let title = "Panel options";
     let w = 54u16.min(cols.saturating_sub(2));
@@ -505,16 +594,18 @@ fn draw_panel_options_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 #[allow(clippy::too_many_arguments)]
 fn draw_overwrite_dialog(
@@ -525,6 +616,7 @@ fn draw_overwrite_dialog(
     op: rmc_core::app::CopyMoveOp,
     dst: &std::path::Path,
     focus: rmc_core::app::OverwriteFocus,
+    show_shadow: bool,
 ) {
     let w = (cols as usize).min(70) as u16;
     let h = 9u16;
@@ -640,16 +732,18 @@ fn draw_overwrite_dialog(
     draw_row(p, pal, x, y + h - 3, w, &row1, focus);
     draw_row(p, pal, x, y + h - 2, w, &row2, focus);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 fn draw_confirmations_dialog(
@@ -659,6 +753,7 @@ fn draw_confirmations_dialog(
     pal: McPalette,
     draft: &rmc_core::app::ConfirmOptions,
     focus: rmc_core::app::ConfirmationsFocus,
+    show_shadow: bool,
 ) {
     let title = "Confirmation";
     let w = 54u16.min(cols.saturating_sub(2));
@@ -739,16 +834,18 @@ fn draw_confirmations_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -761,6 +858,7 @@ fn draw_learn_keys_dialog(
     selected: usize,
     capturing: bool,
     focus_ok: bool,
+    show_shadow: bool,
 ) {
     let title = "Learn keys";
     // Labels matching the draft order
@@ -898,16 +996,18 @@ fn draw_learn_keys_dialog(
     p.goto(bx, btn_row);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 fn draw_compare_dirs_dialog(
@@ -917,6 +1017,7 @@ fn draw_compare_dirs_dialog(
     pal: McPalette,
     mode: rmc_core::app::CompareDirsMode,
     focus: rmc_core::app::CompareDirsFocus,
+    show_shadow: bool,
 ) {
     let title = "Compare directories";
     let w = 50u16.min(cols.saturating_sub(2));
@@ -1005,16 +1106,18 @@ fn draw_compare_dirs_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 fn draw_user_menu_dialog(
@@ -1100,6 +1203,7 @@ fn draw_layout_dialog(
     pal: McPalette,
     draft: &LayoutOptions,
     focus: LayoutFocus,
+    show_shadow: bool,
 ) {
     let title = "Layout";
     let w = 54u16.min(cols.saturating_sub(2));
@@ -1195,16 +1299,140 @@ fn draw_layout_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_appearance_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    draft_skin: &str,
+    draft_shadows: bool,
+    skins: &[String],
+    selected: usize,
+    focus: rmc_core::app::AppearanceFocus,
+    show_shadow: bool,
+) {
+    let title = "Appearance";
+    // Width based on longest skin name + padding
+    let mut max_name = skins.iter().map(|s| s.len()).max().unwrap_or(7);
+    max_name = max_name.max("default".len());
+    let list_w = (max_name + 6).clamp(20, 60) as u16;
+    let w = list_w;
+    // rows: frame top + title + list + shadows + buttons + frame bottom
+    let list_h = skins.len() as u16;
+    let base_h = 2 /*title*/ + list_h + 3 /*shadows+space*/ + 2 /*buttons+space*/;
+    let h = base_h.min(rows.saturating_sub(2)).max(10);
+    let x = (cols.saturating_sub(w)) / 2;
+    let y = (rows.saturating_sub(h)) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
     p.hline(
         x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
     );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Skin list
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let list_top = y + 2;
+    for (i, name) in skins.iter().enumerate() {
+        let row = list_top + i as u16;
+        if i == selected && matches!(focus, rmc_core::app::AppearanceFocus::SkinList) {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row);
+        let mark = if name == draft_skin { '*' } else { ' ' };
+        let mut line = format!("{mark} {name}");
+        while line.len() < (w - 4) as usize {
+            line.push(' ');
+        }
+        p.text(&line);
+    }
+    // Shadows checkbox (one row below list)
+    let shadows_row = list_top + list_h + 1;
+    if matches!(focus, rmc_core::app::AppearanceFocus::Shadows) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, shadows_row);
+    p.text(&format!(
+        "[{}] {}",
+        if draft_shadows { 'x' } else { ' ' },
+        "Shadows"
+    ));
+    // Buttons row at bottom-2
+    let btn_row = y + h - 2;
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_txt = if matches!(focus, rmc_core::app::AppearanceFocus::Ok) {
+        "< OK >"
+    } else {
+        "  OK  "
+    };
+    let cancel_txt = if matches!(focus, rmc_core::app::AppearanceFocus::Cancel) {
+        "[ Cancel ]"
+    } else {
+        "  Cancel  "
+    };
+    let btns = format!("{ok_txt}  {cancel_txt}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, btn_row);
+    p.text(&btns);
+    // Shadow
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1219,6 +1447,7 @@ fn draw_editor(
     search_input: Option<&str>,
     save_as_input: Option<&str>,
     confirm: Option<&rmc_core::app::YncDialog>,
+    show_shadow: bool,
 ) {
     // Background (editor core colors)
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -1382,7 +1611,16 @@ fn draw_editor(
         draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
     }
     if let Some(c) = confirm {
-        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus);
+        draw_dialog_ync(
+            p,
+            cols,
+            rows,
+            pal,
+            &c.title,
+            &c.message,
+            c.focus,
+            show_shadow,
+        );
     }
 }
 
@@ -1493,6 +1731,7 @@ fn draw_inline_prompt(
     p.text(&t);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_dialog_ync(
     p: &mut Painter,
     cols: u16,
@@ -1501,6 +1740,7 @@ fn draw_dialog_ync(
     title: &str,
     message: &str,
     focus: rmc_core::app::YncFocus,
+    show_shadow: bool,
 ) {
     // Centered box
     let w = (cols as usize).min(60) as u16;
@@ -1565,17 +1805,20 @@ fn draw_dialog_ync(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
+#[allow(clippy::too_many_arguments)]
 fn draw_dialog_box(
     p: &mut Painter,
     cols: u16,
@@ -1584,6 +1827,7 @@ fn draw_dialog_box(
     title: &str,
     message: &str,
     buttons: &[&str],
+    show_shadow: bool,
 ) {
     // Centered box
     let w = (cols as usize).min(60) as u16;
@@ -1636,16 +1880,18 @@ fn draw_dialog_box(
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1659,6 +1905,7 @@ fn draw_sort_dialog(
     by: rmc_core::panel::SortBy,
     reverse: bool,
     dirs_first: bool,
+    show_shadow: bool,
 ) {
     let _ = side; // implied by Left/Right menu; title remains generic
     let title = "Sort order";
@@ -1745,16 +1992,18 @@ fn draw_sort_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1771,6 +2020,7 @@ fn draw_viewer(
     show_cr: bool,
     search_prompt: &Option<String>,
     goto_prompt: &Option<String>,
+    show_shadow: bool,
 ) -> Result<()> {
     // MC-style viewer: blue background with frame and title
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -1894,11 +2144,29 @@ fn draw_viewer(
     draw_viewer_fbar(p, rows.saturating_sub(1), cols, pal);
     // Search prompt overlay (MC-style input dialog)
     if let Some(current) = search_prompt {
-        draw_dialog_box(p, cols, rows, pal, "Search", current, &["< OK >", "Cancel"]);
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Search",
+            current,
+            &["< OK >", "Cancel"],
+            show_shadow,
+        );
     }
     // Goto prompt overlay (MC-style input dialog)
     if let Some(current) = goto_prompt {
-        draw_dialog_box(p, cols, rows, pal, "Goto", current, &["< OK >", "Cancel"]);
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Goto",
+            current,
+            &["< OK >", "Cancel"],
+            show_shadow,
+        );
     }
     Ok(())
 }
@@ -2599,6 +2867,7 @@ fn draw_diff(
     rows: u16,
     pal: McPalette,
     state: &rmc_core::app::DiffState,
+    show_shadow: bool,
 ) -> Result<()> {
     // Background
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -2774,7 +3043,16 @@ fn draw_diff(
     draw_diff_fbar(p, fbar_row, cols, pal);
     // Overlays: search / goto / confirm-exit on top of diff
     if let Some(current) = &state.search_prompt {
-        draw_dialog_box(p, cols, rows, pal, "Search", current, &["< OK >", "Cancel"]);
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Search",
+            current,
+            &["< OK >", "Cancel"],
+            show_shadow,
+        );
     }
     if let Some(current) = &state.goto_prompt {
         draw_dialog_box(
@@ -2785,10 +3063,20 @@ fn draw_diff(
             "Goto line",
             current,
             &["< OK >", "Cancel"],
+            show_shadow,
         );
     }
     if let Some(c) = &state.confirm_exit {
-        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus);
+        draw_dialog_ync(
+            p,
+            cols,
+            rows,
+            pal,
+            &c.title,
+            &c.message,
+            c.focus,
+            show_shadow,
+        );
     }
     Ok(())
 }
@@ -2917,6 +3205,7 @@ fn draw_mkdir_dialog(
     pal: McPalette,
     value: &str,
     focus_ok: bool,
+    show_shadow: bool,
 ) {
     let w = (cols as usize).min(60) as u16;
     let h = 7u16;
@@ -2970,16 +3259,18 @@ fn draw_mkdir_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2992,6 +3283,7 @@ fn draw_input_dialog(
     prompt: &str,
     value: &str,
     focus_ok: bool,
+    show_shadow: bool,
 ) {
     let w = (cols as usize).min(66) as u16;
     let h = 9u16;
@@ -3049,16 +3341,18 @@ fn draw_input_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3076,6 +3370,7 @@ fn draw_ftp_connect_dialog(
     anonymous: bool,
     focus_index: usize,
     focus_ok: bool,
+    show_shadow: bool,
 ) {
     let w = (cols as usize).min(66) as u16;
     let h = 12u16;
@@ -3219,18 +3514,21 @@ fn draw_ftp_connect_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_jobs_dialog(
     p: &mut Painter,
     cols: u16,
@@ -3239,6 +3537,7 @@ fn draw_jobs_dialog(
     app: &App,
     selected: usize,
     focus: rmc_core::app::JobsDialogFocus,
+    show_shadow: bool,
 ) {
     let jobs = app.jobs.snapshot();
     // Size: width up to 80, height based on number of jobs + chrome
@@ -3364,16 +3663,18 @@ fn draw_jobs_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3392,6 +3693,7 @@ fn draw_copy_move_dialog(
     dive_into_subdir: bool,
     stable_symlinks: bool,
     focus: rmc_core::app::CopyDialogFocus,
+    show_shadow: bool,
 ) {
     use rmc_core::app::CopyDialogFocus as F;
     let w = (cols as usize).min(74) as u16;
@@ -3522,16 +3824,18 @@ fn draw_copy_move_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3548,6 +3852,7 @@ fn draw_chmod_dialog(
     special: (bool, bool, bool), // suid, sgid, sticky
     recursive: bool,
     focus_index: usize,
+    show_shadow: bool,
 ) {
     let w = (cols as usize).min(66) as u16;
     let h = 14u16;
@@ -3663,16 +3968,18 @@ fn draw_chmod_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3685,6 +3992,7 @@ fn draw_chown_dialog(
     group: &str,
     recursive: bool,
     focus_index: usize,
+    show_shadow: bool,
 ) {
     let w = (cols as usize).min(66) as u16;
     let h = 10u16;
@@ -3798,16 +4106,18 @@ fn draw_chown_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
-    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-    p.hline(
-        x + 1,
-        y + h,
-        w.saturating_sub(1),
-        ' ',
-        pal.shadow_fg,
-        pal.shadow_bg,
-    );
-    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
 }
 
 fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selected: usize) {
@@ -3851,6 +4161,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Layout",
             "Panels",
             "Confirmations",
+            "Appearance",
             "Learn keys",
             "Save setup",
         ],

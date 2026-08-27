@@ -230,6 +230,66 @@ fn parse_color_name(name: &str) -> Option<Color> {
     }
 }
 
+/// Return a list of available skin names (without .ini), always including "default".
+/// Search in:
+/// - $MC_SKIN (basename without extension)
+/// - ./data/skins/*.ini
+/// - <workspace>/data/skins/*.ini
+pub fn list_available_skins() -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    names.insert("default".to_string());
+    if let Ok(p) = std::env::var("MC_SKIN") {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                names.insert(stem.to_string());
+            }
+        }
+    }
+    let scan_dir = |dir: &Path, out: &mut BTreeSet<String>| {
+        if let Ok(rd) = fs::read_dir(dir) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                if p.extension().and_then(|s| s.to_str()).unwrap_or("") == "ini" {
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        out.insert(stem.to_string());
+                    }
+                }
+            }
+        }
+    };
+    scan_dir(&PathBuf::from("data/skins"), &mut names);
+    scan_dir(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/skins"),
+        &mut names,
+    );
+    names.into_iter().collect()
+}
+
+/// Resolve a skin name to a file path according to the same search order
+/// used by `list_available_skins` (except that "default" returns None).
+pub fn find_skin_path_by_name(name: &str) -> Option<PathBuf> {
+    if name.eq_ignore_ascii_case("default") {
+        return None;
+    }
+    if let Ok(p) = std::env::var("MC_SKIN") {
+        let path = PathBuf::from(&p);
+        if path.is_file() {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if stem.eq_ignore_ascii_case(name) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    let candidates = [
+        PathBuf::from("data/skins").join(format!("{name}.ini")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../data/skins/{name}.ini")),
+    ];
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
