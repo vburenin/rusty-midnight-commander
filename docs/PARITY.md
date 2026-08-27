@@ -82,7 +82,7 @@ Directory panels (selection, navigation, layout):
 Command line integration (filename helpers, history, completion):
 - [x] Alt-Enter / C-Enter: copy selected filename to command line
 - [x] C-S-Enter: copy full path
-- [ ] Alt-Tab: completion (var/user/host/cmd/filename), popup list as configured
+- [x] Alt-Tab: completion (var/user/host/cmd/filename), popup list as configured
 - [x] Alt-p / Alt-n: command history prev/next; Alt-h: history list
 - [x] C-x t / C-x C-t: copy tagged/selected filenames to command line (from current/other panel)
 - [x] C-x p / C-x C-p: copy current/other panel path

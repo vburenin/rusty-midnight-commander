@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod app;
+pub mod complete;
 pub mod config;
 pub mod dirtree;
 pub mod events;

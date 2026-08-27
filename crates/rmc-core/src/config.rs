@@ -507,6 +507,7 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "auto_menus={}", app.config_opts.auto_menus)?;
     writeln!(f, "drop_menus={}", app.config_opts.drop_menus)?;
     writeln!(f, "mkdir_autoname={}", app.config_opts.mkdir_autoname)?;
+    writeln!(f, "complete_show_all={}", app.config_opts.complete_show_all)?;
     // Save keymap
     let keymap_path = dir.join("keymap");
     app.keymap.save_to_file(&keymap_path)?;
@@ -614,6 +615,7 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                     "auto_menus" => app.config_opts.auto_menus = vb(&v),
                     "drop_menus" => app.config_opts.drop_menus = vb(&v),
                     "mkdir_autoname" => app.config_opts.mkdir_autoname = vb(&v),
+                    "complete_show_all" => app.config_opts.complete_show_all = vb(&v),
                     _ => {}
                 },
                 _ => {}
