@@ -59,6 +59,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [x] Show hidden files toggle (dotfiles)
 - [x] Fast directory reload; manual rescan C-r
 - [ ] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection
+- [x] `-d`/`--nomouse`: disable mouse capture and mouse event handling for this run
 
 ---
 
@@ -137,6 +138,7 @@ Per mcview(1) and mc(1) “Internal File Viewer”:
 - [x] View compressed via filters (e.g., gzip) per extension rules
 - [x] Display options: show line numbers, underline/bold formatting, show CR as ^M
 - [x] Selection and keybindings parity (F-keys and movement)
+- [x] `-v file`/`--view=file`/`--view file`: start the internal viewer on `file` at startup (GNU mcview; not `$PAGER`)
 
 ---
 
@@ -195,7 +197,8 @@ From mcdiff(1) and mc(1) “Internal Diff Viewer”:
 From mc(1) “Shell Command Line”, “The subshell support”:
 - [ ] Embedded subshell (bash, zsh, tcsh, fish, etc. where enabled)
 - [x] Toggle panels vs subshell/output: C-o; suspend/return behavior
-- [ ] SHELL override on invocation; -U/--subshell or -u/--nosubshell flags
+- [ ] SHELL override on invocation
+- [x] `-U`/`--subshell` or `-u`/`--nosubshell` flags (last of the pair wins; `-u` does not spawn/attach a PTY on C-o)
 - [x] Command line editing keys (Emacs-like) and filename helpers (see Section 3)
 
 ---
@@ -205,6 +208,7 @@ From mc(1) “Shell Command Line”, “The subshell support”:
 Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “User menu”, “Edit extension file”, “Hotlist”:
 - [ ] Config files: system defaults vs user `~/.config/mc/ini` and related; auto-save setup
  - [ ] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
+ - [x] `-S arg`/`--skin=arg`/`--skin arg`: specify skin name on the command line (overrides ini for this process; missing names keep the CLI name and fall back like Options → Appearance)
  - [ ] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action; “Learn keys” support
 - [x] User menu (F2): `.mc.menu` (cwd) or `~/.config/mc/menu`, else system menu; minimal safety
 - [x] Extension rules: `mc.ext.ini` to open helper-defined VFS (minimal)
