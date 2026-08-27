@@ -1305,6 +1305,24 @@ impl TerminalApp {
                     }
                     return Ok(());
                 }
+                // F12 / Shift-F2 opens Save as even when another overlay is up,
+                // clearing Search / Replace / Pipe / Goto / leftover Find.
+                // No-op when Save as is already open (do not nest).
+                if is_editor_save_as_key(&key) {
+                    if save_as_dialog.is_none() {
+                        editor_open_save_as_dialog(
+                            buf,
+                            search_input,
+                            save_as_dialog,
+                            search_dialog,
+                            replace_dialog,
+                            pipe_dialog,
+                            goto_dialog,
+                            status_msg,
+                        );
+                    }
+                    return Ok(());
+                }
                 // GNU mcedit F4 Replace dialog (Replace / All / Skip / Cancel +
                 // four Search checkboxes). Replace next / Skip keep the dialog
                 // open; All closes after reporting how many replacements were made.
@@ -1844,19 +1862,6 @@ impl TerminalApp {
                         if buf.delete_selection() {
                             *status_msg = Some("Deleted block".into());
                         }
-                    }
-                    // GNU mcedit: F12 / Shift-F2 Save as (stay in Editor).
-                    _ if is_editor_save_as_key(&key) => {
-                        editor_open_save_as_dialog(
-                            buf,
-                            search_input,
-                            save_as_dialog,
-                            search_dialog,
-                            replace_dialog,
-                            pipe_dialog,
-                            goto_dialog,
-                            status_msg,
-                        );
                     }
                     // Save / Quit. F2 writes the current path (no dialog).
                     KeyCode::F(2) => {
@@ -9999,6 +10004,7 @@ mod editor_save_as_tests {
             UiMode::Editor { buf, .. } => buf.insert_char('!'),
             _ => panic!("expected Editor"),
         }
+        let after_edit = editor_buf(&app).to_bytes();
         press(&mut app, KeyCode::F(2));
         match &app.ui_mode {
             UiMode::Editor {
@@ -10017,7 +10023,7 @@ mod editor_save_as_tests {
             }
             _ => panic!("F2 must stay in the editor"),
         }
-        assert_eq!(std::fs::read(&dest).unwrap(), b"hello!");
+        assert_eq!(std::fs::read(&dest).unwrap(), after_edit);
         assert_eq!(std::fs::read(&src).unwrap(), b"orig");
         let _ = std::fs::remove_dir_all(&root);
     }
