@@ -18,6 +18,11 @@ PageUp    = PageUp
 PageDown  = PageDown
 Home      = Home
 End       = End
+# GNU mc(1) Directory Panels aliases (A1/C1 are keypad Home/End → Home/End)
+C-p       = MoveUp
+C-n       = MoveDown
+Alt-v     = PageUp
+C-v       = PageDown
 # GNU mc(1) Directory Panels: jump to top/middle/bottom currently visible file
 Alt-g     = PanelJumpTop
 Alt-r     = PanelJumpMiddle

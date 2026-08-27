@@ -70,7 +70,7 @@ Function keys (File menu shortcuts; Esc-1..0 emulates F1..F10):
 
 Directory panels (selection, navigation, layout):
 - [x] Tab / C-i / Left/Right: switch active panel
-- [ ] Up/Down, PageUp/PageDown, Home/End movement
+- [x] Up/Down, PageUp/PageDown, Home/End movement
 - [x] Insert / C-t: toggle mark; “Mark moves down” option
 - [x] Alt-g / Alt-r / Alt-j: jump to top/middle/bottom item
 - [x] Alt-t: cycle listing format (Brief/Long/User/Full)

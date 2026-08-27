@@ -1699,12 +1699,14 @@ impl TerminalApp {
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        // Effective page size depends on active panel format/width
-                        let active_capacity = match app.active {
-                            rmc_core::actions::PaneSide::Left => left_capacity,
-                            rmc_core::actions::PaneSide::Right => right_capacity,
+                        // Panel body rows (after frames/header/mini-status). handle_key
+                        // applies listing_page_capacity (Brief × columns). Never TTY size
+                        // inside the key handler itself.
+                        let active_page_rows = match app.active {
+                            rmc_core::actions::PaneSide::Left => left_rows,
+                            rmc_core::actions::PaneSide::Right => right_rows,
                         };
-                        Self::handle_key(app, key, active_capacity)?;
+                        Self::handle_key(app, key, active_page_rows)?;
                     }
                     Event::Mouse(mev) => {
                         // Ignore mouse while subshell full-screen
@@ -1712,11 +1714,11 @@ impl TerminalApp {
                             continue;
                         }
                         if matches!(app.ui_mode, UiMode::Viewer { .. }) {
-                            let active_capacity = match app.active {
-                                rmc_core::actions::PaneSide::Left => left_capacity,
-                                rmc_core::actions::PaneSide::Right => right_capacity,
+                            let active_page_rows = match app.active {
+                                rmc_core::actions::PaneSide::Left => left_rows,
+                                rmc_core::actions::PaneSide::Right => right_rows,
                             };
-                            let _ = Self::handle_mouse(app, mev, active_capacity);
+                            let _ = Self::handle_mouse(app, mev, active_page_rows);
                             continue;
                         }
                         if !matches!(app.ui_mode, UiMode::Normal) {
@@ -1744,12 +1746,12 @@ impl TerminalApp {
                         if let Some(n) = fbar_function_from_xy(app, mx, my, cols, rows) {
                             if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
                                 let key = KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE);
-                                // Page size based on active panel for any actions that need it
-                                let active_capacity = match app.active {
-                                    PaneSide::Left => left_capacity,
-                                    PaneSide::Right => right_capacity,
+                                // Panel body rows; handle_key applies listing_page_capacity.
+                                let active_page_rows = match app.active {
+                                    PaneSide::Left => left_rows,
+                                    PaneSide::Right => right_rows,
                                 };
-                                let _ = Self::handle_key(app, key, active_capacity);
+                                let _ = Self::handle_key(app, key, active_page_rows);
                             }
                             continue;
                         }
@@ -1899,9 +1901,9 @@ impl TerminalApp {
                                                     KeyModifiers::NONE,
                                                 );
                                                 let page = if matches!(side, PaneSide::Left) {
-                                                    left_capacity
+                                                    left_rows
                                                 } else {
-                                                    right_capacity
+                                                    right_rows
                                                 };
                                                 let _ = Self::handle_key(app, key, page);
                                             }
@@ -1911,9 +1913,9 @@ impl TerminalApp {
                                             let key =
                                                 KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE);
                                             let page = if matches!(side, PaneSide::Left) {
-                                                left_capacity
+                                                left_rows
                                             } else {
-                                                right_capacity
+                                                right_rows
                                             };
                                             let _ = Self::handle_key(app, key, page);
                                         }
@@ -3220,6 +3222,13 @@ impl TerminalApp {
                         }
                         if matches!(action, Action::CycleListingFormat) {
                             app.cycle_listing_format_by(page_rows);
+                            return Ok(());
+                        }
+                        // C-p / C-n / Alt-v / C-v (and PgUp/PgDn) still move the
+                        // listing. Arrow Up/Down stay command-history here.
+                        if !matches!(key.code, KeyCode::Up | KeyCode::Down)
+                            && apply_listing_move_action(app, &action, page_rows)
+                        {
                             return Ok(());
                         }
                     }
@@ -7537,6 +7546,7 @@ impl TerminalApp {
             // Emacs-like input-line keys: C-a/C-e always focus the line.
             // Other unbound Emacs chords go to the line; Home/End/Left/Right/
             // Backspace/C-h/C-u stay panel bindings here.
+            // C-p / C-n / C-v / Alt-v are panel movement (not Emacs / not history).
             // GNU Delete edits an active listing Quick search pattern (not the cmdline).
             let qs_owns_delete = app.quick_search.is_some()
                 && matches!(key.code, KeyCode::Delete)
@@ -7639,8 +7649,26 @@ impl TerminalApp {
                     16 => open_copy_move_dialog(app, true, true, true),
                     _ => {}
                 },
-                Action::PageUp => app.page_up_by(page_rows),
-                Action::PageDown => app.page_down_by(page_rows),
+                Action::MoveUp
+                | Action::MoveDown
+                | Action::PageUp
+                | Action::PageDown
+                | Action::Home
+                | Action::End => {
+                    apply_listing_move_action(app, &action, page_rows);
+                }
+                Action::ToggleSelect => {
+                    app.handle_action(Action::ToggleSelect)?;
+                    let cap = {
+                        let p = app.active_panel();
+                        rmc_core::panel::listing_page_capacity(
+                            p.listing,
+                            p.brief_columns,
+                            page_rows,
+                        )
+                    };
+                    app.active_panel_mut().ensure_visible(cap);
+                }
                 Action::PanelJumpTop | Action::PanelJumpMiddle | Action::PanelJumpBottom => {
                     apply_panel_visible_jump(app, &action, page_rows);
                 }
@@ -8090,6 +8118,7 @@ fn focus_command_line(app: &mut App) {
 /// Backspace/C-h, C-u apply). From panels (`Normal`), C-a/C-e still focus the
 /// line and jump; other unbound Emacs chords are sent to the line without
 /// stealing C-x, C-o, C-r, C-s, Alt-s, history, C-q, Alt-Enter, Tab, `+`/`*`/`\\`.
+/// C-p / C-n / C-v / Alt-v are panel listing movement, not Emacs (history is Alt-p / Alt-n).
 #[derive(Debug, Clone, Copy)]
 enum CmdlineEmacs {
     Home,
@@ -8161,6 +8190,21 @@ fn try_cmdline_emacs_key(app: &mut App, key: &KeyEvent, line_has_focus: bool) ->
         app.subshell.clear_history_nav();
     }
     focus_command_line(app);
+    true
+}
+
+/// GNU mc(1) Directory Panels listing movement (Up/Down/Page/Home/End and aliases).
+/// Uses `page_rows` from `handle_key` (never TTY size). Brief multiplies by columns.
+fn apply_listing_move_action(app: &mut App, action: &Action, page_rows: usize) -> bool {
+    match action {
+        Action::MoveUp => app.move_up_by(page_rows),
+        Action::MoveDown => app.move_down_by(page_rows),
+        Action::PageUp => app.page_up_by(page_rows),
+        Action::PageDown => app.page_down_by(page_rows),
+        Action::Home => app.home_by(page_rows),
+        Action::End => app.end_by(page_rows),
+        _ => return false,
+    }
     true
 }
 
@@ -8927,21 +8971,14 @@ fn handle_panel_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> bool
         .as_ref()
         .map(|t| t.search_active)
         .unwrap_or(false);
+    // Same Action::* as listing movement (Up/C-p, Down/C-n, Page/Alt-v/C-v, Home/End).
+    // Does not rewrite tree search / Dynamic / Static / Left-Right / b/Space/g/G.
+    if let Some(action) = app.keymap.resolve(&key) {
+        if apply_tree_panel_nav_action(app, &action, list_rows) {
+            return true;
+        }
+    }
     match key.code {
-        KeyCode::Up => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.move_up();
-                tree.figure.ensure_visible(list_rows);
-            }
-            true
-        }
-        KeyCode::Down => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.move_down();
-                tree.figure.ensure_visible(list_rows);
-            }
-            true
-        }
         KeyCode::Left => {
             if let Some(tree) = app.active_panel_mut().tree.as_mut() {
                 tree.figure.move_parent();
@@ -8952,34 +8989,6 @@ fn handle_panel_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> bool
         KeyCode::Right => {
             if let Some(tree) = app.active_panel_mut().tree.as_mut() {
                 tree.figure.move_child();
-                tree.figure.ensure_visible(list_rows);
-            }
-            true
-        }
-        KeyCode::PageUp => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.page_up(list_rows);
-                tree.figure.ensure_visible(list_rows);
-            }
-            true
-        }
-        KeyCode::PageDown => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.page_down(list_rows);
-                tree.figure.ensure_visible(list_rows);
-            }
-            true
-        }
-        KeyCode::Home => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.move_home();
-                tree.figure.ensure_visible(list_rows);
-            }
-            true
-        }
-        KeyCode::End => {
-            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
-                tree.figure.move_end();
                 tree.figure.ensure_visible(list_rows);
             }
             true
@@ -9052,6 +9061,26 @@ fn handle_panel_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> bool
     }
 }
 
+/// Wire listing `Action::Move*` / `Page*` / `Home` / `End` into the active Tree
+/// figure. Search / Dynamic / Static / tree-figure keys (`b`/`Space`/`g`/`G`) stay
+/// on the existing KeyCode path.
+fn apply_tree_panel_nav_action(app: &mut App, action: &Action, list_rows: usize) -> bool {
+    let Some(tree) = app.active_panel_mut().tree.as_mut() else {
+        return false;
+    };
+    match action {
+        Action::MoveUp => tree.figure.move_up(),
+        Action::MoveDown => tree.figure.move_down(),
+        Action::PageUp => tree.figure.page_up(list_rows),
+        Action::PageDown => tree.figure.page_down(list_rows),
+        Action::Home => tree.figure.move_home(),
+        Action::End => tree.figure.move_end(),
+        _ => return false,
+    }
+    tree.figure.ensure_visible(list_rows);
+    true
+}
+
 /// Enter in tree view: chdir the **other** panel; stay in Tree; do not chdir this panel.
 fn panel_tree_enter_other(app: &mut App) {
     let dest = app
@@ -9119,6 +9148,7 @@ fn set_other_panel_mode(app: &mut App, mode: rmc_core::panel::PanelMode) {
 /// When Quick view or Info is the **active** panel: consume listing movement so
 /// the leftover file list is not scrolled, and give Quick view viewer-ish keys.
 /// Uses `page_rows` from `handle_key` (never `terminal::size()`). Tab still leaves.
+/// Info has no separate scroll path: movement is swallowed (listing-only).
 fn handle_preview_panel_action(app: &mut App, action: &Action, page_rows: usize) -> bool {
     let mode = app.active_panel().mode;
     if !matches!(
@@ -20256,6 +20286,28 @@ mod panel_quickview_info_tests {
     }
 
     #[test]
+    fn listing_down_updates_other_quick_view_preview() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        select_named(&mut app, "aaa.txt");
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        assert_eq!(app.active, PaneSide::Left);
+        let other_cursor = app.right.cursor;
+        press(&mut app, KeyCode::Down);
+        let name = app.left.current_entry().map(|e| e.name.as_str());
+        assert_ne!(name, Some("aaa.txt"));
+        assert_eq!(
+            app.right.preview_path.as_ref(),
+            app.left.current_entry().map(|e| &e.path),
+            "Quick view as the other panel follows the listing cursor"
+        );
+        assert_eq!(app.right.cursor, other_cursor);
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn filter_sort_listing_equal_swap_help_quick_cd_still_work_with_quick_view() {
         let root = temp_workspace();
         std::fs::create_dir(root.join("subdir")).unwrap();
@@ -20547,6 +20599,34 @@ mod panel_tree_mode_tests {
         assert!(
             static_len >= dynamic_len,
             "static shows all known dirs ({static_len}) vs neighborhood ({dynamic_len})"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_c_p_c_n_use_move_up_down_actions() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(tree_selected(&app), left_dir.join("aaa"));
+        press_ctrl(&mut app, 'n');
+        assert_eq!(
+            tree_selected(&app),
+            left_dir.join("bbb"),
+            "C-n is MoveDown on the tree figure"
+        );
+        press_ctrl(&mut app, 'p');
+        assert_eq!(
+            tree_selected(&app),
+            left_dir.join("aaa"),
+            "C-p is MoveUp on the tree figure"
+        );
+        let listing_cursor = app.left.cursor;
+        press_ctrl(&mut app, 'n');
+        assert_eq!(
+            app.left.cursor, listing_cursor,
+            "tree movement must not scroll the leftover listing"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -25118,6 +25198,395 @@ mod listing_format_cycle_tests {
             app.subshell.cmdline, "ls",
             "Alt-t is not an Emacs cmdline key"
         );
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_listing_movement_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::app::{App, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{listing_page_capacity, ListingFormat, PanelMode};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-panel-move-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn make_split_app(left: &std::path::Path, right: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(left).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(right).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::ALT, 10);
+    }
+
+    fn seed_files(root: &std::path::Path, n: usize) {
+        for i in 0..n {
+            std::fs::write(root.join(format!("file{i:02}.txt")), b"x").unwrap();
+        }
+    }
+
+    fn cursor_name(app: &App) -> &str {
+        app.active_panel()
+            .current_entry()
+            .map(|e| e.name.as_str())
+            .unwrap_or("")
+    }
+
+    fn snapshot_inactive(app: &App) -> (usize, usize) {
+        (app.inactive_panel().cursor, app.inactive_panel().scroll_top)
+    }
+
+    #[test]
+    fn keymap_binds_movement_and_gnu_aliases() {
+        let km = KeyMap::mc_defaults();
+        for (ev, want) in [
+            (
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+                Action::MoveUp,
+            ),
+            (
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                Action::MoveDown,
+            ),
+            (
+                KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+                Action::PageUp,
+            ),
+            (
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                Action::PageDown,
+            ),
+            (
+                KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+                Action::Home,
+            ),
+            (KeyEvent::new(KeyCode::End, KeyModifiers::NONE), Action::End),
+            (
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                Action::MoveUp,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                Action::MoveDown,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
+                Action::PageUp,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                Action::PageDown,
+            ),
+        ] {
+            assert_eq!(
+                km.resolve(&ev),
+                Some(want.clone()),
+                "expected {want:?} for {ev:?}"
+            );
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
+        let file_km = KeyMap::load_from_file(&path).expect("load data/mc.keymap");
+        assert!(matches!(
+            file_km.resolve(&KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            Some(Action::MoveUp)
+        ));
+        assert!(matches!(
+            file_km.resolve(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT)),
+            Some(Action::PageUp)
+        ));
+        assert!(
+            !matches!(
+                km.resolve(&KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT)),
+                Some(Action::MoveUp)
+            ),
+            "Alt-p stays command history, not MoveUp"
+        );
+        assert!(
+            !matches!(
+                km.resolve(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)),
+                Some(Action::MoveDown)
+            ),
+            "Alt-n stays SortName, not MoveDown"
+        );
+    }
+
+    #[test]
+    fn up_down_home_end_move_only_active_panel() {
+        let root = temp_workspace();
+        seed_files(&root, 8);
+        let mut app = make_app(&root);
+        assert_eq!(app.active_panel().entries[0].name, "..");
+        let other = snapshot_inactive(&app);
+        let page = 4;
+
+        press_rows(&mut app, KeyCode::Down, KeyModifiers::NONE, page);
+        assert_eq!(app.left.cursor, 1);
+        assert_eq!(snapshot_inactive(&app), other);
+        press_rows(&mut app, KeyCode::Up, KeyModifiers::NONE, page);
+        assert_eq!(app.left.cursor, 0, "Up on first stays");
+        press_rows(&mut app, KeyCode::Up, KeyModifiers::NONE, page);
+        assert_eq!(app.left.cursor, 0);
+
+        press_rows(&mut app, KeyCode::End, KeyModifiers::NONE, page);
+        let last = app.left.entries.len() - 1;
+        assert_eq!(app.left.cursor, last);
+        assert_eq!(app.left.scroll_top, last.saturating_sub(page - 1));
+        press_rows(&mut app, KeyCode::Down, KeyModifiers::NONE, page);
+        assert_eq!(app.left.cursor, last, "Down on last stays");
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        assert_eq!(app.left.cursor, 0);
+        assert_eq!(cursor_name(&app), "..");
+        assert_eq!(app.left.scroll_top, 0);
+        assert_eq!(snapshot_inactive(&app), other);
+        assert!(app.subshell.cmdline.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn page_up_down_step_by_listing_capacity_and_clamp() {
+        let root = temp_workspace();
+        seed_files(&root, 40);
+        let mut app = make_app(&root);
+        let page_rows = 5;
+        let other = snapshot_inactive(&app);
+        let cap = listing_page_capacity(app.left.listing, app.left.brief_columns, page_rows);
+        assert_eq!(cap, 5, "default Full page is page_rows");
+
+        press_rows(&mut app, KeyCode::PageDown, KeyModifiers::NONE, page_rows);
+        assert_eq!(app.left.cursor, cap);
+        press_rows(&mut app, KeyCode::PageDown, KeyModifiers::NONE, page_rows);
+        assert_eq!(app.left.cursor, cap * 2);
+        press_rows(&mut app, KeyCode::PageUp, KeyModifiers::NONE, page_rows);
+        assert_eq!(app.left.cursor, cap);
+
+        app.left.listing = ListingFormat::Brief;
+        app.left.brief_columns = 2;
+        app.left.cursor = 0;
+        app.left.scroll_top = 0;
+        let brief_cap = listing_page_capacity(app.left.listing, app.left.brief_columns, page_rows);
+        assert_eq!(brief_cap, 10);
+        press_rows(&mut app, KeyCode::PageDown, KeyModifiers::NONE, page_rows);
+        assert_eq!(app.left.cursor, brief_cap);
+        press_rows(&mut app, KeyCode::Down, KeyModifiers::NONE, page_rows);
+        assert_eq!(
+            app.left.cursor,
+            brief_cap + 1,
+            "Brief Down still advances one entry"
+        );
+
+        app.left.cursor = app.left.entries.len() - 2;
+        press_rows(&mut app, KeyCode::PageDown, KeyModifiers::NONE, page_rows);
+        assert_eq!(
+            app.left.cursor,
+            app.left.entries.len() - 1,
+            "PageDown clamps to last; never wraps"
+        );
+        press_rows(&mut app, KeyCode::PageDown, KeyModifiers::NONE, page_rows);
+        assert_eq!(app.left.cursor, app.left.entries.len() - 1);
+        assert_eq!(snapshot_inactive(&app), other);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn aliases_c_p_c_n_alt_v_c_v_match_arrows() {
+        let root = temp_workspace();
+        seed_files(&root, 24);
+        let mut app = make_app(&root);
+        let page = 4;
+        let other = snapshot_inactive(&app);
+
+        press_rows(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL, page);
+        assert_eq!(app.left.cursor, 1);
+        press_rows(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL, page);
+        assert_eq!(app.left.cursor, 0);
+        press_rows(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL, page);
+        assert_eq!(app.left.cursor, page);
+        press_rows(&mut app, KeyCode::Char('v'), KeyModifiers::ALT, page);
+        assert_eq!(app.left.cursor, 0);
+        assert_eq!(snapshot_inactive(&app), other);
+        assert!(app.subshell.cmdline.is_empty(), "aliases must not type");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn right_panel_and_horizontal_split_move_only_active() {
+        let root = temp_workspace();
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        seed_files(&left, 12);
+        seed_files(&right, 12);
+        let mut app = make_split_app(&left, &right);
+        let page = 3;
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        let left_before = (app.left.cursor, app.left.scroll_top);
+        press_rows(&mut app, KeyCode::Down, KeyModifiers::NONE, page);
+        assert_eq!(app.right.cursor, 1);
+        assert_eq!((app.left.cursor, app.left.scroll_top), left_before);
+        press_rows(&mut app, KeyCode::End, KeyModifiers::NONE, page);
+        assert_eq!(app.right.cursor, app.right.entries.len() - 1);
+        assert_eq!((app.left.cursor, app.left.scroll_top), left_before);
+
+        app.layout.horizontal_split = true;
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        let right_before = (app.right.cursor, app.right.scroll_top);
+        press_rows(&mut app, KeyCode::Home, KeyModifiers::NONE, page);
+        press_rows(&mut app, KeyCode::PageDown, KeyModifiers::NONE, page);
+        assert_eq!(app.left.cursor, page);
+        assert_eq!((app.right.cursor, app.right.scroll_top), right_before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_listing_movement_is_noop() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.left.entries.clear();
+        app.left.cursor = 0;
+        app.left.scroll_top = 0;
+        let page = 6;
+        for (code, mods) in [
+            (KeyCode::Up, KeyModifiers::NONE),
+            (KeyCode::Down, KeyModifiers::NONE),
+            (KeyCode::PageUp, KeyModifiers::NONE),
+            (KeyCode::PageDown, KeyModifiers::NONE),
+            (KeyCode::Home, KeyModifiers::NONE),
+            (KeyCode::End, KeyModifiers::NONE),
+            (KeyCode::Char('p'), KeyModifiers::CONTROL),
+            (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            (KeyCode::Char('v'), KeyModifiers::ALT),
+            (KeyCode::Char('v'), KeyModifiers::CONTROL),
+        ] {
+            press_rows(&mut app, code, mods, page);
+            assert_eq!(app.left.cursor, 0);
+            assert_eq!(app.left.scroll_top, 0);
+            assert!(app.left.entries.is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn insert_still_marks_and_moves_down() {
+        let root = temp_workspace();
+        seed_files(&root, 6);
+        let mut app = make_app(&root);
+        assert!(app.panel_opts.mark_moves_down);
+        app.left.cursor = 1;
+        press(&mut app, KeyCode::Insert);
+        assert!(app.left.selection.is_selected(1));
+        assert_eq!(app.left.cursor, 2);
+        press_ctrl(&mut app, 't');
+        assert!(app.left.selection.is_selected(2));
+        assert_eq!(app.left.cursor, 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn movement_does_not_steal_switch_refresh_history_or_emacs() {
+        let root = temp_workspace();
+        seed_files(&root, 8);
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.left.cursor, 1);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right, "Tab still switches");
+        press_ctrl(&mut app, 'i');
+        assert_eq!(app.active, PaneSide::Left, "C-i still switches");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.active, PaneSide::Right, "Left still SwitchPanel");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active, PaneSide::Left, "Right still SwitchPanel");
+
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press_ctrl(&mut app, 'l');
+        assert!(app.needs_full_clear, "C-l still Repaint");
+        app.needs_full_clear = false;
+        press_ctrl(&mut app, 'r');
+        assert!(!app.needs_full_clear, "C-r is Refresh, not Repaint");
+        assert_eq!(app.left.mode, PanelMode::Listing);
+
+        press_ctrl(&mut app, 'a');
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "C-a Emacs still focuses the command line"
+        );
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn c_p_from_shell_input_moves_panel_not_history() {
+        let root = temp_workspace();
+        seed_files(&root, 8);
+        let mut app = make_app(&root);
+        for c in "ls".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert!(matches!(app.ui_mode, UiMode::ShellInput));
+        assert_eq!(app.subshell.cmdline, "ls");
+        let start = app.left.cursor;
+        press_ctrl(&mut app, 'p');
+        assert_eq!(
+            app.subshell.cmdline, "ls",
+            "C-p is not Emacs / not Alt-p history"
+        );
+        assert_eq!(app.left.cursor, start, "Up on first stays at 0");
+        press_ctrl(&mut app, 'n');
+        assert_eq!(app.left.cursor, start + 1);
+        assert_eq!(app.subshell.cmdline, "ls");
+        press_alt(&mut app, 'p');
+        // No history recorded yet: Alt-p is still the history binding.
         assert!(matches!(app.ui_mode, UiMode::ShellInput));
         let _ = std::fs::remove_dir_all(&root);
     }
