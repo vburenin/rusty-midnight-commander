@@ -3631,14 +3631,17 @@ fn draw_panel(
             p.text(&truncate(&header, (w - 2) as usize));
         }
         rmc_core::panel::ListingFormat::Long => {
-            // Column-aligned like ls -l
+            // Column-aligned like ls -l: perm, nlink, owner, group, size, mtime
             let perms_col = x + 1;
-            let owner_col = perms_col + 12; // 10 perms + 2 spaces
+            let nlink_col = perms_col + 11; // 10 perms + 1 space
+            let owner_col = nlink_col + 5; // nlink 4 + 1 space
             let group_col = owner_col + 9; // owner 8 + 1 space
             let size_col = group_col + 9; // group 8 + 1 space
             let time_col = size_col + 9; // size 8 + 1 space
             p.goto(perms_col, y + 1);
             p.text("Perms");
+            p.goto(nlink_col, y + 1);
+            p.text("Nl");
             p.goto(owner_col, y + 1);
             p.text("Owner");
             p.goto(group_col, y + 1);
@@ -3714,25 +3717,21 @@ fn draw_panel(
             }
         }
         rmc_core::panel::ListingFormat::Brief => {
-            // Two columns if there is enough width
-            let two_cols = w >= 30;
-            let per_col_width = if two_cols {
-                (w - 3) / 2 // 1 left pad + 1 space + 1 right pad
-            } else {
-                w - 2
-            };
+            // Pack names into 1–9 columns (GNU Brief; default 2).
+            let cols_n = rmc_core::panel::clamp_brief_columns(panel.brief_columns);
+            let per_col_width = rmc_core::panel::brief_column_width(w, cols_n);
             for i in 0..content_h as usize {
                 let row_y = content_top + i as u16;
                 p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
                 p.goto(x + 1, row_y);
                 p.text(&" ".repeat((w - 2) as usize));
-                let left_idx = panel.scroll_top + i;
-                let right_idx = if two_cols {
-                    panel.scroll_top + i + content_h as usize
-                } else {
-                    usize::MAX
-                };
-                for (j, idx) in [left_idx, right_idx].into_iter().enumerate() {
+                for col in 0..cols_n as usize {
+                    let idx = rmc_core::panel::brief_entry_index(
+                        panel.scroll_top,
+                        i,
+                        col,
+                        content_h as usize,
+                    );
                     if let Some(ent) = panel.entries.get(idx) {
                         let is_active_panel = (is_left
                             && matches!(app.active, rmc_core::actions::PaneSide::Left))
@@ -3750,7 +3749,7 @@ fn draw_panel(
                             (pal.core_default_fg, pal.core_default_bg)
                         };
                         p.set_fg_bg(fg, bg);
-                        let col_x = if j == 0 { x + 1 } else { x + 2 + per_col_width };
+                        let col_x = x + 1 + col as u16 * (per_col_width + 1);
                         p.goto(col_x, row_y);
                         let display_name = format_entry_name(ent);
                         let name_trunc = truncate(&display_name, per_col_width as usize);
@@ -3786,16 +3785,10 @@ fn draw_panel(
                         (pal.core_default_fg, pal.core_default_bg)
                     };
                     p.set_fg_bg(fg, bg);
-                    let perms = perm_string(ent.permissions, ent.is_dir);
-                    let owner = ent.owner.as_deref().unwrap_or("-");
-                    let group = ent.group.as_deref().unwrap_or("-");
-                    let size = if ent.is_dir { 0 } else { ent.size };
-                    let size_s = format!(
-                        "{:>8}",
-                        rmc_core::panel::format_byte_size(size, app.panel_opts.kilobyte_si)
+                    let prefix = rmc_core::panel::format_long_listing_prefix(
+                        ent,
+                        app.panel_opts.kilobyte_si,
                     );
-                    let tm = format_time(ent);
-                    let prefix = format!("{perms}  {owner:>8} {group:>8} {size_s} {tm}  ");
                     let width = (w - 2) as usize;
                     p.goto(x + 1, row_y);
                     let prefix_len = prefix.chars().count();
