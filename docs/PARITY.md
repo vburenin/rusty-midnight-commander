@@ -26,7 +26,7 @@ Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”
 - [ ] Hint line (context/help hints when enabled)
 - [ ] Shell command line (second line from bottom)
 - [ ] Bottom F-key label bar (F1…F10)
-- [ ] Default F-bar labels: Help, Menu, View, Edit, Copy, RenMov, Mkdir, Delete, PullDn, Quit
+- [x] Default F-bar labels: Help, Menu, View, Edit, Copy, RenMov, Mkdir, Delete, PullDn, Quit
 - [x] Horizontal and vertical panel split layouts (Left/Right; Above/Below nomenclature)
 - [x] Screen repaint: C-l
 
@@ -65,7 +65,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 ## 3) Default keybindings worth shipping — Status: Later
 
 Function keys (File menu shortcuts; Esc-1..0 emulates F1..F10):
-- [ ] F1 Help; F2 User Menu; F3 View; F4 Edit; F5 Copy; F6 RenMov; F7 Mkdir; F8 Delete; F9 PullDn (menu bar); F10 Quit
+- [x] F1 Help; F2 User Menu; F3 View; F4 Edit; F5 Copy; F6 RenMov; F7 Mkdir; F8 Delete; F9 PullDn (menu bar); F10 Quit
 - [ ] Shift-F variants (F13..F20) where relevant (e.g., F13 view-raw, F16 move to selected panel)
 
 Directory panels (selection, navigation, layout):

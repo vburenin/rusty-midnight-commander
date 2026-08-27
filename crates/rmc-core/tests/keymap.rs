@@ -31,4 +31,31 @@ fn resolves_mc_defaults() {
     assert!(matches!(a, Some(Action::Repaint)));
     let a = km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     assert!(matches!(a, Some(Action::Refresh)));
+    for (n, want) in [
+        (1, "ShowHelp"),
+        (2, "ShowUserMenu"),
+        (3, "ViewFile"),
+        (4, "FunctionKey4"),
+        (5, "Copy"),
+        (6, "Move"),
+        (7, "Mkdir"),
+        (8, "Delete"),
+        (9, "FocusMenu"),
+        (10, "Quit"),
+    ] {
+        let a = km.resolve(&KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+        match (n, a) {
+            (1, Some(Action::ShowHelp)) => {}
+            (2, Some(Action::ShowUserMenu)) => {}
+            (3, Some(Action::ViewFile)) => {}
+            (4, Some(Action::FunctionKey(4))) => {}
+            (5, Some(Action::Copy)) => {}
+            (6, Some(Action::Move)) => {}
+            (7, Some(Action::Mkdir)) => {}
+            (8, Some(Action::Delete)) => {}
+            (9, Some(Action::FocusMenu)) => {}
+            (10, Some(Action::Quit)) => {}
+            other => panic!("F{n} must bind {want}, got {other:?}"),
+        }
+    }
 }

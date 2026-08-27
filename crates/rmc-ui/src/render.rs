@@ -4090,10 +4090,15 @@ fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, _pal: McPalette, app: &App) 
         p.text(&" ".repeat(cols as usize - t.len()));
     }
 }
-fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = [
+/// GNU mc(1) default panel F-bar labels (F1…F10). F2 is **Menu**, not “User menu”.
+pub(crate) fn panel_fbar_labels() -> [&'static str; 10] {
+    [
         "Help", "Menu", "View", "Edit", "Copy", "RenMov", "Mkdir", "Delete", "PullDn", "Quit",
-    ];
+    ]
+}
+
+fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    let labels = panel_fbar_labels();
     let mut x = 0u16;
     for (i, lab) in labels.iter().enumerate() {
         let num = if i == 9 { "10" } else { &(i + 1).to_string() };
@@ -6685,9 +6690,25 @@ fn draw_select_group_dialog(
 
 #[cfg(test)]
 mod viewer_fbar_and_selection_style_tests {
-    use super::{help_fbar_labels, viewer_fbar_labels, viewer_line_style};
+    use super::{help_fbar_labels, panel_fbar_labels, viewer_fbar_labels, viewer_line_style};
     use crate::mc_colors::McPalette;
     use crossterm::style::Color;
+
+    #[test]
+    fn gnu_panel_fbar_labels_match_mc_defaults() {
+        assert_eq!(
+            panel_fbar_labels(),
+            [
+                "Help", "Menu", "View", "Edit", "Copy", "RenMov", "Mkdir", "Delete", "PullDn",
+                "Quit"
+            ]
+        );
+        assert_eq!(
+            panel_fbar_labels()[1],
+            "Menu",
+            "GNU F2 label is Menu, not User menu"
+        );
+    }
 
     #[test]
     fn gnu_help_fbar_is_not_panel_bar() {

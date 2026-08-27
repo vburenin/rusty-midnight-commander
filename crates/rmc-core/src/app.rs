@@ -13,6 +13,7 @@ use rmc_diff;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 type UiOkCb = Box<dyn FnOnce(&mut App) -> Result<()> + Send>;
 type UiPromptCb = Box<dyn FnOnce(&mut App, String) -> Result<()> + Send>;
@@ -1322,6 +1323,8 @@ pub struct App {
     pub pending_ctrl_x: bool,
     /// C-q: insert the next key literally into the command line.
     pub pending_quote: bool,
+    /// GNU mc(1) Esc-number: time of a pending Esc in Normal listing (`None` = idle).
+    pub pending_esc: Option<Instant>,
     /// MC-style incremental quick search state for the active panel.
     pub quick_search: Option<crate::quicksearch::QuickSearchState>,
     /// Last pattern used when listing Quick search ended (GNU double C-s).
@@ -1379,6 +1382,7 @@ impl App {
             hotlist: Hotlist::load_from_default_path(),
             pending_ctrl_x: false,
             pending_quote: false,
+            pending_esc: None,
             quick_search: None,
             quick_search_prev: String::new(),
             jobs: crate::jobs::JobQueue::new(),
@@ -1401,6 +1405,15 @@ impl App {
         let _ = crate::config::load_user_setup(&mut app);
         app.reload_panels()?;
         Ok(app)
+    }
+
+    /// GNU mc Esc-number: drop a pending Esc prefix after the idle timeout.
+    pub fn expire_esc_number_prefix(&mut self) {
+        if let Some(at) = self.pending_esc {
+            if at.elapsed() >= crate::actions::ESC_NUMBER_TIMEOUT {
+                self.pending_esc = None;
+            }
+        }
     }
 
     pub fn active_panel_mut(&mut self) -> &mut PanelState {

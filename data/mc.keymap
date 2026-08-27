@@ -39,6 +39,7 @@ C-o     = ToggleSubshell
 F1  = ShowHelp
 F2  = ShowUserMenu
 F3  = ViewFile
+F4  = FunctionKey4
 F5  = Copy
 F6  = Move
 F7  = Mkdir

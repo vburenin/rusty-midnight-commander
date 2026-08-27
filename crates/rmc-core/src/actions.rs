@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneSide {
@@ -89,20 +90,68 @@ pub enum Action {
     FunctionKey(u8),
 }
 
+/// GNU mc Esc-number idle timeout. A pending Esc then 1..9/0 is F1..F9/F10;
+/// after this delay the prefix is dropped so later digits are not stolen.
+pub const ESC_NUMBER_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// GNU mc(1): Esc then digit `1`..`9`/`0` emulates F1..F9/F10.
+pub fn esc_digit_to_function_key(c: char) -> Option<u8> {
+    match c {
+        '1' => Some(1),
+        '2' => Some(2),
+        '3' => Some(3),
+        '4' => Some(4),
+        '5' => Some(5),
+        '6' => Some(6),
+        '7' => Some(7),
+        '8' => Some(8),
+        '9' => Some(9),
+        '0' => Some(10),
+        _ => None,
+    }
+}
+
 pub fn keyevent_to_function_key(ev: &KeyEvent) -> Option<u8> {
     match ev.code {
         KeyCode::F(n @ 1..=12) => Some(n),
-        KeyCode::Char('1') if ev.modifiers.contains(KeyModifiers::ALT) => Some(1),
-        KeyCode::Char('2') if ev.modifiers.contains(KeyModifiers::ALT) => Some(2),
-        KeyCode::Char('3') if ev.modifiers.contains(KeyModifiers::ALT) => Some(3),
-        KeyCode::Char('4') if ev.modifiers.contains(KeyModifiers::ALT) => Some(4),
-        KeyCode::Char('5') if ev.modifiers.contains(KeyModifiers::ALT) => Some(5),
-        KeyCode::Char('6') if ev.modifiers.contains(KeyModifiers::ALT) => Some(6),
-        KeyCode::Char('7') if ev.modifiers.contains(KeyModifiers::ALT) => Some(7),
-        KeyCode::Char('8') if ev.modifiers.contains(KeyModifiers::ALT) => Some(8),
-        KeyCode::Char('9') if ev.modifiers.contains(KeyModifiers::ALT) => Some(9),
-        KeyCode::Char('0') if ev.modifiers.contains(KeyModifiers::ALT) => Some(10),
+        KeyCode::Char(c) if ev.modifiers.contains(KeyModifiers::ALT) => {
+            esc_digit_to_function_key(c)
+        }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn esc_digit_emulates_f1_through_f10() {
+        assert_eq!(esc_digit_to_function_key('1'), Some(1));
+        assert_eq!(esc_digit_to_function_key('5'), Some(5));
+        assert_eq!(esc_digit_to_function_key('9'), Some(9));
+        assert_eq!(esc_digit_to_function_key('0'), Some(10));
+        assert_eq!(esc_digit_to_function_key('a'), None);
+    }
+
+    #[test]
+    fn alt_digit_emulates_f1_through_f10() {
+        assert_eq!(
+            keyevent_to_function_key(&KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT)),
+            Some(1)
+        );
+        assert_eq!(
+            keyevent_to_function_key(&KeyEvent::new(KeyCode::Char('0'), KeyModifiers::ALT)),
+            Some(10)
+        );
+        assert_eq!(
+            keyevent_to_function_key(&KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE)),
+            Some(3)
+        );
+        assert_eq!(
+            keyevent_to_function_key(&KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+            None
+        );
     }
 }
 
