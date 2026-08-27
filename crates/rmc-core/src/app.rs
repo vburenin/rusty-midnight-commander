@@ -1266,7 +1266,7 @@ pub enum ConfirmationsFocus {
     Ok,
     Cancel,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelOptionsFocus {
     ShowHidden,
     MixAllFiles,
@@ -1725,11 +1725,21 @@ impl App {
                 }
             }
             ToggleSelect => {
-                let idx = self.active_panel().cursor;
-                self.active_panel_mut().selection.toggle(idx);
-                // GNU mc: when enabled, marking moves the cursor down
-                if self.panel_opts.mark_moves_down {
-                    self.active_panel_mut().move_down();
+                // GNU mc(1) Insert / C-t: toggle the mark on the current listing
+                // entry. Never mark `..` (no-op). Directories are markable.
+                // “Mark moves down” (GNU default on) advances after a successful toggle.
+                if matches!(self.ui_mode, UiMode::Normal)
+                    && matches!(self.active_panel().mode, crate::panel::PanelMode::Listing)
+                    && self
+                        .active_panel()
+                        .current_entry()
+                        .is_some_and(|e| !e.is_parent_marker())
+                {
+                    let idx = self.active_panel().cursor;
+                    self.active_panel_mut().selection.toggle(idx);
+                    if self.panel_opts.mark_moves_down {
+                        self.active_panel_mut().move_down();
+                    }
                 }
             }
             Sort(sb) => {
