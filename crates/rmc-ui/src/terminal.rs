@@ -1589,6 +1589,7 @@ impl TerminalApp {
                         let port_val = port.trim();
                         let mut user_val = user.trim().to_string();
                         let mut pass_val = password.clone(); // allow empty
+
                         // Apply ~/.netrc if enabled and no user provided (FTP only)
                         if scheme == "ftp" && app.vfs_opts.use_netrc && user_val.is_empty() {
                             if let Some((u, p)) = netrc_lookup(&host_val) {
@@ -1597,7 +1598,11 @@ impl TerminalApp {
                             }
                         }
                         // If FTP anonymous with no provided password, use configured default
-                        if scheme == "ftp" && *anonymous && user_val.is_empty() && pass_val.is_empty() {
+                        if scheme == "ftp"
+                            && *anonymous
+                            && user_val.is_empty()
+                            && pass_val.is_empty()
+                        {
                             let anon_pass = app.vfs_opts.ftp_anon_password.trim().to_string();
                             if !anon_pass.is_empty() {
                                 pass_val = anon_pass;
@@ -2554,15 +2559,18 @@ impl TerminalApp {
                         }
                         _ => {}
                     },
-                    KeyCode::Char(' ') => match *focus {
-                        F::AlwaysUseFtpProxy => {
-                            draft.always_use_ftp_proxy = !draft.always_use_ftp_proxy
+                    // Space toggles checkboxes; on input focus, fall through to Char and push ' '
+                    KeyCode::Char(' ') if matches!(*focus, F::AlwaysUseFtpProxy | F::UseNetrc) => {
+                        match *focus {
+                            F::AlwaysUseFtpProxy => {
+                                draft.always_use_ftp_proxy = !draft.always_use_ftp_proxy
+                            }
+                            F::UseNetrc => {
+                                draft.use_netrc = !draft.use_netrc;
+                            }
+                            _ => {}
                         }
-                        F::UseNetrc => {
-                            draft.use_netrc = !draft.use_netrc;
-                        }
-                        _ => {}
-                    },
+                    }
                     KeyCode::Enter => match *focus {
                         F::AlwaysUseFtpProxy => {
                             draft.always_use_ftp_proxy = !draft.always_use_ftp_proxy
@@ -2587,18 +2595,17 @@ impl TerminalApp {
                         F::FtpAnonPassword => {
                             draft.ftp_anon_password.push(c);
                         }
-                        F::DirCacheTimeout => {
-                            if c.is_ascii_digit() {
-                                let mut s = draft.dir_cache_timeout_secs.to_string();
-                                if s == "0" {
-                                    s.clear();
-                                }
-                                s.push(c);
-                                if let Ok(n) = s.parse::<u32>() {
-                                    draft.dir_cache_timeout_secs = n;
-                                }
+                        F::DirCacheTimeout if c.is_ascii_digit() => {
+                            let mut s = draft.dir_cache_timeout_secs.to_string();
+                            if s == "0" {
+                                s.clear();
+                            }
+                            s.push(c);
+                            if let Ok(n) = s.parse::<u32>() {
+                                draft.dir_cache_timeout_secs = n;
                             }
                         }
+                        F::DirCacheTimeout => {}
                         _ => {}
                     },
                     _ => {}

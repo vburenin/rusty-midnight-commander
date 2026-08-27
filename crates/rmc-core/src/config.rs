@@ -477,11 +477,7 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     )?;
     writeln!(f, "ftp_proxy_host={}", app.vfs_opts.ftp_proxy_host)?;
     writeln!(f, "use_netrc={}", app.vfs_opts.use_netrc)?;
-    writeln!(
-        f,
-        "ftp_anon_password={}",
-        app.vfs_opts.ftp_anon_password
-    )?;
+    writeln!(f, "ftp_anon_password={}", app.vfs_opts.ftp_anon_password)?;
     writeln!(
         f,
         "dir_cache_timeout_secs={}",
@@ -572,9 +568,7 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                     _ => {}
                 },
                 "vfs" => match k.as_str() {
-                    "always_use_ftp_proxy" => {
-                        app.vfs_opts.always_use_ftp_proxy = vb(&v)
-                    }
+                    "always_use_ftp_proxy" => app.vfs_opts.always_use_ftp_proxy = vb(&v),
                     "ftp_proxy_host" => {
                         app.vfs_opts.ftp_proxy_host = v;
                     }
