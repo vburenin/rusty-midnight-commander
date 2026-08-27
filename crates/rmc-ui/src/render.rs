@@ -443,6 +443,28 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 app.shadows,
             );
         }
+        rmc_core::app::UiMode::SelectGroupDialog {
+            select,
+            pattern,
+            files_only,
+            case_sensitive,
+            regular_expression,
+            focus,
+        } => {
+            draw_select_group_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                *select,
+                pattern,
+                *files_only,
+                *case_sensitive,
+                *regular_expression,
+                *focus,
+                app.shadows,
+            );
+        }
         rmc_core::app::UiMode::FindDialog(state) => {
             draw_find_dialog(p, cols, rows, pal, state);
         }
@@ -6162,6 +6184,27 @@ pub(crate) const LEFT_RIGHT_MENU_ITEMS: &[&str] = &[
     "Equal panel size",
 ];
 
+/// GNU mc(1) File menu labels. Shared with `terminal.rs`.
+pub(crate) const FILE_MENU_ITEMS: &[&str] = &[
+    "Help",
+    "View",
+    "Edit",
+    "Copy",
+    "Move",
+    "Mkdir",
+    "Delete",
+    "Quick cd",
+    "Select group",
+    "Unselect group",
+    "Invert selection",
+    "Chmod",
+    "Chown",
+    "Hard link",
+    "SymLink",
+    "Relative symlink",
+    "Quit",
+];
+
 fn draw_menu_dropdown(
     p: &mut Painter,
     pal: McPalette,
@@ -6172,22 +6215,7 @@ fn draw_menu_dropdown(
     // Real top menus and stub items
     let menus: [&[&str]; 5] = [
         LEFT_RIGHT_MENU_ITEMS,
-        &[
-            "Help",
-            "View",
-            "Edit",
-            "Copy",
-            "Move",
-            "Mkdir",
-            "Delete",
-            "Quick cd",
-            "Chmod",
-            "Chown",
-            "Hard link",
-            "SymLink",
-            "Relative symlink",
-            "Quit",
-        ],
+        FILE_MENU_ITEMS,
         COMMAND_MENU_ITEMS,
         &[
             "Configuration",
@@ -6454,6 +6482,132 @@ fn draw_filter_dialog(
         ),
         ("Files only", files_only, F::FilesOnly),
         ("Case sensitive", case_sensitive, F::CaseSensitive),
+    ];
+    for (i, (label, on, lf)) in boxes.iter().enumerate() {
+        let row_y = y + 3 + i as u16;
+        if focus == *lf {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
+    }
+
+    let sel_btn = |want: F, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
+    let bx = x + w.saturating_sub(btns.len() as u16) / 2;
+    p.goto(bx, y + h.saturating_sub(2));
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_select_group_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    select: bool,
+    pattern: &str,
+    files_only: bool,
+    case_sensitive: bool,
+    regular_expression: bool,
+    focus: rmc_core::app::SelectGroupDialogFocus,
+    show_shadow: bool,
+) {
+    use rmc_core::app::SelectGroupDialogFocus as F;
+    let w = 52u16.min(cols.saturating_sub(2));
+    let h = 10u16.min(rows.saturating_sub(2)).max(9);
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(
+        x + 1,
+        y,
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y);
+    p.text("┐");
+    p.vline(
+        x,
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        x + w.saturating_sub(1),
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h.saturating_sub(1));
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h.saturating_sub(1),
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
+    p.text("┘");
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = if select { " Select " } else { " Unselect " };
+    let tx = x + w.saturating_sub(ttl.len() as u16) / 2;
+    p.goto(tx, y);
+    p.text(ttl);
+
+    let inner_w = w.saturating_sub(4);
+    if matches!(focus, F::Pattern) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 2);
+    let shown = truncate(pattern, inner_w as usize);
+    let mut field = shown;
+    while field.chars().count() < inner_w as usize {
+        field.push(' ');
+    }
+    p.text(&field);
+
+    let boxes = [
+        ("Files only", files_only, F::FilesOnly),
+        ("Case sensitive", case_sensitive, F::CaseSensitive),
+        (
+            "Regular expression",
+            regular_expression,
+            F::RegularExpression,
+        ),
     ];
     for (i, (label, on, lf)) in boxes.iter().enumerate() {
         let row_y = y + 3 + i as u16;

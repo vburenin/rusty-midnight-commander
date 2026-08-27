@@ -75,7 +75,7 @@ Directory panels (selection, navigation, layout):
 - [ ] Alt-g / Alt-r / Alt-j: jump to top/middle/bottom item
 - [ ] Alt-t: cycle listing format (Brief/Long/User/Full)
 - [x] C-\\ (Ctrl-Backslash): Directory hotlist dialog
-- [ ] ‘+’ Select group; ‘\\’ Unselect group; ‘*’ Invert selection
+- [x] ‘+’ Select group; ‘\\’ Unselect group; ‘*’ Invert selection
 - [ ] Quick search: C-s / Alt-s starts; C-s repeats; wildcards * ?
 - [ ] Refresh/rescan directory: C-r (when enabled)
 

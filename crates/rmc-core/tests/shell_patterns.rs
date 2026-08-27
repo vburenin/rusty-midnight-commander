@@ -29,17 +29,6 @@ fn selected_names(app: &App) -> Vec<String> {
         .collect()
 }
 
-fn submit_prompt(app: &mut App, pattern: &str) -> Result<()> {
-    let mode = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
-    match mode {
-        UiMode::PromptInput { on_submit, .. } => on_submit(app, pattern.to_string()),
-        other => {
-            app.ui_mode = other;
-            anyhow::bail!("expected PromptInput for Select/Unselect group");
-        }
-    }
-}
-
 #[test]
 fn shell_patterns_defaults_true() -> Result<()> {
     assert!(ConfigOptions::default().shell_patterns);
@@ -122,29 +111,39 @@ fn select_unselect_group_honor_shell_patterns() -> Result<()> {
     let mut app = app_in_dir(root)?;
     assert!(app.config_opts.shell_patterns);
 
-    // Gray+ / + with glob
     app.handle_action(Action::SelectGroup)?;
-    submit_prompt(&mut app, "*.txt")?;
+    match &app.ui_mode {
+        UiMode::SelectGroupDialog {
+            select: true,
+            regular_expression,
+            ..
+        } => assert!(
+            !*regular_expression,
+            "first Select open seeds Regular expression from shell_patterns"
+        ),
+        _ => panic!("SelectGroup must open Select dialog"),
+    }
+    app.ui_mode = UiMode::Normal;
+    app.apply_group_pattern("*.txt", true, false, true, false);
     let sel = selected_names(&app);
     assert!(sel.iter().any(|n| n == "foo.txt"));
     assert!(!sel.iter().any(|n| n == "foo.rs"));
 
-    // Gray- with glob: unselect the .txt, leave none
     app.handle_action(Action::UnselectGroup)?;
-    submit_prompt(&mut app, "*.txt")?;
+    match &app.ui_mode {
+        UiMode::SelectGroupDialog { select: false, .. } => {}
+        _ => panic!("UnselectGroup must open Unselect dialog"),
+    }
+    app.ui_mode = UiMode::Normal;
+    app.apply_group_pattern("*.txt", false, false, true, false);
     assert!(selected_names(&app).is_empty());
 
-    // Regex mode: Gray+ with .*\.txt$
-    app.config_opts.shell_patterns = false;
-    app.handle_action(Action::SelectGroup)?;
-    submit_prompt(&mut app, r".*\.txt$")?;
+    app.apply_group_pattern(r".*\.txt$", true, false, true, true);
     let sel = selected_names(&app);
     assert!(sel.iter().any(|n| n == "foo.txt"));
     assert!(!sel.iter().any(|n| n == "foo.rs"));
 
-    // Gray- with regex unselects the same names
-    app.handle_action(Action::UnselectGroup)?;
-    submit_prompt(&mut app, r".*\.txt$")?;
+    app.apply_group_pattern(r".*\.txt$", false, false, true, true);
     assert!(selected_names(&app).is_empty());
     Ok(())
 }
