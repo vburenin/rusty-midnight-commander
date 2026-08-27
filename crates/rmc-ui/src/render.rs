@@ -2159,24 +2159,22 @@ fn draw_editor_replace_dialog(
         "{rt}{}",
         " ".repeat(inner_w.saturating_sub(rt.len()))
     ));
-    // Buttons: Replace / All / Cancel (focused default uses < >, others [ ])
+    // Buttons: focused `< Replace >`, unfocused `[ Replace ]` (GNU mc / History)
+    let focus = dlg.focus;
+    let sel_btn = |want, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let replace_txt = if matches!(dlg.focus, F::Replace) {
-        "< Replace >"
-    } else {
-        "  Replace  "
-    };
-    let all_txt = if matches!(dlg.focus, F::All) {
-        "[ All ]"
-    } else {
-        "  All  "
-    };
-    let cancel_txt = if matches!(dlg.focus, F::Cancel) {
-        "[ Cancel ]"
-    } else {
-        "  Cancel  "
-    };
-    let btns = format!("{replace_txt}  {all_txt}  {cancel_txt}");
+    let btns = format!(
+        "{}  {}  {}",
+        sel_btn(F::Replace, "Replace"),
+        sel_btn(F::All, "All"),
+        sel_btn(F::Cancel, "Cancel")
+    );
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);
