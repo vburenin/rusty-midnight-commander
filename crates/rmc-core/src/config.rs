@@ -533,7 +533,7 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
 
 /// Save App options and keymap into `dir` (`ini` + `keymap`).
 pub fn save_setup_to(app: &crate::app::App, dir: &Path) -> Result<()> {
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(dir)?;
     // Save options ini
     let ini_path = dir.join("ini");
     let mut f = File::create(&ini_path)?;

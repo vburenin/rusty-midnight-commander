@@ -5,7 +5,7 @@
 //! copies try clone / fallocate and soft-fail to a normal byte copy.
 
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use walkdir::WalkDir;
 
