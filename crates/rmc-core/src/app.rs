@@ -365,6 +365,8 @@ pub enum UiMode {
         pipe_dialog: Option<EditorPipeDialog>,
         /// GNU mcedit Alt-l Goto line dialog (None while editing).
         goto_dialog: Option<Box<EditorGotoDialog>>,
+        /// GNU mcedit Options → Tab spacing dialog (None while editing).
+        tab_spacing_dialog: Option<Box<EditorTabSpacingDialog>>,
         pending_quit: bool,
         confirm_exit: Option<YncDialog>,
         /// When the editor was opened from mcdiff, restore this mode on quit
@@ -728,15 +730,15 @@ impl EditorMenu {
         }
     }
 
-    /// Item labels under the current title. Options is empty: no editor Options
-    /// dialogs are wired yet (mcedit(1) General / Save mode / Learn keys / Syntax).
+    /// Item labels under the current title. Options wires Auto indent (toggle)
+    /// and Tab spacing (mcedit(1) `editor_tab_spacing` dialog).
     pub fn items(self) -> &'static [&'static str] {
         match self {
             Self::File { .. } => &["Save", "Save as", "Quit"],
             Self::Edit { .. } => &["Undo", "Copy", "Move", "Delete", "Mark"],
             Self::Search { .. } => &["Search", "Replace"],
             Self::Command { .. } => &["Go to line", "Pipe"],
-            Self::Options { .. } => &[],
+            Self::Options { .. } => &["Auto indent", "Tab spacing"],
         }
     }
 
@@ -980,6 +982,33 @@ impl EditorGotoDialog {
         Self {
             line: (row + 1).to_string(),
             focus: EditorGotoFocus::Line,
+        }
+    }
+}
+
+/// Focus within the GNU mcedit Options → Tab spacing dialog.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum EditorTabSpacingFocus {
+    #[default]
+    Width,
+    Ok,
+    Cancel,
+}
+
+/// GNU mcedit-style Tab spacing dialog (mcedit(1) `editor_tab_spacing`).
+/// Title ` Tab spacing `, prompt `Enter tab spacing:`.
+#[derive(Clone)]
+pub struct EditorTabSpacingDialog {
+    pub width: String,
+    pub focus: EditorTabSpacingFocus,
+}
+
+impl EditorTabSpacingDialog {
+    /// Prefill from the buffer's current tab width.
+    pub fn from_tab_width(width: usize) -> Self {
+        Self {
+            width: width.to_string(),
+            focus: EditorTabSpacingFocus::Width,
         }
     }
 }
@@ -2062,9 +2091,9 @@ mod tests {
             EditorMenu::Command { selected: 0 }.items(),
             &["Go to line", "Pipe"][..]
         );
-        assert!(
-            EditorMenu::Options { selected: 0 }.items().is_empty(),
-            "Options has no stub items"
+        assert_eq!(
+            EditorMenu::Options { selected: 0 }.items(),
+            &["Auto indent", "Tab spacing"][..]
         );
         let search = file.right().right();
         assert!(matches!(search, EditorMenu::Search { selected: 0 }));
@@ -2073,6 +2102,10 @@ mod tests {
         assert!(matches!(options.right(), EditorMenu::File { selected: 0 }));
         assert!(matches!(file.left(), EditorMenu::Options { selected: 0 }));
         let opts = EditorMenu::Options { selected: 0 };
-        assert_eq!(opts.down(), opts, "empty Options Up/Down is a no-op");
+        assert_eq!(
+            opts.down().current_item(),
+            Some("Tab spacing"),
+            "Down from Auto indent lands on Tab spacing"
+        );
     }
 }

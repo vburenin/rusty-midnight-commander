@@ -17,8 +17,15 @@ use std::process::{Command, Stdio};
 
 pub mod syntax;
 pub use syntax::{
-    guess_language, guess_language_for_buffer, tokenize_for_render, Language, Span, TokenKind,
+    byte_col_to_visual, guess_language, guess_language_for_buffer, tokenize_for_render,
+    visible_line, Language, Span, TokenKind,
 };
+
+/// GNU mcedit default `editor_tab_spacing` (mcedit(1)).
+pub const DEFAULT_TAB_WIDTH: usize = 8;
+/// Inclusive range for Options → Tab spacing.
+pub const MIN_TAB_WIDTH: usize = 2;
+pub const MAX_TAB_WIDTH: usize = 16;
 
 /// A single high-level editor operation suitable for macro recording/replay.
 /// These mirror existing `EditorBuffer` methods and are intentionally coarse-grained
@@ -58,6 +65,10 @@ pub struct EditorBuffer {
     pub view_col: usize,
     /// True when in overwrite mode; false when inserting.
     pub overwrite: bool,
+    /// GNU mcedit `editor_return_does_auto_indent` (default on).
+    pub autoindent: bool,
+    /// GNU mcedit `editor_tab_spacing` (default 8). Visual columns per tab stop.
+    pub tab_width: usize,
     /// True when buffer has unsaved changes.
     pub dirty: bool,
     /// Last search term (raw bytes)
@@ -100,6 +111,8 @@ impl EditorBuffer {
             view_row: 0,
             view_col: 0,
             overwrite: false,
+            autoindent: true,
+            tab_width: DEFAULT_TAB_WIDTH,
             dirty: false,
             last_search: Vec::new(),
             last_search_case_insensitive: false,
@@ -139,6 +152,8 @@ impl EditorBuffer {
             view_row: 0,
             view_col: 0,
             overwrite: false,
+            autoindent: true,
+            tab_width: DEFAULT_TAB_WIDTH,
             dirty: false,
             last_search: Vec::new(),
             last_search_case_insensitive: false,
@@ -197,6 +212,22 @@ impl EditorBuffer {
     pub fn toggle_overwrite(&mut self) {
         self.record_action(EditorAction::ToggleOverwrite);
         self.overwrite = !self.overwrite;
+    }
+
+    /// Toggle GNU mcedit autoindent (`editor_return_does_auto_indent`).
+    pub fn toggle_autoindent(&mut self) {
+        self.autoindent = !self.autoindent;
+    }
+
+    /// Set tab spacing, clamping to the Options → Tab spacing range (2–16).
+    pub fn set_tab_width(&mut self, width: usize) {
+        self.tab_width = width.clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH);
+    }
+
+    /// Visual column of the cursor on the current line (tab-expanded).
+    pub fn cursor_visual_col(&self) -> usize {
+        let line = self.lines.get(self.row).map(Vec::as_slice).unwrap_or(&[]);
+        byte_col_to_visual(line, self.col, self.tab_width)
     }
 
     /// Move cursor left.
@@ -286,13 +317,27 @@ impl EditorBuffer {
     }
 
     /// Handle Enter: split the current line at cursor.
+    /// With autoindent on (GNU default), the new line starts with a copy of the
+    /// previous line's leading spaces and tabs.
     pub fn insert_newline(&mut self) {
         self.record_action(EditorAction::InsertNewline);
         self.push_undo();
         let tail = self.lines[self.row].split_off(self.col);
+        let indent: Vec<u8> = if self.autoindent {
+            self.lines[self.row]
+                .iter()
+                .copied()
+                .take_while(|&b| b == b' ' || b == b'\t')
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let indent_len = indent.len();
         self.row += 1;
-        self.col = 0;
-        self.lines.insert(self.row, tail);
+        let mut new_line = indent;
+        new_line.extend_from_slice(&tail);
+        self.lines.insert(self.row, new_line);
+        self.col = indent_len;
         self.dirty = true;
         self.ensure_cursor_visible();
     }
@@ -360,6 +405,7 @@ impl EditorBuffer {
     }
 
     /// Adjust viewport to keep cursor visible given available width/height.
+    /// Horizontal origin `view_col` is a visual column after tab expansion.
     pub fn adjust_viewport(&mut self, view_width: usize, view_height: usize) {
         // Vertical
         if self.row < self.view_row {
@@ -367,11 +413,12 @@ impl EditorBuffer {
         } else if self.row >= self.view_row + view_height {
             self.view_row = self.row + 1 - view_height;
         }
-        // Horizontal
-        if self.col < self.view_col {
-            self.view_col = self.col;
-        } else if self.col >= self.view_col + view_width {
-            self.view_col = self.col + 1 - view_width;
+        // Horizontal (visual columns)
+        let vis = self.cursor_visual_col();
+        if vis < self.view_col {
+            self.view_col = vis;
+        } else if vis >= self.view_col + view_width {
+            self.view_col = vis + 1 - view_width;
         }
     }
 
@@ -379,31 +426,20 @@ impl EditorBuffer {
         // Keep a soft margin by default when possible
         let margin = 4usize;
         self.view_row = self.row.saturating_sub(margin);
-        self.view_col = self.col.saturating_sub(margin);
+        self.view_col = self.cursor_visual_col().saturating_sub(margin);
     }
 
     /// Render a window of lines for display. Non-printable bytes are shown as '.'.
+    /// Tabs expand to `tab_width` visual columns (GNU mcedit tab spacing).
     pub fn render_window(&self, width: usize, height: usize) -> Vec<String> {
         let mut out = Vec::new();
         for i in 0..height {
             let li = self.view_row + i;
             if let Some(line) = self.lines.get(li) {
-                let mut s = String::with_capacity(width);
-                // Determine visible slice
-                let start = min(self.view_col, line.len());
-                let mut j = start;
-                while s.chars().count() < width && j < line.len() {
-                    let b = line[j];
-                    // Show ASCII printable; else dot
-                    if (0x20..=0x7E).contains(&b) || b == b'\t' {
-                        let ch = if b == b'\t' { ' ' } else { b as char };
-                        s.push(ch);
-                    } else {
-                        s.push('.');
-                    }
-                    j += 1;
-                }
-                // Pad to width
+                let vis = visible_line(line, self.tab_width);
+                let chars: Vec<char> = vis.chars().collect();
+                let start = min(self.view_col, chars.len());
+                let mut s: String = chars.iter().skip(start).take(width).collect();
                 while s.chars().count() < width {
                     s.push(' ');
                 }
@@ -416,8 +452,8 @@ impl EditorBuffer {
     }
 
     /// Render a window of tokenized spans suitable for syntax-colored drawing.
-    /// This mirrors `render_window` semantics (printable ASCII, tabs to space, others as '.'),
-    /// but returns `(text, kind)` spans clipped to the current viewport.
+    /// This mirrors `render_window` (printable ASCII, tabs to tab stops, others as '.'),
+    /// but returns `(text, kind)` spans clipped to the current visual viewport.
     pub fn render_window_spans(&self, width: usize, height: usize) -> Vec<Vec<Span>> {
         let mut out: Vec<Vec<Span>> = Vec::new();
         let lang = guess_language_for_buffer(
@@ -427,7 +463,7 @@ impl EditorBuffer {
         for i in 0..height {
             let li = self.view_row + i;
             if let Some(line) = self.lines.get(li) {
-                let spans = tokenize_for_render(line, lang, self.view_col, width);
+                let spans = tokenize_for_render(line, lang, self.view_col, width, self.tab_width);
                 out.push(spans);
             } else {
                 out.push(vec![Span {
@@ -1069,10 +1105,13 @@ impl EditorBuffer {
             } else {
                 (0, self.lines[li].len())
             };
-            // Map to viewport columns
-            let mut a = start_c.saturating_sub(view_col);
-            let mut b = end_c.saturating_sub(view_col);
-            if end_c <= view_col || start_c >= view_col + width {
+            // Map byte offsets to visual columns, then to the viewport.
+            let line = self.lines.get(li).map(Vec::as_slice).unwrap_or(&[]);
+            let start_v = byte_col_to_visual(line, start_c, self.tab_width);
+            let end_v = byte_col_to_visual(line, end_c, self.tab_width);
+            let mut a = start_v.saturating_sub(view_col);
+            let mut b = end_v.saturating_sub(view_col);
+            if end_v <= view_col || start_v >= view_col + width {
                 continue;
             }
             // Clamp to [0,width]
@@ -1589,6 +1628,49 @@ mod tests {
         b.col = 3;
         b.insert_bytes(b"YY");
         assert_eq!(b.to_bytes(), b"aZcYY");
+    }
+
+    #[test]
+    fn autoindent_copies_leading_spaces_and_tabs() {
+        let mut b = EditorBuffer::from_bytes(b"\t  foo", None);
+        assert!(b.autoindent, "GNU default is on");
+        b.col = b.lines[0].len();
+        b.insert_newline();
+        assert_eq!(b.to_bytes(), b"\t  foo\n\t  ");
+        assert_eq!(b.row, 1);
+        assert_eq!(b.col, 3);
+        b.autoindent = false;
+        b.insert_newline();
+        assert_eq!(b.to_bytes(), b"\t  foo\n\t  \n");
+        assert_eq!(b.col, 0);
+        assert!(b.lines[2].is_empty());
+    }
+
+    #[test]
+    fn tab_renders_as_tab_width_columns_not_one_space() {
+        assert_eq!(EditorBuffer::new_empty().tab_width, DEFAULT_TAB_WIDTH);
+        let mut b = EditorBuffer::from_bytes(b"\tfn", Some(PathBuf::from("main.rs")));
+        let row = &b.render_window(16, 1)[0];
+        assert_eq!(&row[..8], "        ");
+        assert_eq!(&row[8..10], "fn");
+        let spans = &b.render_window_spans(16, 1)[0];
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == TokenKind::Keyword && s.text == "fn"),
+            "{spans:?}"
+        );
+        b.set_tab_width(4);
+        let row4 = &b.render_window(16, 1)[0];
+        assert_eq!(&row4[..4], "    ");
+        assert_eq!(&row4[4..6], "fn");
+        let spans4 = &b.render_window_spans(16, 1)[0];
+        assert!(
+            spans4
+                .iter()
+                .any(|s| s.kind == TokenKind::Keyword && s.text == "fn"),
+            "{spans4:?}"
+        );
     }
 
     #[test]
