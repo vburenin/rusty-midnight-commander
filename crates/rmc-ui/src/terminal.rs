@@ -249,6 +249,54 @@ fn menu_top_index_from_x(x: u16) -> Option<usize> {
     None
 }
 
+// Minimal ~/.netrc parser: searches for `machine <host> login <user> password <pass>`
+fn netrc_lookup(host: &str) -> Option<(String, String)> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::Path::new(&home).join(".netrc");
+    let data = std::fs::read_to_string(path).ok()?;
+    // Tokenize by whitespace; ignore comments starting with '#'
+    let mut tokens = Vec::new();
+    for line in data.lines() {
+        let l = line.split('#').next().unwrap_or("").trim();
+        if l.is_empty() {
+            continue;
+        }
+        for t in l.split_whitespace() {
+            tokens.push(t.to_string());
+        }
+    }
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i].eq_ignore_ascii_case("machine") && i + 1 < tokens.len() {
+            let mch = tokens[i + 1].clone();
+            i += 2;
+            let mut login: Option<String> = None;
+            let mut pass: Option<String> = None;
+            while i < tokens.len() {
+                match tokens[i].as_str() {
+                    "machine" => break, // next block
+                    "login" if i + 1 < tokens.len() => {
+                        login = Some(tokens[i + 1].clone());
+                        i += 2;
+                    }
+                    "password" if i + 1 < tokens.len() => {
+                        pass = Some(tokens[i + 1].clone());
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            }
+            if mch == host {
+                if let (Some(u), Some(p)) = (login, pass) {
+                    return Some((u, p));
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
 fn fbar_function_from_xy(app: &App, x: u16, y: u16, cols: u16, rows: u16) -> Option<u8> {
     // Hit only when keybar is visible and y matches computed fbar row
     let geom = compute_chrome_geom(cols, rows, &app.layout);
@@ -1539,8 +1587,22 @@ impl TerminalApp {
                             return Ok(());
                         }
                         let port_val = port.trim();
-                        let user_val = user.trim();
-                        let pass_val = password.clone(); // allow empty
+                        let mut user_val = user.trim().to_string();
+                        let mut pass_val = password.clone(); // allow empty
+                        // Apply ~/.netrc if enabled and no user provided (FTP only)
+                        if scheme == "ftp" && app.vfs_opts.use_netrc && user_val.is_empty() {
+                            if let Some((u, p)) = netrc_lookup(&host_val) {
+                                user_val = u;
+                                pass_val = p;
+                            }
+                        }
+                        // If FTP anonymous with no provided password, use configured default
+                        if scheme == "ftp" && *anonymous && user_val.is_empty() && pass_val.is_empty() {
+                            let anon_pass = app.vfs_opts.ftp_anon_password.trim().to_string();
+                            if !anon_pass.is_empty() {
+                                pass_val = anon_pass;
+                            }
+                        }
                         let dir_val = {
                             let d = directory.trim();
                             if d.is_empty() {
@@ -1552,6 +1614,7 @@ impl TerminalApp {
                             }
                         };
                         let user_part = {
+                            // When anonymous and user empty, default to "anonymous"
                             let u = if *anonymous && user_val.is_empty() {
                                 "anonymous".to_string()
                             } else {
@@ -2426,6 +2489,122 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::VfsOptionsDialog { draft, focus } => {
+                use rmc_core::app::VfsOptionsFocus as F;
+                // Focus order: checkbox, input, checkbox, input, input, buttons
+                let order = [
+                    F::AlwaysUseFtpProxy,
+                    F::FtpProxyHost,
+                    F::UseNetrc,
+                    F::FtpAnonPassword,
+                    F::DirCacheTimeout,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Backspace => match *focus {
+                        F::FtpProxyHost => {
+                            draft.ftp_proxy_host.pop();
+                        }
+                        F::FtpAnonPassword => {
+                            draft.ftp_anon_password.pop();
+                        }
+                        F::DirCacheTimeout => {
+                            // Operate on a temporary string then parse
+                            let mut s = draft.dir_cache_timeout_secs.to_string();
+                            s.pop();
+                            if s.is_empty() {
+                                draft.dir_cache_timeout_secs = 0;
+                            } else if let Ok(n) = s.parse::<u32>() {
+                                draft.dir_cache_timeout_secs = n;
+                            }
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(' ') => match *focus {
+                        F::AlwaysUseFtpProxy => {
+                            draft.always_use_ftp_proxy = !draft.always_use_ftp_proxy
+                        }
+                        F::UseNetrc => {
+                            draft.use_netrc = !draft.use_netrc;
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Enter => match *focus {
+                        F::AlwaysUseFtpProxy => {
+                            draft.always_use_ftp_proxy = !draft.always_use_ftp_proxy
+                        }
+                        F::UseNetrc => {
+                            draft.use_netrc = !draft.use_netrc;
+                        }
+                        F::Ok => {
+                            let new_opts = draft.clone();
+                            app.ui_mode = UiMode::Normal;
+                            app.vfs_opts = new_opts;
+                        }
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Char(c) if key.modifiers.is_empty() => match *focus {
+                        F::FtpProxyHost => {
+                            draft.ftp_proxy_host.push(c);
+                        }
+                        F::FtpAnonPassword => {
+                            draft.ftp_anon_password.push(c);
+                        }
+                        F::DirCacheTimeout => {
+                            if c.is_ascii_digit() {
+                                let mut s = draft.dir_cache_timeout_secs.to_string();
+                                if s == "0" {
+                                    s.clear();
+                                }
+                                s.push(c);
+                                if let Ok(n) = s.parse::<u32>() {
+                                    draft.dir_cache_timeout_secs = n;
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::AppearanceDialog {
                 draft_skin,
                 draft_shadows,
@@ -3212,6 +3391,7 @@ impl TerminalApp {
                         "Panels",
                         "Confirmations",
                         "Appearance",
+                        "Virtual FS...",
                         "Learn keys",
                         "Save setup",
                     ],
@@ -3331,6 +3511,13 @@ impl TerminalApp {
                                     skins,
                                     selected,
                                     focus: rmc_core::app::AppearanceFocus::SkinList,
+                                };
+                            }
+                            "Virtual FS..." => {
+                                let draft = app.vfs_opts.clone();
+                                app.ui_mode = UiMode::VfsOptionsDialog {
+                                    draft,
+                                    focus: rmc_core::app::VfsOptionsFocus::AlwaysUseFtpProxy,
                                 };
                             }
                             "Learn keys" => {
