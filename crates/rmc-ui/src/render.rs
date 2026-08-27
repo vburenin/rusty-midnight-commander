@@ -1792,6 +1792,31 @@ fn draw_appearance_dialog(
     }
 }
 
+/// Map a syntax token (and selection overlay) onto public `[editor]` palette pairs.
+/// `editmarked` always wins over keyword/comment/string colors.
+fn editor_cell_style(kind: rmc_edit::TokenKind, selected: bool, pal: McPalette) -> (Color, Color) {
+    if selected {
+        return (pal.edit_marked_fg, pal.edit_marked_bg);
+    }
+    use rmc_edit::TokenKind as K;
+    match kind {
+        K::Keyword | K::Type | K::Preproc | K::Heading => (pal.edit_bold_fg, pal.edit_bold_bg),
+        K::Comment => {
+            let fg = pal.edit_whitespace_fg;
+            let bg = pal.edit_normal_bg;
+            if fg == bg {
+                (pal.edit_linestate_fg, pal.edit_normal_bg)
+            } else {
+                (fg, bg)
+            }
+        }
+        K::String | K::Number | K::Code | K::Link | K::Emphasis => {
+            (pal.edit_linestate_fg, pal.edit_linestate_bg)
+        }
+        _ => (pal.edit_normal_fg, pal.edit_normal_bg),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_editor(
     p: &mut Painter,
@@ -1810,8 +1835,8 @@ fn draw_editor(
     confirm: Option<&rmc_core::app::YncDialog>,
     show_shadow: bool,
 ) {
-    // Background (editor core colors)
-    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    // Background (editor [editor] _default_ pair)
+    p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
     for y in 0..rows {
         p.goto(0, y);
         p.text(&" ".repeat(cols as usize));
@@ -1827,30 +1852,13 @@ fn draw_editor(
     // Render buffer window
     // We can't mutate buf here; assume viewport was adjusted by the event loop.
     // Draw content lines
-    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
     for i in 0..content_h {
         p.goto(0, content_top + i);
         p.text(&" ".repeat(cols as usize));
     }
-    // Spans for syntax coloring
+    // Spans for syntax coloring (visible window only)
     let view_spans = buf.render_window_spans(cols as usize, content_h as usize);
-    // Map token kind to foreground using existing MC palette (no custom theme)
-    let token_fg = |kind: rmc_edit::TokenKind| -> Color {
-        use rmc_edit::TokenKind as K;
-        match kind {
-            K::Keyword => pal.source_color,     // cyan
-            K::String => pal.archive_color,     // magenta
-            K::Comment => pal.symlink_color,    // gray
-            K::Number => pal.exec_color,        // green
-            K::Type => pal.dir_color,           // white
-            K::Preproc => pal.header_fg,        // yellow
-            K::Heading => pal.dtitle_fg,        // blue
-            K::Emphasis => pal.menuhot_fg,      // yellow
-            K::Link => pal.menusel_fg,          // white
-            K::Code => pal.buttonbar_hotkey_fg, // white on black style fg
-            _ => pal.core_default_fg,
-        }
-    };
     // Compute selection spans in viewport coordinates
     let spans = buf.selection_spans_for_view(
         buf.view_row,
@@ -1866,7 +1874,6 @@ fn draw_editor(
         let mut drawn_cols = 0usize;
         for tok in line_spans {
             let kind = tok.kind;
-            let fg = token_fg(kind);
             let t = truncate(&tok.text, cols as usize - drawn_cols);
             let tok_len = t.chars().count();
             if tok_len == 0 {
@@ -1874,14 +1881,16 @@ fn draw_editor(
             }
             match sel {
                 None => {
-                    p.set_fg_bg(fg, pal.core_default_bg);
+                    let (fg, bg) = editor_cell_style(kind, false, pal);
+                    p.set_fg_bg(fg, bg);
                     p.text(&t);
                     drawn_cols += tok_len;
                 }
                 Some((sa, sb)) => {
                     // Non-overlapping entirely before selection
                     if drawn_cols + tok_len <= sa || drawn_cols >= sb {
-                        p.set_fg_bg(fg, pal.core_default_bg);
+                        let (fg, bg) = editor_cell_style(kind, false, pal);
+                        p.set_fg_bg(fg, bg);
                         p.text(&t);
                         drawn_cols += tok_len;
                         continue;
@@ -1893,13 +1902,15 @@ fn draw_editor(
                     let right_len = tok_len.saturating_sub(sel_end);
                     // Left part
                     if left_len > 0 {
-                        p.set_fg_bg(fg, pal.core_default_bg);
+                        let (fg, bg) = editor_cell_style(kind, false, pal);
+                        p.set_fg_bg(fg, bg);
                         let left: String = t.chars().take(left_len).collect();
                         p.text(&left);
                     }
-                    // Selection part
+                    // Selection part: editmarked wins over syntax colors
                     if sel_end > sel_start {
-                        p.set_fg_bg(pal.marked_fg, pal.marked_bg);
+                        let (fg, bg) = editor_cell_style(kind, true, pal);
+                        p.set_fg_bg(fg, bg);
                         let sel_txt: String = t
                             .chars()
                             .skip(sel_start)
@@ -1909,7 +1920,8 @@ fn draw_editor(
                     }
                     // Right part
                     if right_len > 0 {
-                        p.set_fg_bg(fg, pal.core_default_bg);
+                        let (fg, bg) = editor_cell_style(kind, false, pal);
+                        p.set_fg_bg(fg, bg);
                         let right: String = t.chars().skip(sel_end).collect();
                         p.text(&right);
                     }
@@ -1919,11 +1931,10 @@ fn draw_editor(
         }
         // If we drew less than full width, pad the rest
         if drawn_cols < cols as usize {
-            p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+            p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
             p.text(&" ".repeat(cols as usize - drawn_cols));
         }
-        // Restore default
-        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+        p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
     }
     // Cursor indicator (soft, we don't move real terminal cursor here)
     // Draw a small inverse cell where the logical cursor is on screen
@@ -1940,10 +1951,10 @@ fn draw_editor(
             .unwrap_or_default();
         let ch = row_text.chars().nth(cur_x as usize).unwrap_or(' ');
         // Invert colors for that glyph
-        p.set_fg_bg(pal.core_default_bg, pal.core_default_fg);
+        p.set_fg_bg(pal.edit_normal_bg, pal.edit_normal_fg);
         p.text(&ch.to_string());
         // Restore default for safety
-        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+        p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
     }
     // Status line
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
@@ -5947,5 +5958,90 @@ mod viewer_fbar_and_selection_style_tests {
         let (nfg, nbg) = viewer_line_style(false, pal);
         assert_eq!(nfg, pal.core_default_fg);
         assert_eq!(nbg, pal.core_default_bg);
+    }
+}
+
+#[cfg(test)]
+mod editor_syntax_style_tests {
+    use super::editor_cell_style;
+    use crate::mc_colors::McPalette;
+    use crossterm::style::Color;
+    use rmc_edit::{EditorBuffer, TokenKind};
+    use std::path::PathBuf;
+
+    #[test]
+    fn rust_keywords_use_editbold_txt_stays_unhighlighted() {
+        let pal = McPalette::default();
+        let rs = EditorBuffer::from_bytes(b"fn let name", Some(PathBuf::from("main.rs")));
+        let spans = &rs.render_window_spans(40, 1)[0];
+        let mut saw_kw = false;
+        let mut saw_id = false;
+        for sp in spans {
+            let (fg, bg) = editor_cell_style(sp.kind, false, pal);
+            if sp.text == "fn" || sp.text == "let" {
+                assert_eq!(fg, pal.edit_bold_fg);
+                assert_eq!(bg, pal.edit_bold_bg);
+                assert_eq!((fg, bg), (Color::Yellow, Color::Green));
+                saw_kw = true;
+            }
+            if sp.text == "name" {
+                assert_eq!(fg, pal.edit_normal_fg);
+                assert_eq!(bg, pal.edit_normal_bg);
+                assert_ne!((fg, bg), (pal.edit_bold_fg, pal.edit_bold_bg));
+                saw_id = true;
+            }
+        }
+        assert!(saw_kw && saw_id, "{spans:?}");
+
+        let txt = EditorBuffer::from_bytes(b"fn let name", Some(PathBuf::from("notes.txt")));
+        for sp in &txt.render_window_spans(40, 1)[0] {
+            let (fg, bg) = editor_cell_style(sp.kind, false, pal);
+            assert_eq!((fg, bg), (pal.edit_normal_fg, pal.edit_normal_bg));
+            assert_ne!(sp.kind, TokenKind::Keyword);
+        }
+    }
+
+    #[test]
+    fn selection_uses_editmarked_not_keyword_color() {
+        let pal = McPalette::default();
+        let (kw_fg, kw_bg) = editor_cell_style(TokenKind::Keyword, false, pal);
+        let (sel_fg, sel_bg) = editor_cell_style(TokenKind::Keyword, true, pal);
+        assert_eq!(kw_fg, pal.edit_bold_fg);
+        assert_eq!(kw_bg, pal.edit_bold_bg);
+        assert_eq!(sel_fg, pal.edit_marked_fg);
+        assert_eq!(sel_bg, pal.edit_marked_bg);
+        assert_eq!((sel_fg, sel_bg), (Color::Black, Color::Cyan));
+        assert_ne!((sel_fg, sel_bg), (kw_fg, kw_bg));
+        assert_ne!(
+            sel_bg, pal.marked_bg,
+            "must not use panel marked yellow;blue"
+        );
+
+        let mut buf = EditorBuffer::from_bytes(b"fn foo", Some(PathBuf::from("a.rs")));
+        buf.row = 0;
+        buf.col = 0;
+        buf.mark_start();
+        buf.col = 2;
+        buf.mark_end();
+        let sel = buf.selection_spans_for_view(0, 0, 1, 20);
+        assert_eq!(sel[0], Some((0, 2)));
+        let spans = &buf.render_window_spans(20, 1)[0];
+        assert_eq!(spans[0].kind, TokenKind::Keyword);
+        let (fg, bg) = editor_cell_style(spans[0].kind, true, pal);
+        assert_eq!((fg, bg), (pal.edit_marked_fg, pal.edit_marked_bg));
+    }
+
+    #[test]
+    fn comments_and_strings_use_editor_pairs() {
+        let pal = McPalette::default();
+        let (c_fg, c_bg) = editor_cell_style(TokenKind::Comment, false, pal);
+        assert_eq!(c_fg, pal.edit_whitespace_fg);
+        assert_eq!(c_bg, pal.edit_normal_bg);
+        assert_ne!((c_fg, c_bg), (pal.edit_bold_fg, pal.edit_bold_bg));
+        let (s_fg, s_bg) = editor_cell_style(TokenKind::String, false, pal);
+        assert_eq!(s_fg, pal.edit_linestate_fg);
+        assert_eq!(s_bg, pal.edit_linestate_bg);
+        assert_ne!((s_fg, s_bg), (c_fg, c_bg));
+        assert_ne!((s_fg, s_bg), (pal.edit_bold_fg, pal.edit_bold_bg));
     }
 }

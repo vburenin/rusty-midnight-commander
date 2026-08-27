@@ -9,6 +9,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Original Apache-2.0 tokenizers for GNU mcedit-style highlighting.
+//! Rules are written from public language grammars; GNU mc syntax files are not used.
+
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +20,9 @@ pub enum Language {
     C,
     Python,
     Shell,
+    Makefile,
+    Json,
+    Html,
     Ini,
     Markdown,
     PlainText,
@@ -34,10 +40,10 @@ pub enum TokenKind {
     Preproc,
     Identifier,
     Operator,
-    Heading,  // markdown / ini section
-    Emphasis, // markdown emphasis
-    Link,     // markdown link text
-    Code,     // markdown inline code
+    Heading,
+    Emphasis,
+    Link,
+    Code,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,38 +52,100 @@ pub struct Span {
     pub kind: TokenKind,
 }
 
-// Internal span used during tokenization (positions on visible text)
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpanUnit {
     start: usize,
-    end: usize, // exclusive
+    end: usize,
     kind: TokenKind,
 }
 
+/// Guess language from path (filename / extension). Shebang is not considered.
 pub fn guess_language(path: Option<&Path>) -> Language {
+    guess_language_for_buffer(path, None)
+}
+
+/// Filename/extension first; shebang only when there is no extension (and the
+/// name was not already recognized, e.g. `Makefile`).
+pub fn guess_language_for_buffer(path: Option<&Path>, first_line: Option<&[u8]>) -> Language {
+    let from_path = language_from_path(path);
+    if from_path != Language::PlainText {
+        return from_path;
+    }
+    let has_ext = path
+        .and_then(|p| p.extension())
+        .and_then(|s| s.to_str())
+        .is_some_and(|e| !e.is_empty());
+    if has_ext {
+        return Language::PlainText;
+    }
+    language_from_shebang(first_line).unwrap_or(Language::PlainText)
+}
+
+fn language_from_path(path: Option<&Path>) -> Language {
     let Some(p) = path else {
         return Language::PlainText;
     };
+    if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+        let lower = name.to_ascii_lowercase();
+        if lower == "makefile" || lower == "gnumakefile" {
+            return Language::Makefile;
+        }
+    }
     if let Some(ext) = p
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase())
     {
-        match ext.as_str() {
+        return match ext.as_str() {
             "rs" => Language::Rust,
-            "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" => Language::C,
+            "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" | "c++" => Language::C,
             "py" => Language::Python,
             "sh" | "bash" | "zsh" | "ksh" => Language::Shell,
+            "mk" | "make" => Language::Makefile,
+            "json" => Language::Json,
+            "html" | "htm" => Language::Html,
             "ini" | "conf" | "cfg" => Language::Ini,
             "md" | "markdown" => Language::Markdown,
             _ => Language::PlainText,
-        }
-    } else {
-        Language::PlainText
+        };
     }
+    Language::PlainText
 }
 
-/// Convert raw bytes to visible string (ASCII printable and tabs; others as '.').
+fn language_from_shebang(first_line: Option<&[u8]>) -> Option<Language> {
+    let line = first_line?;
+    let s = std::str::from_utf8(line).ok()?.trim();
+    if !s.starts_with("#!") {
+        return None;
+    }
+    let rest = s[2..].trim();
+    let mut parts = rest.split_whitespace();
+    let interp = parts.next().unwrap_or("");
+    let arg = parts.next().unwrap_or("");
+    let interp_base = interp
+        .rsplit('/')
+        .next()
+        .unwrap_or(interp)
+        .to_ascii_lowercase();
+    let name = if interp_base == "env" {
+        arg.to_ascii_lowercase()
+    } else {
+        interp_base
+    };
+    if name.starts_with("python") {
+        return Some(Language::Python);
+    }
+    if name == "sh"
+        || name.starts_with("bash")
+        || name.starts_with("zsh")
+        || name.starts_with("ksh")
+        || name.starts_with("dash")
+    {
+        return Some(Language::Shell);
+    }
+    None
+}
+
 fn bytes_to_visible_string(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len());
     for &b in bytes {
@@ -90,47 +158,67 @@ fn bytes_to_visible_string(bytes: &[u8]) -> String {
     s
 }
 
-/// Tokenize one visible text line into SpanUnit list.
 fn tokenize_visible_line(text: &str, lang: Language) -> Vec<SpanUnit> {
     match lang {
-        Language::Rust => tokenize_rust_like(text, true),
+        Language::Rust => tokenize_rust(text),
         Language::C => tokenize_c_like(text),
-        Language::Python => tokenize_python(text),
-        Language::Shell => tokenize_shell(text),
+        Language::Python => tokenize_generic(
+            text,
+            python_keywords(),
+            CommentKind::Hash,
+            StringStyle::Python,
+            false,
+            false,
+        ),
+        Language::Shell => tokenize_generic(
+            text,
+            shell_keywords(),
+            CommentKind::Hash,
+            StringStyle::Shell,
+            false,
+            false,
+        ),
+        Language::Makefile => tokenize_generic(
+            text,
+            makefile_keywords(),
+            CommentKind::Hash,
+            StringStyle::Shell,
+            false,
+            true,
+        ),
+        Language::Json => tokenize_generic(
+            text,
+            json_keywords(),
+            CommentKind::None,
+            StringStyle::Json,
+            true,
+            false,
+        ),
+        Language::Html => tokenize_html(text),
         Language::Ini => tokenize_ini(text),
         Language::Markdown => tokenize_markdown(text),
-        Language::PlainText => vec![SpanUnit {
-            start: 0,
-            end: text.chars().count(),
-            kind: TokenKind::Normal,
-        }],
+        Language::PlainText => {
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![SpanUnit {
+                    start: 0,
+                    end: text.chars().count(),
+                    kind: TokenKind::Normal,
+                }]
+            }
+        }
     }
 }
 
-/// Clip SpanUnits to [start_col, start_col+max_cols) and convert to output Spans with actual text.
 fn clip_to_window(
     text: &str,
     spans: Vec<SpanUnit>,
     start_col: usize,
     max_cols: usize,
 ) -> Vec<Span> {
-    let text_len = text.chars().count();
-    let window_end = start_col.saturating_add(max_cols).min(text_len);
-    // Build char indices to byte indices map for slicing
-    let mut char_to_byte: Vec<usize> = Vec::with_capacity(text_len + 1);
-    char_to_byte.push(0);
-    for (i, (bidx, _)) in text.char_indices().enumerate() {
-        if i > 0 {
-            // previous already pushed
-        }
-        // Ensure positions align (we keep start positions)
-        if char_to_byte.last().copied().unwrap_or(usize::MAX) != bidx {
-            char_to_byte.push(bidx);
-        }
-    }
-    // Ensure final byte length
-    char_to_byte.push(text.len());
-
+    let chars: Vec<char> = text.chars().collect();
+    let window_end = start_col.saturating_add(max_cols).min(chars.len());
     let mut out: Vec<Span> = Vec::new();
     for su in spans {
         let a = su.start.max(start_col);
@@ -138,68 +226,47 @@ fn clip_to_window(
         if b <= a {
             continue;
         }
-        let ba = char_index_to_byte(&char_to_byte, a);
-        let bb = char_index_to_byte(&char_to_byte, b);
-        let seg = &text[ba..bb];
-        // Merge adjacent spans of same kind
+        let seg: String = chars[a..b].iter().collect();
         if let Some(last) = out.last_mut() {
             if last.kind == su.kind {
-                last.text.push_str(seg);
+                last.text.push_str(&seg);
                 continue;
             }
         }
         out.push(Span {
-            text: seg.to_string(),
+            text: seg,
             kind: su.kind,
         });
     }
-    // Pad to width if needed (like render_window)
-    let cur_cols: usize = out.iter().map(|s| s.text.chars().count()).sum();
-    if cur_cols < (window_end - start_col) {
-        let pad = " ".repeat((window_end - start_col) - cur_cols);
-        if let Some(last) = out.last_mut() {
-            if last.kind == TokenKind::Normal {
-                last.text.push_str(&pad);
-            } else {
-                out.push(Span {
-                    text: pad,
-                    kind: TokenKind::Normal,
-                });
-            }
-        } else {
-            out.push(Span {
-                text: pad,
-                kind: TokenKind::Normal,
-            });
-        }
-    }
-    // Ensure exactly max_cols width by padding or truncating; current window_end may be less when line shorter
-    // If line shorter than requested width, caller will draw blank remainder of row; we keep as-is.
     out
 }
 
-fn char_index_to_byte(map: &[usize], ci: usize) -> usize {
-    // map[0] is 0, map.last() is len
-    if ci >= map.len() - 1 {
-        *map.last().unwrap()
-    } else {
-        map[ci]
-    }
-}
-
+/// Tokenize one source line for the visible editor window (`start_col` / `max_cols`).
 pub fn tokenize_for_render(
     line_bytes: &[u8],
     lang: Language,
     start_col: usize,
     max_cols: usize,
 ) -> Vec<Span> {
-    // Build full visible text then tokenize and clip
     let full = bytes_to_visible_string(line_bytes);
     let spans = tokenize_visible_line(&full, lang);
     clip_to_window(&full, spans, start_col, max_cols)
 }
 
-// ---------- Language tokenizers ----------
+#[derive(Clone, Copy)]
+enum CommentKind {
+    None,
+    Hash,
+    CFamily,
+}
+
+#[derive(Clone, Copy)]
+enum StringStyle {
+    CLike,
+    Python,
+    Shell,
+    Json,
+}
 
 fn is_ident_start(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '_'
@@ -213,20 +280,111 @@ fn is_whitespace(c: char) -> bool {
 
 fn rust_keywords() -> &'static [&'static str] {
     &[
-        "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false",
-        "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
-        "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
-        "unsafe", "use", "where", "while", "async", "await", "union", "yield",
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+        "true", "type", "union", "unsafe", "use", "where", "while", "yield",
     ]
 }
+
 fn c_keywords() -> &'static [&'static str] {
     &[
-        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-        "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-        "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
-        "union", "unsigned", "void", "volatile", "while",
+        "alignas",
+        "alignof",
+        "and",
+        "and_eq",
+        "asm",
+        "auto",
+        "bitand",
+        "bitor",
+        "bool",
+        "break",
+        "case",
+        "catch",
+        "char",
+        "char8_t",
+        "char16_t",
+        "char32_t",
+        "class",
+        "compl",
+        "concept",
+        "const",
+        "consteval",
+        "constexpr",
+        "constinit",
+        "const_cast",
+        "continue",
+        "co_await",
+        "co_return",
+        "co_yield",
+        "decltype",
+        "default",
+        "delete",
+        "do",
+        "double",
+        "dynamic_cast",
+        "else",
+        "enum",
+        "explicit",
+        "export",
+        "extern",
+        "false",
+        "float",
+        "for",
+        "friend",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "mutable",
+        "namespace",
+        "new",
+        "noexcept",
+        "not",
+        "not_eq",
+        "nullptr",
+        "operator",
+        "or",
+        "or_eq",
+        "private",
+        "protected",
+        "public",
+        "register",
+        "reinterpret_cast",
+        "requires",
+        "restrict",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "static_assert",
+        "static_cast",
+        "struct",
+        "switch",
+        "template",
+        "this",
+        "thread_local",
+        "throw",
+        "true",
+        "try",
+        "typedef",
+        "typeid",
+        "typename",
+        "union",
+        "unsigned",
+        "using",
+        "virtual",
+        "void",
+        "volatile",
+        "wchar_t",
+        "while",
+        "xor",
+        "xor_eq",
     ]
 }
+
 fn python_keywords() -> &'static [&'static str] {
     &[
         "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
@@ -235,95 +393,262 @@ fn python_keywords() -> &'static [&'static str] {
         "try", "while", "with", "yield",
     ]
 }
+
 fn shell_keywords() -> &'static [&'static str] {
     &[
-        "if", "then", "else", "elif", "fi", "for", "do", "done", "case", "esac", "function", "in",
-        "while", "until", "select",
+        "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+        "select", "then", "time", "until", "while",
     ]
 }
 
-fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
-    // Handles Rust; C-like done separately to catch preproc
+fn makefile_keywords() -> &'static [&'static str] {
+    &[
+        "define", "else", "endef", "endif", "export", "ifdef", "ifeq", "ifndef", "ifneq",
+        "include", "override", "private", "sinclude", "unexport", "vpath",
+    ]
+}
+
+fn json_keywords() -> &'static [&'static str] {
+    &["true", "false", "null"]
+}
+
+fn push_span(out: &mut Vec<SpanUnit>, start: usize, end: usize, kind: TokenKind) {
+    if end > start {
+        out.push(SpanUnit { start, end, kind });
+    }
+}
+
+fn tokenize_generic(
+    text: &str,
+    keywords: &[&str],
+    comments: CommentKind,
+    strings: StringStyle,
+    json_numbers: bool,
+    makefile_dot_idents: bool,
+) -> Vec<SpanUnit> {
     let mut out: Vec<SpanUnit> = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
     let mut i = 0usize;
+    while i < n {
+        let c = chars[i];
+        match comments {
+            CommentKind::Hash if c == '#' => {
+                push_span(&mut out, i, n, TokenKind::Comment);
+                break;
+            }
+            CommentKind::CFamily if c == '/' && i + 1 < n && chars[i + 1] == '/' => {
+                push_span(&mut out, i, n, TokenKind::Comment);
+                break;
+            }
+            CommentKind::CFamily if c == '/' && i + 1 < n && chars[i + 1] == '*' => {
+                let start = i;
+                i += 2;
+                while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                if i + 1 < n {
+                    i += 2;
+                } else {
+                    i = n;
+                }
+                push_span(&mut out, start, i, TokenKind::Comment);
+                continue;
+            }
+            _ => {}
+        }
+        if matches!(strings, StringStyle::Json)
+            && c == '-'
+            && i + 1 < n
+            && chars[i + 1].is_ascii_digit()
+        {
+            i = scan_number(&chars, i, json_numbers, &mut out);
+            continue;
+        }
+        if c == '"' || (c == '\'' && !matches!(strings, StringStyle::Json)) {
+            i = scan_string(&chars, i, strings, &mut out);
+            continue;
+        }
+        if c.is_ascii_digit() {
+            i = scan_number(&chars, i, json_numbers, &mut out);
+            continue;
+        }
+        if makefile_dot_idents && c == '.' && i + 1 < n && is_ident_start(chars[i + 1]) {
+            let start = i;
+            i += 1;
+            while i < n && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let kind = if word.eq_ignore_ascii_case(".PHONY")
+                || word.eq_ignore_ascii_case(".SUFFIXES")
+                || word.eq_ignore_ascii_case(".DEFAULT")
+                || word.eq_ignore_ascii_case(".PRECIOUS")
+                || word.eq_ignore_ascii_case(".IGNORE")
+                || word.eq_ignore_ascii_case(".SILENT")
+                || word.eq_ignore_ascii_case(".NOTPARALLEL")
+            {
+                TokenKind::Keyword
+            } else {
+                TokenKind::Identifier
+            };
+            push_span(&mut out, start, i, kind);
+            continue;
+        }
+        if is_ident_start(c) {
+            let start = i;
+            i += 1;
+            while i < n && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let kind = if keywords.iter().any(|&k| k == word) {
+                TokenKind::Keyword
+            } else {
+                TokenKind::Identifier
+            };
+            push_span(&mut out, start, i, kind);
+            continue;
+        }
+        if is_whitespace(c) {
+            let start = i;
+            i += 1;
+            while i < n && is_whitespace(chars[i]) {
+                i += 1;
+            }
+            push_span(&mut out, start, i, TokenKind::Whitespace);
+            continue;
+        }
+        push_span(&mut out, i, i + 1, TokenKind::Operator);
+        i += 1;
+    }
+    out
+}
+
+fn scan_string(chars: &[char], start: usize, style: StringStyle, out: &mut Vec<SpanUnit>) -> usize {
+    let n = chars.len();
+    let quote = chars[start];
+    let mut i = start + 1;
+    if matches!(style, StringStyle::Python)
+        && start + 2 < n
+        && chars[start + 1] == quote
+        && chars[start + 2] == quote
+    {
+        i = start + 3;
+        while i + 2 < n {
+            if chars[i] == quote && chars[i + 1] == quote && chars[i + 2] == quote {
+                i += 3;
+                break;
+            }
+            if chars[i] == '\\' && i + 1 < n {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        if i <= start + 3 {
+            i = n;
+        }
+        push_span(out, start, i, TokenKind::String);
+        return i;
+    }
+    while i < n {
+        if chars[i] == '\\' && i + 1 < n {
+            if matches!(style, StringStyle::Shell) && quote == '\'' {
+                break;
+            }
+            i += 2;
+            continue;
+        }
+        if chars[i] == quote {
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+    push_span(out, start, i, TokenKind::String);
+    i
+}
+
+fn scan_number(chars: &[char], start: usize, json_numbers: bool, out: &mut Vec<SpanUnit>) -> usize {
+    let n = chars.len();
+    let mut i = start;
+    if chars[i] == '-' {
+        i += 1;
+    }
+    if i < n
+        && chars[i] == '0'
+        && i + 1 < n
+        && (chars[i + 1] == 'x' || chars[i + 1] == 'X')
+        && !json_numbers
+    {
+        i += 2;
+        while i < n && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
+            i += 1;
+        }
+        push_span(out, start, i, TokenKind::Number);
+        return i;
+    }
+    while i < n && (chars[i].is_ascii_digit() || (!json_numbers && chars[i] == '_')) {
+        i += 1;
+    }
+    if i < n && chars[i] == '.' && i + 1 < n && chars[i + 1].is_ascii_digit() {
+        i += 1;
+        while i < n && (chars[i].is_ascii_digit() || (!json_numbers && chars[i] == '_')) {
+            i += 1;
+        }
+    }
+    if json_numbers && i < n && (chars[i] == 'e' || chars[i] == 'E') {
+        i += 1;
+        if i < n && (chars[i] == '+' || chars[i] == '-') {
+            i += 1;
+        }
+        while i < n && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    push_span(out, start, i, TokenKind::Number);
+    i
+}
+
+fn tokenize_rust(text: &str) -> Vec<SpanUnit> {
+    let mut out: Vec<SpanUnit> = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let kws = rust_keywords();
+    let mut i = 0usize;
     while i < n {
         let c = chars[i];
-        // Line comment //
         if c == '/' && i + 1 < n && chars[i + 1] == '/' {
-            out.push(SpanUnit {
-                start: i,
-                end: n,
-                kind: TokenKind::Comment,
-            });
+            push_span(&mut out, i, n, TokenKind::Comment);
             break;
         }
-        // Block comment start /* ... (single line only)
         if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            // From i to end as comment (no multiline handling)
-            out.push(SpanUnit {
-                start: i,
-                end: n,
-                kind: TokenKind::Comment,
-            });
-            break;
-        }
-        // String literal "..." or '...'
-        if c == '"' || c == '\'' {
             let start = i;
-            i += 1;
-            while i < n {
-                if chars[i] == '\\' && i + 1 < n {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == c {
-                    i += 1;
-                    break;
-                }
+            i += 2;
+            while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
                 i += 1;
             }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::String,
-            });
-            continue;
-        }
-        // Number
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            // 0x... hex or 0b... bin or 0o... oct or digits/underscores
-            if start + 1 < n
-                && chars[start] == '0'
-                && (chars[start + 1] == 'x' || chars[start + 1] == 'X')
-            {
-                i = start + 2;
-                while i < n && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
-                    i += 1;
-                }
+            if i + 1 < n {
+                i += 2;
             } else {
-                while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                    i += 1;
-                }
-                if i < n && chars[i] == '.' {
-                    i += 1;
-                    while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                        i += 1;
-                    }
-                }
+                i = n;
             }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Number,
-            });
+            push_span(&mut out, start, i, TokenKind::Comment);
             continue;
         }
-        // Identifier / keyword
+        if c == '"' {
+            i = scan_string(&chars, i, StringStyle::CLike, &mut out);
+            continue;
+        }
+        if c == '\'' {
+            i = scan_rust_tick(&chars, i, &mut out);
+            continue;
+        }
+        if c.is_ascii_digit() {
+            i = scan_number(&chars, i, false, &mut out);
+            continue;
+        }
         if is_ident_start(c) {
             let start = i;
             i += 1;
@@ -336,413 +661,161 @@ fn tokenize_rust_like(text: &str, _is_rust: bool) -> Vec<SpanUnit> {
             } else {
                 TokenKind::Identifier
             };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
+            push_span(&mut out, start, i, kind);
             continue;
         }
-        // Whitespace
         if is_whitespace(c) {
             let start = i;
             i += 1;
             while i < n && is_whitespace(chars[i]) {
                 i += 1;
             }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Whitespace,
-            });
+            push_span(&mut out, start, i, TokenKind::Whitespace);
             continue;
         }
-        // Operators/punct
-        out.push(SpanUnit {
-            start: i,
-            end: i + 1,
-            kind: TokenKind::Operator,
-        });
+        push_span(&mut out, i, i + 1, TokenKind::Operator);
         i += 1;
     }
-    if out.is_empty() {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Normal,
-        });
-    }
     out
+}
+
+/// `'x'` char literal vs `'lifetime` (neither is copied from GNU mc).
+fn scan_rust_tick(chars: &[char], start: usize, out: &mut Vec<SpanUnit>) -> usize {
+    let n = chars.len();
+    let mut i = start + 1;
+    if i < n && chars[i] == '\\' {
+        return scan_string(chars, start, StringStyle::CLike, out);
+    }
+    if i < n && is_ident_start(chars[i]) {
+        i += 1;
+        while i < n && is_ident_char(chars[i]) {
+            i += 1;
+        }
+        if i < n && chars[i] == '\'' {
+            i += 1;
+            push_span(out, start, i, TokenKind::String);
+            return i;
+        }
+        push_span(out, start, i, TokenKind::Identifier);
+        return i;
+    }
+    scan_string(chars, start, StringStyle::CLike, out)
 }
 
 fn tokenize_c_like(text: &str) -> Vec<SpanUnit> {
-    // C/C++: preprocessor if starts with '#'
     let trimmed = text.trim_start();
-    let leading_ws = text.len() - trimmed.len();
+    let leading_ws = text.chars().count() - trimmed.chars().count();
     if trimmed.starts_with('#') {
-        return vec![SpanUnit {
-            start: leading_ws,
-            end: text.chars().count(),
-            kind: TokenKind::Preproc,
-        }];
+        let mut out = Vec::new();
+        if leading_ws > 0 {
+            push_span(&mut out, 0, leading_ws, TokenKind::Whitespace);
+        }
+        push_span(
+            &mut out,
+            leading_ws,
+            text.chars().count(),
+            TokenKind::Preproc,
+        );
+        return out;
     }
-    // Otherwise use rust-like with C keywords
-    let mut out: Vec<SpanUnit> = Vec::new();
-    let mut i = 0usize;
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let kws = c_keywords();
-    while i < n {
-        let c = chars[i];
-        // Line comment //
-        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
-            out.push(SpanUnit {
-                start: i,
-                end: n,
-                kind: TokenKind::Comment,
-            });
-            break;
-        }
-        // Block comment start /* ... (single line only)
-        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            out.push(SpanUnit {
-                start: i,
-                end: n,
-                kind: TokenKind::Comment,
-            });
-            break;
-        }
-        // String
-        if c == '"' || c == '\'' {
-            let start = i;
-            i += 1;
-            while i < n {
-                if chars[i] == '\\' && i + 1 < n {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == c {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::String,
-            });
-            continue;
-        }
-        // Number
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            if start + 1 < n
-                && chars[start] == '0'
-                && (chars[start + 1] == 'x' || chars[start + 1] == 'X')
-            {
-                i = start + 2;
-                while i < n && (chars[i].is_ascii_hexdigit() || chars[i] == '_') {
-                    i += 1;
-                }
-            } else {
-                while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                    i += 1;
-                }
-                if i < n && chars[i] == '.' {
-                    i += 1;
-                    while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                        i += 1;
-                    }
-                }
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Number,
-            });
-            continue;
-        }
-        // Identifier / keyword
-        if is_ident_start(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let kind = if kws.iter().any(|&k| k == word) {
-                TokenKind::Keyword
-            } else {
-                TokenKind::Identifier
-            };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
-            continue;
-        }
-        // Whitespace
-        if is_whitespace(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_whitespace(chars[i]) {
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Whitespace,
-            });
-            continue;
-        }
-        out.push(SpanUnit {
-            start: i,
-            end: i + 1,
-            kind: TokenKind::Operator,
-        });
-        i += 1;
-    }
-    if out.is_empty() {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Normal,
-        });
-    }
-    out
+    tokenize_generic(
+        text,
+        c_keywords(),
+        CommentKind::CFamily,
+        StringStyle::CLike,
+        false,
+        false,
+    )
 }
 
-fn tokenize_python(text: &str) -> Vec<SpanUnit> {
-    let kws = python_keywords();
+fn tokenize_html(text: &str) -> Vec<SpanUnit> {
     let mut out: Vec<SpanUnit> = Vec::new();
-    let mut i = 0usize;
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
+    let mut i = 0usize;
     while i < n {
         let c = chars[i];
-        // Comment
-        if c == '#' {
-            out.push(SpanUnit {
-                start: i,
-                end: n,
-                kind: TokenKind::Comment,
-            });
-            break;
-        }
-        // Triple-quoted or single quotes
-        if c == '"' || c == '\'' {
+        if c == '<'
+            && i + 3 < n
+            && chars[i + 1] == '!'
+            && chars[i + 2] == '-'
+            && chars[i + 3] == '-'
+        {
             let start = i;
-            // Check for triple quotes
-            let triple = i + 2 < n && chars[i + 1] == c && chars[i + 2] == c;
-            if triple {
+            i += 4;
+            while i + 2 < n && !(chars[i] == '-' && chars[i + 1] == '-' && chars[i + 2] == '>') {
+                i += 1;
+            }
+            if i + 2 < n {
                 i += 3;
-                while i + 2 < n {
-                    if chars[i] == c && chars[i + 1] == c && chars[i + 2] == c {
-                        i += 3;
-                        break;
-                    }
-                    if chars[i] == '\\' && i + 1 < n {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
             } else {
-                i += 1;
-                while i < n {
-                    if chars[i] == '\\' && i + 1 < n {
-                        i += 2;
-                        continue;
-                    }
-                    if chars[i] == c {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
+                i = n;
             }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::String,
-            });
+            push_span(&mut out, start, i, TokenKind::Comment);
             continue;
         }
-        // Number
-        if c.is_ascii_digit() {
+        if c == '<' {
             let start = i;
             i += 1;
-            while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
+            if i < n && chars[i] == '/' {
                 i += 1;
             }
-            if i < n && chars[i] == '.' {
-                i += 1;
-                while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                    i += 1;
-                }
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Number,
-            });
-            continue;
-        }
-        // Identifier / keyword
-        if is_ident_start(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
+            let name_start = i;
+            while i < n && (is_ident_char(chars[i]) || chars[i] == '-' || chars[i] == ':') {
                 i += 1;
             }
-            let word: String = chars[start..i].iter().collect();
-            let kind = if kws.iter().any(|&k| k == word) {
-                TokenKind::Keyword
+            if i > name_start {
+                push_span(&mut out, start, name_start, TokenKind::Operator);
+                push_span(&mut out, name_start, i, TokenKind::Keyword);
             } else {
-                TokenKind::Identifier
-            };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
-            continue;
-        }
-        // Whitespace
-        if is_whitespace(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_whitespace(chars[i]) {
-                i += 1;
+                push_span(&mut out, start, i, TokenKind::Operator);
             }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Whitespace,
-            });
             continue;
         }
-        out.push(SpanUnit {
-            start: i,
-            end: i + 1,
-            kind: TokenKind::Operator,
-        });
-        i += 1;
-    }
-    if out.is_empty() {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Normal,
-        });
-    }
-    out
-}
-
-fn tokenize_shell(text: &str) -> Vec<SpanUnit> {
-    let kws = shell_keywords();
-    let mut out: Vec<SpanUnit> = Vec::new();
-    let mut i = 0usize;
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    while i < n {
-        let c = chars[i];
-        // Comment
-        if c == '#' {
-            out.push(SpanUnit {
-                start: i,
-                end: n,
-                kind: TokenKind::Comment,
-            });
-            break;
-        }
-        // Strings '...' or "..."
         if c == '"' || c == '\'' {
-            let start = i;
-            i += 1;
-            while i < n {
-                if chars[i] == '\\' && i + 1 < n && c == '"' {
-                    // Only escape inside double quotes for bash; good enough
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == c {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::String,
-            });
+            i = scan_string(&chars, i, StringStyle::CLike, &mut out);
             continue;
         }
-        // Number
-        if c.is_ascii_digit() {
-            let start = i;
+        if c == '>' || c == '/' || c == '=' {
+            push_span(&mut out, i, i + 1, TokenKind::Operator);
             i += 1;
-            while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Number,
-            });
             continue;
         }
-        // Identifier / keyword
-        if is_ident_start(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let kind = if kws.iter().any(|&k| k == word) {
-                TokenKind::Keyword
-            } else {
-                TokenKind::Identifier
-            };
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind,
-            });
-            continue;
-        }
-        // Whitespace
         if is_whitespace(c) {
             let start = i;
             i += 1;
             while i < n && is_whitespace(chars[i]) {
                 i += 1;
             }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Whitespace,
-            });
+            push_span(&mut out, start, i, TokenKind::Whitespace);
             continue;
         }
-        out.push(SpanUnit {
-            start: i,
-            end: i + 1,
-            kind: TokenKind::Operator,
-        });
+        if is_ident_start(c) {
+            let start = i;
+            i += 1;
+            while i < n && (is_ident_char(chars[i]) || chars[i] == '-' || chars[i] == ':') {
+                i += 1;
+            }
+            push_span(&mut out, start, i, TokenKind::Identifier);
+            continue;
+        }
+        let start = i;
         i += 1;
-    }
-    if out.is_empty() {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Normal,
-        });
+        while i < n {
+            let d = chars[i];
+            if d == '<'
+                || d == '>'
+                || d == '"'
+                || d == '\''
+                || d == '/'
+                || d == '='
+                || is_whitespace(d)
+            {
+                break;
+            }
+            i += 1;
+        }
+        push_span(&mut out, start, i, TokenKind::Normal);
     }
     out
 }
@@ -751,23 +824,15 @@ fn tokenize_ini(text: &str) -> Vec<SpanUnit> {
     let mut out: Vec<SpanUnit> = Vec::new();
     let trimmed = text.trim();
     if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
-        // Section heading
         let start = text.find('[').unwrap_or(0);
         let end = text
             .rfind(']')
             .map(|i| i + 1)
             .unwrap_or_else(|| text.chars().count());
-        out.push(SpanUnit {
-            start,
-            end,
-            kind: TokenKind::Heading,
-        });
+        push_span(&mut out, start, end, TokenKind::Heading);
         return out;
     }
-    // Comment: ';' or '#'
     if let Some(pos) = text.find([';', '#']) {
-        // Everything after marker is comment
-        // Left side may still be tokenized roughly as key=value
         let (left, _) = text.split_at(pos);
         let mut left_spans = tokenize_kv_like(left);
         let comment_len = text.chars().count() - pos;
@@ -782,109 +847,20 @@ fn tokenize_ini(text: &str) -> Vec<SpanUnit> {
 }
 
 fn tokenize_kv_like(text: &str) -> Vec<SpanUnit> {
-    let mut out: Vec<SpanUnit> = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut i = 0usize;
-    // key [whitespace] '=' [whitespace] value
-    // We'll color key as Identifier, '=' as Operator, value as String if quoted or Number if numeric
-    // Otherwise Normal.
-    // Scan left-to-right
-    while i < n {
-        let c = chars[i];
-        if is_whitespace(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_whitespace(chars[i]) {
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Whitespace,
-            });
-            continue;
-        }
-        if c == '=' {
-            out.push(SpanUnit {
-                start: i,
-                end: i + 1,
-                kind: TokenKind::Operator,
-            });
-            i += 1;
-            continue;
-        }
-        if c == '"' || c == '\'' {
-            let start = i;
-            i += 1;
-            while i < n {
-                if chars[i] == '\\' && i + 1 < n {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == c {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::String,
-            });
-            continue;
-        }
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            while i < n && (chars[i].is_ascii_digit() || chars[i] == '_') {
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Number,
-            });
-            continue;
-        }
-        // Identifier fragment until whitespace or '='
-        if is_ident_start(c) {
-            let start = i;
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            out.push(SpanUnit {
-                start,
-                end: i,
-                kind: TokenKind::Identifier,
-            });
-            continue;
-        }
-        // Fallback single char
-        out.push(SpanUnit {
-            start: i,
-            end: i + 1,
-            kind: TokenKind::Normal,
-        });
-        i += 1;
-    }
-    if out.is_empty() {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Normal,
-        });
-    }
-    out
+    tokenize_generic(
+        text,
+        &[],
+        CommentKind::None,
+        StringStyle::CLike,
+        false,
+        false,
+    )
 }
 
 fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
     let mut out: Vec<SpanUnit> = Vec::new();
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
-    // Heading if starts with 1+ '#'+space
     let mut i = 0usize;
     while i < n && chars[i] == ' ' {
         i += 1;
@@ -895,24 +871,14 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
             j += 1;
         }
         if j < n && chars[j].is_ascii_whitespace() {
-            out.push(SpanUnit {
-                start: 0,
-                end: n,
-                kind: TokenKind::Heading,
-            });
+            push_span(&mut out, 0, n, TokenKind::Heading);
             return out;
         }
     }
-    // Code fence line ```
     if text.trim_start().starts_with("```") {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Code,
-        });
+        push_span(&mut out, 0, n, TokenKind::Code);
         return out;
     }
-    // Otherwise, scan for inline code `...`, links [text](url), emphasis *...* or _..._
     let mut pos = 0usize;
     while pos < n {
         let c = chars[pos];
@@ -925,11 +891,7 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
             if pos < n && chars[pos] == '`' {
                 pos += 1;
             }
-            out.push(SpanUnit {
-                start,
-                end: pos,
-                kind: TokenKind::Code,
-            });
+            push_span(&mut out, start, pos, TokenKind::Code);
             continue;
         }
         if c == '[' {
@@ -940,7 +902,6 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
             }
             if pos < n && chars[pos] == ']' {
                 pos += 1;
-                // Optional url (...)
                 if pos < n && chars[pos] == '(' {
                     while pos < n && chars[pos] != ')' {
                         pos += 1;
@@ -950,11 +911,7 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
                     }
                 }
             }
-            out.push(SpanUnit {
-                start,
-                end: pos,
-                kind: TokenKind::Link,
-            });
+            push_span(&mut out, start, pos, TokenKind::Link);
             continue;
         }
         if c == '*' || c == '_' {
@@ -966,19 +923,10 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
             }
             if pos < n && chars[pos] == mark {
                 pos += 1;
-                out.push(SpanUnit {
-                    start,
-                    end: pos,
-                    kind: TokenKind::Emphasis,
-                });
+                push_span(&mut out, start, pos, TokenKind::Emphasis);
                 continue;
             }
-            // Not closed: treat as normal char
-            out.push(SpanUnit {
-                start,
-                end: start + 1,
-                kind: TokenKind::Normal,
-            });
+            push_span(&mut out, start, start + 1, TokenKind::Normal);
             pos = start + 1;
             continue;
         }
@@ -988,56 +936,42 @@ fn tokenize_markdown(text: &str) -> Vec<SpanUnit> {
             while pos < n && is_whitespace(chars[pos]) {
                 pos += 1;
             }
-            out.push(SpanUnit {
-                start,
-                end: pos,
-                kind: TokenKind::Whitespace,
-            });
+            push_span(&mut out, start, pos, TokenKind::Whitespace);
             continue;
         }
-        // Accumulate run of non-specials as Normal until next special
         let start = pos;
         pos += 1;
         while pos < n {
             let d = chars[pos];
-            if d == '`'
-                || d == '['
-                || d == ']'
-                || d == '('
-                || d == ')'
-                || d == '*'
-                || d == '_'
-                || is_whitespace(d)
-            {
+            if d == '`' || d == '[' || d == ']' || d == '*' || d == '_' || is_whitespace(d) {
                 break;
             }
             pos += 1;
         }
-        out.push(SpanUnit {
-            start,
-            end: pos,
-            kind: TokenKind::Normal,
-        });
-    }
-    if out.is_empty() {
-        out.push(SpanUnit {
-            start: 0,
-            end: n,
-            kind: TokenKind::Normal,
-        });
+        push_span(&mut out, start, pos, TokenKind::Normal);
     }
     out
 }
-
-// ---------- Tests ----------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn spans_kinds(text: &str, lang: Language) -> Vec<TokenKind> {
-        let su = tokenize_visible_line(text, lang);
-        su.into_iter().map(|s| s.kind).collect()
+        tokenize_visible_line(text, lang)
+            .into_iter()
+            .map(|s| s.kind)
+            .collect()
+    }
+
+    fn kinds_for_text(text: &str, lang: Language) -> Vec<(String, TokenKind)> {
+        tokenize_visible_line(text, lang)
+            .into_iter()
+            .map(|s| {
+                let chars: Vec<char> = text.chars().collect();
+                (chars[s.start..s.end].iter().collect(), s.kind)
+            })
+            .collect()
     }
 
     #[test]
@@ -1046,16 +980,30 @@ mod tests {
         assert!(kinds.contains(&TokenKind::Keyword));
         assert!(kinds.contains(&TokenKind::Number));
         assert!(kinds.contains(&TokenKind::Comment));
+        let parts = kinds_for_text("fn let name", Language::Rust);
+        assert_eq!(
+            parts
+                .iter()
+                .filter(|(t, _)| t == "fn" || t == "let" || t == "name")
+                .map(|(t, k)| (t.as_str(), *k))
+                .collect::<Vec<_>>(),
+            vec![
+                ("fn", TokenKind::Keyword),
+                ("let", TokenKind::Keyword),
+                ("name", TokenKind::Identifier),
+            ]
+        );
     }
 
     #[test]
     fn c_line_preproc_and_keywords() {
         let pre = spans_kinds("#include <stdio.h>", Language::C);
-        assert_eq!(pre.len(), 1);
-        assert_eq!(pre[0], TokenKind::Preproc);
+        assert!(pre.contains(&TokenKind::Preproc));
         let kinds = spans_kinds("int main(){ return 0; }", Language::C);
         assert!(kinds.contains(&TokenKind::Keyword));
         assert!(kinds.contains(&TokenKind::Number));
+        let cpp = spans_kinds("class Foo { public: void bar(); };", Language::C);
+        assert!(cpp.contains(&TokenKind::Keyword));
     }
 
     #[test]
@@ -1074,10 +1022,37 @@ mod tests {
     }
 
     #[test]
+    fn makefile_keywords_and_comment() {
+        let kinds = spans_kinds("ifeq ($(X),1) include foo.mk # c", Language::Makefile);
+        assert!(kinds.contains(&TokenKind::Keyword));
+        assert!(kinds.contains(&TokenKind::Comment));
+        let phony = kinds_for_text(".PHONY: all", Language::Makefile);
+        assert!(phony
+            .iter()
+            .any(|(t, k)| t == ".PHONY" && *k == TokenKind::Keyword));
+    }
+
+    #[test]
+    fn json_keywords_strings_numbers() {
+        let kinds = spans_kinds(r#"{"ok": true, "n": -2.5e1}"#, Language::Json);
+        assert!(kinds.contains(&TokenKind::Keyword));
+        assert!(kinds.contains(&TokenKind::String));
+        assert!(kinds.contains(&TokenKind::Number));
+        assert!(!kinds.contains(&TokenKind::Comment));
+    }
+
+    #[test]
+    fn html_tags_comments_strings() {
+        let kinds = spans_kinds(r#"<div class="x"><!-- c -->text</div>"#, Language::Html);
+        assert!(kinds.contains(&TokenKind::Keyword));
+        assert!(kinds.contains(&TokenKind::String));
+        assert!(kinds.contains(&TokenKind::Comment));
+    }
+
+    #[test]
     fn ini_section_and_kv() {
         let sec = spans_kinds("[section-name]", Language::Ini);
-        assert_eq!(sec.len(), 1);
-        assert_eq!(sec[0], TokenKind::Heading);
+        assert!(sec.contains(&TokenKind::Heading));
         let kv = spans_kinds("port = 8080 ; listen port", Language::Ini);
         assert!(kv.contains(&TokenKind::Identifier));
         assert!(kv.contains(&TokenKind::Number));
@@ -1095,5 +1070,69 @@ mod tests {
         assert!(link.contains(&TokenKind::Link));
         let emp = spans_kinds("*hi*", Language::Markdown);
         assert!(emp.contains(&TokenKind::Emphasis));
+    }
+
+    #[test]
+    fn plaintext_has_no_keywords() {
+        let kinds = spans_kinds("fn let name", Language::PlainText);
+        assert!(!kinds.contains(&TokenKind::Keyword));
+        assert!(kinds.iter().all(|k| *k == TokenKind::Normal));
+    }
+
+    #[test]
+    fn guess_from_extension_and_makefile_name() {
+        assert_eq!(
+            guess_language(Some(Path::new("src/main.rs"))),
+            Language::Rust
+        );
+        assert_eq!(guess_language(Some(Path::new("a.c"))), Language::C);
+        assert_eq!(guess_language(Some(Path::new("a.cpp"))), Language::C);
+        assert_eq!(guess_language(Some(Path::new("a.py"))), Language::Python);
+        assert_eq!(guess_language(Some(Path::new("run.sh"))), Language::Shell);
+        assert_eq!(
+            guess_language(Some(Path::new("Makefile"))),
+            Language::Makefile
+        );
+        assert_eq!(
+            guess_language(Some(Path::new("foo.mk"))),
+            Language::Makefile
+        );
+        assert_eq!(guess_language(Some(Path::new("a.json"))), Language::Json);
+        assert_eq!(guess_language(Some(Path::new("a.html"))), Language::Html);
+        assert_eq!(
+            guess_language(Some(Path::new("README.md"))),
+            Language::Markdown
+        );
+        assert_eq!(
+            guess_language(Some(Path::new("notes.txt"))),
+            Language::PlainText
+        );
+    }
+
+    #[test]
+    fn shebang_fallback_when_no_extension() {
+        assert_eq!(
+            guess_language_for_buffer(Some(Path::new("tool")), Some(b"#!/usr/bin/env python3")),
+            Language::Python
+        );
+        assert_eq!(
+            guess_language_for_buffer(Some(Path::new("tool")), Some(b"#!/bin/sh")),
+            Language::Shell
+        );
+        assert_eq!(
+            guess_language_for_buffer(Some(Path::new("main.rs")), Some(b"#!/bin/sh")),
+            Language::Rust
+        );
+        assert_eq!(
+            guess_language_for_buffer(Some(Path::new("notes.txt")), Some(b"#!/bin/sh")),
+            Language::PlainText
+        );
+    }
+
+    #[test]
+    fn tokenize_for_render_clips_visible_window() {
+        let spans = tokenize_for_render(b"fn abcdef", Language::Rust, 3, 3);
+        let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(joined, "abc");
     }
 }
