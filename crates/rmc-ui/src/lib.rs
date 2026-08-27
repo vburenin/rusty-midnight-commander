@@ -5,6 +5,7 @@ pub mod help;
 pub mod hotlist;
 mod mc_colors;
 mod mc_ext;
+mod panel_preview;
 pub mod panelize;
 mod render;
 mod skin;

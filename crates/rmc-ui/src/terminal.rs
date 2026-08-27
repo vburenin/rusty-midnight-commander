@@ -4318,7 +4318,8 @@ impl TerminalApp {
                     _ => {}
                 }
                 if apply {
-                    // Apply to the selected side's panel
+                    // Apply listing format to the selected side. GNU: this
+                    // restores Listing panel mode if that side was Quick view / Info.
                     let p = if matches!(*side, rmc_core::actions::PaneSide::Left) {
                         &mut app.left
                     } else {
@@ -4326,6 +4327,7 @@ impl TerminalApp {
                     };
                     p.listing = *listing;
                     p.user_format = user_format.clone();
+                    p.mode = rmc_core::panel::PanelMode::Listing;
                     app.ui_mode = UiMode::Normal;
                 }
                 return Ok(());
@@ -7226,23 +7228,13 @@ impl TerminalApp {
                             return Ok(());
                         }
                         'q' => {
-                            // Toggle Quick view on the inactive panel
-                            let p = app.inactive_panel_mut();
-                            p.mode = if matches!(p.mode, rmc_core::panel::PanelMode::QuickView) {
-                                rmc_core::panel::PanelMode::Listing
-                            } else {
-                                rmc_core::panel::PanelMode::QuickView
-                            };
+                            // C-x q: set the other panel to Quick view (toggle if already).
+                            set_other_panel_mode(app, rmc_core::panel::PanelMode::QuickView);
                             return Ok(());
                         }
                         'i' => {
-                            // Toggle Info on the inactive panel
-                            let p = app.inactive_panel_mut();
-                            p.mode = if matches!(p.mode, rmc_core::panel::PanelMode::Info) {
-                                rmc_core::panel::PanelMode::Listing
-                            } else {
-                                rmc_core::panel::PanelMode::Info
-                            };
+                            // C-x i: set the other panel to Info (toggle if already).
+                            set_other_panel_mode(app, rmc_core::panel::PanelMode::Info);
                             return Ok(());
                         }
                         'c' => {
@@ -7527,6 +7519,13 @@ impl TerminalApp {
             }
         }
         if let Some(action) = app.keymap.resolve(&key) {
+            // Quick view / Info: viewer-ish movement when that panel is active.
+            // Uses `page_rows` from handle_key (no TTY size). Tab still leaves.
+            if matches!(app.ui_mode, UiMode::Normal)
+                && handle_preview_panel_action(app, &action, page_rows)
+            {
+                return Ok(());
+            }
             // Intercept navigation and Enter for Tree mode on the ACTIVE panel.
             if matches!(app.ui_mode, UiMode::Normal) {
                 let is_tree_active = {
@@ -8443,6 +8442,76 @@ fn open_directory_tree(app: &mut App) {
         &mut known,
     );
     app.ui_mode = UiMode::DirectoryTree(DirectoryTreeState::new(known, &start));
+}
+
+/// GNU mc(1) C-x q / C-x i: set the **other** panel to Quick view / Info.
+/// Repeating the same chord restores Listing.
+fn set_other_panel_mode(app: &mut App, mode: rmc_core::panel::PanelMode) {
+    let p = app.inactive_panel_mut();
+    p.mode = if p.mode == mode {
+        rmc_core::panel::PanelMode::Listing
+    } else {
+        mode
+    };
+    p.preview_offset = 0;
+    p.preview_path = None;
+}
+
+/// When Quick view or Info is the **active** panel: consume listing movement so
+/// the leftover file list is not scrolled, and give Quick view viewer-ish keys.
+/// Uses `page_rows` from `handle_key` (never `terminal::size()`). Tab still leaves.
+fn handle_preview_panel_action(app: &mut App, action: &Action, page_rows: usize) -> bool {
+    let mode = app.active_panel().mode;
+    if !matches!(
+        mode,
+        rmc_core::panel::PanelMode::QuickView | rmc_core::panel::PanelMode::Info
+    ) {
+        return false;
+    }
+    let nav = matches!(
+        action,
+        Action::MoveUp
+            | Action::MoveDown
+            | Action::PageUp
+            | Action::PageDown
+            | Action::Home
+            | Action::End
+            | Action::Enter
+    );
+    if !nav {
+        return false;
+    }
+    if matches!(mode, rmc_core::panel::PanelMode::Info) || matches!(action, Action::Enter) {
+        return true;
+    }
+    let src = app.inactive_panel().current_entry().cloned();
+    let Some(ent) = src else {
+        return true;
+    };
+    if ent.is_dir {
+        return true;
+    }
+    let rows = page_rows.max(1) as u16;
+    const COLS: u16 = 80;
+    let p = app.active_panel_mut();
+    if p.preview_path.as_ref() != Some(&ent.path) {
+        p.preview_path = Some(ent.path.clone());
+        p.preview_offset = 0;
+    }
+    let off = p.preview_offset;
+    let next = match action {
+        Action::MoveDown => rmc_view::nav_line_down(&ent.path, off).unwrap_or(off),
+        Action::MoveUp => rmc_view::nav_line_up(&ent.path, off).unwrap_or(off),
+        Action::PageDown => {
+            rmc_view::nav_page_down(&ent.path, off, COLS, rows, true).unwrap_or(off)
+        }
+        Action::PageUp => rmc_view::nav_page_up(&ent.path, off, COLS, rows, true).unwrap_or(off),
+        Action::Home => rmc_view::nav_home(),
+        Action::End => rmc_view::nav_end(&ent.path, COLS, rows, true).unwrap_or(off),
+        _ => off,
+    };
+    p.preview_offset = next;
+    true
 }
 
 /// Keys from mc(1) Directory Tree. Uses `page_rows` from `handle_key` so tests/CI
@@ -18786,6 +18855,376 @@ mod sort_dialog_tests {
 
         open_left_right_item(&mut app, false, "Filter");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.left.listing, ListingFormat::Full);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Long);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::User);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.listing, ListingFormat::Full);
+
+        open_left_right_item(&mut app, false, "Listing mode...");
+        assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        app.layout.panel_ratio = 0.8;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_quickview_info_tests {
+    use super::*;
+    use crate::panel_preview::{
+        info_lines_for_panel, preview_source_entry, quick_view_directory_line,
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ListingModeFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{format_byte_size, ListingFormat, PanelMode};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-qvinfo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_view = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
+        panel.entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("aaa.txt"), b"0123456789").unwrap();
+        std::fs::write(left.join("zzz.bin"), b"xxxxxxxxxxxxxxxxxxxx").unwrap();
+        std::fs::create_dir(left.join("adir")).unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        (left, right)
+    }
+
+    fn seed_app(root: &std::path::Path) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let (left_dir, right_dir) = two_panel_dirs(root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        (app, left_dir, right_dir)
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn ctrl_x_then(app: &mut App, c: char) {
+        press_ctrl(app, 'x');
+        press(app, KeyCode::Char(c));
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn tab_listing_ok(app: &mut App) {
+        for _ in 0..8 {
+            if matches!(
+                app.ui_mode,
+                UiMode::ListingModeDialog {
+                    focus: ListingModeFocus::Ok,
+                    ..
+                }
+            ) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach Listing mode OK");
+    }
+
+    #[test]
+    fn ctrl_x_q_sets_other_panel_to_quick_view() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let left_listing = names(&app.left);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.right.mode, PanelMode::Listing);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(names(&app.left), left_listing);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_i_sets_other_panel_to_info() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        ctrl_x_then(&mut app, 'i');
+        assert_eq!(app.right.mode, PanelMode::Info);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_q_toggles_quick_view_back_to_listing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::Listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_cursor_updates_quick_view_and_info_target() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        select_named(&mut app, "aaa.txt");
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        let src = preview_source_entry(&app, false).expect("qv source");
+        assert_eq!(src.name, "aaa.txt");
+        assert_eq!(src.size, 10);
+        assert!(quick_view_directory_line(src).is_none());
+
+        select_named(&mut app, "zzz.bin");
+        let src = preview_source_entry(&app, false).expect("qv source after move");
+        assert_eq!(src.name, "zzz.bin");
+        assert_eq!(src.size, 20);
+
+        ctrl_x_then(&mut app, 'i');
+        assert_eq!(app.right.mode, PanelMode::Info);
+        let src = preview_source_entry(&app, false).expect("info source");
+        assert_eq!(src.name, "zzz.bin");
+        let lines = info_lines_for_panel(&app, false);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("Name: zzz.bin"),
+            "info name path, got {lines:?}"
+        );
+        let size_s = format_byte_size(20, app.panel_opts.kilobyte_si);
+        assert!(
+            joined.contains(&format!("Size: {size_s}")),
+            "info size text path, got {lines:?}"
+        );
+        assert!(joined.contains("Links:"), "nlink: {lines:?}");
+        assert!(
+            src.inode == 0 || joined.contains(&format!("Inode: {}", src.inode)),
+            "inode if present: {lines:?}"
+        );
+
+        select_named(&mut app, "adir");
+        let src = preview_source_entry(&app, false).expect("dir source");
+        assert_eq!(src.name, "adir");
+        assert_eq!(
+            quick_view_directory_line(src).as_deref(),
+            Some("Directory: adir")
+        );
+        let lines = info_lines_for_panel(&app, false);
+        assert!(
+            lines.iter().any(|l| l == "Name: adir"),
+            "info follows dir cursor: {lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f3_still_opens_viewer_with_quick_view_other_panel() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        select_named(&mut app, "aaa.txt");
+        ctrl_x_then(&mut app, 'q');
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            matches!(app.ui_mode, UiMode::Viewer { .. }),
+            "F3 must still open the full viewer"
+        );
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_leaves_quick_view_without_restoring_listing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_ok_restores_quick_view_panel_to_listing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        open_left_right_item(&mut app, true, "Listing mode...");
+        assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
+        tab_listing_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.right.mode, PanelMode::Listing);
+        assert_eq!(app.right.listing, ListingFormat::Full);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quick_view_scroll_uses_page_rows_not_listing_cursor() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        let long = "line\n".repeat(80);
+        std::fs::write(app.left.cwd.join("aaa.txt"), long.as_bytes()).unwrap();
+        app.reload_panels().unwrap();
+        select_named(&mut app, "aaa.txt");
+        let listing_cursor = app.left.cursor;
+        ctrl_x_then(&mut app, 'q');
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        press(&mut app, KeyCode::PageDown);
+        assert!(
+            app.right.preview_offset > 0,
+            "Quick view PageDown should advance preview offset, got {}",
+            app.right.preview_offset
+        );
+        assert_eq!(app.left.cursor, listing_cursor);
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_sort_listing_equal_swap_help_quick_cd_still_work_with_quick_view() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+
+        open_command_item(&mut app, "Swap panels");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+
+        open_left_right_item(&mut app, false, "Filter");
+        assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        assert!(matches!(app.ui_mode, UiMode::SortDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
         assert_eq!(app.left.listing, ListingFormat::Full);

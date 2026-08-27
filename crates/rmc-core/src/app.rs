@@ -3,7 +3,7 @@ use crate::config::KeyMap;
 use crate::dirtree::DirectoryTreeState;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
-use crate::panel::{FileEntry, PanelState, SortBy};
+use crate::panel::{FileEntry, PanelMode, PanelState, SortBy};
 use crate::panelize::ExternalPanelizeDialogState;
 use crate::sorting::SortDir;
 use crate::subshell::Subshell;
@@ -1261,6 +1261,19 @@ impl App {
             PaneSide::Right => &self.left,
         }
     }
+
+    /// GNU Quick view / Info follow the listing panel cursor. Reset the other
+    /// panel's reduced-viewer offset when the selected path changes.
+    fn sync_other_preview_target(&mut self) {
+        let src_path = self.active_panel().current_entry().map(|e| e.path.clone());
+        let other = self.inactive_panel_mut();
+        if matches!(other.mode, PanelMode::QuickView | PanelMode::Info)
+            && other.preview_path != src_path
+        {
+            other.preview_path = src_path;
+            other.preview_offset = 0;
+        }
+    }
     pub fn active_panel(&self) -> &PanelState {
         match self.active {
             PaneSide::Left => &self.left,
@@ -1415,6 +1428,9 @@ impl App {
             CycleListingFormat => {
                 let p = self.active_panel_mut();
                 p.listing = p.listing.cycle();
+                // GNU: applying a listing format restores Listing panel mode
+                // (Quick view / Info → listing). Alt-t is the same path.
+                p.mode = PanelMode::Listing;
             }
             ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -1488,18 +1504,32 @@ impl App {
                     prev: Box::new(prev),
                 };
             }
-            MoveUp => self.active_panel_mut().move_up(),
-            MoveDown => self.active_panel_mut().move_down(),
+            MoveUp => {
+                self.active_panel_mut().move_up();
+                self.sync_other_preview_target();
+            }
+            MoveDown => {
+                self.active_panel_mut().move_down();
+                self.sync_other_preview_target();
+            }
             PageUp => {
                 let page = 10;
                 self.active_panel_mut().page_up(page);
+                self.sync_other_preview_target();
             }
             PageDown => {
                 let page = 10;
                 self.active_panel_mut().page_down(page);
+                self.sync_other_preview_target();
             }
-            Home => self.active_panel_mut().home(),
-            End => self.active_panel_mut().end(),
+            Home => {
+                self.active_panel_mut().home();
+                self.sync_other_preview_target();
+            }
+            End => {
+                self.active_panel_mut().end();
+                self.sync_other_preview_target();
+            }
             Enter => {
                 let panelized = self.active_panel().is_panelized();
                 let ent_opt = self.active_panel().current_entry().cloned();
@@ -1597,6 +1627,7 @@ impl App {
         if cwd_changed && auto_menus {
             self.try_auto_open_local_user_menu(&new_cwd);
         }
+        self.sync_other_preview_target();
         Ok(())
     }
 
@@ -1756,9 +1787,11 @@ impl App {
     }
     pub fn page_up_by(&mut self, rows: usize) {
         self.active_panel_mut().page_up(rows);
+        self.sync_other_preview_target();
     }
     pub fn page_down_by(&mut self, rows: usize) {
         self.active_panel_mut().page_down(rows);
+        self.sync_other_preview_target();
     }
 
     /// Push an internal module (editor / viewer / diff) as a new screen.
@@ -2404,5 +2437,19 @@ mod tests {
         assert_eq!(app.left.listing, ListingFormat::User);
         app.handle_action(Action::CycleListingFormat).unwrap();
         assert_eq!(app.left.listing, ListingFormat::Full);
+    }
+
+    #[test]
+    fn cycle_listing_format_restores_listing_panel_mode() {
+        use crate::panel::{ListingFormat, PanelMode};
+        let (mut app, _tmp, _, _) = app_with_distinct_panes();
+        app.left.mode = PanelMode::QuickView;
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        app.left.mode = PanelMode::Info;
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.left.listing, ListingFormat::Long);
     }
 }
