@@ -133,7 +133,7 @@ Per mcview(1) and mc(1) “Internal File Viewer”:
 
 From mcedit(1):
 - [ ] Basics: open multiple files (up to size limits), binary-safe
-- [ ] Editing: block copy/move/delete/cut/paste; undo; insert/overwrite; autoindent; tab width
+- [x] Editing: block copy/move/delete/cut/paste; undo; insert/overwrite; autoindent; tab width
 - [x] Syntax highlighting for common types
 - [ ] Macros; external filters (pipe regions to commands)
 - [ ] Search/replace with regex

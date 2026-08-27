@@ -146,16 +146,42 @@ fn language_from_shebang(first_line: Option<&[u8]>) -> Option<Language> {
     None
 }
 
-fn bytes_to_visible_string(bytes: &[u8]) -> String {
+/// Expand a source line for display: printable ASCII as-is, tabs to the next
+/// tab stop (`tab_width` columns, GNU mcedit `editor_tab_spacing`), else `.`.
+pub fn visible_line(bytes: &[u8], tab_width: usize) -> String {
+    let tab_width = tab_width.max(1);
     let mut s = String::with_capacity(bytes.len());
+    let mut col = 0usize;
     for &b in bytes {
-        if (0x20..=0x7E).contains(&b) || b == b'\t' {
-            s.push(if b == b'\t' { ' ' } else { b as char });
+        if b == b'\t' {
+            let next = ((col / tab_width) + 1) * tab_width;
+            for _ in col..next {
+                s.push(' ');
+            }
+            col = next;
+        } else if (0x20..=0x7E).contains(&b) {
+            s.push(b as char);
+            col += 1;
         } else {
             s.push('.');
+            col += 1;
         }
     }
     s
+}
+
+/// Visual column of a byte offset on a line (same rules as [`visible_line`]).
+pub fn byte_col_to_visual(bytes: &[u8], byte_col: usize, tab_width: usize) -> usize {
+    let tab_width = tab_width.max(1);
+    let mut col = 0usize;
+    for &b in bytes.iter().take(byte_col) {
+        if b == b'\t' {
+            col = ((col / tab_width) + 1) * tab_width;
+        } else {
+            col += 1;
+        }
+    }
+    col
 }
 
 fn tokenize_visible_line(text: &str, lang: Language) -> Vec<SpanUnit> {
@@ -242,13 +268,15 @@ fn clip_to_window(
 }
 
 /// Tokenize one source line for the visible editor window (`start_col` / `max_cols`).
+/// `start_col` is a visual column after tab expansion (`tab_width`).
 pub fn tokenize_for_render(
     line_bytes: &[u8],
     lang: Language,
     start_col: usize,
     max_cols: usize,
+    tab_width: usize,
 ) -> Vec<Span> {
-    let full = bytes_to_visible_string(line_bytes);
+    let full = visible_line(line_bytes, tab_width);
     let spans = tokenize_visible_line(&full, lang);
     clip_to_window(&full, spans, start_col, max_cols)
 }
@@ -1131,8 +1159,30 @@ mod tests {
 
     #[test]
     fn tokenize_for_render_clips_visible_window() {
-        let spans = tokenize_for_render(b"fn abcdef", Language::Rust, 3, 3);
+        let spans = tokenize_for_render(b"fn abcdef", Language::Rust, 3, 3, 8);
         let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, "abc");
+    }
+
+    #[test]
+    fn tab_expands_to_tab_width_and_keyword_stays_keyword() {
+        let spans = tokenize_for_render(b"\tfn", Language::Rust, 0, 16, 8);
+        let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(&joined[..8], "        ", "{spans:?}");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == TokenKind::Keyword && s.text == "fn"),
+            "{spans:?}"
+        );
+        let spans4 = tokenize_for_render(b"\tfn", Language::Rust, 0, 16, 4);
+        let joined4: String = spans4.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(&joined4[..4], "    ", "{spans4:?}");
+        assert!(
+            spans4
+                .iter()
+                .any(|s| s.kind == TokenKind::Keyword && s.text == "fn"),
+            "{spans4:?}"
+        );
     }
 }

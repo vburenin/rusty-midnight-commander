@@ -14,8 +14,9 @@ use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
     App, EditorGotoDialog, EditorGotoFocus, EditorMenu, EditorPipeDialog, EditorPipeFocus,
     EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus,
-    EditorSearchDialog, EditorSearchFocus, HistoryDialogFocus, LayoutFocus, UiMode,
-    ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
+    EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog, EditorTabSpacingFocus,
+    HistoryDialogFocus, LayoutFocus, UiMode, ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu,
+    ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
     find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
@@ -269,6 +270,7 @@ fn editor_ui_mode(buf: rmc_edit::EditorBuffer, return_to: Option<Box<UiMode>>) -
         replace_dialog: None,
         pipe_dialog: None,
         goto_dialog: None,
+        tab_spacing_dialog: None,
         pending_quit: false,
         confirm_exit: None,
         return_to,
@@ -401,6 +403,7 @@ fn editor_open_save_as_dialog(
     replace_dialog: &mut Option<Box<EditorReplaceDialog>>,
     pipe_dialog: &mut Option<EditorPipeDialog>,
     goto_dialog: &mut Option<Box<EditorGotoDialog>>,
+    tab_spacing_dialog: &mut Option<Box<EditorTabSpacingDialog>>,
     status_msg: &mut Option<String>,
     show_menu: &mut Option<EditorMenu>,
 ) {
@@ -412,6 +415,7 @@ fn editor_open_save_as_dialog(
     *replace_dialog = None;
     *pipe_dialog = None;
     *goto_dialog = None;
+    *tab_spacing_dialog = None;
     *status_msg = None;
     *show_menu = None;
     *save_as_dialog = Some(Box::new(EditorSaveAsDialog::from_buffer_path(
@@ -463,6 +467,23 @@ fn editor_save_as_commit(
             false
         }
     }
+}
+
+/// Apply Options → Tab spacing. Empty or non-numeric is a no-op; values
+/// outside 2–16 are clamped (mcedit(1) default 8; range from the dialog).
+fn editor_tab_spacing_apply(buf: &mut rmc_edit::EditorBuffer, width: &str) {
+    let t = width.trim();
+    if t.is_empty() {
+        return;
+    }
+    let Ok(n) = t.parse::<i64>() else {
+        return;
+    };
+    let n = n.clamp(
+        rmc_edit::MIN_TAB_WIDTH as i64,
+        rmc_edit::MAX_TAB_WIDTH as i64,
+    ) as usize;
+    buf.set_tab_width(n);
 }
 
 /// Apply a 1-based decimal line number. Empty or non-numeric is a no-op.
@@ -1775,6 +1796,7 @@ impl TerminalApp {
                 replace_dialog,
                 pipe_dialog,
                 goto_dialog,
+                tab_spacing_dialog,
                 pending_quit: _,
                 confirm_exit,
                 return_to: _,
@@ -1833,6 +1855,7 @@ impl TerminalApp {
                             replace_dialog,
                             pipe_dialog,
                             goto_dialog,
+                            tab_spacing_dialog,
                             status_msg,
                             show_menu,
                         );
@@ -2051,6 +2074,64 @@ impl TerminalApp {
                                 && matches!(dlg.focus, F::Line) =>
                         {
                             dlg.line.push(c);
+                        }
+                        _ => {}
+                    }
+                    return Ok(());
+                }
+                // GNU mcedit Options → Tab spacing (mcedit(1) editor_tab_spacing).
+                if let Some(dlg) = tab_spacing_dialog {
+                    use EditorTabSpacingFocus as F;
+                    let order = [F::Width, F::Ok, F::Cancel];
+                    let mut idx = order.iter().position(|f0| *f0 == dlg.focus).unwrap_or(0);
+                    match key.code {
+                        KeyCode::Esc | KeyCode::F(10) => {
+                            *tab_spacing_dialog = None;
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            idx = (idx + 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::BackTab | KeyCode::Up => {
+                            idx = (idx + order.len() - 1) % order.len();
+                            dlg.focus = order[idx];
+                        }
+                        KeyCode::Left | KeyCode::Right
+                            if matches!(dlg.focus, F::Ok | F::Cancel) =>
+                        {
+                            dlg.focus = if matches!(dlg.focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                        KeyCode::Backspace if matches!(dlg.focus, F::Width) => {
+                            dlg.width.pop();
+                        }
+                        // Space on buttons before generic Char so the field is not
+                        // filled with a space when OK/Cancel is focused.
+                        KeyCode::Enter | KeyCode::Char(' ')
+                            if matches!(dlg.focus, F::Ok | F::Cancel)
+                                || matches!(key.code, KeyCode::Enter) =>
+                        {
+                            match dlg.focus {
+                                F::Cancel => {
+                                    *tab_spacing_dialog = None;
+                                }
+                                F::Width | F::Ok => {
+                                    let width = dlg.width.clone();
+                                    *tab_spacing_dialog = None;
+                                    editor_tab_spacing_apply(buf, &width);
+                                }
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && matches!(dlg.focus, F::Width) =>
+                        {
+                            dlg.width.push(c);
                         }
                         _ => {}
                     }
@@ -2312,6 +2393,7 @@ impl TerminalApp {
                                             replace_dialog,
                                             pipe_dialog,
                                             goto_dialog,
+                                            tab_spacing_dialog,
                                             status_msg,
                                             show_menu,
                                         );
@@ -2326,6 +2408,7 @@ impl TerminalApp {
                                         replace_dialog,
                                         pipe_dialog,
                                         goto_dialog,
+                                        tab_spacing_dialog,
                                         status_msg,
                                         show_menu,
                                     );
@@ -2416,6 +2499,26 @@ impl TerminalApp {
                                     *goto_dialog = None;
                                     *status_msg = None;
                                     *pipe_dialog = Some(EditorPipeDialog::default());
+                                }
+                                Some("Auto indent") => {
+                                    buf.toggle_autoindent();
+                                    *status_msg = Some(if buf.autoindent {
+                                        "Auto indent: On".into()
+                                    } else {
+                                        "Auto indent: Off".into()
+                                    });
+                                }
+                                Some("Tab spacing") => {
+                                    *search_input = None;
+                                    *save_as_dialog = None;
+                                    *search_dialog = None;
+                                    *replace_dialog = None;
+                                    *pipe_dialog = None;
+                                    *goto_dialog = None;
+                                    *status_msg = None;
+                                    *tab_spacing_dialog = Some(Box::new(
+                                        EditorTabSpacingDialog::from_tab_width(buf.tab_width),
+                                    ));
                                 }
                                 _ => {}
                             }
@@ -2549,6 +2652,7 @@ impl TerminalApp {
                                 replace_dialog,
                                 pipe_dialog,
                                 goto_dialog,
+                                tab_spacing_dialog,
                                 status_msg,
                                 show_menu,
                             );
@@ -2576,6 +2680,7 @@ impl TerminalApp {
                     KeyCode::Delete => buf.delete(),
                     KeyCode::Enter => buf.insert_newline(),
                     KeyCode::Insert => buf.toggle_overwrite(),
+                    KeyCode::Tab => buf.insert_bytes(b"\t"),
                     KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
                         buf.insert_char(c)
                     }
@@ -8911,6 +9016,7 @@ mod editor_replace_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -9566,6 +9672,7 @@ mod editor_pipe_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -9795,6 +9902,7 @@ mod editor_goto_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -10099,6 +10207,7 @@ mod editor_search_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -10535,6 +10644,7 @@ mod editor_save_as_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -11103,6 +11213,7 @@ mod editor_f9_menu_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -11406,6 +11517,420 @@ mod editor_f9_menu_tests {
             } => {
                 assert!(show_menu.is_none());
                 assert!(replace_dialog.is_none(), "Diff F4 must not open Replace");
+                assert!(
+                    matches!(return_to.as_deref(), Some(UiMode::Diff(_))),
+                    "Diff F4 still nests editor"
+                );
+            }
+            _ => panic!("Diff F4 must nest editor"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod editor_ins_autoindent_tab_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::{DiffState, EditorMenu, EditorTabSpacingFocus};
+    use rmc_core::config::KeyMap;
+    use rmc_edit::{EditorBuffer, TokenKind};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-editor-tab-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app() -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.config_opts.use_internal_edit = true;
+        app.config_opts.use_internal_view = true;
+        app
+    }
+
+    fn make_app_at(cwd: &std::path::Path) -> App {
+        let mut app = make_app();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn open_editor(app: &mut App, text: &[u8]) {
+        open_editor_path(app, text, None);
+    }
+
+    fn open_editor_path(app: &mut App, text: &[u8], path: Option<std::path::PathBuf>) {
+        app.ui_mode = UiMode::Editor {
+            buf: EditorBuffer::from_bytes(text, path),
+            show_menu: None,
+            status_msg: None,
+            search_input: None,
+            save_as_dialog: None,
+            search_dialog: None,
+            replace_dialog: None,
+            pipe_dialog: None,
+            goto_dialog: None,
+            tab_spacing_dialog: None,
+            pending_quit: false,
+            confirm_exit: None,
+            return_to: None,
+        };
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn editor_buf(app: &App) -> &EditorBuffer {
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn editor_buf_mut(app: &mut App) -> &mut EditorBuffer {
+        match &mut app.ui_mode {
+            UiMode::Editor { buf, .. } => buf,
+            _ => panic!("expected Editor"),
+        }
+    }
+
+    fn goto_options_menu(app: &mut App) {
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu: Some(EditorMenu::Options { selected: 0 }),
+                ..
+            } => {}
+            _ => panic!("expected Options menu with Auto indent selected"),
+        }
+    }
+
+    #[test]
+    fn insert_key_toggles_overwrite_and_typing_follows_mode() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc");
+        assert!(!editor_buf(&app).overwrite);
+        assert!(editor_buf(&app).status_text().contains("[INS]"));
+        press(&mut app, KeyCode::Insert);
+        assert!(editor_buf(&app).overwrite);
+        assert!(editor_buf(&app).status_text().contains("[OVR]"));
+        press(&mut app, KeyCode::Char('X'));
+        assert_eq!(editor_buf(&app).to_bytes(), b"Xbc");
+        press(&mut app, KeyCode::Insert);
+        assert!(!editor_buf(&app).overwrite);
+        assert!(editor_buf(&app).status_text().contains("[INS]"));
+        press(&mut app, KeyCode::Char('Y'));
+        assert_eq!(editor_buf(&app).to_bytes(), b"XYbc");
+    }
+
+    #[test]
+    fn insert_key_ignored_while_search_overlay_open() {
+        let mut app = make_app();
+        open_editor(&mut app, b"abc");
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Insert);
+        match &app.ui_mode {
+            UiMode::Editor {
+                search_dialog: Some(_),
+                buf,
+                show_menu,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(!buf.overwrite, "Ins must not toggle overwrite under Search");
+            }
+            _ => panic!("Search overlay must keep keys"),
+        }
+    }
+
+    #[test]
+    fn enter_autoindent_on_and_off() {
+        let mut app = make_app();
+        open_editor(&mut app, b"\t  foo");
+        assert!(editor_buf(&app).autoindent);
+        editor_buf_mut(&mut app).col = 6;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_buf(&app).to_bytes(), b"\t  foo\n\t  ");
+        assert_eq!(editor_buf(&app).col, 3);
+
+        goto_options_menu(&mut app);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                buf,
+                status_msg,
+                show_menu,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(!buf.autoindent);
+                assert_eq!(status_msg.as_deref(), Some("Auto indent: Off"));
+            }
+            _ => panic!("Auto indent toggle must stay in Editor"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(editor_buf(&app).to_bytes(), b"\t  foo\n\t  \n");
+        assert_eq!(editor_buf(&app).col, 0);
+    }
+
+    #[test]
+    fn tab_inserts_literal_tab_and_renders_tab_width() {
+        let mut app = make_app();
+        open_editor_path(&mut app, b"", Some(std::path::PathBuf::from("main.rs")));
+        assert_eq!(editor_buf(&app).tab_width, 8);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(editor_buf(&app).to_bytes(), b"\tif");
+        editor_buf_mut(&mut app).view_col = 0;
+        let row = &editor_buf(&app).render_window(16, 1)[0];
+        assert_eq!(&row[..8], "        ");
+        assert_eq!(&row[8..10], "if");
+        let spans = &editor_buf(&app).render_window_spans(16, 1)[0];
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.kind == TokenKind::Keyword && s.text == "if"),
+            "{spans:?}"
+        );
+    }
+
+    #[test]
+    fn f9_options_tab_spacing_sets_width_to_four() {
+        let mut app = make_app();
+        open_editor_path(&mut app, b"\tfn", Some(std::path::PathBuf::from("main.rs")));
+        goto_options_menu(&mut app);
+        press(&mut app, KeyCode::Down);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu: Some(EditorMenu::Options { selected: 1 }),
+                ..
+            } => {}
+            _ => panic!("Down must land on Tab spacing"),
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                tab_spacing_dialog: Some(dlg),
+                show_menu,
+                search_dialog,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(search_dialog.is_none());
+                assert_eq!(dlg.width, "8");
+                assert_eq!(dlg.focus, EditorTabSpacingFocus::Width);
+            }
+            _ => panic!("Tab spacing must open the dialog"),
+        }
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Char('4'));
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                tab_spacing_dialog,
+                buf,
+                ..
+            } => {
+                assert!(tab_spacing_dialog.is_none());
+                assert_eq!(buf.tab_width, 4);
+                let row = &buf.render_window(16, 1)[0];
+                assert_eq!(&row[..4], "    ");
+                assert_eq!(&row[4..6], "fn");
+            }
+            _ => panic!("OK must apply Tab spacing and stay in Editor"),
+        }
+    }
+
+    #[test]
+    fn f9_options_auto_indent_toggle_esc_f10_do_not_quit() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        assert!(editor_buf(&app).autoindent);
+        goto_options_menu(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(!editor_buf(&app).autoindent);
+        goto_options_menu(&mut app);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor {
+                buf,
+                status_msg,
+                confirm_exit,
+                ..
+            } => {
+                assert!(buf.autoindent);
+                assert_eq!(status_msg.as_deref(), Some("Auto indent: On"));
+                assert!(confirm_exit.is_none());
+            }
+            UiMode::Normal => panic!("toggle must not quit"),
+            _ => panic!("expected Editor"),
+        }
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Esc);
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                confirm_exit,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(confirm_exit.is_none(), "Esc on the menu must not quit");
+            }
+            UiMode::Normal => panic!("Esc on the menu must not quit the editor"),
+            _ => panic!("Esc on the menu must stay in Editor"),
+        }
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::F(10));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                confirm_exit,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(confirm_exit.is_none(), "F10 on the menu must not quit");
+            }
+            UiMode::Normal => panic!("F10 on the menu must not quit the editor"),
+            _ => panic!("F10 on the menu must stay in Editor"),
+        }
+    }
+
+    #[test]
+    fn tab_spacing_esc_cancel_leaves_width_search_overlay_still_wins() {
+        let mut app = make_app();
+        open_editor(&mut app, b"hello");
+        goto_options_menu(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('4'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(editor_buf(&app).tab_width, 8);
+        match &app.ui_mode {
+            UiMode::Editor {
+                tab_spacing_dialog: None,
+                ..
+            } => {}
+            _ => panic!("Esc must close Tab spacing without applying"),
+        }
+
+        goto_options_menu(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        match &app.ui_mode {
+            UiMode::Editor {
+                tab_spacing_dialog: Some(dlg),
+                ..
+            } => {
+                assert_eq!(dlg.focus, EditorTabSpacingFocus::Cancel);
+            }
+            _ => panic!("Tab twice must land on Cancel"),
+        }
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(editor_buf(&app).tab_width, 8);
+
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                search_dialog: Some(_),
+                tab_spacing_dialog,
+                ..
+            } => {
+                assert!(show_menu.is_none(), "F9 must not steal the Search dialog");
+                assert!(tab_spacing_dialog.is_none());
+            }
+            _ => panic!("Search overlay must keep keys"),
+        }
+    }
+
+    #[test]
+    fn viewer_f9_panel_pulldn_diff_f4_unchanged() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+        let other = root.join("other.txt");
+        std::fs::write(&other, "world\n").unwrap();
+
+        let mut app = make_app_at(&root);
+        app.ui_mode = UiMode::new_viewer(file.clone());
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                format_nroff,
+                display_dialog,
+                viewer_menu,
+                ..
+            } => {
+                assert!(*format_nroff, "Viewer F9 still toggles format");
+                assert!(display_dialog.is_none());
+                assert!(viewer_menu.is_none());
+            }
+            UiMode::Editor { .. } => panic!("Viewer F9 must not open Editor"),
+            _ => panic!("Viewer F9 must stay in Viewer"),
+        }
+
+        app.ui_mode = UiMode::Normal;
+        press(&mut app, KeyCode::F(9));
+        match &app.ui_mode {
+            UiMode::Menu { .. } => {}
+            UiMode::Editor { .. } => panic!("panel F9 must stay PullDn, not Editor"),
+            _ => panic!("panel F9 must open PullDn"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        let ltxt = "hello\n";
+        let rtxt = "world\n";
+        app.ui_mode = UiMode::Diff(DiffState {
+            left_path: file,
+            right_path: other,
+            left_lines: rmc_diff::split_lines(ltxt),
+            right_lines: rmc_diff::split_lines(rtxt),
+            hunks: rmc_diff::compute_diff(ltxt, rtxt).hunks,
+            current_hunk: 0,
+            left_modified: false,
+            right_modified: false,
+            show_line_numbers: true,
+            show_hunk_status: true,
+            search: None,
+            search_prompt: None,
+            goto_prompt: None,
+            confirm_exit: None,
+            left_scroll: 0,
+            right_scroll: 0,
+            panel_ratio: 0.6,
+            tab_width: 4,
+            merge_target_right: true,
+        });
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Editor {
+                show_menu,
+                return_to,
+                replace_dialog,
+                tab_spacing_dialog,
+                ..
+            } => {
+                assert!(show_menu.is_none());
+                assert!(replace_dialog.is_none(), "Diff F4 must not open Replace");
+                assert!(tab_spacing_dialog.is_none());
                 assert!(
                     matches!(return_to.as_deref(), Some(UiMode::Diff(_))),
                     "Diff F4 still nests editor"
@@ -12011,6 +12536,7 @@ mod viewer_search_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
@@ -12536,6 +13062,7 @@ mod viewer_display_options_tests {
             replace_dialog: None,
             pipe_dialog: None,
             goto_dialog: None,
+            tab_spacing_dialog: None,
             pending_quit: false,
             confirm_exit: None,
             return_to: None,
