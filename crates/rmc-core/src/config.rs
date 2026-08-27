@@ -177,9 +177,13 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
             Action::CycleListingFormat,
         );
-        // Selection toggles
+        // GNU mc(1) Insert / C-t: toggle mark. Space remains a ToggleSelect alias.
         m.bind(
             KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE),
+            ToggleSelect,
+        );
+        m.bind(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
             ToggleSelect,
         );
         m.bind(
@@ -714,6 +718,14 @@ mod tests {
         assert!(matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),
             Some(Action::QuickSearch)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)),
+            Some(Action::ToggleSelect)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Some(Action::ToggleSelect)
         ));
         assert!(!matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT)),

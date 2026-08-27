@@ -823,15 +823,15 @@ fn draw_panel_options_dialog(
         p.goto(x + 2, row_y);
         p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
     }
-    // Buttons
+    // Buttons: focused `< txt >`, unfocused `[ txt ]`
     let ok_sel = matches!(focus, F::Ok);
     let cancel_sel = matches!(focus, F::Cancel);
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
+    let ok_txt = if ok_sel { "< OK >" } else { "[ OK ]" };
     let cancel_txt = if cancel_sel {
-        "[ Cancel ]"
+        "< Cancel >"
     } else {
-        "  Cancel  "
+        "[ Cancel ]"
     };
     let btns = format!("{ok_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;

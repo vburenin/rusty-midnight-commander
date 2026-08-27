@@ -58,8 +58,9 @@ Alt-, = TogglePanelSplit
 C-\\ = OpenHotlist
 # Note: 'C-x h' (Add current dir to hotlist) is handled as a key chord by the UI layer.
 
-# Selection
+# Selection (GNU mc(1) Insert / C-t toggle mark)
 Insert = ToggleSelect
+C-t    = ToggleSelect
 Space  = ToggleSelect
 # Group selection (panel)
 +  = SelectGroup

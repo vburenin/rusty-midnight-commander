@@ -4864,7 +4864,8 @@ impl TerminalApp {
                             };
                         }
                     }
-                    KeyCode::Char(' ') => match *focus {
+                    // Space on the checkbox before generic Char.
+                    KeyCode::Char(' ') if key.modifiers.is_empty() => match *focus {
                         F::ShowHidden => draft.show_hidden = !draft.show_hidden,
                         F::MixAllFiles => draft.mix_all_files = !draft.mix_all_files,
                         F::MarkMovesDown => draft.mark_moves_down = !draft.mark_moves_down,
@@ -22871,6 +22872,434 @@ mod panel_quick_search_tests {
         type_str(&mut app, "zza");
         press_alt_tab(&mut app);
         assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_toggle_mark_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::{Action, PaneSide};
+    use rmc_core::app::{App, PanelOptionsFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-toggle-mark-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press_rows(app: &mut App, code: KeyCode, mods: KeyModifiers, page_rows: usize) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), page_rows).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        press_rows(app, code, KeyModifiers::NONE, 10);
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_rows(app, KeyCode::Char(c), KeyModifiers::CONTROL, 10);
+    }
+
+    fn seed_listing(root: &std::path::Path) {
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        std::fs::write(root.join("bbb.txt"), b"b").unwrap();
+        std::fs::write(root.join("zzz.bin"), b"z").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+    }
+
+    fn cursor_name(app: &App) -> &str {
+        app.active_panel()
+            .current_entry()
+            .map(|e| e.name.as_str())
+            .unwrap_or("")
+    }
+
+    fn idx_of(app: &App, name: &str) -> usize {
+        app.active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+    }
+
+    fn selected_names(app: &App) -> Vec<String> {
+        let p = app.active_panel();
+        p.selection
+            .iter()
+            .filter_map(|i| p.entries.get(i).map(|e| e.name.clone()))
+            .collect()
+    }
+
+    fn parent_idx(app: &App) -> Option<usize> {
+        app.active_panel()
+            .entries
+            .iter()
+            .position(|e| e.is_parent_marker())
+    }
+
+    fn parent_is_marked(app: &App) -> bool {
+        match parent_idx(app) {
+            Some(i) => app.active_panel().selection.is_selected(i),
+            None => false,
+        }
+    }
+
+    fn goto_name(app: &mut App, name: &str) {
+        app.active_panel_mut().cursor = idx_of(app, name);
+    }
+
+    fn open_panel_options(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        for _ in 0..3 {
+            press(app, KeyCode::Right);
+        }
+        press(app, KeyCode::Down); // Configuration → Layout
+        press(app, KeyCode::Down); // Layout → Panels
+        press(app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::PanelOptionsDialog { .. }),
+            "Options → Panels must open Panel options"
+        );
+    }
+
+    fn panel_options_focus(app: &App) -> PanelOptionsFocus {
+        match &app.ui_mode {
+            UiMode::PanelOptionsDialog { focus, .. } => *focus,
+            _ => panic!("expected PanelOptionsDialog, got other mode"),
+        }
+    }
+
+    fn tab_to_panel_opt(app: &mut App, want: PanelOptionsFocus) {
+        for _ in 0..16 {
+            if matches!(
+                app.ui_mode,
+                UiMode::PanelOptionsDialog { focus, .. } if focus == want
+            ) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!(
+            "did not reach Panel options focus {want:?}, at {:?}",
+            panel_options_focus(app)
+        );
+    }
+
+    #[test]
+    fn keymap_binds_insert_and_c_t_to_toggle_select() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)),
+            Some(Action::ToggleSelect)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Some(Action::ToggleSelect)
+        ));
+        assert!(
+            matches!(
+                km.resolve(&KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+                Some(Action::CycleListingFormat)
+            ),
+            "Alt-t must stay listing-format, not mark"
+        );
+    }
+
+    #[test]
+    fn insert_toggles_file_mark_and_never_marks_parent() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+
+        goto_name(&mut app, "..");
+        press(&mut app, KeyCode::Insert);
+        assert!(
+            !parent_is_marked(&app),
+            "Insert on .. is a no-op; parent stays unmarked"
+        );
+        assert!(selected_names(&app).is_empty());
+        assert_eq!(cursor_name(&app), "..");
+
+        goto_name(&mut app, "aaa.txt");
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+        assert!(!parent_is_marked(&app));
+        press(&mut app, KeyCode::Insert);
+        assert!(
+            selected_names(&app).is_empty(),
+            "Insert again unmarks the same file"
+        );
+        assert!(!parent_is_marked(&app));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn c_t_toggles_file_mark_and_never_marks_parent() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+
+        goto_name(&mut app, "..");
+        press_ctrl(&mut app, 't');
+        assert!(!parent_is_marked(&app));
+        assert!(selected_names(&app).is_empty());
+        assert_eq!(cursor_name(&app), "..");
+
+        goto_name(&mut app, "bbb.txt");
+        press_ctrl(&mut app, 't');
+        assert_eq!(selected_names(&app), vec!["bbb.txt".to_string()]);
+        assert!(!parent_is_marked(&app));
+        press_ctrl(&mut app, 't');
+        assert!(selected_names(&app).is_empty());
+        assert!(!parent_is_marked(&app));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mark_moves_down_on_advances_cursor_last_entry_stays() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        assert!(
+            app.panel_opts.mark_moves_down,
+            "GNU default Mark moves down is on"
+        );
+
+        goto_name(&mut app, "aaa.txt");
+        let next = idx_of(&app, "bbb.txt");
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+        assert_eq!(app.active_panel().cursor, next);
+        assert_eq!(cursor_name(&app), "bbb.txt");
+
+        goto_name(&mut app, "zzz.bin");
+        let last = app.active_panel().cursor;
+        press_ctrl(&mut app, 't');
+        assert!(selected_names(&app).contains(&"zzz.bin".to_string()));
+        assert_eq!(
+            app.active_panel().cursor,
+            last,
+            "last entry stays last after mark"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mark_moves_down_off_keeps_cursor() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "aaa.txt");
+        let stay = app.active_panel().cursor;
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+        assert_eq!(app.active_panel().cursor, stay);
+        press_ctrl(&mut app, 't');
+        assert!(selected_names(&app).is_empty());
+        assert_eq!(app.active_panel().cursor, stay);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directories_are_markable() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "subdir");
+        assert!(app
+            .active_panel()
+            .current_entry()
+            .is_some_and(|e| e.is_dir && !e.is_parent_marker()));
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["subdir".to_string()]);
+        press_ctrl(&mut app, 't');
+        assert!(selected_names(&app).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn shell_input_c_t_does_not_mark_and_c_x_t_copies_tagged_names() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "aaa.txt");
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+
+        app.ui_mode = UiMode::ShellInput;
+        app.subshell.replace_cmdline("echo ".to_string());
+        press_ctrl(&mut app, 't');
+        assert!(
+            matches!(app.ui_mode, UiMode::ShellInput),
+            "C-t must stay on the command line"
+        );
+        assert_eq!(
+            selected_names(&app),
+            vec!["aaa.txt".to_string()],
+            "C-t in ShellInput must not toggle marks"
+        );
+        assert_eq!(app.subshell.cmdline, "echo ");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        app.subshell.clear_cmdline();
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('t'));
+        assert!(
+            app.subshell.cmdline.contains("aaa.txt"),
+            "C-x t from Normal copies tagged names: {:?}",
+            app.subshell.cmdline
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_mark_quick_search_alt_g_select_and_tab_still_work() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "aaa.txt");
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+
+        press_ctrl(&mut app, 's');
+        assert!(
+            app.quick_search.is_some(),
+            "C-s Quick search must still start after marking"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.quick_search.is_none());
+        assert_eq!(selected_names(&app), vec!["aaa.txt".to_string()]);
+
+        let page = 5;
+        app.active_panel_mut().scroll_top = 0;
+        press_rows(&mut app, KeyCode::Char('g'), KeyModifiers::ALT, page);
+        assert_eq!(cursor_name(&app), "..");
+
+        press(&mut app, KeyCode::Char('+'));
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.subshell.clear_cmdline();
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn insert_c_t_do_not_mark_from_menu_or_dialog() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        goto_name(&mut app, "aaa.txt");
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        assert!(matches!(app.ui_mode, UiMode::Menu { .. }));
+        press(&mut app, KeyCode::Insert);
+        press_ctrl(&mut app, 't');
+        assert!(selected_names(&app).is_empty());
+        press(&mut app, KeyCode::Esc);
+
+        open_panel_options(&mut app);
+        press(&mut app, KeyCode::Insert);
+        press_ctrl(&mut app, 't');
+        assert!(selected_names(&app).is_empty());
+        press(&mut app, KeyCode::Esc);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panel_options_mark_moves_down_checkbox_ok_and_esc() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        assert!(app.panel_opts.mark_moves_down);
+
+        open_panel_options(&mut app);
+        assert_eq!(panel_options_focus(&app), PanelOptionsFocus::ShowHidden);
+        tab_to_panel_opt(&mut app, PanelOptionsFocus::MarkMovesDown);
+        match &app.ui_mode {
+            UiMode::PanelOptionsDialog { draft, .. } => {
+                assert!(draft.mark_moves_down, "dialog seeds GNU default on");
+            }
+            _ => unreachable!(),
+        }
+        press(&mut app, KeyCode::Char(' '));
+        match &app.ui_mode {
+            UiMode::PanelOptionsDialog { draft, .. } => {
+                assert!(!draft.mark_moves_down);
+            }
+            _ => panic!("Space must stay in Panel options"),
+        }
+        assert!(
+            app.panel_opts.mark_moves_down,
+            "Space edits the draft only until OK"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            app.panel_opts.mark_moves_down,
+            "Esc cancels without applying"
+        );
+
+        open_panel_options(&mut app);
+        tab_to_panel_opt(&mut app, PanelOptionsFocus::MarkMovesDown);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            app.panel_opts.mark_moves_down,
+            "F10 cancels without applying"
+        );
+
+        open_panel_options(&mut app);
+        tab_to_panel_opt(&mut app, PanelOptionsFocus::MarkMovesDown);
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_panel_opt(&mut app, PanelOptionsFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            !app.panel_opts.mark_moves_down,
+            "OK applies Mark moves down off"
+        );
+
+        goto_name(&mut app, "aaa.txt");
+        let stay = app.active_panel().cursor;
+        press(&mut app, KeyCode::Insert);
+        assert_eq!(app.active_panel().cursor, stay);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
