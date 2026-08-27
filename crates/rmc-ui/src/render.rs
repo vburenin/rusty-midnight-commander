@@ -2600,6 +2600,8 @@ fn draw_panel(
                     let owner = ent.owner.as_deref().unwrap_or("-");
                     let group = ent.group.as_deref().unwrap_or("-");
                     let size = if ent.is_dir { 0 } else { ent.size };
+                    let size_s =
+                        rmc_core::panel::format_byte_size(size, app.panel_opts.kilobyte_si);
                     let tm: OffsetDateTime = ent.modified.into();
                     let ts = tm
                         .format(&time::macros::format_description!(
@@ -2610,7 +2612,7 @@ fn draw_panel(
                         format!("Name: {}", ent.name),
                         format!("Path: {}", ent.path.display()),
                         format!("Type: {}", if ent.is_dir { "Directory" } else { "File" }),
-                        format!("Size: {}", size),
+                        format!("Size: {size_s}"),
                         format!("Owner: {owner}  Group: {group}"),
                         format!("Perms: {perms}"),
                         format!("Modified: {ts}"),
@@ -2856,11 +2858,10 @@ fn draw_panel(
                     let owner = ent.owner.as_deref().unwrap_or("-");
                     let group = ent.group.as_deref().unwrap_or("-");
                     let size = if ent.is_dir { 0 } else { ent.size };
-                    let size_s = if app.panel_opts.kilobyte_si {
-                        format!("{:>8}", rmc_core::panel::format_si_size(size))
-                    } else {
-                        format!("{:>8}", size)
-                    };
+                    let size_s = format!(
+                        "{:>8}",
+                        rmc_core::panel::format_byte_size(size, app.panel_opts.kilobyte_si)
+                    );
                     let tm = format_time(ent);
                     let prefix = format!("{perms}  {owner:>8} {group:>8} {size_s} {tm}  ");
                     let width = (w - 2) as usize;
@@ -2936,7 +2937,7 @@ fn draw_panel(
                     p.text(&" ".repeat((w - 2) as usize - s.len()));
                 }
             } else if let Some(cur) = panel.current_entry() {
-                let s = format_mini_status(cur);
+                let s = format_mini_status(cur, app.panel_opts.kilobyte_si);
                 let s = truncate(&s, (w - 2) as usize);
                 p.text(&s);
             } else {
@@ -2944,7 +2945,7 @@ fn draw_panel(
                 p.text(&s);
             }
         } else if let Some(cur) = panel.current_entry() {
-            let s = format_mini_status(cur);
+            let s = format_mini_status(cur, app.panel_opts.kilobyte_si);
             let s = truncate(&s, (w - 2) as usize);
             p.text(&s);
         } else {
@@ -3554,10 +3555,8 @@ fn format_size(ent: &FileEntry, si: bool) -> String {
         "UP--DIR".to_string()
     } else if ent.is_dir {
         "        ".to_string()
-    } else if si {
-        format!("{:>8}", rmc_core::panel::format_si_size(ent.size))
     } else {
-        format!("{:>8}", ent.size)
+        format!("{:>8}", rmc_core::panel::format_byte_size(ent.size, si))
     }
 }
 
@@ -3580,18 +3579,19 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn format_mini_status(ent: &FileEntry) -> String {
+fn format_mini_status(ent: &FileEntry, si: bool) -> String {
     let perms = perm_string(ent.permissions, ent.is_dir);
     let owner = ent.owner.as_deref().unwrap_or("-");
     let group = ent.group.as_deref().unwrap_or("-");
     let size = if ent.is_dir { 0 } else { ent.size };
+    let size_s = rmc_core::panel::format_byte_size(size, si);
     let tm: OffsetDateTime = ent.modified.into();
     let ts = tm
         .format(&time::macros::format_description!(
             "[month repr:short] [day padding:space] [hour]:[minute]"
         ))
         .unwrap_or_default();
-    format!("{perms}  {owner:>8} {group:>8} {size:>8} {ts}")
+    format!("{perms}  {owner:>8} {group:>8} {size_s:>8} {ts}")
 }
 
 fn perm_string(mode: u32, is_dir: bool) -> String {

@@ -95,7 +95,7 @@ pub struct PanelOptions {
     pub mix_all_files: bool,    // default false — match current dirs_first=true
     pub mark_moves_down: bool,  // default true — GNU mc Insert-mark then cursor down
     pub show_mini_status: bool, // default true; store only
-    pub kilobyte_si: bool,      // default false; store only
+    pub kilobyte_si: bool,      // default false; panel/mini-status SI (1000) vs 1024 units
     /// Skip local panel re-list when the directory mtime/ctime/nlink/size is unchanged.
     /// Default false. C-r / Refresh always re-lists. Remote/archive/extfs use dir cache timeout.
     pub fast_reload: bool,
