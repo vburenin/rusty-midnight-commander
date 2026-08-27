@@ -4319,7 +4319,7 @@ impl TerminalApp {
                 }
                 if apply {
                     // Apply listing format to the selected side. GNU: this
-                    // restores Listing panel mode if that side was Quick view / Info.
+                    // restores Listing panel mode if that side was Quick view / Info / Tree.
                     let p = if matches!(*side, rmc_core::actions::PaneSide::Left) {
                         &mut app.left
                     } else {
@@ -6066,30 +6066,11 @@ impl TerminalApp {
                                 };
                             }
                             "Tree" => {
-                                // Set Tree mode for the chosen side and make it active.
+                                // Left/Right → Tree: panel mode on that side (not the
+                                // Command-menu Directory tree dialog). Repeating Tree
+                                // while already Tree stays Tree and re-seeds the figure.
                                 let set_left = *top_index == 0;
-                                let panel = if set_left {
-                                    &mut app.left
-                                } else {
-                                    &mut app.right
-                                };
-                                panel.mode = rmc_core::panel::PanelMode::Tree;
-                                // Build a simple flattened tree starting at the panel's cwd
-                                let start = panel.cwd.clone();
-                                let max_entries = 2048usize;
-                                let mut entries: Vec<rmc_core::panel::TreeEntry> = Vec::new();
-                                build_tree_flat(&*app.vfs, &start, 0, max_entries, &mut entries);
-                                panel.tree = Some(rmc_core::panel::TreeState {
-                                    entries,
-                                    cursor: 0,
-                                    scroll_top: 0,
-                                });
-                                app.active = if set_left {
-                                    rmc_core::actions::PaneSide::Left
-                                } else {
-                                    rmc_core::actions::PaneSide::Right
-                                };
-                                app.ui_mode = UiMode::Normal;
+                                enter_panel_tree_mode(app, set_left);
                             }
                             "Copy" => {
                                 return Self::handle_key(
@@ -7406,6 +7387,11 @@ impl TerminalApp {
                 return Ok(());
             }
         }
+        // GNU mc(1) Tree panel mode (Left/Right → Tree). Not the Command-menu
+        // Directory tree dialog. Uses `page_rows`; never `terminal::size()`.
+        if handle_panel_tree_key(app, key, page_rows) {
+            return Ok(());
+        }
         // Panel quick search handling (only in UiMode::Normal), placed after C-x handling.
         if matches!(app.ui_mode, UiMode::Normal) {
             // Next-match helper with wrap-around
@@ -7525,156 +7511,6 @@ impl TerminalApp {
                 && handle_preview_panel_action(app, &action, page_rows)
             {
                 return Ok(());
-            }
-            // Intercept navigation and Enter for Tree mode on the ACTIVE panel.
-            if matches!(app.ui_mode, UiMode::Normal) {
-                let is_tree_active = {
-                    let ap = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                        &app.left
-                    } else {
-                        &app.right
-                    };
-                    matches!(ap.mode, rmc_core::panel::PanelMode::Tree)
-                };
-                if is_tree_active {
-                    match action {
-                        Action::MoveUp => {
-                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                                &mut app.left
-                            } else {
-                                &mut app.right
-                            };
-                            if let Some(tree) = &mut p.tree {
-                                if tree.cursor > 0 {
-                                    tree.cursor -= 1;
-                                    if tree.cursor < tree.scroll_top {
-                                        tree.scroll_top = tree.cursor;
-                                    }
-                                }
-                            }
-                            return Ok(());
-                        }
-                        Action::MoveDown => {
-                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                                &mut app.left
-                            } else {
-                                &mut app.right
-                            };
-                            if let Some(tree) = &mut p.tree {
-                                if tree.cursor + 1 < tree.entries.len() {
-                                    tree.cursor += 1;
-                                    let (c, r) = crossterm::terminal::size()?;
-                                    let geom2 = compute_chrome_geom(c, r, &app.layout);
-                                    let panel_h =
-                                        geom2.content_bottom.saturating_sub(geom2.panel_top);
-                                    let content_rows = panel_h.saturating_sub(4) as usize;
-                                    if tree.cursor >= tree.scroll_top + content_rows {
-                                        tree.scroll_top = tree
-                                            .cursor
-                                            .saturating_sub(content_rows.saturating_sub(1));
-                                    }
-                                }
-                            }
-                            return Ok(());
-                        }
-                        Action::Home => {
-                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                                &mut app.left
-                            } else {
-                                &mut app.right
-                            };
-                            if let Some(tree) = &mut p.tree {
-                                tree.cursor = 0;
-                                tree.scroll_top = 0;
-                            }
-                            return Ok(());
-                        }
-                        Action::End => {
-                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                                &mut app.left
-                            } else {
-                                &mut app.right
-                            };
-                            if let Some(tree) = &mut p.tree {
-                                if !tree.entries.is_empty() {
-                                    tree.cursor = tree.entries.len() - 1;
-                                    let (c, r) = crossterm::terminal::size()?;
-                                    let geom2 = compute_chrome_geom(c, r, &app.layout);
-                                    let panel_h =
-                                        geom2.content_bottom.saturating_sub(geom2.panel_top);
-                                    let content_rows = panel_h.saturating_sub(4) as usize;
-                                    tree.scroll_top =
-                                        tree.cursor.saturating_sub(content_rows.saturating_sub(1));
-                                }
-                            }
-                            return Ok(());
-                        }
-                        Action::PageUp => {
-                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                                &mut app.left
-                            } else {
-                                &mut app.right
-                            };
-                            if let Some(tree) = &mut p.tree {
-                                let prev = tree.cursor;
-                                tree.cursor = tree.cursor.saturating_sub(page_rows);
-                                if tree.cursor < tree.scroll_top {
-                                    tree.scroll_top = tree.cursor;
-                                }
-                                if prev != tree.cursor {
-                                    // adjusted above
-                                }
-                                return Ok(());
-                            }
-                        }
-                        Action::PageDown => {
-                            let p = if matches!(app.active, rmc_core::actions::PaneSide::Left) {
-                                &mut app.left
-                            } else {
-                                &mut app.right
-                            };
-                            if let Some(tree) = &mut p.tree {
-                                let max = tree.entries.len().saturating_sub(1);
-                                let prev = tree.cursor;
-                                tree.cursor = (tree.cursor + page_rows).min(max);
-                                if tree.cursor >= tree.scroll_top + page_rows {
-                                    tree.scroll_top =
-                                        tree.cursor.saturating_sub(page_rows.saturating_sub(1));
-                                }
-                                if prev != tree.cursor {
-                                    // adjusted
-                                }
-                                return Ok(());
-                            }
-                        }
-                        Action::Enter => {
-                            // Enter in Tree changes directory of the other panel (keep focus)
-                            let (tree_side_left, dest_opt) = {
-                                let is_left =
-                                    matches!(app.active, rmc_core::actions::PaneSide::Left);
-                                let p = if is_left { &app.left } else { &app.right };
-                                let path = p
-                                    .tree
-                                    .as_ref()
-                                    .and_then(|t| t.entries.get(t.cursor))
-                                    .map(|e| e.path.clone());
-                                (is_left, path)
-                            };
-                            if let Some(dest) = dest_opt {
-                                let original_active = app.active;
-                                app.active = if tree_side_left {
-                                    rmc_core::actions::PaneSide::Right
-                                } else {
-                                    rmc_core::actions::PaneSide::Left
-                                };
-                                let _ = app.change_dir(&dest);
-                                app.active = original_active;
-                            }
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
-                }
             }
             match action {
                 Action::ShowHelp => {
@@ -8414,13 +8250,17 @@ fn add_immediate_child_dirs(
     }
 }
 
-/// Command-menu Directory tree figure. Does not switch panel Tree mode.
-fn open_directory_tree(app: &mut App) {
-    let start = app.active_panel().cwd.clone();
+/// Seed known directories the same way as the Command-menu Directory tree:
+/// ancestor chain, siblings along that chain, and a small scan under `start`.
+/// Missing children appear after C-r/F2 on the parent. Does not walk the whole FS.
+fn seed_directory_tree_known(
+    vfs: &dyn rmc_fs::Vfs,
+    start: &std::path::Path,
+) -> Vec<rmc_core::panel::TreeEntry> {
     let start = if start.as_os_str().is_empty() {
         std::path::PathBuf::from("/")
     } else {
-        start
+        start.to_path_buf()
     };
     let chain = rmc_core::find::find_tree_ancestor_chain(&start);
     let mut known: Vec<rmc_core::panel::TreeEntry> = Vec::new();
@@ -8430,18 +8270,246 @@ fn open_directory_tree(app: &mut App) {
     // Siblings along the ancestor chain (not the start dir itself).
     if chain.len() > 1 {
         for (i, p) in chain.iter().enumerate().take(chain.len() - 1) {
-            add_immediate_child_dirs(&*app.vfs, p, i, DIRECTORY_TREE_MAX_ENTRIES, &mut known);
+            add_immediate_child_dirs(vfs, p, i, DIRECTORY_TREE_MAX_ENTRIES, &mut known);
         }
     }
     let start_depth = chain.len().saturating_sub(1);
     build_tree_flat(
-        &*app.vfs,
+        vfs,
         &start,
         start_depth,
         DIRECTORY_TREE_MAX_ENTRIES,
         &mut known,
     );
+    known
+}
+
+/// Command-menu Directory tree figure. Does not switch panel Tree mode.
+fn open_directory_tree(app: &mut App) {
+    let start = app.active_panel().cwd.clone();
+    let start = if start.as_os_str().is_empty() {
+        std::path::PathBuf::from("/")
+    } else {
+        start
+    };
+    let known = seed_directory_tree_known(&*app.vfs, &start);
     app.ui_mode = UiMode::DirectoryTree(DirectoryTreeState::new(known, &start));
+}
+
+/// Left/Right → Tree: that panel becomes Tree, is made active, cwd is unchanged.
+fn enter_panel_tree_mode(app: &mut App, set_left: bool) {
+    let start = if set_left {
+        app.left.cwd.clone()
+    } else {
+        app.right.cwd.clone()
+    };
+    let start = if start.as_os_str().is_empty() {
+        std::path::PathBuf::from("/")
+    } else {
+        start
+    };
+    let known = seed_directory_tree_known(&*app.vfs, &start);
+    let panel = if set_left {
+        &mut app.left
+    } else {
+        &mut app.right
+    };
+    panel.mode = rmc_core::panel::PanelMode::Tree;
+    panel.tree = Some(rmc_core::panel::TreeState {
+        figure: DirectoryTreeState::new(known, &start),
+        search_active: false,
+    });
+    app.active = if set_left {
+        rmc_core::actions::PaneSide::Left
+    } else {
+        rmc_core::actions::PaneSide::Right
+    };
+    app.ui_mode = UiMode::Normal;
+}
+
+/// GNU mc(1) tree view keys on the active Tree panel. Uses `page_rows` from
+/// `handle_key` so tests/CI without a TTY never call `crossterm::terminal::size()`.
+fn handle_panel_tree_key(app: &mut App, key: KeyEvent, page_rows: usize) -> bool {
+    if !matches!(app.ui_mode, UiMode::Normal) {
+        return false;
+    }
+    if !matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Tree) {
+        return false;
+    }
+    if app.active_panel().tree.is_none() {
+        return false;
+    }
+    let list_rows = page_rows.max(1);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let search_active = app
+        .active_panel()
+        .tree
+        .as_ref()
+        .map(|t| t.search_active)
+        .unwrap_or(false);
+    match key.code {
+        KeyCode::Up => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.move_up();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Down => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.move_down();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Left => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.move_parent();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Right => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.move_child();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::PageUp => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.page_up(list_rows);
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::PageDown => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.page_down(list_rows);
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Home => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.move_home();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::End => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.move_end();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Enter => {
+            panel_tree_enter_other(app);
+            true
+        }
+        KeyCode::F(2) => {
+            rescan_panel_tree(app, list_rows);
+            true
+        }
+        KeyCode::Char('r') if ctrl => {
+            rescan_panel_tree(app, list_rows);
+            true
+        }
+        KeyCode::F(3) => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.forget_selected();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::F(4) => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.toggle_mode();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Char('s') if ctrl || alt => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                let already = tree.search_active;
+                tree.search_active = true;
+                if already {
+                    tree.figure.search_next();
+                    tree.figure.ensure_visible(list_rows);
+                }
+            }
+            true
+        }
+        KeyCode::Backspace => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.search.pop();
+            }
+            true
+        }
+        KeyCode::Char('h') if ctrl => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.search.pop();
+            }
+            true
+        }
+        KeyCode::Char(' ') if !search_active && key.modifiers.is_empty() => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.page_down(list_rows);
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        KeyCode::Char(c) if search_active && key.modifiers.is_empty() && !c.is_control() => {
+            if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+                tree.figure.search.push(c);
+                tree.figure.search_next();
+                tree.figure.ensure_visible(list_rows);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Enter in tree view: chdir the **other** panel; stay in Tree; do not chdir this panel.
+fn panel_tree_enter_other(app: &mut App) {
+    let dest = app
+        .active_panel()
+        .tree
+        .as_ref()
+        .map(|t| t.figure.selected_path());
+    let Some(dest) = dest else {
+        return;
+    };
+    let original_active = app.active;
+    app.active = match original_active {
+        rmc_core::actions::PaneSide::Left => rmc_core::actions::PaneSide::Right,
+        rmc_core::actions::PaneSide::Right => rmc_core::actions::PaneSide::Left,
+    };
+    let _ = app.change_dir(&dest);
+    app.active = original_active;
+}
+
+fn rescan_panel_tree(app: &mut App, list_rows: usize) {
+    let (path, depth) = match app.active_panel().tree.as_ref() {
+        Some(tree) => (tree.figure.selected_path(), tree.figure.selected_depth()),
+        None => return,
+    };
+    let mut kids: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = app.vfs.list_dir(&path, false) {
+        for e in entries {
+            if e.meta.is_dir && e.name != ".." {
+                kids.push(e.path);
+            }
+        }
+    }
+    kids.sort();
+    if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+        tree.figure.apply_rescan(kids, depth);
+        tree.figure.ensure_visible(list_rows);
+    }
 }
 
 /// GNU mc(1) C-x q / C-x i: set the **other** panel to Quick view / Info.
@@ -19262,6 +19330,479 @@ mod panel_quickview_info_tests {
             UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
             _ => panic!("File menu Quick cd must still open"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod panel_tree_mode_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ListingModeFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_core::dirtree::DirectoryTreeState;
+    use rmc_core::panel::{tree_panel_mini_status, ListingFormat, PanelMode};
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-panel-tree-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), 10)
+            .unwrap();
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::create_dir_all(left.join("aaa").join("a_child")).unwrap();
+        std::fs::create_dir_all(left.join("bbb").join("b_child")).unwrap();
+        std::fs::create_dir(left.join("zzzmatch")).unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        (left, right)
+    }
+
+    fn seed_app(root: &std::path::Path) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let (left_dir, right_dir) = two_panel_dirs(root);
+        let mut app = make_app(&left_dir);
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        (app, left_dir, right_dir)
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_command_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        let idx = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn ctrl_x_then(app: &mut App, c: char) {
+        press_ctrl(app, 'x');
+        press(app, KeyCode::Char(c));
+    }
+
+    fn tab_listing_ok(app: &mut App) {
+        for _ in 0..8 {
+            if matches!(
+                app.ui_mode,
+                UiMode::ListingModeDialog {
+                    focus: ListingModeFocus::Ok,
+                    ..
+                }
+            ) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach Listing mode OK");
+    }
+
+    fn tree_figure(app: &App) -> &DirectoryTreeState {
+        app.active_panel()
+            .tree
+            .as_ref()
+            .map(|t| &t.figure)
+            .expect("active panel tree figure")
+    }
+
+    fn tree_selected(app: &App) -> std::path::PathBuf {
+        tree_figure(app).selected_path()
+    }
+
+    #[test]
+    fn left_right_tree_sets_that_panel_cwd_unchanged() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.active, PaneSide::Left);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(app.right.mode, PanelMode::Listing);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            !matches!(app.ui_mode, UiMode::DirectoryTree(_)),
+            "Left/Right Tree must not open the Command-menu Directory tree dialog"
+        );
+
+        open_left_right_item(&mut app, true, "Tree");
+        assert_eq!(app.right.mode, PanelMode::Tree);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repeating_tree_stays_tree() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert_eq!(app.left.cwd, left_dir);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_chdirs_other_panel_stays_tree_and_normal() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        press(&mut app, KeyCode::Right);
+        let dest = tree_selected(&app);
+        assert_eq!(dest, left_dir.join("aaa"));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, dest);
+        assert_ne!(app.right.cwd, right_dir);
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dynamic_up_down_left_right_and_f4_static() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert!(tree_figure(&app).is_dynamic());
+        press(&mut app, KeyCode::Right);
+        assert_eq!(tree_selected(&app), left_dir.join("aaa"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(tree_selected(&app), left_dir.join("bbb"));
+        assert!(
+            !tree_figure(&app)
+                .entries
+                .iter()
+                .any(|e| e.path == left_dir.join("aaa").join("a_child")),
+            "dynamic Down stays on siblings; child of the previous sibling is hidden"
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(tree_selected(&app), left_dir.join("aaa"));
+        press(&mut app, KeyCode::Left);
+        assert_eq!(tree_selected(&app), left_dir);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(tree_selected(&app), left_dir.join("aaa"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(tree_selected(&app), left_dir.join("bbb"));
+        press(&mut app, KeyCode::Right);
+        assert_eq!(tree_selected(&app), left_dir.join("bbb").join("b_child"));
+
+        press(&mut app, KeyCode::F(4));
+        assert!(!tree_figure(&app).is_dynamic());
+        let static_len = tree_figure(&app).entries.len();
+        press(&mut app, KeyCode::F(4));
+        assert!(tree_figure(&app).is_dynamic());
+        let dynamic_len = tree_figure(&app).entries.len();
+        assert!(
+            static_len >= dynamic_len,
+            "static shows all known dirs ({static_len}) vs neighborhood ({dynamic_len})"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f3_forget_and_rescan_replace_children() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(tree_selected(&app), left_dir.join("bbb"));
+        press(&mut app, KeyCode::F(3));
+        assert!(
+            !tree_figure(&app)
+                .known
+                .iter()
+                .any(|e| e.path == left_dir.join("bbb")),
+            "F3 Forget drops the selected dir"
+        );
+        assert!(
+            !tree_figure(&app)
+                .known
+                .iter()
+                .any(|e| e.path == left_dir.join("bbb").join("b_child")),
+            "F3 Forget drops descendants"
+        );
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, PanelMode::Tree);
+
+        if tree_selected(&app) != left_dir {
+            let idx = tree_figure(&app)
+                .entries
+                .iter()
+                .position(|e| e.path == left_dir)
+                .expect("left cwd in figure");
+            app.left.tree.as_mut().unwrap().figure.selected_index = idx;
+            let keep = left_dir.clone();
+            app.left
+                .tree
+                .as_mut()
+                .unwrap()
+                .figure
+                .rebuild_shown(Some(&keep));
+        }
+        let newborn = left_dir.join("new_child");
+        std::fs::create_dir(&newborn).unwrap();
+        press_ctrl(&mut app, 'r');
+        assert!(
+            tree_figure(&app).known.iter().any(|e| e.path == newborn),
+            "C-r rescan should pick up a new child"
+        );
+        press(&mut app, KeyCode::F(2));
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_s_search_shows_on_mini_status() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        press_ctrl(&mut app, 's');
+        assert!(
+            app.left.tree.as_ref().unwrap().search_active,
+            "C-s activates tree search"
+        );
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(tree_figure(&app).search, "zzz");
+        assert_eq!(tree_selected(&app), left_dir.join("zzzmatch"));
+        let line = tree_panel_mini_status(app.left.tree.as_ref().unwrap(), true, true)
+            .expect("mini-status while searching");
+        assert!(line.contains("Dynamic"), "mode on mini-status: {line:?}");
+        assert!(
+            line.contains("Search: zzz"),
+            "search string on mini-status: {line:?}"
+        );
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(tree_figure(&app).search, "zz");
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+        assert_eq!(tree_figure(&app).search, "z");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn listing_mode_ok_and_alt_t_restore_listing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        open_left_right_item(&mut app, false, "Listing mode...");
+        assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
+        tab_listing_ok(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.left.listing, ListingFormat::Full);
+
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        press_alt(&mut app, 't');
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.left.listing, ListingFormat::Brief);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_does_not_restore_listing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_q_sets_other_panel_to_quick_view_from_tree() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        ctrl_x_then(&mut app, 'q');
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn filter_sort_equal_swap_help_quick_cd_still_work() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+
+        open_command_item(&mut app, "Swap panels");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        open_command_item(&mut app, "Swap panels");
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+
+        open_left_right_item(&mut app, false, "Filter");
+        assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        assert!(matches!(app.ui_mode, UiMode::SortDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        app.layout.panel_ratio = 0.8;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must still open"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_directory_tree_still_opens_dialog() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        open_command_item(&mut app, "Directory tree");
+        assert!(
+            matches!(app.ui_mode, UiMode::DirectoryTree(_)),
+            "Command menu Directory tree must still open the dedicated figure"
+        );
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn page_keys_use_page_rows_without_tty() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Tree");
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        TerminalApp::handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), 2)
+            .unwrap();
+        TerminalApp::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            2,
+        )
+        .unwrap();
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1429,7 +1429,7 @@ impl App {
                 let p = self.active_panel_mut();
                 p.listing = p.listing.cycle();
                 // GNU: applying a listing format restores Listing panel mode
-                // (Quick view / Info → listing). Alt-t is the same path.
+                // (Quick view / Info / Tree → listing). Alt-t is the same path.
                 p.mode = PanelMode::Listing;
             }
             ToggleHidden => {
@@ -2451,5 +2451,9 @@ mod tests {
         app.handle_action(Action::CycleListingFormat).unwrap();
         assert_eq!(app.left.mode, PanelMode::Listing);
         assert_eq!(app.left.listing, ListingFormat::Long);
+        app.left.mode = PanelMode::Tree;
+        app.handle_action(Action::CycleListingFormat).unwrap();
+        assert_eq!(app.left.mode, PanelMode::Listing);
+        assert_eq!(app.left.listing, ListingFormat::User);
     }
 }

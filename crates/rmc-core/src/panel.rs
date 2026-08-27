@@ -1,3 +1,4 @@
+use crate::dirtree::DirectoryTreeState;
 use crate::matchutil;
 use crate::selection::Selection;
 use crate::sorting::{self, SortDir};
@@ -19,11 +20,15 @@ pub struct TreeEntry {
     pub depth: usize,
 }
 
+/// Per-panel tree figure for Left/Right → Tree (not the Command-menu dialog).
+///
+/// Reuses [`DirectoryTreeState`] so dynamic/static navigation, forget, rescan,
+/// and search stay on one engine.
 #[derive(Debug, Clone)]
 pub struct TreeState {
-    pub entries: Vec<TreeEntry>,
-    pub cursor: usize,
-    pub scroll_top: usize,
+    pub figure: DirectoryTreeState,
+    /// GNU tree view: typed characters extend search only after C-s / Alt-s.
+    pub search_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -733,6 +738,29 @@ pub fn panel_mini_status_line(
     })
 }
 
+/// Mini-status for Left/Right Tree panel mode.
+///
+/// After C-s, GNU shows the search string on this row. We include Dynamic/Static
+/// plus the string so tests and the user can see both mode and query.
+pub fn tree_panel_mini_status(
+    tree: &TreeState,
+    show_mini_status: bool,
+    is_active_panel: bool,
+) -> Option<String> {
+    if is_active_panel && tree.search_active {
+        let mode = if tree.figure.is_dynamic() {
+            "Dynamic"
+        } else {
+            "Static"
+        };
+        return Some(format!("{mode}  Search: {}", tree.figure.search));
+    }
+    if !show_mini_status {
+        return None;
+    }
+    Some(tree.figure.selected_path().display().to_string())
+}
+
 fn user_size_string(ent: &FileEntry, si: bool) -> String {
     if ent.name == ".." {
         "UP--DIR".to_string()
@@ -1269,6 +1297,39 @@ mod tests {
             None,
             "inactive panel does not show quick search on mini-status"
         );
+    }
+
+    #[test]
+    fn tree_panel_mini_status_shows_mode_and_search() {
+        let known = vec![
+            TreeEntry {
+                path: PathBuf::from("/"),
+                depth: 0,
+            },
+            TreeEntry {
+                path: PathBuf::from("/tmp"),
+                depth: 1,
+            },
+        ];
+        let mut tree = TreeState {
+            figure: crate::dirtree::DirectoryTreeState::new(known, Path::new("/tmp")),
+            search_active: false,
+        };
+        assert!(tree_panel_mini_status(&tree, false, true).is_none());
+        tree.search_active = true;
+        tree.figure.search = "tm".to_string();
+        let line = tree_panel_mini_status(&tree, false, true).expect("search row");
+        assert!(line.contains("Dynamic"), "mode in mini-status: {line:?}");
+        assert!(
+            line.contains("Search: tm"),
+            "string in mini-status: {line:?}"
+        );
+        tree.figure.toggle_mode();
+        tree.search_active = true;
+        tree.figure.search = "tm".to_string();
+        let line = tree_panel_mini_status(&tree, false, true).expect("static search row");
+        assert!(line.contains("Static"), "mode in mini-status: {line:?}");
+        assert!(line.contains("Search: tm"), "{line:?}");
     }
 
     #[test]

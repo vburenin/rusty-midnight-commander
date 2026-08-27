@@ -3573,15 +3573,25 @@ fn draw_panel(
             }
             PanelMode::Tree => {
                 if let Some(tree) = &panel.tree {
-                    for i in 0..content_h as usize {
-                        let idx = tree.scroll_top + i;
-                        if let Some(ent) = tree.entries.get(idx) {
+                    let is_active_panel = (is_left
+                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                    let status = rmc_core::panel::tree_panel_mini_status(
+                        tree,
+                        app.panel_opts.show_mini_status,
+                        is_active_panel,
+                    );
+                    let list_h = if status.is_some() {
+                        content_h.saturating_sub(1)
+                    } else {
+                        content_h
+                    };
+                    let figure = &tree.figure;
+                    for i in 0..list_h as usize {
+                        let idx = figure.scroll_top + i;
+                        if let Some(ent) = figure.entries.get(idx) {
                             let row_y = content_top + i as u16;
-                            let is_active_panel = (is_left
-                                && matches!(app.active, rmc_core::actions::PaneSide::Left))
-                                || (!is_left
-                                    && matches!(app.active, rmc_core::actions::PaneSide::Right));
-                            let is_cursor = idx == tree.cursor;
+                            let is_cursor = idx == figure.selected_index;
                             let (fg, bg) = if is_cursor && is_active_panel {
                                 (pal.selected_fg, pal.selected_bg)
                             } else {
@@ -3591,8 +3601,24 @@ fn draw_panel(
                             p.goto(x + 1, row_y);
                             let name = ent.path.file_name().and_then(|s| s.to_str()).unwrap_or("/");
                             let indent = "  ".repeat(ent.depth);
-                            let display = format!("{indent}{name}/");
+                            let display = if ent.path.as_os_str() == "/" {
+                                "/".to_string()
+                            } else {
+                                format!("{indent}{name}/")
+                            };
                             p.text(&truncate(&display, (w - 2) as usize));
+                        }
+                    }
+                    if let Some(text) = status {
+                        let status_y = y + h - 2;
+                        p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
+                        p.goto(x + 1, status_y);
+                        let s = truncate(&text, (w - 2) as usize);
+                        p.text(&s);
+                        let inner = (w - 2) as usize;
+                        let used = s.chars().count();
+                        if used < inner {
+                            p.text(&" ".repeat(inner - used));
                         }
                     }
                 } else {
