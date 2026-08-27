@@ -1301,9 +1301,7 @@ impl TerminalApp {
                         if app.subshell.cmdline.trim().is_empty() {
                             // Empty command: use panel Enter behavior
                             app.ui_mode = UiMode::Normal;
-                            if !try_enter_executable(app)? {
-                                app.handle_action(Action::Enter)?;
-                            }
+                            handle_panel_enter(app)?;
                         } else {
                             // Prefer executing inside a live PTY session when available.
                             let outcome = {
@@ -4987,14 +4985,17 @@ impl TerminalApp {
                 return Ok(());
             }
         }
-        // Lynx-like motion (Options → Panels): Left = parent, Right = enter.
-        // Only in Normal listing mode; reuse ParentDir / Enter (do not open viewer).
+        // Lynx-like motion (Options → Panels): Left = parent, Right = panel Enter
+        // (dirs / archives / executables / mc.ext Open). Listing mode only.
         if matches!(app.ui_mode, UiMode::Normal)
             && key.modifiers.is_empty()
             && matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing)
         {
             if let Some(action) = lynx_like_arrow_action(app.panel_opts.lynx_like, key.code) {
-                app.handle_action(action)?;
+                match action {
+                    Action::Enter => handle_panel_enter(app)?,
+                    other => app.handle_action(other)?,
+                }
                 return Ok(());
             }
         }
@@ -5151,37 +5152,7 @@ impl TerminalApp {
             }
             match action {
                 Action::ViewFile => {
-                    // If configured to use internal viewer, delegate to core; otherwise spawn external viewer.
-                    if app.config_opts.use_internal_view {
-                        app.handle_action(Action::ViewFile)?;
-                    } else {
-                        if let Some(ent) = app.active_panel().current_entry().cloned() {
-                            if !ent.is_dir {
-                                // Prefer $PAGER; otherwise try view, then less
-                                if let Some(pager) =
-                                    std::env::var("PAGER").ok().filter(|s| !s.trim().is_empty())
-                                {
-                                    let _ = std::process::Command::new(&pager)
-                                        .arg(&ent.path)
-                                        .current_dir(&app.active_panel().cwd)
-                                        .status();
-                                } else {
-                                    let tried_view = std::process::Command::new("view")
-                                        .arg(&ent.path)
-                                        .current_dir(&app.active_panel().cwd)
-                                        .status()
-                                        .is_ok();
-                                    if !tried_view {
-                                        let _ = std::process::Command::new("less")
-                                            .arg(&ent.path)
-                                            .current_dir(&app.active_panel().cwd)
-                                            .status();
-                                    }
-                                }
-                                app.reload_panels()?;
-                            }
-                        }
-                    }
+                    view_current_file(app)?;
                 }
                 Action::FunctionKey(4) => {
                     // Open editor on selected file (panels Normal mode)
@@ -5441,9 +5412,7 @@ impl TerminalApp {
                     }
                 }
                 Action::Enter => {
-                    if !try_enter_executable(app)? {
-                        app.handle_action(Action::Enter)?;
-                    }
+                    handle_panel_enter(app)?;
                 }
                 _ => app.handle_action(action)?,
             }
@@ -5508,10 +5477,94 @@ fn quote_exec_path(path: &std::path::Path) -> String {
     out
 }
 
+/// Panel Enter: directory / `..` / panelized and VFS archives stay in core;
+/// executables run first; then mc.ext `[open]` for regular files.
+fn handle_panel_enter(app: &mut App) -> Result<()> {
+    if try_enter_executable(app)? {
+        return Ok(());
+    }
+    if try_open_by_extension(app)? {
+        return Ok(());
+    }
+    app.handle_action(Action::Enter)
+}
+
+/// F3 / `[open] = view`: internal viewer when configured, else $PAGER / view / less.
+fn view_current_file(app: &mut App) -> Result<()> {
+    if app.config_opts.use_internal_view {
+        app.handle_action(Action::ViewFile)?;
+        return Ok(());
+    }
+    if let Some(ent) = app.active_panel().current_entry().cloned() {
+        if !ent.is_dir {
+            // Prefer $PAGER; otherwise try view, then less
+            if let Some(pager) = std::env::var("PAGER").ok().filter(|s| !s.trim().is_empty()) {
+                let _ = std::process::Command::new(&pager)
+                    .arg(&ent.path)
+                    .current_dir(&app.active_panel().cwd)
+                    .status();
+            } else {
+                let tried_view = std::process::Command::new("view")
+                    .arg(&ent.path)
+                    .current_dir(&app.active_panel().cwd)
+                    .status()
+                    .is_ok();
+                if !tried_view {
+                    let _ = std::process::Command::new("less")
+                        .arg(&ent.path)
+                        .current_dir(&app.active_panel().cwd)
+                        .status();
+                }
+            }
+            app.reload_panels()?;
+        }
+    }
+    Ok(())
+}
+
+/// Enter on a regular non-executable file: consult mc.ext `[open]`.
+/// Directories, VFS-enterable archives, and unknown extensions return false
+/// so core `Action::Enter` can run (or no-op).
+fn try_open_by_extension(app: &mut App) -> Result<bool> {
+    let (path, is_dir) = match app.active_panel().current_entry() {
+        Some(ent) => (ent.path.clone(), ent.is_dir),
+        None => return Ok(false),
+    };
+    if is_dir {
+        return Ok(false);
+    }
+    // Archives / extfs: let Action::Enter VFS-enter instead of opening.
+    if app.vfs.enter_path(&path).is_some() {
+        return Ok(false);
+    }
+    match crate::mc_ext::lookup_open(&path) {
+        Some(crate::mc_ext::OpenAction::View) => {
+            view_current_file(app)?;
+            Ok(true)
+        }
+        Some(crate::mc_ext::OpenAction::XdgOpen) => {
+            run_desktop_open(&path, &app.active_panel().cwd);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+fn run_desktop_open(path: &std::path::Path, cwd: &std::path::Path) {
+    let prog = crate::mc_ext::desktop_open_program();
+    let _ = std::process::Command::new(&prog)
+        .arg(path)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 /// Enter on a regular executable file: run it, or prompt when `confirm.execute`.
 /// Returns true when the current entry was an executable that is not VFS-enterable
-/// (so core `Action::Enter` must not run). Directories, archives, and non-executables
-/// return false.
+/// (so core `Action::Enter` / mc.ext Open must not run). Directories, archives, and
+/// non-executables return false.
 fn try_enter_executable(app: &mut App) -> Result<bool> {
     let (path, is_dir, is_exe) = match app.active_panel().current_entry() {
         Some(ent) => (ent.path.clone(), ent.is_dir, ent.is_exe),
@@ -5775,12 +5828,147 @@ mod enter_executable_tests {
     #[test]
     fn enter_non_executable_is_noop() {
         let root = temp_workspace();
-        let file = root.join("notes.txt");
+        let file = root.join("notes.dat");
         std::fs::write(&file, "hi").unwrap();
         let mut app = make_app(&root);
-        select_named(&mut app, "notes.txt");
+        select_named(&mut app, "notes.dat");
         assert!(!app.active_panel().current_entry().unwrap().is_exe);
         assert!(!try_enter_executable(&mut app).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod enter_open_tests {
+    use super::*;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-enter-open-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        // App::new overlays user setup; keep F3/Open on the internal viewer so
+        // tests never spawn `view`/`less` with `.status()`.
+        app.config_opts.use_internal_view = true;
+        app.confirm.execute = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn press_enter(app: &mut App) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        TerminalApp::handle_key(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 10)
+            .unwrap();
+    }
+
+    #[test]
+    fn open_txt_uses_internal_viewer_without_execute_confirm() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt");
+        assert!(!try_enter_executable(&mut app).unwrap());
+        assert!(try_open_by_extension(&mut app).unwrap());
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_key_opens_mapped_text_file() {
+        let root = temp_workspace();
+        let file = root.join("lib.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "lib.rs");
+        press_enter(&mut app);
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unknown_extension_is_still_noop() {
+        let root = temp_workspace();
+        std::fs::write(root.join("data.bin"), b"\x00\x01").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "data.bin");
+        assert!(!try_open_by_extension(&mut app).unwrap());
+        press_enter(&mut app);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active_panel().cwd, root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directory_is_not_opened_by_extension() {
+        let root = temp_workspace();
+        let sub = root.join("src.rs");
+        std::fs::create_dir(&sub).unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "src.rs");
+        assert!(!try_open_by_extension(&mut app).unwrap());
+        press_enter(&mut app);
+        assert_eq!(app.active_panel().cwd, sub);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn xdg_open_mapping_does_not_prompt_execute() {
+        let root = temp_workspace();
+        std::fs::write(root.join("shot.png"), b"not-a-real-png").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "shot.png");
+        assert!(try_open_by_extension(&mut app).unwrap());
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn executable_mapped_file_still_runs_execute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_workspace();
+        let script = root.join("notes.txt");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt");
+        press_enter(&mut app);
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, .. } => assert_eq!(title, "Execute command"),
+            _ => panic!("expected execute confirm, not Open/view"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -5808,6 +5996,8 @@ mod lynx_like_motion_tests {
     fn make_app(cwd: &std::path::Path) -> App {
         let vfs = LocalFs::new();
         let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        // App::new overlays user setup; keep Open→view on the internal viewer.
+        app.config_opts.use_internal_view = true;
         app.change_dir(cwd).unwrap();
         app
     }
@@ -5866,20 +6056,37 @@ mod lynx_like_motion_tests {
     }
 
     #[test]
-    fn right_enters_directory_and_ignores_regular_files() {
+    fn right_enters_directory_and_ignores_unmapped_files() {
         let root = temp_workspace();
         let sub = root.join("sub");
         std::fs::create_dir(&sub).unwrap();
-        std::fs::write(root.join("notes.txt"), "hi").unwrap();
+        std::fs::write(root.join("notes.dat"), "hi").unwrap();
         let mut app = make_app(&root);
         app.panel_opts.lynx_like = true;
-        select_named(&mut app, "notes.txt");
+        select_named(&mut app, "notes.dat");
         press(&mut app, KeyCode::Right);
         assert_eq!(app.active_panel().cwd, root);
         assert!(matches!(app.ui_mode, UiMode::Normal));
         select_named(&mut app, "sub");
         press(&mut app, KeyCode::Right);
         assert_eq!(app.active_panel().cwd, sub);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn right_opens_mapped_text_file_when_lynx_like() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hi").unwrap();
+        let mut app = make_app(&root);
+        app.panel_opts.lynx_like = true;
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active_panel().cwd, root);
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("expected Viewer"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

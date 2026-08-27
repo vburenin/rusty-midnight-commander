@@ -2,7 +2,17 @@ use rmc_fs::remote::{
     copy_out_with_client, ftp_connect_target, list_dir, list_dir_with_client, parse_remote_url_str,
     set_ftp_proxy, RemoteClient, RemoteEntry, RemoteScheme, RemoteUrl,
 };
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+/// Live `set_ftp_proxy` + TCP mock tests share process-wide proxy state.
+static FTP_PROXY_LIVE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_ftp_proxy_tests() -> std::sync::MutexGuard<'static, ()> {
+    FTP_PROXY_LIVE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 #[test]
 fn parse_ftp_and_sftp_urls() {
@@ -189,6 +199,8 @@ fn ftp_connect_sends_user_at_host_to_proxy() {
     use std::thread;
     use std::time::Duration;
 
+    let _serial = lock_ftp_proxy_tests();
+
     struct ClearProxy;
     impl Drop for ClearProxy {
         fn drop(&mut self) {
@@ -234,6 +246,8 @@ fn ftp_connect_direct_sends_plain_user_to_real_host() {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    let _serial = lock_ftp_proxy_tests();
 
     struct ClearProxy;
     impl Drop for ClearProxy {

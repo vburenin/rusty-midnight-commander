@@ -858,7 +858,7 @@ impl App {
                         if let Some(p) = self.vfs.enter_path(&ent.path) {
                             self.change_dir(&p)?;
                         } else {
-                            // No-op for regular files (open with View action instead)
+                            // No-op here; UI Enter path may Open via mc.ext after VFS/exe fail.
                         }
                     }
                 }
