@@ -351,6 +351,69 @@ pub struct SelectGroupLast {
     pub regular_expression: bool,
 }
 
+/// Focus within the GNU File → Chmod dialog (C-x c).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChmodDialogFocus {
+    UserRead,
+    UserWrite,
+    UserExec,
+    GroupRead,
+    GroupWrite,
+    GroupExec,
+    OtherRead,
+    OtherWrite,
+    OtherExec,
+    SetUid,
+    SetGid,
+    Sticky,
+    Recursive,
+    Set,
+    Cancel,
+}
+
+/// Focus within the GNU File → Chown dialog (C-x o).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChownDialogFocus {
+    Owner,
+    Group,
+    Recursive,
+    Ok,
+    Cancel,
+}
+
+/// Kind of link created by File → Hard link / SymLink / Relative symlink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    Hard,
+    Abs,
+    Rel,
+}
+
+impl LinkKind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Hard => "Link",
+            Self::Abs => "Symbolic link",
+            Self::Rel => "Relative symlink",
+        }
+    }
+
+    pub fn prompt(self) -> &'static str {
+        match self {
+            Self::Hard => "Enter the name of the hard link to:",
+            Self::Abs | Self::Rel => "Enter name of the symlink:",
+        }
+    }
+}
+
+/// Focus within the GNU hard-link / symlink name dialog (C-x l / s / v).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkDialogFocus {
+    Name,
+    Ok,
+    Cancel,
+}
+
 #[allow(clippy::large_enum_variant)] // Editor owns EditorBuffer; overlays are boxed where needed
 pub enum UiMode {
     Normal,
@@ -490,11 +553,11 @@ pub enum UiMode {
         dst_path: PathBuf,
         focus: OverwriteFocus,
     },
-    // Permissions dialog
+    // Permissions dialog (GNU File → Chmod / C-x c)
     ChmodDialog {
         name: String,
+        paths: Vec<PathBuf>,
         mode: u32,
-        // Bit flags
         ur: bool,
         uw: bool,
         ux: bool,
@@ -508,15 +571,24 @@ pub enum UiMode {
         sgid: bool,
         sticky: bool,
         recursive: bool,
-        focus_index: usize,
+        allow_recursive: bool,
+        focus: ChmodDialogFocus,
     },
-    // Ownership dialog
+    // Ownership dialog (GNU File → Chown / C-x o)
     ChownDialog {
+        paths: Vec<PathBuf>,
         owner: String,
         group: String,
         recursive: bool,
-        // 0=owner,1=group,2=recursive,3=ok,4=cancel
-        focus_index: usize,
+        allow_recursive: bool,
+        focus: ChownDialogFocus,
+    },
+    /// GNU File → Hard link / SymLink / Relative symlink (C-x l / s / v).
+    LinkDialog {
+        kind: LinkKind,
+        src: PathBuf,
+        value: String,
+        focus: LinkDialogFocus,
     },
     MkdirDialog {
         value: String,
@@ -1666,6 +1738,11 @@ impl App {
             Copy | Move | Mkdir | Delete => {
                 // UI layer opens dialogs; core provides helpers
             }
+            Chmod => self.open_chmod_dialog(),
+            Chown => self.open_chown_dialog(),
+            LinkHard => self.open_link_dialog(LinkKind::Hard),
+            SymlinkAbs => self.open_link_dialog(LinkKind::Abs),
+            SymlinkRel => self.open_link_dialog(LinkKind::Rel),
             ShowUserMenu => self.try_open_user_menu(),
             ViewerQuit => self.close_current_screen(),
             ViewerToggleHex => {
@@ -1726,6 +1803,170 @@ impl App {
             entries: menu.entries,
             selected_index: 0,
         };
+    }
+
+    /// Tagged entries, or the current entry when nothing is tagged. Never `..`.
+    fn tagged_or_current_entries(&self) -> Vec<&FileEntry> {
+        let panel = self.active_panel();
+        if panel.selection.is_empty() {
+            match panel.current_entry() {
+                Some(e) if !e.is_parent_marker() => vec![e],
+                _ => Vec::new(),
+            }
+        } else {
+            panel
+                .selection
+                .iter()
+                .filter_map(|i| panel.entries.get(i))
+                .filter(|e| !e.is_parent_marker())
+                .collect()
+        }
+    }
+
+    /// GNU File → Chmod (C-x c). Seeds bits from the current entry; applies to
+    /// tagged files when any are marked.
+    pub fn open_chmod_dialog(&mut self) {
+        let targets = self.tagged_or_current_entries();
+        if targets.is_empty() {
+            return;
+        }
+        let paths: Vec<PathBuf> = targets.iter().map(|e| e.path.clone()).collect();
+        let allow_recursive = targets.iter().any(|e| e.is_dir);
+        let n = paths.len();
+        let name = if !self.active_panel().selection.is_empty() {
+            format!("{n} files")
+        } else {
+            targets[0].name.clone()
+        };
+        let m = self
+            .active_panel()
+            .current_entry()
+            .map(|e| e.permissions & 0o7777)
+            .unwrap_or_else(|| targets[0].permissions & 0o7777);
+        self.ui_mode = UiMode::ChmodDialog {
+            name,
+            paths,
+            mode: m,
+            ur: (m & 0o400) != 0,
+            uw: (m & 0o200) != 0,
+            ux: (m & 0o100) != 0,
+            gr: (m & 0o040) != 0,
+            gw: (m & 0o020) != 0,
+            gx: (m & 0o010) != 0,
+            or_: (m & 0o004) != 0,
+            ow: (m & 0o002) != 0,
+            ox: (m & 0o001) != 0,
+            suid: (m & 0o4000) != 0,
+            sgid: (m & 0o2000) != 0,
+            sticky: (m & 0o1000) != 0,
+            recursive: false,
+            allow_recursive,
+            focus: ChmodDialogFocus::UserRead,
+        };
+    }
+
+    /// GNU File → Chown (C-x o). Owner/group names; empty field = unchanged.
+    pub fn open_chown_dialog(&mut self) {
+        let targets = self.tagged_or_current_entries();
+        if targets.is_empty() {
+            return;
+        }
+        let paths: Vec<PathBuf> = targets.iter().map(|e| e.path.clone()).collect();
+        let allow_recursive = targets.iter().any(|e| e.is_dir);
+        let seed = self.active_panel().current_entry().unwrap_or(targets[0]);
+        self.ui_mode = UiMode::ChownDialog {
+            paths,
+            owner: seed.owner.clone().unwrap_or_default(),
+            group: seed.group.clone().unwrap_or_default(),
+            recursive: false,
+            allow_recursive,
+            focus: ChownDialogFocus::Owner,
+        };
+    }
+
+    /// GNU File → Hard link / SymLink / Relative symlink (C-x l / s / v).
+    ///
+    /// Hard-linking a directory (including `..`) is refused with an error
+    /// dialog. Destination defaults to the other panel's cwd + current name.
+    pub fn open_link_dialog(&mut self, kind: LinkKind) {
+        let Some(ent) = self.active_panel().current_entry().cloned() else {
+            return;
+        };
+        if ent.is_parent_marker() {
+            return;
+        }
+        if kind == LinkKind::Hard && ent.is_dir {
+            self.show_error_dialog("Cannot hard-link a directory".into());
+            return;
+        }
+        let dst_dir = self.inactive_panel().cwd.clone();
+        let default_to = dst_dir.join(&ent.name).display().to_string();
+        self.ui_mode = UiMode::LinkDialog {
+            kind,
+            src: ent.path,
+            value: default_to,
+            focus: LinkDialogFocus::Name,
+        };
+    }
+
+    /// Show a modal error (unknown user, dest exists, VFS failure). Does not panic.
+    pub fn show_error_dialog(&mut self, message: String) {
+        self.ui_mode = UiMode::DialogConfirm {
+            title: "Error".into(),
+            message,
+            on_ok: Box::new(|_| Ok(())),
+        };
+    }
+
+    /// Create the link named in the dialog. Refuses to clobber an existing dest
+    /// (overwrite/replace confirm is out of scope). Relative symlink stores a
+    /// path relative to the new link's directory.
+    pub fn apply_link_dialog(&mut self, kind: LinkKind, src: &Path, dst_raw: &str) -> Result<()> {
+        let dst = PathBuf::from(dst_raw.trim());
+        if dst.as_os_str().is_empty() {
+            anyhow::bail!("link name is empty");
+        }
+        let dst = if dst.is_absolute() {
+            dst
+        } else {
+            self.inactive_panel().cwd.join(dst)
+        };
+        if self.vfs.stat(&dst).is_ok() {
+            anyhow::bail!(
+                "destination already exists: {} (overwrite confirm is not implemented; refusing to clobber)",
+                dst.display()
+            );
+        }
+        let cwd = self.active_panel().cwd.clone();
+        let abs_src = if src.is_absolute() {
+            src.to_path_buf()
+        } else {
+            cwd.join(src)
+        };
+        match kind {
+            LinkKind::Hard => {
+                let md = self.vfs.stat(&abs_src)?;
+                if md.is_dir {
+                    anyhow::bail!("Cannot hard-link a directory");
+                }
+                self.vfs.link_hard(&abs_src, &dst)?;
+            }
+            LinkKind::Abs => {
+                self.vfs.symlink(&abs_src, &dst)?;
+            }
+            LinkKind::Rel => {
+                let base = dst.parent().unwrap_or_else(|| Path::new("."));
+                let abs_base = if base.is_absolute() {
+                    base.to_path_buf()
+                } else {
+                    cwd.join(base)
+                };
+                let rel = relative_path(&abs_base, &abs_src);
+                self.vfs.symlink(&rel, &dst)?;
+            }
+        }
+        self.reload_panels()?;
+        Ok(())
     }
 
     fn open_select_group_dialog(&mut self, select: bool) {
@@ -1881,6 +2122,7 @@ impl App {
             UiMode::FtpConnectDialog { .. } => "FTP".to_string(),
             UiMode::ChmodDialog { .. } => "Chmod".to_string(),
             UiMode::ChownDialog { .. } => "Chown".to_string(),
+            UiMode::LinkDialog { .. } => "Link".to_string(),
             UiMode::MenuFocused => "Menus".to_string(),
             UiMode::Help { state, .. } => state.topic.clone(),
             UiMode::ShellInput => "Panels".to_string(),
@@ -2196,6 +2438,84 @@ impl App {
     pub fn drive_pending_file_op(&mut self) -> Result<()> {
         self.poll_file_op_progress()
     }
+}
+
+/// Path of `to` relative to directory `from`. Used for GNU C-x v.
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let mut i = 0usize;
+    while i < from.len() && i < to.len() && from[i] == to[i] {
+        i += 1;
+    }
+    let mut out = PathBuf::new();
+    for _ in i..from.len() {
+        out.push("..");
+    }
+    for comp in &to[i..] {
+        out.push(comp.as_os_str());
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
+}
+
+/// Recompute octal mode from GNU Chmod checkboxes (permission bits only).
+#[allow(clippy::too_many_arguments)]
+pub fn chmod_mode_from_bits(
+    ur: bool,
+    uw: bool,
+    ux: bool,
+    gr: bool,
+    gw: bool,
+    gx: bool,
+    or_: bool,
+    ow: bool,
+    ox: bool,
+    suid: bool,
+    sgid: bool,
+    sticky: bool,
+) -> u32 {
+    let mut m = 0u32;
+    if ur {
+        m |= 0o400;
+    }
+    if uw {
+        m |= 0o200;
+    }
+    if ux {
+        m |= 0o100;
+    }
+    if gr {
+        m |= 0o040;
+    }
+    if gw {
+        m |= 0o020;
+    }
+    if gx {
+        m |= 0o010;
+    }
+    if or_ {
+        m |= 0o004;
+    }
+    if ow {
+        m |= 0o002;
+    }
+    if ox {
+        m |= 0o001;
+    }
+    if suid {
+        m |= 0o4000;
+    }
+    if sgid {
+        m |= 0o2000;
+    }
+    if sticky {
+        m |= 0o1000;
+    }
+    m
 }
 
 #[cfg(test)]

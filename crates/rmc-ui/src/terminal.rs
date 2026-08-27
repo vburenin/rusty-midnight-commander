@@ -15,12 +15,12 @@ use crossterm::terminal::{
 };
 use rmc_core::actions::{Action, PaneSide};
 use rmc_core::app::{
-    App, EditorGotoDialog, EditorGotoFocus, EditorMenu, EditorPipeDialog, EditorPipeFocus,
-    EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog, EditorSaveAsFocus,
-    EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog, EditorTabSpacingFocus,
-    FilterDialogFocus, HistoryDialogFocus, LayoutFocus, ScreenListFocus, SelectGroupDialogFocus,
-    UiMode, ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog,
-    ViewerSearchFocus,
+    App, ChmodDialogFocus, ChownDialogFocus, EditorGotoDialog, EditorGotoFocus, EditorMenu,
+    EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog,
+    EditorSaveAsFocus, EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog,
+    EditorTabSpacingFocus, FilterDialogFocus, HistoryDialogFocus, LayoutFocus, LinkDialogFocus,
+    ScreenListFocus, SelectGroupDialogFocus, UiMode, ViewerDisplayDialog, ViewerDisplayFocus,
+    ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::complete::{
     classify_token, collect_matches, common_replacement_prefix, filter_items, token_before_cursor,
@@ -5605,6 +5605,7 @@ impl TerminalApp {
             }
             UiMode::ChmodDialog {
                 name: _,
+                paths,
                 mode,
                 ur,
                 uw,
@@ -5619,229 +5620,276 @@ impl TerminalApp {
                 sgid,
                 sticky,
                 recursive,
-                focus_index,
+                allow_recursive,
+                focus,
             } => {
-                // 0..8: rwx (u,g,o), 9..11: suid/sgid/sticky, 12: recursive, 13: OK, 14: Cancel
-                let total_fields = 15usize;
+                use ChmodDialogFocus as F;
+                let order = chmod_focus_order(*allow_recursive);
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                let mut apply = false;
                 match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                        return Ok(());
+                    }
                     KeyCode::Tab => {
-                        *focus_index = (*focus_index + 1) % total_fields;
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
                     }
                     KeyCode::BackTab => {
-                        *focus_index = (*focus_index + total_fields - 1) % total_fields;
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
                     }
-                    KeyCode::Char(' ') => {
-                        match *focus_index {
-                            0 => *ur = !*ur,
-                            1 => *uw = !*uw,
-                            2 => *ux = !*ux,
-                            3 => *gr = !*gr,
-                            4 => *gw = !*gw,
-                            5 => *gx = !*gx,
-                            6 => *or_ = !*or_,
-                            7 => *ow = !*ow,
-                            8 => *ox = !*ox,
-                            9 => *suid = !*suid,
-                            10 => *sgid = !*sgid,
-                            11 => *sticky = !*sticky,
-                            12 => *recursive = !*recursive,
-                            _ => {}
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
                         }
-                        // Recompute mode from flags
-                        let mut m = 0u32;
-                        if *ur {
-                            m |= 0o400
-                        }
-                        if *uw {
-                            m |= 0o200
-                        }
-                        if *ux {
-                            m |= 0o100
-                        }
-                        if *gr {
-                            m |= 0o040
-                        }
-                        if *gw {
-                            m |= 0o020
-                        }
-                        if *gx {
-                            m |= 0o010
-                        }
-                        if *or_ {
-                            m |= 0o004
-                        }
-                        if *ow {
-                            m |= 0o002
-                        }
-                        if *ox {
-                            m |= 0o001
-                        }
-                        if *suid {
-                            m |= 0o4000
-                        }
-                        if *sgid {
-                            m |= 0o2000
-                        }
-                        if *sticky {
-                            m |= 0o1000
-                        }
-                        *mode = m;
                     }
-                    KeyCode::Enter => {
-                        // Cancel selected
-                        if *focus_index == 14 {
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Set | F::Cancel) {
+                            *focus = if matches!(*focus, F::Set) {
+                                F::Cancel
+                            } else {
+                                F::Set
+                            };
+                        }
+                    }
+                    // Space on checkboxes/buttons before generic Char.
+                    KeyCode::Char(' ') => match *focus {
+                        F::UserRead => *ur = !*ur,
+                        F::UserWrite => *uw = !*uw,
+                        F::UserExec => *ux = !*ux,
+                        F::GroupRead => *gr = !*gr,
+                        F::GroupWrite => *gw = !*gw,
+                        F::GroupExec => *gx = !*gx,
+                        F::OtherRead => *or_ = !*or_,
+                        F::OtherWrite => *ow = !*ow,
+                        F::OtherExec => *ox = !*ox,
+                        F::SetUid => *suid = !*suid,
+                        F::SetGid => *sgid = !*sgid,
+                        F::Sticky => *sticky = !*sticky,
+                        F::Recursive if *allow_recursive => *recursive = !*recursive,
+                        F::Set => apply = true,
+                        F::Cancel => {
                             app.ui_mode = UiMode::Normal;
                             return Ok(());
                         }
-                        // Only OK applies
-                        if *focus_index != 13 {
+                        F::Recursive => {}
+                    },
+                    KeyCode::Char(_) => {}
+                    KeyCode::Enter => match *focus {
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
                             return Ok(());
                         }
-                        let mode_val = *mode;
-                        let recursive_val = *recursive;
-                        app.ui_mode = UiMode::Normal;
-                        // Collect paths: selected entries or current
-                        let paths: Vec<std::path::PathBuf> = {
-                            let p = app.active_panel();
-                            let mut out = Vec::new();
-                            if p.selection.is_empty() {
-                                if let Some(ent) = p.current_entry() {
-                                    if ent.name != ".." {
-                                        out.push(ent.path.clone());
-                                    }
-                                }
-                            } else {
-                                for idx in p.selection.iter() {
-                                    if let Some(ent) = p.entries.get(idx) {
-                                        if ent.name != ".." {
-                                            out.push(ent.path.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            out
-                        };
-                        // Try apply; on error, show error dialog
-                        let mut first_err: Option<anyhow::Error> = None;
-                        for p in paths {
-                            if let Err(e) = app.vfs.chmod(&p, mode_val, recursive_val) {
-                                first_err = Some(anyhow::Error::new(e));
-                                break;
-                            }
-                        }
-                        if let Some(err) = first_err {
-                            app.ui_mode = UiMode::DialogConfirm {
-                                title: "Error".into(),
-                                message: format!("{err}"),
-                                on_ok: Box::new(|_| Ok(())),
-                            };
-                        } else {
-                            app.reload_panels()?;
+                        _ => apply = true,
+                    },
+                    _ => {}
+                }
+                *mode = rmc_core::app::chmod_mode_from_bits(
+                    *ur, *uw, *ux, *gr, *gw, *gx, *or_, *ow, *ox, *suid, *sgid, *sticky,
+                );
+                if apply {
+                    let mode_val = *mode;
+                    let recursive_val = *recursive && *allow_recursive;
+                    let paths = paths.clone();
+                    app.ui_mode = UiMode::Normal;
+                    for p in paths {
+                        if let Err(e) = app.vfs.chmod(&p, mode_val, recursive_val) {
+                            app.show_error_dialog(format!("{e}"));
+                            return Ok(());
                         }
                     }
-                    _ => {}
+                    app.reload_panels()?;
                 }
                 return Ok(());
             }
             UiMode::ChownDialog {
+                paths,
                 owner,
                 group,
                 recursive,
-                focus_index,
+                allow_recursive,
+                focus,
             } => {
+                use ChownDialogFocus as F;
+                let order = chown_focus_order(*allow_recursive);
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                let mut apply = false;
                 match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                        return Ok(());
+                    }
                     KeyCode::Tab => {
-                        *focus_index = (*focus_index + 1) % 5;
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
                     }
                     KeyCode::BackTab => {
-                        *focus_index = (*focus_index + 5 - 1) % 5;
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
                     }
-                    KeyCode::Char(c) if *focus_index == 0 && key.modifiers.is_empty() => {
-                        owner.push(c);
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
                     }
-                    KeyCode::Backspace if *focus_index == 0 => {
-                        owner.pop();
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
                     }
-                    KeyCode::Char(c) if *focus_index == 1 && key.modifiers.is_empty() => {
-                        group.push(c);
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
                     }
-                    KeyCode::Backspace if *focus_index == 1 => {
-                        group.pop();
-                    }
-                    KeyCode::Char(' ') if *focus_index == 2 => {
-                        *recursive = !*recursive;
-                    }
-                    KeyCode::Enter => {
-                        // Cancel
-                        if *focus_index == 4 {
+                    KeyCode::Backspace => match *focus {
+                        F::Owner => {
+                            owner.pop();
+                        }
+                        F::Group => {
+                            group.pop();
+                        }
+                        _ => {}
+                    },
+                    // Space on checkboxes/buttons before generic Char so owner/group
+                    // fields still accept spaces.
+                    KeyCode::Char(' ') if !matches!(*focus, F::Owner | F::Group) => match *focus {
+                        F::Recursive if *allow_recursive => *recursive = !*recursive,
+                        F::Ok => apply = true,
+                        F::Cancel => {
                             app.ui_mode = UiMode::Normal;
                             return Ok(());
                         }
-                        // Only OK applies
-                        if *focus_index != 3 {
-                            return Ok(());
-                        }
-                        // Capture values and close dialog to avoid borrow conflicts
-                        let owner_val = owner.clone();
-                        let group_val = group.clone();
-                        let recursive_val = *recursive;
-                        app.ui_mode = UiMode::Normal;
-                        // Apply to selected/current
-                        let paths: Vec<std::path::PathBuf> = {
-                            let p = app.active_panel();
-                            let mut out = Vec::new();
-                            if p.selection.is_empty() {
-                                if let Some(ent) = p.current_entry() {
-                                    if ent.name != ".." {
-                                        out.push(ent.path.clone());
-                                    }
-                                }
-                            } else {
-                                for idx in p.selection.iter() {
-                                    if let Some(ent) = p.entries.get(idx) {
-                                        if ent.name != ".." {
-                                            out.push(ent.path.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            out
-                        };
-                        let owner_opt = if owner_val.trim().is_empty() {
-                            None
-                        } else {
-                            Some(owner_val.trim().to_string())
-                        };
-                        let group_opt = if group_val.trim().is_empty() {
-                            None
-                        } else {
-                            Some(group_val.trim().to_string())
-                        };
-                        let mut first_err: Option<anyhow::Error> = None;
-                        for p in paths {
-                            if let Err(e) = app.vfs.chown(
-                                &p,
-                                owner_opt.as_deref(),
-                                group_opt.as_deref(),
-                                recursive_val,
-                            ) {
-                                first_err = Some(anyhow::Error::new(e));
-                                break;
-                            }
-                        }
-                        if let Some(err) = first_err {
-                            app.ui_mode = UiMode::DialogConfirm {
-                                title: "Error".into(),
-                                message: format!("{err}"),
-                                on_ok: Box::new(|_| Ok(())),
-                            };
-                        } else {
-                            app.reload_panels()?;
+                        F::Owner | F::Group | F::Recursive => {}
+                    },
+                    KeyCode::Char(c)
+                        if key.modifiers.is_empty() && matches!(*focus, F::Owner | F::Group) =>
+                    {
+                        match *focus {
+                            F::Owner => owner.push(c),
+                            F::Group => group.push(c),
+                            _ => {}
                         }
                     }
+                    KeyCode::Enter => match *focus {
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        F::Recursive if *allow_recursive => *recursive = !*recursive,
+                        _ => apply = true,
+                    },
                     _ => {}
+                }
+                if apply {
+                    let owner_val = owner.clone();
+                    let group_val = group.clone();
+                    let recursive_val = *recursive && *allow_recursive;
+                    let paths = paths.clone();
+                    app.ui_mode = UiMode::Normal;
+                    let owner_opt = if owner_val.trim().is_empty() {
+                        None
+                    } else {
+                        Some(owner_val.trim().to_string())
+                    };
+                    let group_opt = if group_val.trim().is_empty() {
+                        None
+                    } else {
+                        Some(group_val.trim().to_string())
+                    };
+                    for p in paths {
+                        if let Err(e) = app.vfs.chown(
+                            &p,
+                            owner_opt.as_deref(),
+                            group_opt.as_deref(),
+                            recursive_val,
+                        ) {
+                            app.show_error_dialog(format!("{e}"));
+                            return Ok(());
+                        }
+                    }
+                    app.reload_panels()?;
+                }
+                return Ok(());
+            }
+            UiMode::LinkDialog {
+                kind,
+                src,
+                value,
+                focus,
+            } => {
+                use LinkDialogFocus as F;
+                let order = [F::Name, F::Ok, F::Cancel];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                let mut apply = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                        return Ok(());
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if matches!(*focus, F::Ok | F::Cancel) {
+                            *focus = if matches!(*focus, F::Ok) {
+                                F::Cancel
+                            } else {
+                                F::Ok
+                            };
+                        }
+                    }
+                    KeyCode::Backspace if matches!(*focus, F::Name) => {
+                        value.pop();
+                    }
+                    KeyCode::Char(' ') if matches!(*focus, F::Ok | F::Cancel) => match *focus {
+                        F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        F::Name => {}
+                    },
+                    KeyCode::Char(c) if key.modifiers.is_empty() && matches!(*focus, F::Name) => {
+                        value.push(c);
+                    }
+                    KeyCode::Enter => match *focus {
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        F::Name | F::Ok => apply = true,
+                    },
+                    _ => {}
+                }
+                if apply {
+                    let kind = *kind;
+                    let src = src.clone();
+                    let val = value.clone();
+                    app.ui_mode = UiMode::Normal;
+                    if let Err(e) = app.apply_link_dialog(kind, &src, &val) {
+                        app.show_error_dialog(format!("{e}"));
+                    }
                 }
                 return Ok(());
             }
@@ -6243,45 +6291,19 @@ impl TerminalApp {
                                 app.ui_mode = UiMode::Normal;
                             }
                             "Chmod" => {
-                                // Simulate C-x c chord
-                                app.pending_ctrl_x = true;
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::Char('c'), key.modifiers),
-                                    page_rows,
-                                );
+                                app.handle_action(Action::Chmod)?;
                             }
                             "Chown" => {
-                                app.pending_ctrl_x = true;
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::Char('o'), key.modifiers),
-                                    page_rows,
-                                );
+                                app.handle_action(Action::Chown)?;
                             }
                             "Hard link" => {
-                                app.pending_ctrl_x = true;
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::Char('l'), key.modifiers),
-                                    page_rows,
-                                );
+                                app.handle_action(Action::LinkHard)?;
                             }
                             "SymLink" => {
-                                app.pending_ctrl_x = true;
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::Char('s'), key.modifiers),
-                                    page_rows,
-                                );
+                                app.handle_action(Action::SymlinkAbs)?;
                             }
                             "Relative symlink" => {
-                                app.pending_ctrl_x = true;
-                                return Self::handle_key(
-                                    app,
-                                    KeyEvent::new(KeyCode::Char('v'), key.modifiers),
-                                    page_rows,
-                                );
+                                app.handle_action(Action::SymlinkRel)?;
                             }
                             "User menu" => {
                                 return Self::handle_key(
@@ -7358,130 +7380,23 @@ impl TerminalApp {
                             return Ok(());
                         }
                         'c' => {
-                            if let Some(ent) = app.active_panel().current_entry().cloned() {
-                                let m = ent.permissions & 0o7777;
-                                app.ui_mode = UiMode::ChmodDialog {
-                                    name: ent.name,
-                                    mode: m,
-                                    ur: (m & 0o400) != 0,
-                                    uw: (m & 0o200) != 0,
-                                    ux: (m & 0o100) != 0,
-                                    gr: (m & 0o040) != 0,
-                                    gw: (m & 0o020) != 0,
-                                    gx: (m & 0o010) != 0,
-                                    or_: (m & 0o004) != 0,
-                                    ow: (m & 0o002) != 0,
-                                    ox: (m & 0o001) != 0,
-                                    suid: (m & 0o4000) != 0,
-                                    sgid: (m & 0o2000) != 0,
-                                    sticky: (m & 0o1000) != 0,
-                                    recursive: false,
-                                    focus_index: 0,
-                                };
-                            }
+                            app.handle_action(Action::Chmod)?;
                             return Ok(());
                         }
                         'o' => {
-                            if let Some(ent) = app.active_panel().current_entry().cloned() {
-                                app.ui_mode = UiMode::ChownDialog {
-                                    owner: ent.owner.unwrap_or_default(),
-                                    group: ent.group.unwrap_or_default(),
-                                    recursive: false,
-                                    focus_index: 0,
-                                };
-                            } else {
-                                app.ui_mode = UiMode::ChownDialog {
-                                    owner: String::new(),
-                                    group: String::new(),
-                                    recursive: false,
-                                    focus_index: 0,
-                                };
-                            }
+                            app.handle_action(Action::Chown)?;
                             return Ok(());
                         }
-                        'l' | 's' | 'v' => {
-                            if let Some(ent) = app.active_panel().current_entry().cloned() {
-                                let dst_dir = app.inactive_panel_mut().cwd.clone();
-                                let default_to = dst_dir.join(&ent.name).display().to_string();
-                                let is_hard = c == 'l';
-                                let is_symlink_abs = c == 's';
-                                let (dlg_title, prompt) = if is_hard {
-                                    (
-                                        "Link".to_string(),
-                                        "Enter the name of the hard link to:".to_string(),
-                                    )
-                                } else if is_symlink_abs {
-                                    (
-                                        "Symbolic link".to_string(),
-                                        "Enter name of the symlink:".to_string(),
-                                    )
-                                } else {
-                                    (
-                                        "Relative symlink".to_string(),
-                                        "Enter name of the symlink:".to_string(),
-                                    )
-                                };
-                                app.ui_mode = UiMode::InputDialog {
-                                    title: dlg_title,
-                                    prompt,
-                                    value: default_to.clone(),
-                                    focus_ok: true,
-                                    on_submit: Box::new(move |app, val| {
-                                        let src = ent.path.clone();
-                                        let dst = std::path::PathBuf::from(val);
-                                        if is_hard {
-                                            app.vfs.link_hard(&src, &dst)?;
-                                        } else if is_symlink_abs {
-                                            let abs_target = if src.is_absolute() {
-                                                src.clone()
-                                            } else {
-                                                active_cwd.join(&src)
-                                            };
-                                            app.vfs.symlink(&abs_target, &dst)?;
-                                        } else {
-                                            let base = dst
-                                                .parent()
-                                                .unwrap_or_else(|| std::path::Path::new("."));
-                                            let abs_src = if src.is_absolute() {
-                                                src.clone()
-                                            } else {
-                                                active_cwd.join(&src)
-                                            };
-                                            let abs_base = if base.is_absolute() {
-                                                base.to_path_buf()
-                                            } else {
-                                                active_cwd.join(base)
-                                            };
-                                            fn relpath(
-                                                from: &std::path::Path,
-                                                to: &std::path::Path,
-                                            ) -> std::path::PathBuf
-                                            {
-                                                let from = from.components().collect::<Vec<_>>();
-                                                let to = to.components().collect::<Vec<_>>();
-                                                let mut i = 0usize;
-                                                while i < from.len()
-                                                    && i < to.len()
-                                                    && from[i] == to[i]
-                                                {
-                                                    i += 1;
-                                                }
-                                                let mut out = std::path::PathBuf::new();
-                                                for _ in i..from.len() {
-                                                    out.push("..");
-                                                }
-                                                for comp in &to[i..] {
-                                                    out.push(comp.as_os_str());
-                                                }
-                                                out
-                                            }
-                                            let rel = relpath(&abs_base, &abs_src);
-                                            app.vfs.symlink(&rel, &dst)?;
-                                        }
-                                        Ok(())
-                                    }),
-                                };
-                            }
+                        'l' => {
+                            app.handle_action(Action::LinkHard)?;
+                            return Ok(());
+                        }
+                        's' => {
+                            app.handle_action(Action::SymlinkAbs)?;
+                            return Ok(());
+                        }
+                        'v' => {
+                            app.handle_action(Action::SymlinkRel)?;
                             return Ok(());
                         }
                         _ => {}
@@ -7748,129 +7663,6 @@ impl TerminalApp {
                             let _ = app.vfs.remove(&path, true);
                             app.reload_panels()?;
                         }
-                    }
-                }
-                Action::Chmod => {
-                    if let Some(ent) = app.active_panel().current_entry().cloned() {
-                        let m = ent.permissions & 0o7777;
-                        app.ui_mode = UiMode::ChmodDialog {
-                            name: ent.name,
-                            mode: m,
-                            ur: (m & 0o400) != 0,
-                            uw: (m & 0o200) != 0,
-                            ux: (m & 0o100) != 0,
-                            gr: (m & 0o040) != 0,
-                            gw: (m & 0o020) != 0,
-                            gx: (m & 0o010) != 0,
-                            or_: (m & 0o004) != 0,
-                            ow: (m & 0o002) != 0,
-                            ox: (m & 0o001) != 0,
-                            suid: (m & 0o4000) != 0,
-                            sgid: (m & 0o2000) != 0,
-                            sticky: (m & 0o1000) != 0,
-                            recursive: false,
-                            focus_index: 0,
-                        };
-                    }
-                }
-                Action::Chown => {
-                    if let Some(ent) = app.active_panel().current_entry().cloned() {
-                        app.ui_mode = UiMode::ChownDialog {
-                            owner: ent.owner.unwrap_or_default(),
-                            group: ent.group.unwrap_or_default(),
-                            recursive: false,
-                            focus_index: 0,
-                        };
-                    } else {
-                        app.ui_mode = UiMode::ChownDialog {
-                            owner: String::new(),
-                            group: String::new(),
-                            recursive: false,
-                            focus_index: 0,
-                        };
-                    }
-                }
-                Action::LinkHard | Action::SymlinkAbs | Action::SymlinkRel => {
-                    if let Some(ent) = app.active_panel().current_entry().cloned() {
-                        let dst_dir = app.inactive_panel_mut().cwd.clone();
-                        let default_to = dst_dir.join(&ent.name).display().to_string();
-                        let is_hard = matches!(action, Action::LinkHard);
-                        let is_symlink_abs = matches!(action, Action::SymlinkAbs);
-                        let (dlg_title, prompt) = if is_hard {
-                            (
-                                "Link".to_string(),
-                                "Enter the name of the hard link to:".to_string(),
-                            )
-                        } else if is_symlink_abs {
-                            (
-                                "Symbolic link".to_string(),
-                                "Enter name of the symlink:".to_string(),
-                            )
-                        } else {
-                            (
-                                "Relative symlink".to_string(),
-                                "Enter name of the symlink:".to_string(),
-                            )
-                        };
-                        app.ui_mode = UiMode::InputDialog {
-                            title: dlg_title,
-                            prompt,
-                            value: default_to.clone(),
-                            focus_ok: true,
-                            on_submit: Box::new(move |app, val| {
-                                let src = ent.path.clone();
-                                let dst = std::path::PathBuf::from(val);
-                                if is_hard {
-                                    app.vfs.link_hard(&src, &dst)?;
-                                } else if is_symlink_abs {
-                                    let abs_target = if src.is_absolute() {
-                                        src.clone()
-                                    } else {
-                                        active_cwd.join(&src)
-                                    };
-                                    app.vfs.symlink(&abs_target, &dst)?;
-                                } else {
-                                    let base =
-                                        dst.parent().unwrap_or_else(|| std::path::Path::new("."));
-                                    let abs_src = if src.is_absolute() {
-                                        src.clone()
-                                    } else {
-                                        active_cwd.join(&src)
-                                    };
-                                    let abs_base = if base.is_absolute() {
-                                        base.to_path_buf()
-                                    } else {
-                                        active_cwd.join(base)
-                                    };
-                                    let rel = {
-                                        fn relpath(
-                                            from: &std::path::Path,
-                                            to: &std::path::Path,
-                                        ) -> std::path::PathBuf
-                                        {
-                                            let from = from.components().collect::<Vec<_>>();
-                                            let to = to.components().collect::<Vec<_>>();
-                                            let mut i = 0usize;
-                                            while i < from.len() && i < to.len() && from[i] == to[i]
-                                            {
-                                                i += 1;
-                                            }
-                                            let mut out = std::path::PathBuf::new();
-                                            for _ in i..from.len() {
-                                                out.push("..");
-                                            }
-                                            for comp in &to[i..] {
-                                                out.push(comp.as_os_str());
-                                            }
-                                            out
-                                        }
-                                        relpath(&abs_base, &abs_src)
-                                    };
-                                    app.vfs.symlink(&rel, &dst)?;
-                                }
-                                Ok(())
-                            }),
-                        };
                     }
                 }
                 Action::Copy => {
@@ -8328,6 +8120,41 @@ fn apply_cmdline_history(app: &mut App, prev: bool) {
         app.subshell.replace_cmdline(s);
     }
     focus_command_line(app);
+}
+
+fn chmod_focus_order(allow_recursive: bool) -> Vec<ChmodDialogFocus> {
+    use ChmodDialogFocus as F;
+    let mut order = vec![
+        F::UserRead,
+        F::UserWrite,
+        F::UserExec,
+        F::GroupRead,
+        F::GroupWrite,
+        F::GroupExec,
+        F::OtherRead,
+        F::OtherWrite,
+        F::OtherExec,
+        F::SetUid,
+        F::SetGid,
+        F::Sticky,
+    ];
+    if allow_recursive {
+        order.push(F::Recursive);
+    }
+    order.push(F::Set);
+    order.push(F::Cancel);
+    order
+}
+
+fn chown_focus_order(allow_recursive: bool) -> Vec<ChownDialogFocus> {
+    use ChownDialogFocus as F;
+    let mut order = vec![F::Owner, F::Group];
+    if allow_recursive {
+        order.push(F::Recursive);
+    }
+    order.push(F::Ok);
+    order.push(F::Cancel);
+    order
 }
 
 fn open_quick_cd(app: &mut App) {
@@ -21419,6 +21246,649 @@ mod select_group_dialog_tests {
         assert!(case_sensitive);
         assert!(!regex);
         assert_eq!(focus, SelectGroupDialogFocus::Pattern);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod chmod_chown_link_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{
+        App, ChmodDialogFocus, ChownDialogFocus, LinkDialogFocus, LinkKind, UiMode,
+    };
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{ListingFormat, PanelMode};
+    use rmc_fs::local::LocalFs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-chmod-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, mods), 10).unwrap();
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::CONTROL);
+    }
+
+    fn press_alt(app: &mut App, c: char) {
+        press_mod(app, KeyCode::Char(c), KeyModifiers::ALT);
+    }
+
+    fn press_alt_tab(app: &mut App) {
+        press_mod(app, KeyCode::Tab, KeyModifiers::ALT);
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    fn mode_of(path: &std::path::Path) -> u32 {
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn mark_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        app.active_panel_mut().selection.select(idx);
+    }
+
+    fn open_ctrl_x(app: &mut App, c: char) {
+        press_ctrl(app, 'x');
+        press(app, KeyCode::Char(c));
+    }
+
+    fn chmod_focus(app: &App) -> ChmodDialogFocus {
+        match &app.ui_mode {
+            UiMode::ChmodDialog { focus, .. } => *focus,
+            _ => panic!("expected ChmodDialog, got {}", ui_mode_name(&app.ui_mode)),
+        }
+    }
+
+    fn tab_to_chmod(app: &mut App, want: ChmodDialogFocus) {
+        for _ in 0..20 {
+            if matches!(app.ui_mode, UiMode::ChmodDialog { focus, .. } if focus == want) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!(
+            "did not reach Chmod focus {want:?}, at {:?}",
+            chmod_focus(app)
+        );
+    }
+
+    fn tab_to_chown(app: &mut App, want: ChownDialogFocus) {
+        for _ in 0..12 {
+            if matches!(app.ui_mode, UiMode::ChownDialog { focus, .. } if focus == want) {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("did not reach Chown focus {want:?}");
+    }
+
+    fn open_file_item(app: &mut App, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        let idx = FILE_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing File menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn open_left_right_item(app: &mut App, right: bool, label: &str) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        if right {
+            for _ in 0..4 {
+                press(app, KeyCode::Right);
+            }
+        }
+        let idx = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == label)
+            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
+        for _ in 0..idx {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let left = root.join("left");
+        let right = root.join("right");
+        std::fs::create_dir(&left).unwrap();
+        std::fs::create_dir(&right).unwrap();
+        std::fs::write(left.join("a.txt"), b"a").unwrap();
+        std::fs::write(left.join("b.txt"), b"b").unwrap();
+        std::fs::create_dir(left.join("subdir")).unwrap();
+        std::fs::write(right.join("r.txt"), b"r").unwrap();
+        std::fs::write(left.join("zzalpha.txt"), b"z").unwrap();
+        (left, right)
+    }
+
+    fn ui_mode_name(mode: &UiMode) -> &'static str {
+        match mode {
+            UiMode::Normal => "Normal",
+            UiMode::ChmodDialog { .. } => "ChmodDialog",
+            UiMode::ChownDialog { .. } => "ChownDialog",
+            UiMode::LinkDialog { .. } => "LinkDialog",
+            UiMode::DialogConfirm { .. } => "DialogConfirm",
+            UiMode::Menu { .. } => "Menu",
+            _ => "other",
+        }
+    }
+
+    #[test]
+    fn ctrl_x_c_opens_chmod_toggle_exec_set_changes_mode() {
+        let root = temp_workspace();
+        let file = root.join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let before = mode_of(&file);
+        let mut app = make_app(&root);
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'c');
+        match &app.ui_mode {
+            UiMode::ChmodDialog {
+                name, focus, ux, ..
+            } => {
+                assert_eq!(name, "a.txt");
+                assert_eq!(*focus, ChmodDialogFocus::UserRead);
+                assert!(!*ux, "seed execute from file mode {before:o}");
+            }
+            _ => panic!("C-x c must open Chmod"),
+        }
+        tab_to_chmod(&mut app, ChmodDialogFocus::UserExec);
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_chmod(&mut app, ChmodDialogFocus::Set);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(mode_of(&file), before | 0o100);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chmod_esc_and_f10_do_not_change_mode() {
+        let root = temp_workspace();
+        let file = root.join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let before = mode_of(&file);
+        let mut app = make_app(&root);
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'c');
+        tab_to_chmod(&mut app, ChmodDialogFocus::UserExec);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(mode_of(&file), before);
+
+        open_ctrl_x(&mut app, 'c');
+        tab_to_chmod(&mut app, ChmodDialogFocus::UserExec);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(mode_of(&file), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chmod_recursive_on_directory_changes_nested_file() {
+        let root = temp_workspace();
+        let dir = root.join("nesteddir");
+        let nested = dir.join("inner.txt");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(&nested, b"n").unwrap();
+        let nested_before = mode_of(&nested);
+        let mut app = make_app(&root);
+        select_named(&mut app, "nesteddir");
+        open_ctrl_x(&mut app, 'c');
+        match &app.ui_mode {
+            UiMode::ChmodDialog {
+                allow_recursive, ..
+            } => assert!(*allow_recursive),
+            _ => panic!("expected ChmodDialog"),
+        }
+        tab_to_chmod(&mut app, ChmodDialogFocus::Recursive);
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_chmod(&mut app, ChmodDialogFocus::Set);
+        press(&mut app, KeyCode::Enter);
+        let nested_after = mode_of(&nested);
+        assert_ne!(
+            nested_after, nested_before,
+            "recursive chmod must change nested file ({nested_before:o} -> {nested_after:o})"
+        );
+        assert_eq!(nested_after, mode_of(&dir));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chmod_marked_files_skips_parent_marker() {
+        let root = temp_workspace();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let parent_before = mode_of(&root);
+        let a_before = mode_of(&a);
+        let mut app = make_app(&root);
+        mark_named(&mut app, "a.txt");
+        mark_named(&mut app, "b.txt");
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'c');
+        match &app.ui_mode {
+            UiMode::ChmodDialog { name, paths, .. } => {
+                assert_eq!(name, "2 files");
+                assert_eq!(paths.len(), 2);
+                assert!(paths.iter().all(|p| p.file_name().unwrap() != ".."));
+            }
+            _ => panic!("expected ChmodDialog for marked files"),
+        }
+        tab_to_chmod(&mut app, ChmodDialogFocus::UserExec);
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_chmod(&mut app, ChmodDialogFocus::Set);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(mode_of(&a), a_before | 0o100);
+        assert_eq!(mode_of(&b), a_before | 0o100);
+        assert_eq!(mode_of(&root), parent_before, "must not chmod `..`");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_o_chown_current_user_ok_and_unknown_user_error() {
+        let root = temp_workspace();
+        let file = root.join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'o');
+        match &app.ui_mode {
+            UiMode::ChownDialog { focus, owner, .. } => {
+                assert_eq!(*focus, ChownDialogFocus::Owner);
+                assert!(!owner.is_empty(), "seed owner from current file");
+            }
+            _ => panic!("C-x o must open Chown"),
+        }
+        tab_to_chown(&mut app, ChownDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "chown to current user/group must succeed, got {}",
+            ui_mode_name(&app.ui_mode)
+        );
+
+        open_ctrl_x(&mut app, 'o');
+        for _ in 0..64 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_str(&mut app, "no_such_rmc_user_zzzz");
+        tab_to_chown(&mut app, ChownDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, message, .. } => {
+                assert_eq!(title, "Error");
+                assert!(
+                    message.to_lowercase().contains("unknown")
+                        || message.contains("no_such_rmc_user_zzzz"),
+                    "unknown user error, got {message}"
+                );
+            }
+            other => panic!(
+                "unknown user must show error dialog, got {}",
+                match other {
+                    UiMode::Normal => "Normal",
+                    _ => "other",
+                }
+            ),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chown_empty_owner_leaves_unchanged() {
+        let root = temp_workspace();
+        let file = root.join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'o');
+        for _ in 0..64 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        tab_to_chown(&mut app, ChownDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "empty owner = unchanged must succeed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_l_hard_links_file_and_refuses_directory() {
+        let root = temp_workspace();
+        let (left, right) = two_panel_dirs(&root);
+        let src = left.join("a.txt");
+        let dst = right.join("a.txt");
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'l');
+        match &app.ui_mode {
+            UiMode::LinkDialog { kind, focus, .. } => {
+                assert_eq!(*kind, LinkKind::Hard);
+                assert_eq!(*focus, LinkDialogFocus::Name);
+            }
+            _ => panic!("C-x l must open Link dialog"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(dst.is_file());
+        assert_eq!(
+            std::fs::metadata(&src).unwrap().ino(),
+            std::fs::metadata(&dst).unwrap().ino()
+        );
+
+        select_named(&mut app, "subdir");
+        open_ctrl_x(&mut app, 'l');
+        match &app.ui_mode {
+            UiMode::DialogConfirm { message, .. } => {
+                assert!(
+                    message.to_lowercase().contains("directory"),
+                    "dir hard-link refused: {message}"
+                );
+            }
+            _ => panic!("directory hard-link must be refused"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ctrl_x_s_absolute_symlink_and_ctrl_x_v_relative() {
+        let root = temp_workspace();
+        let (left, right) = two_panel_dirs(&root);
+        let src = left.join("a.txt");
+        let abs_dst = right.join("abs.txt");
+        let rel_dst = right.join("rel.txt");
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+        select_named(&mut app, "a.txt");
+
+        open_ctrl_x(&mut app, 's');
+        match &app.ui_mode {
+            UiMode::LinkDialog { kind, value, .. } => {
+                assert_eq!(*kind, LinkKind::Abs);
+                assert!(value.ends_with("a.txt"));
+            }
+            _ => panic!("C-x s must open symlink dialog"),
+        }
+        for _ in 0..value_len(&app) {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_str(&mut app, &abs_dst.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        let abs_target = std::fs::read_link(&abs_dst).unwrap();
+        assert!(
+            abs_target.is_absolute(),
+            "C-x s target must be absolute: {abs_target:?}"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&abs_target).unwrap(),
+            std::fs::canonicalize(&src).unwrap()
+        );
+
+        open_ctrl_x(&mut app, 'v');
+        match &app.ui_mode {
+            UiMode::LinkDialog { kind, .. } => assert_eq!(*kind, LinkKind::Rel),
+            _ => panic!("C-x v must open relative symlink dialog"),
+        }
+        for _ in 0..value_len(&app) {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_str(&mut app, &rel_dst.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        let rel_target = std::fs::read_link(&rel_dst).unwrap();
+        assert!(
+            !rel_target.is_absolute(),
+            "C-x v target must be relative: {rel_target:?}"
+        );
+        let resolved = rel_dst.parent().unwrap().join(&rel_target);
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&src).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn value_len(app: &App) -> usize {
+        match &app.ui_mode {
+            UiMode::LinkDialog { value, .. } => value.len(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn link_refuses_to_clobber_existing_dest() {
+        let root = temp_workspace();
+        let (left, right) = two_panel_dirs(&root);
+        let dest = right.join("a.txt");
+        std::fs::write(&dest, b"existing").unwrap();
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'l');
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::DialogConfirm { message, .. } => {
+                assert!(
+                    message.contains("already exists") || message.contains("clobber"),
+                    "existing dest error: {message}"
+                );
+            }
+            _ => panic!("must not clobber existing dest"),
+        }
+        assert_eq!(std::fs::read(&dest).unwrap(), b"existing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_menu_chmod_chown_links_help_first_quick_cd_select_group() {
+        let root = temp_workspace();
+        let (left, right) = two_panel_dirs(&root);
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+        select_named(&mut app, "a.txt");
+
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "File menu Help must stay first"
+        );
+        press(&mut app, KeyCode::Esc);
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, QUICK_CD_TITLE),
+            _ => panic!("File menu Quick cd must stay after Delete"),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        open_file_item(&mut app, "Select group");
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_file_item(&mut app, "Chmod");
+        assert!(matches!(app.ui_mode, UiMode::ChmodDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_file_item(&mut app, "Chown");
+        assert!(matches!(app.ui_mode, UiMode::ChownDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_file_item(&mut app, "Hard link");
+        assert!(matches!(
+            app.ui_mode,
+            UiMode::LinkDialog {
+                kind: LinkKind::Hard,
+                ..
+            }
+        ));
+        press(&mut app, KeyCode::Esc);
+
+        open_file_item(&mut app, "SymLink");
+        assert!(matches!(
+            app.ui_mode,
+            UiMode::LinkDialog {
+                kind: LinkKind::Abs,
+                ..
+            }
+        ));
+        press(&mut app, KeyCode::Esc);
+
+        open_file_item(&mut app, "Relative symlink");
+        assert!(matches!(
+            app.ui_mode,
+            UiMode::LinkDialog {
+                kind: LinkKind::Rel,
+                ..
+            }
+        ));
+        press(&mut app, KeyCode::Esc);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn after_chmod_filter_sort_equal_select_invert_tree_quick_view_alt_tab_tab_split_work() {
+        let root = temp_workspace();
+        let (left, right) = two_panel_dirs(&root);
+        let mut app = make_app(&left);
+        app.active = PaneSide::Right;
+        app.change_dir(&right).unwrap();
+        app.active = PaneSide::Left;
+        select_named(&mut app, "a.txt");
+        open_ctrl_x(&mut app, 'c');
+        tab_to_chmod(&mut app, ChmodDialogFocus::Set);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        app.layout.horizontal_split = false;
+        press_alt(&mut app, ',');
+        assert!(app.layout.horizontal_split);
+
+        open_left_right_item(&mut app, false, "Filter");
+        assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        open_left_right_item(&mut app, false, "Sort order...");
+        assert!(matches!(app.ui_mode, UiMode::SortDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        app.layout.panel_ratio = 0.8;
+        open_left_right_item(&mut app, false, "Equal panel size");
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+
+        press(&mut app, KeyCode::Char('+'));
+        assert!(matches!(app.ui_mode, UiMode::SelectGroupDialog { .. }));
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Char('*'));
+        let marked: Vec<String> = {
+            let p = app.active_panel();
+            p.selection
+                .iter()
+                .filter_map(|i| p.entries.get(i).map(|e| e.name.clone()))
+                .collect()
+        };
+        assert!(!marked.iter().any(|n| n == ".."));
+
+        open_left_right_item(&mut app, false, "Tree");
+        assert_eq!(app.left.mode, PanelMode::Tree);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.left.mode, PanelMode::Listing);
+
+        press_ctrl(&mut app, 'x');
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.right.mode, PanelMode::QuickView);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.right.mode, PanelMode::Listing);
+
+        app.ui_mode = UiMode::Normal;
+        app.subshell.clear_cmdline();
+        type_str(&mut app, "zza");
+        press_alt_tab(&mut app);
+        assert_eq!(app.subshell.cmdline, "zzalpha.txt ");
+
+        app.subshell.clear_cmdline();
+        app.ui_mode = UiMode::Normal;
+        assert_eq!(app.active, PaneSide::Left);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.active, PaneSide::Right);
+        assert_eq!(app.left.listing, ListingFormat::Full);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
