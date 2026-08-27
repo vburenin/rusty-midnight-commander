@@ -385,7 +385,23 @@ impl TerminalApp {
             let panel_top = geom.panel_top;
             let content_bottom = geom.content_bottom;
             let panel_h = content_bottom - panel_top;
-            let content_rows = panel_h.saturating_sub(4) as usize;
+            let qs_active = app.quick_search.is_some();
+            let left_rows = rmc_core::panel::panel_listing_content_rows(
+                panel_h,
+                rmc_core::panel::reserve_panel_mini_status(
+                    app.panel_opts.show_mini_status,
+                    matches!(app.active, PaneSide::Left),
+                    qs_active,
+                ),
+            ) as usize;
+            let right_rows = rmc_core::panel::panel_listing_content_rows(
+                panel_h,
+                rmc_core::panel::reserve_panel_mini_status(
+                    app.panel_opts.show_mini_status,
+                    matches!(app.active, PaneSide::Right),
+                    qs_active,
+                ),
+            ) as usize;
             // Compute per-panel visible capacity (rows or 2*rows for Brief two-column)
             let mid = cols / 2;
             let left_w = mid;
@@ -394,8 +410,8 @@ impl TerminalApp {
                 matches!(app.left.listing, rmc_core::panel::ListingFormat::Brief) && left_w >= 30;
             let right_two_cols =
                 matches!(app.right.listing, rmc_core::panel::ListingFormat::Brief) && right_w >= 30;
-            let left_capacity = content_rows * if left_two_cols { 2 } else { 1 };
-            let right_capacity = content_rows * if right_two_cols { 2 } else { 1 };
+            let left_capacity = left_rows * if left_two_cols { 2 } else { 1 };
+            let right_capacity = right_rows * if right_two_cols { 2 } else { 1 };
             // Ensure cursor visibility based on last-known height
             {
                 let left = &mut app.left;
@@ -586,7 +602,14 @@ impl TerminalApp {
                             };
                             // Listing content area
                             let content_top = _py + 2;
-                            let content_h = ph.saturating_sub(4);
+                            let content_h = rmc_core::panel::panel_listing_content_rows(
+                                ph,
+                                rmc_core::panel::reserve_panel_mini_status(
+                                    app.panel_opts.show_mini_status,
+                                    true,
+                                    app.quick_search.is_some(),
+                                ),
+                            );
                             // Only rows within listing body move the cursor / toggle / enter
                             if my >= content_top && my < content_top.saturating_add(content_h) {
                                 let row_i = (my - content_top) as usize;

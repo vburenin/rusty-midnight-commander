@@ -91,11 +91,15 @@ impl Default for ConfirmOptions {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PanelOptions {
-    pub show_hidden: bool,      // default false — match current App.show_hidden
-    pub mix_all_files: bool,    // default false — match current dirs_first=true
-    pub mark_moves_down: bool,  // default true — GNU mc Insert-mark then cursor down
-    pub show_mini_status: bool, // default true; store only
-    pub kilobyte_si: bool,      // default false; panel/mini-status SI (1000) vs 1024 units
+    pub show_hidden: bool,     // default false — match current App.show_hidden
+    pub mix_all_files: bool,   // default false — match current dirs_first=true
+    pub mark_moves_down: bool, // default true — GNU mc Insert-mark then cursor down
+    /// GNU mc Options → Panels → Show mini-status. When true (default), draw the
+    /// mini-status line at the bottom of each listing panel (perms/owner/group/
+    /// size/mtime). When false, omit that row so the listing uses the extra line.
+    /// Quick search still uses the row on the active panel.
+    pub show_mini_status: bool,
+    pub kilobyte_si: bool, // default false; panel/mini-status SI (1000) vs 1024 units
     /// Skip local panel re-list when the directory mtime/ctime/nlink/size is unchanged.
     /// Default false. C-r / Refresh always re-lists. Remote/archive/extfs use dir cache timeout.
     pub fast_reload: bool,

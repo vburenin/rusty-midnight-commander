@@ -568,6 +568,59 @@ pub fn format_byte_size(bytes: u64, si: bool) -> String {
     }
 }
 
+/// GNU mc Options → Panels → Show mini-status: reserve the panel footer row
+/// when the option is on, or when quick search is active on this panel.
+pub fn reserve_panel_mini_status(
+    show_mini_status: bool,
+    is_active_panel: bool,
+    quick_search_active: bool,
+) -> bool {
+    show_mini_status || (is_active_panel && quick_search_active)
+}
+
+/// Listing body rows inside a panel of height `panel_h` (including frames).
+/// Chrome is top frame + header + bottom frame, plus the mini-status row when reserved.
+pub fn panel_listing_content_rows(panel_h: u16, reserve_mini_status: bool) -> u16 {
+    panel_h.saturating_sub(if reserve_mini_status { 4 } else { 3 })
+}
+
+/// Current-entry mini-status: perms, owner, group, size ([`format_byte_size`]), mtime.
+pub fn format_mini_status(ent: &FileEntry, si: bool) -> String {
+    let perms = user_perm_string(ent.permissions, ent.is_dir);
+    let owner = ent.owner.as_deref().unwrap_or("-");
+    let group = ent.group.as_deref().unwrap_or("-");
+    let size = if ent.is_dir { 0 } else { ent.size };
+    let size_s = format_byte_size(size, si);
+    let ts = user_mtime_string(ent);
+    format!("{perms}  {owner:>8} {group:>8} {size_s:>8} {ts}")
+}
+
+/// Text for the panel mini-status row, if that row is shown.
+///
+/// - Option on (default): current-entry status, or empty when the panel has no entry.
+/// - Option off: `None` (do not draw). Quick search on the active panel still
+///   returns ` Search: …` so the search string can use that row.
+pub fn panel_mini_status_line(
+    show_mini_status: bool,
+    is_active_panel: bool,
+    quick_search: Option<&str>,
+    current: Option<&FileEntry>,
+    si: bool,
+) -> Option<String> {
+    if is_active_panel {
+        if let Some(pattern) = quick_search {
+            return Some(format!(" Search: {pattern}"));
+        }
+    }
+    if !show_mini_status {
+        return None;
+    }
+    Some(match current {
+        Some(ent) => format_mini_status(ent, si),
+        None => String::new(),
+    })
+}
+
 fn user_size_string(ent: &FileEntry, si: bool) -> String {
     if ent.name == ".." {
         "UP--DIR".to_string()
@@ -906,6 +959,75 @@ mod tests {
         assert_eq!(
             format_byte_size(1024, crate::app::PanelOptions::default().kilobyte_si),
             "1K"
+        );
+    }
+
+    #[test]
+    fn show_mini_status_defaults_true() {
+        assert!(
+            crate::app::PanelOptions::default().show_mini_status,
+            "GNU mc Show mini-status defaults to on"
+        );
+        assert!(reserve_panel_mini_status(true, false, false));
+        assert_eq!(panel_listing_content_rows(20, true), 16);
+    }
+
+    #[test]
+    fn mini_status_on_draws_current_entry() {
+        let mut ent = make_entry("readme.txt", 1024, SystemTime::UNIX_EPOCH, false);
+        ent.permissions = 0o644;
+        ent.owner = Some("alice".into());
+        ent.group = Some("staff".into());
+        let line = panel_mini_status_line(true, true, None, Some(&ent), false)
+            .expect("mini-status drawn when option is on");
+        assert!(
+            line.starts_with("-rw-r--r--"),
+            "perms in mini-status: {line:?}"
+        );
+        assert!(line.contains("alice"), "owner in mini-status: {line:?}");
+        assert!(line.contains("staff"), "group in mini-status: {line:?}");
+        let size = format!("{:>8}", format_byte_size(1024, false));
+        assert!(
+            line.contains(&size),
+            "1024-based size {size:?} in mini-status: {line:?}"
+        );
+        assert_eq!(line, format_mini_status(&ent, false));
+        // SI size units still apply when the line is shown.
+        let si_line = panel_mini_status_line(true, false, None, Some(&ent), true)
+            .expect("inactive panel still draws mini-status when option is on");
+        let si_size = format!("{:>8}", format_byte_size(1024, true));
+        assert!(
+            si_line.contains(&si_size),
+            "SI size {si_size:?} in mini-status: {si_line:?}"
+        );
+    }
+
+    #[test]
+    fn mini_status_off_does_not_draw() {
+        let ent = make_entry("readme.txt", 1024, SystemTime::UNIX_EPOCH, false);
+        assert_eq!(
+            panel_mini_status_line(false, true, None, Some(&ent), false),
+            None,
+            "active panel omits mini-status when option is off"
+        );
+        assert_eq!(
+            panel_mini_status_line(false, false, None, Some(&ent), false),
+            None,
+            "inactive panel omits mini-status when option is off"
+        );
+        assert!(!reserve_panel_mini_status(false, false, false));
+        assert!(!reserve_panel_mini_status(false, true, false));
+        assert_eq!(panel_listing_content_rows(20, false), 17);
+        // Quick search on the active panel still uses the row.
+        assert_eq!(
+            panel_mini_status_line(false, true, Some("foo"), Some(&ent), false).as_deref(),
+            Some(" Search: foo")
+        );
+        assert!(reserve_panel_mini_status(false, true, true));
+        assert_eq!(
+            panel_mini_status_line(false, false, Some("foo"), Some(&ent), false),
+            None,
+            "inactive panel does not show quick search on mini-status"
         );
     }
 
