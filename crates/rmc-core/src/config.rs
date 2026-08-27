@@ -2,8 +2,8 @@ use crate::actions::{Action, SortBy};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +180,56 @@ impl KeyMap {
         }
         None
     }
+
+    /// Return the first key bound to the given action, if any.
+    pub fn first_key_for_action(&self, action: &Action) -> Option<KeyEvent> {
+        for (k, a) in &self.bindings {
+            if a == action {
+                return Some(*k);
+            }
+        }
+        None
+    }
+
+    /// Expose bindings as a slice for iteration.
+    pub fn bindings(&self) -> &[(KeyEvent, Action)] {
+        &self.bindings
+    }
+
+    /// Save the keymap to a file in a simple INI-like format.
+    /// Uses the same names that `load_from_file` accepts.
+    pub fn save_to_file(&self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                fs::create_dir_all(dir)?;
+            }
+        }
+        let mut f = File::create(path)?;
+        // Header
+        writeln!(f, "# rmc keymap")?;
+        writeln!(f, "[main]")?;
+        for (key, action) in &self.bindings {
+            // Skip mouse pseudo-actions; skip unknown/unrepresentable keys.
+            if matches!(
+                action,
+                Action::MouseClick { .. } | Action::MouseScroll { .. }
+            ) {
+                continue;
+            }
+            let k = format_key(key);
+            if k == "Unknown" {
+                continue;
+            }
+            let a = format_action(action);
+            writeln!(f, "{k} = {a}")?;
+        }
+        Ok(())
+    }
+
+    /// Remove all bindings associated with the given action.
+    pub fn remove_action_bindings(&mut self, action: &Action) {
+        self.bindings.retain(|(_, a)| a != action);
+    }
 }
 
 fn new_event(code: KeyCode) -> KeyEvent {
@@ -275,8 +325,222 @@ fn parse_action(s: &str) -> Option<Action> {
         "SortSize" => Some(Sort(SortBy::Size)),
         "SortTime" => Some(Sort(SortBy::Time)),
         "OpenHotlist" => Some(OpenHotlist),
-        _ => None,
+        _ => {
+            // FunctionKeyN pattern (e.g., FunctionKey4)
+            if let Some(num) = s.strip_prefix("FunctionKey") {
+                if let Ok(n) = num.parse::<u8>() {
+                    return Some(Action::FunctionKey(n));
+                }
+            }
+            None
+        }
     }
+}
+
+fn format_action(a: &Action) -> String {
+    use Action::*;
+    match a {
+        Quit => "Quit",
+        Refresh => "Refresh",
+        Action::ToggleSubshell => "ToggleSubshell",
+        ToggleHidden => "ToggleHidden",
+        SwapPanels => "SwapPanels",
+        ShowUserMenu => "ShowUserMenu",
+        FocusMenu => "FocusMenu",
+        ShowHelp => "ShowHelp",
+        CycleListingFormat => "CycleListingFormat",
+        MoveUp => "MoveUp",
+        MoveDown => "MoveDown",
+        PageUp => "PageUp",
+        PageDown => "PageDown",
+        Home => "Home",
+        End => "End",
+        Enter => "Enter",
+        ParentDir => "ParentDir",
+        SwitchPanel => "SwitchPanel",
+        ToggleSelect => "ToggleSelect",
+        ViewFile => "ViewFile",
+        Copy => "Copy",
+        Move => "Move",
+        Mkdir => "Mkdir",
+        Delete => "Delete",
+        Action::SelectGroup => "SelectGroup",
+        Action::UnselectGroup => "UnselectGroup",
+        Action::InvertSelection => "InvertSelection",
+        Chmod => "Chmod",
+        Chown => "Chown",
+        LinkHard => "LinkHard",
+        SymlinkAbs => "SymlinkAbs",
+        SymlinkRel => "SymlinkRel",
+        ViewerQuit => "ViewerQuit",
+        ViewerToggleHex => "ViewerToggleHex",
+        Action::Sort(SortBy::Name) => "SortName",
+        Action::Sort(SortBy::Ext) => "SortExt",
+        Action::Sort(SortBy::Size) => "SortSize",
+        Action::Sort(SortBy::Time) => "SortTime",
+        Action::OpenHotlist => "OpenHotlist",
+        Action::FunctionKey(n) => return format!("FunctionKey{}", n),
+        Action::MouseClick { .. } | Action::MouseScroll { .. } => "Mouse",
+    }
+    .to_string()
+}
+
+fn format_key(ev: &KeyEvent) -> String {
+    let mut out = String::new();
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        out.push_str("C-");
+    }
+    if ev.modifiers.contains(KeyModifiers::ALT) {
+        out.push_str("Alt-");
+    }
+    match ev.code {
+        KeyCode::Up => out.push_str("Up"),
+        KeyCode::Down => out.push_str("Down"),
+        KeyCode::Left => out.push_str("Left"),
+        KeyCode::Right => out.push_str("Right"),
+        KeyCode::Home => out.push_str("Home"),
+        KeyCode::End => out.push_str("End"),
+        KeyCode::PageUp => out.push_str("PageUp"),
+        KeyCode::PageDown => out.push_str("PageDown"),
+        KeyCode::Tab => out.push_str("Tab"),
+        KeyCode::Enter => out.push_str("Enter"),
+        KeyCode::Backspace => out.push_str("Backspace"),
+        KeyCode::Insert => out.push_str("Insert"),
+        KeyCode::Char(' ') => out.push_str("Space"),
+        KeyCode::Char(ch) => out.push(ch),
+        KeyCode::F(n) => out.push_str(&format!("F{n}")),
+        _ => out.push_str("Unknown"),
+    }
+    out
+}
+
+/// Return the config directory path honoring $MCR_CONFIG_DIR or ~/.config/mcr.
+pub fn default_config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("MCR_CONFIG_DIR") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config/mcr")
+}
+
+/// Save App options (layout/confirm/panels) and keymap to default config dir.
+pub fn save_setup(app: &crate::app::App) -> Result<()> {
+    let dir = default_config_dir();
+    fs::create_dir_all(&dir)?;
+    // Save options ini
+    let ini_path = dir.join("ini");
+    let mut f = File::create(&ini_path)?;
+    // [layout]
+    writeln!(f, "[layout]")?;
+    writeln!(f, "menubar_visible={}", app.layout.menubar_visible)?;
+    writeln!(f, "command_prompt={}", app.layout.command_prompt)?;
+    writeln!(f, "keybar_visible={}", app.layout.keybar_visible)?;
+    writeln!(f, "hintbar_visible={}", app.layout.hintbar_visible)?;
+    writeln!(f, "xterm_title={}", app.layout.xterm_title)?;
+    writeln!(f, "show_free_space={}", app.layout.show_free_space)?;
+    // [confirm]
+    writeln!(f, "\n[confirm]")?;
+    writeln!(f, "delete={}", app.confirm.delete)?;
+    writeln!(f, "overwrite={}", app.confirm.overwrite)?;
+    writeln!(f, "execute={}", app.confirm.execute)?;
+    writeln!(f, "exit={}", app.confirm.exit)?;
+    writeln!(f, "directory_hotlist={}", app.confirm.directory_hotlist)?;
+    writeln!(f, "history_cleanup={}", app.confirm.history_cleanup)?;
+    // [panels]
+    writeln!(f, "\n[panels]")?;
+    writeln!(f, "show_hidden={}", app.panel_opts.show_hidden)?;
+    writeln!(f, "mix_all_files={}", app.panel_opts.mix_all_files)?;
+    writeln!(f, "mark_moves_down={}", app.panel_opts.mark_moves_down)?;
+    writeln!(f, "show_mini_status={}", app.panel_opts.show_mini_status)?;
+    writeln!(f, "kilobyte_si={}", app.panel_opts.kilobyte_si)?;
+    writeln!(f, "fast_reload={}", app.panel_opts.fast_reload)?;
+    writeln!(
+        f,
+        "reverse_files_only={}",
+        app.panel_opts.reverse_files_only
+    )?;
+    writeln!(f, "simple_swap={}", app.panel_opts.simple_swap)?;
+    writeln!(f, "auto_save_setup={}", app.panel_opts.auto_save_setup)?;
+    writeln!(f, "lynx_like={}", app.panel_opts.lynx_like)?;
+    // Save keymap
+    let keymap_path = dir.join("keymap");
+    app.keymap.save_to_file(&keymap_path)?;
+    Ok(())
+}
+
+/// If setup files exist, load them over defaults and apply to the App.
+pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
+    let dir = default_config_dir();
+    // Keymap (optional)
+    let keymap_path = dir.join("keymap");
+    if keymap_path.exists() {
+        if let Ok(km) = KeyMap::load_from_file(&keymap_path) {
+            app.keymap = km;
+        }
+    }
+    // Options ini (optional)
+    let ini_path = dir.join("ini");
+    if ini_path.exists() {
+        let f = File::open(&ini_path)?;
+        let mut section = String::new();
+        for line in BufReader::new(f).lines() {
+            let raw = line?;
+            let s = raw.trim();
+            if s.is_empty() || s.starts_with('#') || s.starts_with(';') {
+                continue;
+            }
+            if s.starts_with('[') && s.ends_with(']') {
+                section = s[1..s.len() - 1].to_ascii_lowercase();
+                continue;
+            }
+            let (k, v) = match s.split_once('=') {
+                Some((a, b)) => (a.trim().to_ascii_lowercase(), b.trim().to_string()),
+                None => continue,
+            };
+            let vb = |s: &str| -> bool { s.eq_ignore_ascii_case("true") };
+            match section.as_str() {
+                "layout" => match k.as_str() {
+                    "menubar_visible" => app.layout.menubar_visible = vb(&v),
+                    "command_prompt" => app.layout.command_prompt = vb(&v),
+                    "keybar_visible" => app.layout.keybar_visible = vb(&v),
+                    "hintbar_visible" => app.layout.hintbar_visible = vb(&v),
+                    "xterm_title" => app.layout.xterm_title = vb(&v),
+                    "show_free_space" => app.layout.show_free_space = vb(&v),
+                    _ => {}
+                },
+                "confirm" => match k.as_str() {
+                    "delete" => app.confirm.delete = vb(&v),
+                    "overwrite" => app.confirm.overwrite = vb(&v),
+                    "execute" => app.confirm.execute = vb(&v),
+                    "exit" => app.confirm.exit = vb(&v),
+                    "directory_hotlist" => app.confirm.directory_hotlist = vb(&v),
+                    "history_cleanup" => app.confirm.history_cleanup = vb(&v),
+                    _ => {}
+                },
+                "panels" => match k.as_str() {
+                    "show_hidden" => app.panel_opts.show_hidden = vb(&v),
+                    "mix_all_files" => app.panel_opts.mix_all_files = vb(&v),
+                    "mark_moves_down" => app.panel_opts.mark_moves_down = vb(&v),
+                    "show_mini_status" => app.panel_opts.show_mini_status = vb(&v),
+                    "kilobyte_si" => app.panel_opts.kilobyte_si = vb(&v),
+                    "fast_reload" => app.panel_opts.fast_reload = vb(&v),
+                    "reverse_files_only" => app.panel_opts.reverse_files_only = vb(&v),
+                    "simple_swap" => app.panel_opts.simple_swap = vb(&v),
+                    "auto_save_setup" => app.panel_opts.auto_save_setup = vb(&v),
+                    "lynx_like" => app.panel_opts.lynx_like = vb(&v),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        // Apply top-level derived flags and panel flags
+        app.show_hidden = app.panel_opts.show_hidden;
+        app.left.dirs_first = !app.panel_opts.mix_all_files;
+        app.right.dirs_first = !app.panel_opts.mix_all_files;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -308,5 +572,65 @@ mod tests {
             km.resolve(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
             Some(Action::ParentDir)
         ));
+    }
+
+    #[test]
+    fn keymap_save_and_load_roundtrip_overrides_binding() {
+        // Create a temporary file path
+        let mut p = std::env::temp_dir();
+        p.push(format!("rmc_keymap_test_{}.keymap", std::process::id()));
+        // Start from defaults, override F5 to Move (instead of Copy)
+        let mut km = KeyMap::mc_defaults();
+        km.set_binding(
+            KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
+            Action::Move,
+        );
+        km.save_to_file(&p).expect("save keymap");
+        // Load from file and ensure F5 resolves to Move
+        let lm = KeyMap::load_from_file(&p).expect("load keymap");
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+            Some(Action::Move)
+        ));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn keymap_roundtrip_preserves_function_keys() {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "rmc_keymap_test_fkeys_{}.keymap",
+            std::process::id()
+        ));
+        let km = KeyMap::mc_defaults();
+        km.save_to_file(&p).expect("save keymap");
+        let lm = KeyMap::load_from_file(&p).expect("load keymap");
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(Action::ShowHelp)
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(4))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE)),
+            Some(Action::Quit)
+        ));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn keymap_roundtrip_preserves_f4_edit() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("rmc_keymap_f4_{}.keymap", std::process::id()));
+        let km = KeyMap::mc_defaults();
+        km.save_to_file(&p).expect("save");
+        let lm = KeyMap::load_from_file(&p).expect("load");
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(4))
+        ));
+        let _ = std::fs::remove_file(&p);
     }
 }

@@ -682,6 +682,97 @@ impl TerminalApp {
         }
         // Dialog handling first
         match &mut app.ui_mode {
+            UiMode::LearnKeysDialog {
+                draft,
+                selected,
+                capturing,
+                focus_ok,
+            } => {
+                let rows_len = draft.len();
+                // When capturing, take next key except Esc; F10 should not quit.
+                if *capturing {
+                    match key.code {
+                        KeyCode::Esc => {
+                            *capturing = false;
+                        }
+                        _ => {
+                            if *selected < rows_len {
+                                // Update binding for this row in draft
+                                draft[*selected].1 = key;
+                            }
+                            *capturing = false;
+                        }
+                    }
+                    return Ok(());
+                }
+                // Not capturing: navigate and accept/cancel
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Up => {
+                        if *selected == rows_len {
+                            // Move from buttons to last row
+                            if rows_len > 0 {
+                                *selected = rows_len - 1;
+                            }
+                        } else if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected < rows_len.saturating_sub(1) {
+                            *selected += 1;
+                        } else {
+                            // Move focus to buttons
+                            *selected = rows_len;
+                        }
+                    }
+                    KeyCode::Tab => {
+                        if *selected < rows_len {
+                            *selected = rows_len; // move to buttons
+                            *focus_ok = true;
+                        } else {
+                            *focus_ok = !*focus_ok;
+                        }
+                    }
+                    KeyCode::Left => {
+                        if *selected == rows_len {
+                            *focus_ok = true;
+                        }
+                    }
+                    KeyCode::Right => {
+                        if *selected == rows_len {
+                            *focus_ok = false;
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        if *selected < rows_len {
+                            // Start capturing next key
+                            *capturing = true;
+                        } else {
+                            if *focus_ok {
+                                // Apply: for each action, unbind previous keys then set the new one.
+                                let pairs: Vec<(
+                                    rmc_core::actions::Action,
+                                    crossterm::event::KeyEvent,
+                                )> = draft.clone();
+                                // Close the dialog first.
+                                app.ui_mode = UiMode::Normal;
+                                for (act, keyev) in pairs {
+                                    app.keymap.remove_action_bindings(&act);
+                                    app.keymap.set_binding(keyev, act);
+                                }
+                            } else {
+                                // Cancel
+                                app.ui_mode = UiMode::Normal;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
             UiMode::Editor {
                 buf,
                 show_menu: _,
@@ -2836,7 +2927,13 @@ impl TerminalApp {
                         "Compare dirs",
                         "External panelize",
                     ],
-                    &["Layout", "Panels", "Confirmations"],
+                    &[
+                        "Layout",
+                        "Panels",
+                        "Confirmations",
+                        "Learn keys",
+                        "Save setup",
+                    ],
                     &[
                         "Copy",
                         "Move",
@@ -2888,6 +2985,64 @@ impl TerminalApp {
                                     draft,
                                     focus: LayoutFocus::MenuBar,
                                 };
+                            }
+                            "Learn keys" => {
+                                // Build draft list of actions with their current first key.
+                                use rmc_core::actions::Action as A;
+                                let actions: [(&str, A); 15] = [
+                                    ("Help", A::ShowHelp),
+                                    ("User menu", A::ShowUserMenu),
+                                    ("View", A::ViewFile),
+                                    ("Edit", A::FunctionKey(4)),
+                                    ("Copy", A::Copy),
+                                    ("Rename/Move", A::Move),
+                                    ("Make directory", A::Mkdir),
+                                    ("Delete", A::Delete),
+                                    ("Pull down", A::FocusMenu),
+                                    ("Quit", A::Quit),
+                                    ("Select", A::ToggleSelect),
+                                    ("Subshell", A::ToggleSubshell),
+                                    ("Hidden files", A::ToggleHidden),
+                                    ("Swap panels", A::SwapPanels),
+                                    ("Refresh", A::Refresh),
+                                ];
+                                let mut draft: Vec<(A, crossterm::event::KeyEvent)> = Vec::new();
+                                for (_label, act) in actions {
+                                    if let Some(k) = app.keymap.first_key_for_action(&act) {
+                                        draft.push((act.clone(), k));
+                                    } else {
+                                        // Fallback: keep row but use a dummy Enter; renderer will show it
+                                        draft.push((
+                                            act.clone(),
+                                            crossterm::event::KeyEvent::new(
+                                                crossterm::event::KeyCode::Char('?'),
+                                                crossterm::event::KeyModifiers::NONE,
+                                            ),
+                                        ));
+                                    }
+                                }
+                                app.ui_mode = UiMode::LearnKeysDialog {
+                                    draft,
+                                    selected: 0,
+                                    capturing: false,
+                                    focus_ok: true,
+                                };
+                            }
+                            "Save setup" => {
+                                // Save options + keymap to user config dir and show confirmation.
+                                if let Err(e) = rmc_core::config::save_setup(app) {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Error".into(),
+                                        message: e.to_string(),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                } else {
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Info".into(),
+                                        message: "Setup saved".into(),
+                                        on_ok: Box::new(|_| Ok(())),
+                                    };
+                                }
                             }
                             "Panels" => {
                                 let draft = app.panel_opts;
