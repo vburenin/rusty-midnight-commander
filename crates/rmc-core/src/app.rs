@@ -98,9 +98,9 @@ pub struct PanelOptions {
     pub kilobyte_si: bool,        // default false; store only
     pub fast_reload: bool,        // default false; store only
     pub reverse_files_only: bool, // default true; store only
-    pub simple_swap: bool,        // default false; store only
+    pub simple_swap: bool,        // default false — swap panes without flipping active
     pub auto_save_setup: bool,    // default false; store only
-    pub lynx_like: bool,          // default false; store only
+    pub lynx_like: bool,          // default false — Left=parent, Right=enter in listing
 }
 
 impl Default for PanelOptions {
@@ -802,10 +802,13 @@ impl App {
             }
             SwapPanels => {
                 std::mem::swap(&mut self.left, &mut self.right);
-                self.active = match self.active {
-                    PaneSide::Left => PaneSide::Right,
-                    PaneSide::Right => PaneSide::Left,
-                };
+                // GNU mc "Simple swap": keep focus on the same side (now showing the other dir).
+                if !self.panel_opts.simple_swap {
+                    self.active = match self.active {
+                        PaneSide::Left => PaneSide::Right,
+                        PaneSide::Right => PaneSide::Left,
+                    };
+                }
             }
             FocusMenu => {
                 self.ui_mode = UiMode::Menu {
@@ -1030,5 +1033,47 @@ impl App {
         self.active_panel_mut()
             .set_panelized_entries(caption, entries);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn app_with_distinct_panes() -> (App, tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let left_dir = tmp.path().join("left");
+        let right_dir = tmp.path().join("right");
+        std::fs::create_dir(&left_dir).unwrap();
+        std::fs::create_dir(&right_dir).unwrap();
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(&left_dir).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(&right_dir).unwrap();
+        app.active = PaneSide::Left;
+        (app, tmp, left_dir, right_dir)
+    }
+
+    #[test]
+    fn swap_panels_flips_active_by_default() {
+        let (mut app, _tmp, left_dir, right_dir) = app_with_distinct_panes();
+        app.panel_opts.simple_swap = false;
+        app.handle_action(Action::SwapPanels).unwrap();
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        assert_eq!(app.active, PaneSide::Right);
+    }
+
+    #[test]
+    fn simple_swap_keeps_active_side() {
+        let (mut app, _tmp, left_dir, right_dir) = app_with_distinct_panes();
+        app.panel_opts.simple_swap = true;
+        app.handle_action(Action::SwapPanels).unwrap();
+        assert_eq!(app.left.cwd, right_dir);
+        assert_eq!(app.right.cwd, left_dir);
+        assert_eq!(app.active, PaneSide::Left);
     }
 }

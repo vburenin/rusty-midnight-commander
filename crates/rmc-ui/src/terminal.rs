@@ -4987,6 +4987,17 @@ impl TerminalApp {
                 return Ok(());
             }
         }
+        // Lynx-like motion (Options → Panels): Left = parent, Right = enter.
+        // Only in Normal listing mode; reuse ParentDir / Enter (do not open viewer).
+        if matches!(app.ui_mode, UiMode::Normal)
+            && key.modifiers.is_empty()
+            && matches!(app.active_panel().mode, rmc_core::panel::PanelMode::Listing)
+        {
+            if let Some(action) = lynx_like_arrow_action(app.panel_opts.lynx_like, key.code) {
+                app.handle_action(action)?;
+                return Ok(());
+            }
+        }
         if let Some(action) = app.keymap.resolve(&key) {
             // Intercept navigation and Enter for Tree mode on the ACTIVE panel.
             if matches!(app.ui_mode, UiMode::Normal) {
@@ -5469,6 +5480,19 @@ impl TerminalApp {
     }
 }
 
+/// Map Left/Right to ParentDir/Enter when GNU mc Lynx-like motion is enabled.
+/// When the flag is off, Left/Right stay unbound (today's listing-mode behavior).
+fn lynx_like_arrow_action(lynx_like: bool, code: KeyCode) -> Option<Action> {
+    if !lynx_like {
+        return None;
+    }
+    match code {
+        KeyCode::Left => Some(Action::ParentDir),
+        KeyCode::Right => Some(Action::Enter),
+        _ => None,
+    }
+}
+
 /// POSIX single-quote a path so it can be passed to `sh -lc` as the command.
 fn quote_exec_path(path: &std::path::Path) -> String {
     let s = path.to_string_lossy();
@@ -5757,6 +5781,121 @@ mod enter_executable_tests {
         select_named(&mut app, "notes.txt");
         assert!(!app.active_panel().current_entry().unwrap().is_exe);
         assert!(!try_enter_executable(&mut app).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod lynx_like_motion_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-lynx-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    #[test]
+    fn maps_arrows_only_when_lynx_like_is_on() {
+        use rmc_core::actions::Action;
+        assert_eq!(lynx_like_arrow_action(false, KeyCode::Left), None);
+        assert_eq!(lynx_like_arrow_action(false, KeyCode::Right), None);
+        assert_eq!(
+            lynx_like_arrow_action(true, KeyCode::Left),
+            Some(Action::ParentDir)
+        );
+        assert_eq!(
+            lynx_like_arrow_action(true, KeyCode::Right),
+            Some(Action::Enter)
+        );
+        assert_eq!(lynx_like_arrow_action(true, KeyCode::Up), None);
+    }
+
+    #[test]
+    fn left_goes_to_parent_even_when_cursor_is_on_a_file() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("notes.txt"), "hi").unwrap();
+        let mut app = make_app(&sub);
+        app.panel_opts.lynx_like = true;
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.active_panel().cwd, root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn left_at_filesystem_root_is_noop() {
+        let mut app = make_app(std::path::Path::new("/"));
+        app.panel_opts.lynx_like = true;
+        let before = app.active_panel().cwd.clone();
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.active_panel().cwd, before);
+    }
+
+    #[test]
+    fn right_enters_directory_and_ignores_regular_files() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(root.join("notes.txt"), "hi").unwrap();
+        let mut app = make_app(&root);
+        app.panel_opts.lynx_like = true;
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active_panel().cwd, root);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        select_named(&mut app, "sub");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active_panel().cwd, sub);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn arrows_do_nothing_when_flag_is_off() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let mut app = make_app(&sub);
+        app.panel_opts.lynx_like = false;
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.active_panel().cwd, sub);
+        app.change_dir(&root).unwrap();
+        select_named(&mut app, "sub");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.active_panel().cwd, root);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
