@@ -79,6 +79,47 @@ pub enum SortBy {
     Time,
 }
 
+/// Local-directory identity used by GNU mc Fast reload.
+///
+/// GNU mc skips a re-list when POSIX `stat()` of the panel cwd still matches the
+/// snapshot from the last listing (`st_mtime` and `st_ctime`). Remote/archive/extfs
+/// paths fail local `stat()` and are never skipped here (those use Directory cache
+/// timeout instead). `nlink` and `size` are included because directory growth and
+/// subdirectory create/delete often show up there even when timestamps are coarse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirReloadStamp {
+    pub mtime: SystemTime,
+    pub ctime_sec: i64,
+    pub ctime_nsec: i64,
+    pub nlink: u64,
+    pub size: u64,
+}
+
+impl DirReloadStamp {
+    /// Snapshot `path` via local `stat()`. `None` if it is not a readable local directory.
+    pub fn from_local_dir(path: &Path) -> Option<Self> {
+        let md = std::fs::metadata(path).ok()?;
+        if !md.is_dir() {
+            return None;
+        }
+        let mtime = md.modified().ok()?;
+        #[cfg(unix)]
+        let (ctime_sec, ctime_nsec, nlink) = {
+            use std::os::unix::fs::MetadataExt;
+            (md.ctime(), md.ctime_nsec(), md.nlink())
+        };
+        #[cfg(not(unix))]
+        let (ctime_sec, ctime_nsec, nlink) = (0_i64, 0_i64, 1_u64);
+        Some(Self {
+            mtime,
+            ctime_sec,
+            ctime_nsec,
+            nlink,
+            size: md.len(),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PanelState {
     pub cwd: PathBuf,
@@ -101,6 +142,12 @@ pub struct PanelState {
     pub panelized: Option<PanelizeSaved>,
     /// Optional filename filter (shell glob like *.c). `None` or "*" shows all.
     pub filter_glob: Option<String>,
+    /// Local dir mtime/ctime/nlink/size from the last listing (Fast reload).
+    pub dir_reload_stamp: Option<DirReloadStamp>,
+    /// `show_hidden` used for the last listing (Ctrl-H must re-list even if mtime is unchanged).
+    pub dir_reload_show_hidden: Option<bool>,
+    /// Filter glob used for the last listing (changing the filter must re-list).
+    pub dir_reload_filter: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +177,28 @@ impl PanelState {
             selection: Selection::default(),
             panelized: None,
             filter_glob: None,
+            dir_reload_stamp: None,
+            dir_reload_show_hidden: None,
+            dir_reload_filter: None,
         }
+    }
+
+    /// Record the local-directory stamp after a successful `list_dir`.
+    pub fn capture_dir_reload_stamp(&mut self, show_hidden: bool) {
+        self.dir_reload_stamp = DirReloadStamp::from_local_dir(&self.cwd);
+        self.dir_reload_show_hidden = Some(show_hidden);
+        self.dir_reload_filter = self.filter_glob.clone();
+    }
+
+    /// GNU mc Fast reload: reuse this panel's listing when the local dir is unchanged.
+    /// Always `false` for remote/archive/extfs (local `stat()` fails).
+    pub fn fast_reload_listing_is_current(&self, show_hidden: bool) -> bool {
+        let Some(now) = DirReloadStamp::from_local_dir(&self.cwd) else {
+            return false;
+        };
+        self.dir_reload_stamp == Some(now)
+            && self.dir_reload_show_hidden == Some(show_hidden)
+            && self.dir_reload_filter == self.filter_glob
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {

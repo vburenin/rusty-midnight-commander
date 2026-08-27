@@ -91,12 +91,14 @@ impl Default for ConfirmOptions {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PanelOptions {
-    pub show_hidden: bool,        // default false — match current App.show_hidden
-    pub mix_all_files: bool,      // default false — match current dirs_first=true
-    pub mark_moves_down: bool,    // default true — GNU mc Insert-mark then cursor down
-    pub show_mini_status: bool,   // default true; store only
-    pub kilobyte_si: bool,        // default false; store only
-    pub fast_reload: bool,        // default false; store only
+    pub show_hidden: bool,      // default false — match current App.show_hidden
+    pub mix_all_files: bool,    // default false — match current dirs_first=true
+    pub mark_moves_down: bool,  // default true — GNU mc Insert-mark then cursor down
+    pub show_mini_status: bool, // default true; store only
+    pub kilobyte_si: bool,      // default false; store only
+    /// Skip local panel re-list when the directory mtime/ctime/nlink/size is unchanged.
+    /// Default false. C-r / Refresh always re-lists. Remote/archive/extfs use dir cache timeout.
+    pub fast_reload: bool,
     pub reverse_files_only: bool, // default true — dirs-first reverse: files only (dirs stay name-asc)
     pub simple_swap: bool,        // default false — swap panes without flipping active
     pub auto_save_setup: bool,    // default false; store only
@@ -682,14 +684,32 @@ impl App {
     }
 
     pub fn reload_panels(&mut self) -> Result<()> {
+        self.reload_panels_impl(false)
+    }
+
+    /// Re-list both panels. `force` (C-r / Refresh) always calls `list_dir`, even when
+    /// Fast reload is on and the local directory stamp is unchanged.
+    fn reload_panels_impl(&mut self, force: bool) -> Result<()> {
         self.sync_vfs_dir_cache_timeout();
         let reverse_files_only = self.panel_opts.reverse_files_only;
-        let left = self.vfs.list_dir(&self.left.cwd, self.show_hidden)?;
-        let right = self.vfs.list_dir(&self.right.cwd, self.show_hidden)?;
-        self.left
-            .set_entries_with(self.map_dir_entries(left), reverse_files_only);
-        self.right
-            .set_entries_with(self.map_dir_entries(right), reverse_files_only);
+        let show_hidden = self.show_hidden;
+        let fast = self.panel_opts.fast_reload;
+
+        let left_cwd = self.left.cwd.clone();
+        if force || !fast || !self.left.fast_reload_listing_is_current(show_hidden) {
+            let left = self.vfs.list_dir(&left_cwd, show_hidden)?;
+            self.left
+                .set_entries_with(self.map_dir_entries(left), reverse_files_only);
+            self.left.capture_dir_reload_stamp(show_hidden);
+        }
+
+        let right_cwd = self.right.cwd.clone();
+        if force || !fast || !self.right.fast_reload_listing_is_current(show_hidden) {
+            let right = self.vfs.list_dir(&right_cwd, show_hidden)?;
+            self.right
+                .set_entries_with(self.map_dir_entries(right), reverse_files_only);
+            self.right.capture_dir_reload_stamp(show_hidden);
+        }
         Ok(())
     }
 
@@ -740,12 +760,12 @@ impl App {
                 }
             }
             Refresh => {
-                // C-r: force re-list even when the directory cache is still fresh.
+                // C-r: force re-list even when Fast reload or the VFS dir cache is still fresh.
                 let left = self.left.cwd.clone();
                 let right = self.right.cwd.clone();
                 self.vfs.invalidate_dir_cache(Some(&left));
                 self.vfs.invalidate_dir_cache(Some(&right));
-                self.reload_panels()?;
+                self.reload_panels_impl(true)?;
             }
             ToggleSubshell => {
                 // Toggle full-screen subshell/output view.
@@ -959,9 +979,11 @@ impl App {
         // Acquire listing before mutably borrowing panel to avoid aliasing
         let list = self.vfs.list_dir(&new_cwd, self.show_hidden)?;
         let entries = self.map_dir_entries(list);
+        let show_hidden = self.show_hidden;
         let p = self.active_panel_mut();
         p.cwd = new_cwd;
         p.set_entries_with(entries, reverse_files_only);
+        p.capture_dir_reload_stamp(show_hidden);
         Ok(())
     }
 }
