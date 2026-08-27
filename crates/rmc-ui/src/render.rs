@@ -337,6 +337,24 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 app.shadows,
             );
         }
+        rmc_core::app::UiMode::ListingModeDialog {
+            side,
+            listing,
+            user_format,
+            focus,
+        } => {
+            draw_listing_mode_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                *side,
+                *listing,
+                user_format,
+                *focus,
+                app.shadows,
+            );
+        }
         rmc_core::app::UiMode::FindDialog(state) => {
             draw_find_dialog(p, cols, rows, pal, state);
         }
@@ -2485,7 +2503,7 @@ fn draw_panel(
             p.goto(x + 1, y + 1);
             p.text("Name");
         }
-        rmc_core::panel::ListingFormat::Long => {
+        rmc_core::panel::ListingFormat::Long | rmc_core::panel::ListingFormat::User => {
             // Column-aligned like ls -l
             let perms_col = x + 1;
             let owner_col = perms_col + 12; // 10 perms + 2 spaces
@@ -2600,7 +2618,7 @@ fn draw_panel(
                 }
             }
         }
-        rmc_core::panel::ListingFormat::Long => {
+        rmc_core::panel::ListingFormat::Long | rmc_core::panel::ListingFormat::User => {
             for i in 0..content_h as usize {
                 let row_y = content_top + i as u16;
                 p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -4250,6 +4268,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Shell link",
             "SFTP link",
             "SMB link",
+            "Listing mode...",
             "Sort order...",
             "Tree",
             "Filter",
@@ -4293,6 +4312,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Shell link",
             "SFTP link",
             "SMB link",
+            "Listing mode...",
             "Sort order...",
             "Tree",
             "Filter",
@@ -4338,5 +4358,122 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             line.push(' ');
         }
         p.text(&line);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_listing_mode_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    side: rmc_core::actions::PaneSide,
+    listing: rmc_core::panel::ListingFormat,
+    user_format: &str,
+    focus: rmc_core::app::ListingModeFocus,
+    show_shadow: bool,
+) {
+    let _ = side; // implied by Left/Right menu; dialog title remains generic
+    let title = "Listing mode";
+    let w = 60u16.min(cols.saturating_sub(2));
+    let h = 12u16;
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    // Frame
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    // Title
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+    // Radios: Full / Brief / Long / User defined
+    let radios = [
+        ("Full file list", rmc_core::panel::ListingFormat::Full),
+        ("Brief", rmc_core::panel::ListingFormat::Brief),
+        ("Long file list", rmc_core::panel::ListingFormat::Long),
+        ("User defined", rmc_core::panel::ListingFormat::User),
+    ];
+    for (i, (label, kind)) in radios.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        let sel = if *kind == listing { 'x' } else { ' ' };
+        let focused = match (i, focus) {
+            (0, rmc_core::app::ListingModeFocus::RadioFull)
+            | (1, rmc_core::app::ListingModeFocus::RadioBrief)
+            | (2, rmc_core::app::ListingModeFocus::RadioLong)
+            | (3, rmc_core::app::ListingModeFocus::RadioUser) => true,
+            _ => false,
+        };
+        if focused {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("({sel}) {label}"));
+    }
+    // One-line format field (editable only when User defined is selected)
+    let input_row = y + 7;
+    let is_input_focus = matches!(focus, rmc_core::app::ListingModeFocus::Input);
+    if is_input_focus {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    let prompt = "Format:";
+    p.goto(x + 2, input_row);
+    p.text(prompt);
+    let max_len = w.saturating_sub(4 + prompt.len() as u16);
+    let shown = truncate(user_format, max_len as usize);
+    p.goto(x + 2 + prompt.len() as u16 + 1, input_row);
+    p.text(&shown);
+    // Buttons
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let ok_focus = matches!(focus, rmc_core::app::ListingModeFocus::Ok);
+    let cancel_focus = matches!(focus, rmc_core::app::ListingModeFocus::Cancel);
+    let ok = if ok_focus { "< OK >" } else { "[ OK ]" };
+    let cancel = if cancel_focus { "< Cancel >" } else { "[ Cancel ]" };
+    let btns = format!("{ok}  {cancel}");
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    // Shadow
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
     }
 }

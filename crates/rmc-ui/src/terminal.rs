@@ -1914,6 +1914,86 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
+            UiMode::ListingModeDialog {
+                side,
+                listing,
+                user_format,
+                focus,
+            } => {
+                use rmc_core::app::ListingModeFocus as F;
+                let order = [
+                    F::RadioFull,
+                    F::RadioBrief,
+                    F::RadioLong,
+                    F::RadioUser,
+                    F::Input,
+                    F::Ok,
+                    F::Cancel,
+                ];
+                let mut idx = order.iter().position(|f0| f0 == focus).unwrap_or(0);
+                let mut apply = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                        return Ok(());
+                    }
+                    KeyCode::Tab => {
+                        idx = (idx + 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::BackTab => {
+                        idx = (idx + order.len() - 1) % order.len();
+                        *focus = order[idx];
+                    }
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            idx -= 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < order.len() {
+                            idx += 1;
+                            *focus = order[idx];
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if matches!(*focus, F::Input) && !user_format.is_empty() {
+                            user_format.pop();
+                        }
+                    }
+                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                        if matches!(*focus, F::Input) {
+                            user_format.push(c);
+                        }
+                    }
+                    KeyCode::Char(' ') | KeyCode::Enter => match *focus {
+                        F::RadioFull => *listing = rmc_core::panel::ListingFormat::Full,
+                        F::RadioBrief => *listing = rmc_core::panel::ListingFormat::Brief,
+                        F::RadioLong => *listing = rmc_core::panel::ListingFormat::Long,
+                        F::RadioUser => *listing = rmc_core::panel::ListingFormat::User,
+                        F::Ok => apply = true,
+                        F::Cancel => {
+                            app.ui_mode = UiMode::Normal;
+                            return Ok(());
+                        }
+                        F::Input => { /* editing handled above */ }
+                    },
+                    _ => {}
+                }
+                if apply {
+                    // Apply to the selected side's panel
+                    let p = if matches!(*side, rmc_core::actions::PaneSide::Left) {
+                        &mut app.left
+                    } else {
+                        &mut app.right
+                    };
+                    p.listing = *listing;
+                    p.user_format = user_format.clone();
+                    app.ui_mode = UiMode::Normal;
+                }
+                return Ok(());
+            }
             UiMode::CompareDirsDialog { mode, focus } => {
                 use rmc_core::app::{CompareDirsFocus as F, CompareDirsMode as M};
                 let order = [
@@ -3087,6 +3167,7 @@ impl TerminalApp {
                         "Shell link",
                         "SFTP link",
                         "SMB link",
+                        "Listing mode...",
                         "Sort order...",
                         "Tree",
                         "Filter",
@@ -3130,6 +3211,7 @@ impl TerminalApp {
                         "Shell link",
                         "SFTP link",
                         "SMB link",
+                        "Listing mode...",
                         "Sort order...",
                         "Tree",
                         "Filter",
@@ -3165,6 +3247,42 @@ impl TerminalApp {
                     KeyCode::Enter => {
                         let item = menus[*top_index][*selected_index];
                         match item {
+                            "Listing mode..." => {
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => rmc_core::actions::PaneSide::Left,
+                                };
+                                // Prefill from the chosen panel
+                                let (listing, user_format) = {
+                                    let p = if matches!(side, rmc_core::actions::PaneSide::Left) {
+                                        &app.left
+                                    } else {
+                                        &app.right
+                                    };
+                                    (p.listing, p.user_format.clone())
+                                };
+                                let focus = match listing {
+                                    rmc_core::panel::ListingFormat::Full => {
+                                        rmc_core::app::ListingModeFocus::RadioFull
+                                    }
+                                    rmc_core::panel::ListingFormat::Brief => {
+                                        rmc_core::app::ListingModeFocus::RadioBrief
+                                    }
+                                    rmc_core::panel::ListingFormat::Long => {
+                                        rmc_core::app::ListingModeFocus::RadioLong
+                                    }
+                                    rmc_core::panel::ListingFormat::User => {
+                                        rmc_core::app::ListingModeFocus::RadioUser
+                                    }
+                                };
+                                app.ui_mode = UiMode::ListingModeDialog {
+                                    side,
+                                    listing,
+                                    user_format,
+                                    focus,
+                                };
+                            }
                             "Configuration" => {
                                 let draft = app.config_opts;
                                 app.ui_mode = UiMode::ConfigurationDialog {
