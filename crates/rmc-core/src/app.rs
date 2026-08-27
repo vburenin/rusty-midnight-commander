@@ -162,7 +162,8 @@ pub struct VfsOptions {
     pub use_netrc: bool,
     /// Default password for anonymous FTP
     pub ftp_anon_password: String,
-    /// Directory cache timeout in seconds (stored; not currently applied)
+    /// Directory cache timeout in seconds (GNU mc Virtual FS). Pushed into the
+    /// VFS on panel reload and cwd change so remote/archive/extfs listings honor it.
     pub dir_cache_timeout_secs: u32,
 }
 
@@ -667,7 +668,14 @@ impl App {
         }
     }
 
+    /// Push live Options → Virtual FS directory cache timeout into the VFS.
+    fn sync_vfs_dir_cache_timeout(&self) {
+        self.vfs
+            .set_dir_cache_timeout_secs(self.vfs_opts.dir_cache_timeout_secs);
+    }
+
     pub fn reload_panels(&mut self) -> Result<()> {
+        self.sync_vfs_dir_cache_timeout();
         let reverse_files_only = self.panel_opts.reverse_files_only;
         let left = self.vfs.list_dir(&self.left.cwd, self.show_hidden)?;
         let right = self.vfs.list_dir(&self.right.cwd, self.show_hidden)?;
@@ -725,6 +733,11 @@ impl App {
                 }
             }
             Refresh => {
+                // C-r: force re-list even when the directory cache is still fresh.
+                let left = self.left.cwd.clone();
+                let right = self.right.cwd.clone();
+                self.vfs.invalidate_dir_cache(Some(&left));
+                self.vfs.invalidate_dir_cache(Some(&right));
                 self.reload_panels()?;
             }
             ToggleSubshell => {
@@ -933,6 +946,9 @@ impl App {
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
         let new_cwd = path.to_path_buf();
         let reverse_files_only = self.panel_opts.reverse_files_only;
+        self.sync_vfs_dir_cache_timeout();
+        // Changing cwd always re-lists (do not reuse a cached listing for the target).
+        self.vfs.invalidate_dir_cache(Some(&new_cwd));
         // Acquire listing before mutably borrowing panel to avoid aliasing
         let list = self.vfs.list_dir(&new_cwd, self.show_hidden)?;
         let entries = self.map_dir_entries(list);
