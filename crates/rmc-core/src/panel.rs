@@ -30,6 +30,8 @@ pub enum ListingFormat {
     Full,
     Brief,
     Long,
+    /// User-defined format string stored on the panel; rendered like Long for now.
+    User,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +77,8 @@ pub struct PanelState {
     pub sort_dir: SortDir,
     pub dirs_first: bool,
     pub listing: ListingFormat,
+    /// User-defined listing format string used when `listing == ListingFormat::User`.
+    pub user_format: String,
     pub selection: Selection,
     // When panelized, entries show a virtual list; pressing `..` or leaving mode restores saved state.
     pub panelized: Option<PanelizeSaved>,
@@ -104,6 +108,8 @@ impl PanelState {
             sort_dir: SortDir::Asc,
             dirs_first: true,
             listing: ListingFormat::Full,
+            // GNU-ish default placeholder; parsed later if/when implemented.
+            user_format: "half type name | size | perm".to_string(),
             selection: Selection::default(),
             panelized: None,
             filter_glob: None,
