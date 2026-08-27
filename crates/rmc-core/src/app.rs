@@ -1322,6 +1322,8 @@ pub struct App {
     pub pending_quote: bool,
     /// MC-style incremental quick search state for the active panel.
     pub quick_search: Option<crate::quicksearch::QuickSearchState>,
+    /// Last pattern used when listing Quick search ended (GNU double C-s).
+    pub quick_search_prev: String,
     /// Background job queue (copy/move on worker thread).
     pub jobs: crate::jobs::JobQueue,
     /// Options controlling UI chrome visibility/layout.
@@ -1375,6 +1377,7 @@ impl App {
             pending_ctrl_x: false,
             pending_quote: false,
             quick_search: None,
+            quick_search_prev: String::new(),
             jobs: crate::jobs::JobQueue::new(),
             layout: LayoutOptions::default(),
             confirm: ConfirmOptions::default(),
@@ -1677,6 +1680,16 @@ impl App {
             PanelJumpTop => self.jump_visible_top_by(10),
             PanelJumpMiddle => self.jump_visible_middle_by(10),
             PanelJumpBottom => self.jump_visible_bottom_by(10),
+            QuickSearch => {
+                // Start only. Repeat / double-C-s restore live in the UI key loop
+                // (needs `page_rows` from `handle_key`).
+                if matches!(self.ui_mode, UiMode::Normal)
+                    && matches!(self.active_panel().mode, crate::panel::PanelMode::Listing)
+                    && self.quick_search.is_none()
+                {
+                    self.quick_search = Some(crate::quicksearch::QuickSearchState::new());
+                }
+            }
             Enter => {
                 let panelized = self.active_panel().is_panelized();
                 let ent_opt = self.active_panel().current_entry().cloned();

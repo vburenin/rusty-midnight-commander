@@ -76,7 +76,7 @@ Directory panels (selection, navigation, layout):
 - [ ] Alt-t: cycle listing format (Brief/Long/User/Full)
 - [x] C-\\ (Ctrl-Backslash): Directory hotlist dialog
 - [x] ‘+’ Select group; ‘\\’ Unselect group; ‘*’ Invert selection
-- [ ] Quick search: C-s / Alt-s starts; C-s repeats; wildcards * ?
+- [x] Quick search: C-s / Alt-s starts; C-s repeats; wildcards * ?
 - [ ] Refresh/rescan directory: C-r (when enabled)
 
 Command line integration (filename helpers, history, completion):

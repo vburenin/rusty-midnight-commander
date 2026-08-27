@@ -9,7 +9,7 @@
 # Actions use existing rmc_core::actions::Action variant names (simplified):
 #   MoveUp, MoveDown, PageUp, PageDown, Home, End, Enter, ParentDir, SwitchPanel, ToggleHidden,
 #   SwapPanels, Refresh, ShowHelp, ViewFile, Copy, Move, Mkdir, Delete, FocusMenu, Quit,
-#   ToggleSelect, SortName, SortSize, SortTime, CycleListingFormat
+#   ToggleSelect, SortName, SortTime, CycleListingFormat, QuickSearch
 
 # Movement and navigation
 Up        = MoveUp
@@ -44,9 +44,11 @@ F8  = Delete
 F9  = FocusMenu
 F10 = Quit
 
+# GNU mc(1) Quick search (C-s / Alt-s). Sort by size remains on the Sort order dialog.
+C-s   = QuickSearch
+Alt-s = QuickSearch
 # Sorting shortcuts (Alt variants)
 Alt-n = SortName
-Alt-s = SortSize
 # Alt-t cycles listing formats (Brief/Long/Full) as in MC
 Alt-t = CycleListingFormat
 # GNU mc Layout: Alt-, toggles Vertical ↔ Horizontal panel split

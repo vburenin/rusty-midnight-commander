@@ -1,24 +1,26 @@
 //! Filename matching for quick search, Select/Unselect group, and the panel filter.
 //!
-//! Quick search (`name_matches`) stays a case-insensitive glob/substring helper.
-//! Select group, Unselect group, and the panel filter honor GNU mc
-//! Options → Configuration → Use shell patterns (`filename_pattern_matches`).
+//! Quick search (`name_matches`) is a case-insensitive prefix match, or a glob
+//! when the pattern contains `*` / `?`. Select group, Unselect group, and the
+//! panel filter honor GNU mc Options → Configuration → Use shell patterns
+//! (`filename_pattern_matches`).
 
-/// Returns true if `name` matches `pattern` using simple glob rules.
+/// Returns true if `name` matches `pattern` using GNU mc(1) Quick search rules.
 ///
 /// Supported wildcards:
 ///   - `*` matches any sequence of characters (including empty)
 ///   - `?` matches exactly one character
 ///
-/// If the pattern contains no wildcards, we perform a case-insensitive
-/// substring check to mimic MC quick search typing.
+/// If the pattern contains no wildcards, match a case-insensitive **prefix** of
+/// the file name (GNU “starting with”), not a mid-string substring. An empty
+/// pattern matches nothing (no cursor jump until the user types).
 pub fn name_matches(pattern: &str, name: &str) -> bool {
     if pattern.is_empty() {
-        return true;
+        return false;
     }
     let has_wildcards = pattern.contains('*') || pattern.contains('?');
     if !has_wildcards {
-        return name.to_lowercase().contains(&pattern.to_lowercase());
+        return name.to_lowercase().starts_with(&pattern.to_lowercase());
     }
     glob_match_case_insensitive(pattern, name)
 }
@@ -241,9 +243,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_plain_substring() {
-        assert!(name_matches("abc", "zzzAbCd"));
+    fn test_plain_prefix() {
+        assert!(name_matches("abc", "AbCdzzz"));
+        assert!(name_matches("abc", "ABC"));
+        assert!(!name_matches("abc", "zzzAbCd"));
         assert!(!name_matches("abc", "acb"));
+        assert!(!name_matches("", "foo"));
     }
 
     #[test]
