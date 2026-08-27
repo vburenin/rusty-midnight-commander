@@ -7753,7 +7753,8 @@ fn build_tree_flat(
     let mut dirs: Vec<(std::path::PathBuf, usize)> = Vec::new();
     if let Ok(entries) = vfs.list_dir(start, false) {
         for e in entries {
-            if e.meta.is_dir {
+            // Local Vfs injects a ".." parent marker; it is not a child directory.
+            if e.meta.is_dir && e.name != ".." {
                 dirs.push((e.path, depth + 1));
             }
         }
