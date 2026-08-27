@@ -1464,32 +1464,59 @@ impl App {
     }
 
     pub fn reload_panels(&mut self) -> Result<()> {
-        self.reload_panels_impl(false)
+        self.reload_panel(PaneSide::Left, false)?;
+        self.reload_panel(PaneSide::Right, false)?;
+        Ok(())
     }
 
-    /// Re-list both panels. `force` (C-r / Refresh) always calls `list_dir`, even when
-    /// Fast reload is on and the local directory stamp is unchanged.
-    fn reload_panels_impl(&mut self, force: bool) -> Result<()> {
+    /// GNU mc(1) C-r / Left-Right → Reread: invalidate VFS cache and force `list_dir`
+    /// on **one** panel, even when Fast directory reload would skip an auto reload.
+    pub fn refresh_panel(&mut self, side: PaneSide) -> Result<()> {
+        let cwd = match side {
+            PaneSide::Left => self.left.cwd.clone(),
+            PaneSide::Right => self.right.cwd.clone(),
+        };
+        self.vfs.invalidate_dir_cache(Some(&cwd));
+        self.reload_panel(side, true)
+    }
+
+    /// Re-list one panel. `force` always calls `list_dir`. When Fast reload is on and
+    /// `force` is false, skip if the local directory stamp is unchanged.
+    fn reload_panel(&mut self, side: PaneSide, force: bool) -> Result<()> {
         self.sync_vfs_dir_cache_timeout();
         let reverse_files_only = self.panel_opts.reverse_files_only;
         let show_hidden = self.show_hidden;
         let fast = self.panel_opts.fast_reload;
 
-        let left_cwd = self.left.cwd.clone();
-        if force || !fast || !self.left.fast_reload_listing_is_current(show_hidden) {
-            let left = self.vfs.list_dir(&left_cwd, show_hidden)?;
-            self.left
-                .set_entries_with(self.map_dir_entries(left), reverse_files_only);
-            self.left.capture_dir_reload_stamp(show_hidden);
+        let panel = match side {
+            PaneSide::Left => &self.left,
+            PaneSide::Right => &self.right,
+        };
+        // Tree figure C-r is handled in the UI (`rescan_panel_tree`). Quick view /
+        // Info have no separate preview rescan; leftover listing is still reloaded
+        // so returning to Listing mode is current.
+        if !force && fast && panel.fast_reload_listing_is_current(show_hidden) {
+            return Ok(());
         }
 
-        let right_cwd = self.right.cwd.clone();
-        if force || !fast || !self.right.fast_reload_listing_is_current(show_hidden) {
-            let right = self.vfs.list_dir(&right_cwd, show_hidden)?;
-            self.right
-                .set_entries_with(self.map_dir_entries(right), reverse_files_only);
-            self.right.capture_dir_reload_stamp(show_hidden);
-        }
+        let cwd = panel.cwd.clone();
+        let cursor_name = panel.current_entry().map(|e| e.name.clone());
+        let cursor_idx = panel.cursor;
+        let marked_names: Vec<String> = panel
+            .selection
+            .iter()
+            .filter_map(|i| panel.entries.get(i).map(|e| e.name.clone()))
+            .collect();
+
+        let list = self.vfs.list_dir(&cwd, show_hidden)?;
+        let entries = self.map_dir_entries(list);
+        let panel = match side {
+            PaneSide::Left => &mut self.left,
+            PaneSide::Right => &mut self.right,
+        };
+        panel.set_entries_with(entries, reverse_files_only);
+        panel.restore_selection_after_reload(cursor_name.as_deref(), cursor_idx, &marked_names);
+        panel.capture_dir_reload_stamp(show_hidden);
         Ok(())
     }
 
@@ -1588,12 +1615,12 @@ impl App {
                 }
             }
             Refresh => {
-                // C-r: force re-list even when Fast reload or the VFS dir cache is still fresh.
-                let left = self.left.cwd.clone();
-                let right = self.right.cwd.clone();
-                self.vfs.invalidate_dir_cache(Some(&left));
-                self.vfs.invalidate_dir_cache(Some(&right));
-                self.reload_panels_impl(true)?;
+                // C-r / Reread: force re-list the **active** panel only, even when
+                // Fast reload or the VFS dir cache is still fresh. The other panel
+                // is unchanged. Tree figure rescan is wired in the UI.
+                let side = self.active;
+                self.refresh_panel(side)?;
+                self.sync_other_preview_target();
             }
             Repaint => {
                 // C-l: full screen repaint only. Do not reload panels or invalidate VFS cache.

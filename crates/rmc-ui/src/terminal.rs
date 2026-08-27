@@ -6190,6 +6190,24 @@ impl TerminalApp {
                                     focus: FilterDialogFocus::Pattern,
                                 };
                             }
+                            "Reread" => {
+                                // GNU mc(1) Left/Right → Reread: same force-reload as C-r
+                                // on the panel this menu belongs to.
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => app.active,
+                                };
+                                app.refresh_panel(side)?;
+                                let mode = match side {
+                                    rmc_core::actions::PaneSide::Left => app.left.mode,
+                                    rmc_core::actions::PaneSide::Right => app.right.mode,
+                                };
+                                if matches!(mode, rmc_core::panel::PanelMode::Tree) {
+                                    rescan_panel_tree_side(app, side, page_rows.max(1));
+                                }
+                                app.ui_mode = UiMode::Normal;
+                            }
                             "Equal panel size" => {
                                 app.handle_action(Action::EqualizePanels)?;
                                 app.ui_mode = UiMode::Normal;
@@ -9054,7 +9072,15 @@ fn panel_tree_enter_other(app: &mut App) {
 }
 
 fn rescan_panel_tree(app: &mut App, list_rows: usize) {
-    let (path, depth) = match app.active_panel().tree.as_ref() {
+    rescan_panel_tree_side(app, app.active, list_rows);
+}
+
+fn rescan_panel_tree_side(app: &mut App, side: PaneSide, list_rows: usize) {
+    let panel = match side {
+        PaneSide::Left => &app.left,
+        PaneSide::Right => &app.right,
+    };
+    let (path, depth) = match panel.tree.as_ref() {
         Some(tree) => (tree.figure.selected_path(), tree.figure.selected_depth()),
         None => return,
     };
@@ -9067,7 +9093,11 @@ fn rescan_panel_tree(app: &mut App, list_rows: usize) {
         }
     }
     kids.sort();
-    if let Some(tree) = app.active_panel_mut().tree.as_mut() {
+    let panel = match side {
+        PaneSide::Left => &mut app.left,
+        PaneSide::Right => &mut app.right,
+    };
+    if let Some(tree) = panel.tree.as_mut() {
         tree.figure.apply_rescan(kids, depth);
         tree.figure.ensure_visible(list_rows);
     }
@@ -19168,8 +19198,28 @@ mod equalize_panels_tests {
             .unwrap();
     }
 
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
     fn names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
         panel.entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    fn file_names(panel: &rmc_core::panel::PanelState) -> Vec<String> {
+        let mut n: Vec<String> = panel
+            .entries
+            .iter()
+            .filter(|e| e.name != "..")
+            .map(|e| e.name.clone())
+            .collect();
+        n.sort();
+        n
     }
 
     fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -19233,18 +19283,100 @@ mod equalize_panels_tests {
     }
 
     #[test]
-    fn left_right_menu_has_equal_panel_size_after_filter() {
+    fn left_right_menu_has_reread_then_equal_panel_size_after_filter() {
         let filter = LEFT_RIGHT_MENU_ITEMS
             .iter()
             .position(|s| *s == "Filter")
             .expect("Filter");
+        let reread = LEFT_RIGHT_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Reread")
+            .expect("Reread");
         let eq = LEFT_RIGHT_MENU_ITEMS
             .iter()
             .position(|s| *s == "Equal panel size")
             .expect("Equal panel size");
-        assert_eq!(eq, filter + 1);
+        assert_eq!(reread, filter + 1);
+        assert_eq!(eq, reread + 1);
         assert!(!COMMAND_MENU_ITEMS.contains(&"Equal panel size"));
         assert!(!COMMAND_MENU_ITEMS.contains(&"Equalize"));
+        assert!(!COMMAND_MENU_ITEMS.contains(&"Reread"));
+    }
+
+    #[test]
+    fn c_r_rereads_only_the_active_panel_via_handle_key() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        std::fs::write(left_dir.join("left-new.txt"), b"n").unwrap();
+        std::fs::write(right_dir.join("right-new.txt"), b"n").unwrap();
+        assert_eq!(file_names(&app.left), ["l.txt"]);
+        assert_eq!(file_names(&app.right), ["r.txt"]);
+
+        press_ctrl(&mut app, 'r');
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.needs_full_clear, "C-r is not C-l Repaint");
+        assert_eq!(file_names(&app.left), ["l.txt", "left-new.txt"]);
+        assert_eq!(file_names(&app.right), ["r.txt"]);
+        assert_eq!(app.active, PaneSide::Left);
+
+        press(&mut app, KeyCode::Tab);
+        press_ctrl(&mut app, 'r');
+        assert_eq!(file_names(&app.left), ["l.txt", "left-new.txt"]);
+        assert_eq!(file_names(&app.right), ["r.txt", "right-new.txt"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn left_menu_reread_reloads_left_even_when_right_is_active() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        app.active = PaneSide::Right;
+        std::fs::write(left_dir.join("left-new.txt"), b"n").unwrap();
+        std::fs::write(right_dir.join("right-new.txt"), b"n").unwrap();
+        open_left_right_item(&mut app, false, "Reread");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active, PaneSide::Right, "Reread must not steal focus");
+        assert_eq!(file_names(&app.left), ["l.txt", "left-new.txt"]);
+        assert_eq!(file_names(&app.right), ["r.txt"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn right_menu_reread_reloads_right_only() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        std::fs::write(left_dir.join("left-new.txt"), b"n").unwrap();
+        std::fs::write(right_dir.join("right-new.txt"), b"n").unwrap();
+        open_left_right_item(&mut app, true, "Reread");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active, PaneSide::Left);
+        assert_eq!(file_names(&app.left), ["l.txt"]);
+        assert_eq!(file_names(&app.right), ["r.txt", "right-new.txt"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn c_r_still_force_reloads_when_fast_directory_reload_is_on() {
+        let root = temp_workspace();
+        let (mut app, left_dir, _right_dir) = seed_app(&root);
+        app.panel_opts.fast_reload = true;
+        std::fs::write(left_dir.join("left-new.txt"), b"n").unwrap();
+        press_ctrl(&mut app, 'r');
+        assert_eq!(file_names(&app.left), ["l.txt", "left-new.txt"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keymap_c_r_is_refresh_c_l_is_repaint() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Some(Action::Refresh)
+        ));
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            Some(Action::Repaint)
+        ));
     }
 
     #[test]
@@ -23527,6 +23659,35 @@ mod panel_toggle_mark_tests {
         let stay = app.active_panel().cursor;
         press(&mut app, KeyCode::Insert);
         assert_eq!(app.active_panel().cursor, stay);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panel_options_fast_directory_reload_checkbox() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        assert!(
+            !app.panel_opts.fast_reload,
+            "GNU mc Fast directory reload defaults to off"
+        );
+
+        open_panel_options(&mut app);
+        tab_to_panel_opt(&mut app, PanelOptionsFocus::FastReload);
+        match &app.ui_mode {
+            UiMode::PanelOptionsDialog { draft, .. } => {
+                assert!(!draft.fast_reload);
+            }
+            _ => unreachable!(),
+        }
+        press(&mut app, KeyCode::Char(' '));
+        tab_to_panel_opt(&mut app, PanelOptionsFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            app.panel_opts.fast_reload,
+            "OK applies Fast directory reload on"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

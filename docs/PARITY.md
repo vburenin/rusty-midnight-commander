@@ -57,7 +57,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [x] Options: directories first vs “Mix all files”
 - [x] Filter dialog: glob/regex, files only toggle, case sensitivity
 - [x] Show hidden files toggle (dotfiles)
-- [ ] Fast directory reload; manual rescan C-r
+- [x] Fast directory reload; manual rescan C-r
 - [ ] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection
 
 ---
@@ -77,7 +77,7 @@ Directory panels (selection, navigation, layout):
 - [x] C-\\ (Ctrl-Backslash): Directory hotlist dialog
 - [x] ‘+’ Select group; ‘\\’ Unselect group; ‘*’ Invert selection
 - [x] Quick search: C-s / Alt-s starts; C-s repeats; wildcards * ?
-- [ ] Refresh/rescan directory: C-r (when enabled)
+- [x] Refresh/rescan directory: C-r (when enabled)
 
 Command line integration (filename helpers, history, completion):
 - [x] Alt-Enter / C-Enter: copy selected filename to command line
