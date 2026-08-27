@@ -1291,7 +1291,9 @@ impl TerminalApp {
                         if app.subshell.cmdline.trim().is_empty() {
                             // Empty command: use panel Enter behavior
                             app.ui_mode = UiMode::Normal;
-                            app.handle_action(Action::Enter)?;
+                            if !try_enter_executable(app)? {
+                                app.handle_action(Action::Enter)?;
+                            }
                         } else {
                             // Prefer executing inside a live PTY session when available.
                             let outcome = {
@@ -1435,14 +1437,35 @@ impl TerminalApp {
                         }
                         HDF::ButtonRemove => {
                             if state.selected_index < state.entries.len() {
-                                app.hotlist.remove_at(state.selected_index);
-                                app.hotlist.save_to_default_path()?;
-                                // refresh dialog state
-                                state.entries = app.hotlist.entries.clone();
-                                if state.selected_index >= state.entries.len()
-                                    && !state.entries.is_empty()
-                                {
-                                    state.selected_index = state.entries.len() - 1;
+                                let idx = state.selected_index;
+                                if app.confirm.directory_hotlist {
+                                    let label = state.entries[idx].label.clone();
+                                    app.ui_mode = UiMode::DialogConfirm {
+                                        title: "Confirmation".into(),
+                                        message: format!("Remove \"{label}\" from hotlist?"),
+                                        on_ok: Box::new(move |app| {
+                                            app.hotlist.remove_at(idx);
+                                            app.hotlist.save_to_default_path()?;
+                                            let mut st = rmc_core::hotlist::HotlistDialogState::new(
+                                                app.hotlist.entries.clone(),
+                                            );
+                                            if !st.entries.is_empty() {
+                                                st.selected_index = idx.min(st.entries.len() - 1);
+                                            }
+                                            app.ui_mode = UiMode::HotlistDialog(st);
+                                            Ok(())
+                                        }),
+                                    };
+                                } else {
+                                    app.hotlist.remove_at(idx);
+                                    app.hotlist.save_to_default_path()?;
+                                    // refresh dialog state
+                                    state.entries = app.hotlist.entries.clone();
+                                    if state.selected_index >= state.entries.len()
+                                        && !state.entries.is_empty()
+                                    {
+                                        state.selected_index = state.entries.len() - 1;
+                                    }
                                 }
                             }
                         }
@@ -1664,7 +1687,7 @@ impl TerminalApp {
                 on_ok,
             } => {
                 match key.code {
-                    KeyCode::Esc => {
+                    KeyCode::Esc | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Enter => {
@@ -5390,6 +5413,11 @@ impl TerminalApp {
                         };
                     }
                 }
+                Action::Enter => {
+                    if !try_enter_executable(app)? {
+                        app.handle_action(Action::Enter)?;
+                    }
+                }
                 _ => app.handle_action(action)?,
             }
         } else {
@@ -5423,6 +5451,59 @@ impl TerminalApp {
         }
         Ok(())
     }
+}
+
+/// POSIX single-quote a path so it can be passed to `sh -lc` as the command.
+fn quote_exec_path(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    let mut out = String::from("'");
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Enter on a regular executable file: run it, or prompt when `confirm.execute`.
+/// Returns true when the current entry was an executable that is not VFS-enterable
+/// (so core `Action::Enter` must not run). Directories, archives, and non-executables
+/// return false.
+fn try_enter_executable(app: &mut App) -> Result<bool> {
+    let (path, is_dir, is_exe) = match app.active_panel().current_entry() {
+        Some(ent) => (ent.path.clone(), ent.is_dir, ent.is_exe),
+        None => return Ok(false),
+    };
+    if is_dir || !is_exe {
+        return Ok(false);
+    }
+    // Archives / extfs: let Action::Enter VFS-enter instead of executing.
+    if app.vfs.enter_path(&path).is_some() {
+        return Ok(false);
+    }
+    // Only run real local files (not archive-internal virtual paths).
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let cmd = quote_exec_path(&path);
+    if app.confirm.execute {
+        let cmd_run = cmd.clone();
+        app.ui_mode = UiMode::DialogConfirm {
+            title: "Execute command".to_string(),
+            message: format!("Do you want to execute? {cmd}"),
+            on_ok: Box::new(move |app| {
+                let _ = rmc_core::user_menu::run_menu_command(app, &cmd_run);
+                Ok(())
+            }),
+        };
+        return Ok(true);
+    }
+    let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+    app.reload_panels()?;
+    Ok(true)
 }
 
 /// Build a flattened directory tree starting at `start`, up to `max_entries`, depth-first.
@@ -5545,5 +5626,121 @@ impl TerminalApp {
             i += 1;
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod enter_executable_tests {
+    use super::*;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-enter-exe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.confirm.execute = false;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    #[test]
+    fn quote_exec_path_always_single_quotes() {
+        assert_eq!(quote_exec_path(std::path::Path::new("/tmp/a")), "'/tmp/a'");
+        assert_eq!(
+            quote_exec_path(std::path::Path::new("/tmp/a b")),
+            "'/tmp/a b'"
+        );
+        assert_eq!(
+            quote_exec_path(std::path::Path::new("/tmp/a'b")),
+            "'/tmp/a'\\''b'"
+        );
+    }
+
+    #[test]
+    fn enter_executable_runs_without_confirm() {
+        let root = temp_workspace();
+        let marker = root.join("ran");
+        let script = root.join("runme.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let mut app = make_app(&root);
+        select_named(&mut app, "runme.sh");
+        assert!(app.active_panel().current_entry().unwrap().is_exe);
+        assert!(try_enter_executable(&mut app).unwrap());
+        assert!(marker.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_executable_prompts_when_confirm_execute() {
+        let root = temp_workspace();
+        let marker = root.join("ran");
+        let script = root.join("runme.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let mut app = make_app(&root);
+        app.confirm.execute = true;
+        select_named(&mut app, "runme.sh");
+        assert!(try_enter_executable(&mut app).unwrap());
+        assert!(!marker.exists());
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, message, .. } => {
+                assert_eq!(title, "Execute command");
+                assert!(message.contains("Do you want to execute?"));
+                assert!(message.contains("runme.sh"));
+            }
+            _ => panic!("expected DialogConfirm"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_non_executable_is_noop() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hi").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "notes.txt");
+        assert!(!app.active_panel().current_entry().unwrap().is_exe);
+        assert!(!try_enter_executable(&mut app).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
