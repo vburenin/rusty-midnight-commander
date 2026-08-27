@@ -11,7 +11,7 @@ use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::{App, EditorMenu, LayoutFocus, LayoutOptions};
-use rmc_core::layout::{compute_chrome_geom, panel_split};
+use rmc_core::layout::{compute_chrome_geom, dual_panel_rects, menu_bar_titles};
 use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
@@ -178,21 +178,24 @@ impl Renderer {
                 rmc_core::app::UiMode::Menu { top_index, .. } => Some(*top_index),
                 _ => None,
             };
-            draw_menu_bar(&mut painter, cols, self.palette, selected_top);
+            draw_menu_bar(
+                &mut painter,
+                cols,
+                self.palette,
+                selected_top,
+                app.layout.horizontal_split,
+            );
         }
         // Panels area layout (shared geometry with terminal.rs for mouse hit-tests)
         // rows: [menu?] + 1 frame top + content + frame bottom + [gauge?] + [hint?] + [cmd?] + [fbar?]
         let geom = compute_chrome_geom(cols, rows, &app.layout);
-        let panel_top = geom.panel_top;
-        let content_bottom = geom.content_bottom;
-        // Split columns from layout.panel_ratio (0.5 = equal / GNU Equal panel size).
-        let mid = panel_split(cols, app.layout.panel_ratio);
+        let (left_rect, right_rect) = dual_panel_rects(cols, &geom, &app.layout);
         draw_panel(
             &mut painter,
-            0,
-            panel_top,
-            mid,
-            content_bottom - panel_top,
+            left_rect.x,
+            left_rect.y,
+            left_rect.w,
+            left_rect.h,
             true,
             app,
             true,
@@ -200,10 +203,10 @@ impl Renderer {
         )?;
         draw_panel(
             &mut painter,
-            mid,
-            panel_top,
-            cols - mid,
-            content_bottom - panel_top,
+            right_rect.x,
+            right_rect.y,
+            right_rect.w,
+            right_rect.h,
             false,
             app,
             false,
@@ -229,10 +232,16 @@ impl Renderer {
     }
 }
 
-fn draw_menu_bar(p: &mut Painter, cols: u16, pal: McPalette, selected: Option<usize>) {
+fn draw_menu_bar(
+    p: &mut Painter,
+    cols: u16,
+    pal: McPalette,
+    selected: Option<usize>,
+    horizontal_split: bool,
+) {
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(0, 0);
-    let items = [" Left ", " File ", " Command ", " Options ", " Right "];
+    let items = menu_bar_titles(horizontal_split);
     let mut x = 0u16;
     for (i, it) in items.iter().enumerate() {
         if selected == Some(i) {
@@ -589,7 +598,13 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             dropped,
         } => {
             if *dropped {
-                draw_menu_dropdown(p, pal, *top_index, *selected_index);
+                draw_menu_dropdown(
+                    p,
+                    pal,
+                    *top_index,
+                    *selected_index,
+                    app.layout.horizontal_split,
+                );
             }
         }
         rmc_core::app::UiMode::JobsDialog {
@@ -1637,7 +1652,7 @@ fn draw_layout_dialog(
 ) {
     let title = "Layout";
     let w = 54u16.min(cols.saturating_sub(2));
-    let h = 14u16.min(rows.saturating_sub(2)).max(10);
+    let h = 17u16.min(rows.saturating_sub(2)).max(12);
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
@@ -1674,7 +1689,43 @@ fn draw_layout_dialog(
     let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
     p.goto(tx, y);
     p.text(&ttl);
-    // Options (checkboxes)
+    // Panel split radios + Equal split (GNU mc Layout "Panel split" group)
+    let radios: [(&str, bool, LayoutFocus); 2] = [
+        (
+            "Vertical",
+            !draft.horizontal_split,
+            LayoutFocus::SplitVertical,
+        ),
+        (
+            "Horizontal",
+            draft.horizontal_split,
+            LayoutFocus::SplitHorizontal,
+        ),
+    ];
+    for (i, (label, on, lf)) in radios.iter().enumerate() {
+        let row_y = y + 2 + i as u16;
+        if focus == *lf {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!("({}) {}", if *on { 'x' } else { ' ' }, label));
+    }
+    {
+        let row_y = y + 4;
+        if focus == LayoutFocus::EqualSplit {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, row_y);
+        p.text(&format!(
+            "[{}] Equal split",
+            if draft.equal_split { 'x' } else { ' ' }
+        ));
+    }
+    // Other options (existing six checkboxes; do not restaff)
     let items: [(&str, bool, LayoutFocus); 6] = [
         (
             "Menu bar visible",
@@ -1705,7 +1756,7 @@ fn draw_layout_dialog(
     ];
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     for (i, (label, on, lf)) in items.iter().enumerate() {
-        let row_y = y + 2 + i as u16;
+        let row_y = y + 6 + i as u16;
         if focus == *lf {
             p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
         } else {
@@ -1714,15 +1765,15 @@ fn draw_layout_dialog(
         p.goto(x + 2, row_y);
         p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
     }
-    // Buttons
+    // Buttons: focused `< txt >`, unfocused `[ txt ]`
     let ok_sel = matches!(focus, LayoutFocus::Ok);
     let cancel_sel = matches!(focus, LayoutFocus::Cancel);
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let ok_txt = if ok_sel { "< OK >" } else { "  OK  " };
+    let ok_txt = if ok_sel { "< OK >" } else { "[ OK ]" };
     let cancel_txt = if cancel_sel {
-        "[ Cancel ]"
+        "< Cancel >"
     } else {
-        "  Cancel  "
+        "[ Cancel ]"
     };
     let btns = format!("{ok_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
@@ -6111,7 +6162,13 @@ pub(crate) const LEFT_RIGHT_MENU_ITEMS: &[&str] = &[
     "Equal panel size",
 ];
 
-fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selected: usize) {
+fn draw_menu_dropdown(
+    p: &mut Painter,
+    pal: McPalette,
+    top_index: usize,
+    selected: usize,
+    horizontal_split: bool,
+) {
     // Real top menus and stub items
     let menus: [&[&str]; 5] = [
         LEFT_RIGHT_MENU_ITEMS,
@@ -6144,7 +6201,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
         ],
         LEFT_RIGHT_MENU_ITEMS,
     ];
-    let titles = [" Left ", " File ", " Command ", " Options ", " Right "];
+    let titles = menu_bar_titles(horizontal_split);
     // Compute x position under the selected top title
     let mut x = 0u16;
     for title in titles.iter().take(top_index) {

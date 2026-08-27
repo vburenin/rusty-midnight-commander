@@ -54,9 +54,14 @@ pub struct LayoutOptions {
     // Optional extras; default ON to match GNU mc
     pub xterm_title: bool,
     pub show_free_space: bool,
-    /// First panel share of the dual-pane split (left when vertical, top if
-    /// a horizontal split is added later). 0.5 is equal. Clamped to [0.2, 0.8].
+    /// First panel share of the dual-pane split (left when vertical, top when
+    /// horizontal). 0.5 is equal. Clamped to [0.2, 0.8].
     pub panel_ratio: f32,
+    /// GNU mc Layout "Panel split": false = Vertical (Left | Right, default),
+    /// true = Horizontal (Above / Below). Toggled with Alt-,.
+    pub horizontal_split: bool,
+    /// GNU mc Layout "Equal split". When true, [`Self::panel_ratio`] is 0.5.
+    pub equal_split: bool,
 }
 
 impl Default for LayoutOptions {
@@ -69,6 +74,8 @@ impl Default for LayoutOptions {
             xterm_title: true,
             show_free_space: true,
             panel_ratio: 0.5,
+            horizontal_split: false,
+            equal_split: true,
         }
     }
 }
@@ -226,8 +233,11 @@ impl Default for VfsOptions {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutFocus {
+    SplitVertical,
+    SplitHorizontal,
+    EqualSplit,
     MenuBar,
     CommandPrompt,
     KeyBar,
@@ -1517,8 +1527,13 @@ impl App {
                 }
             }
             EqualizePanels => {
-                // GNU mc Left/Right → Equal panel size: 50/50. Does not swap or chdir.
+                // GNU mc Left/Right → Equal panel size: 50/50 in either orientation.
                 self.layout.panel_ratio = 0.5;
+                self.layout.equal_split = true;
+            }
+            TogglePanelSplit => {
+                // GNU mc Alt-, : Vertical (Left|Right) ↔ Horizontal (Above/Below).
+                self.layout.horizontal_split = !self.layout.horizontal_split;
             }
             FocusMenu => {
                 self.ui_mode = UiMode::Menu {
@@ -2168,6 +2183,7 @@ mod tests {
         app.layout.panel_ratio = 0.8;
         app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+        assert!(app.layout.equal_split);
         assert_eq!(app.left.cwd, left_dir);
         assert_eq!(app.right.cwd, right_dir);
         assert_eq!(app.active, PaneSide::Left);
@@ -2175,6 +2191,46 @@ mod tests {
         let right_after: Vec<_> = app.right.entries.iter().map(|e| e.name.clone()).collect();
         assert_eq!(left_after, left_names);
         assert_eq!(right_after, right_names);
+    }
+
+    #[test]
+    fn default_panel_split_is_vertical() {
+        let (app, _tmp, _, _) = app_with_distinct_panes();
+        assert!(!app.layout.horizontal_split);
+        assert!(app.layout.equal_split);
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn toggle_panel_split_flips_orientation_without_equalizing() {
+        let (mut app, _tmp, left_dir, right_dir) = app_with_distinct_panes();
+        app.layout.panel_ratio = 0.8;
+        app.layout.equal_split = false;
+        app.handle_action(Action::TogglePanelSplit).unwrap();
+        assert!(app.layout.horizontal_split);
+        assert!((app.layout.panel_ratio - 0.8).abs() <= f32::EPSILON);
+        assert!(!app.layout.equal_split);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(app.active, PaneSide::Left);
+        app.handle_action(Action::TogglePanelSplit).unwrap();
+        assert!(!app.layout.horizontal_split);
+        assert!((app.layout.panel_ratio - 0.8).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn equalize_panels_sets_ratio_while_horizontal() {
+        let (mut app, _tmp, left_dir, right_dir) = app_with_distinct_panes();
+        app.layout.horizontal_split = true;
+        app.layout.panel_ratio = 0.8;
+        app.layout.equal_split = false;
+        app.handle_action(Action::EqualizePanels).unwrap();
+        assert!(app.layout.horizontal_split);
+        assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
+        assert!(app.layout.equal_split);
+        assert_eq!(app.left.cwd, left_dir);
+        assert_eq!(app.right.cwd, right_dir);
+        assert_eq!(app.active, PaneSide::Left);
     }
 
     fn assert_menu(app: &App, top: usize, sel: usize, dropped: bool) {

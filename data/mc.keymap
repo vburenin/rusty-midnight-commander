@@ -45,6 +45,8 @@ Alt-n = SortName
 Alt-s = SortSize
 # Alt-t cycles listing formats (Brief/Long/Full) as in MC
 Alt-t = CycleListingFormat
+# GNU mc Layout: Alt-, toggles Vertical ↔ Horizontal panel split
+Alt-, = TogglePanelSplit
 
 # Directory hotlist
 C-\\ = OpenHotlist

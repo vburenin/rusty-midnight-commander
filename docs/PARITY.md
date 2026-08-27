@@ -27,7 +27,7 @@ Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”
 - [ ] Shell command line (second line from bottom)
 - [ ] Bottom F-key label bar (F1…F10)
 - [ ] Default F-bar labels: Help, Menu, View, Edit, Copy, RenMov, Mkdir, Delete, PullDn, Quit
-- [ ] Horizontal and vertical panel split layouts (Left/Right; Above/Below nomenclature)
+- [x] Horizontal and vertical panel split layouts (Left/Right; Above/Below nomenclature)
 - [ ] Screen repaint: C-l
 
 Visual spec: Default skin colors (summarized from misc/skins/default.ini; names are foreground;background)
