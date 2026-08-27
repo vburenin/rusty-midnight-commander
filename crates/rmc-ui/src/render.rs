@@ -461,7 +461,16 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             selected_index,
             focus,
         } => {
-            draw_jobs_dialog(p, cols, rows, pal, app, *selected_index, *focus, app.shadows);
+            draw_jobs_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                app,
+                *selected_index,
+                *focus,
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::CompareDirsDialog { mode, focus } => {
             draw_compare_dirs_dialog(p, cols, rows, pal, *mode, *focus, app.shadows);
@@ -1336,10 +1345,24 @@ fn draw_appearance_dialog(
     p.goto(x + w - 1, y);
     p.text("┐");
     p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(x + w - 1, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x, y + h - 1);
     p.text("└");
-    p.hline(x + 1, y + h - 1, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     // Title
@@ -1374,7 +1397,11 @@ fn draw_appearance_dialog(
         p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     }
     p.goto(x + 2, shadows_row);
-    p.text(&format!("[{}] {}", if draft_shadows { 'x' } else { ' ' }, "Shadows"));
+    p.text(&format!(
+        "[{}] {}",
+        if draft_shadows { 'x' } else { ' ' },
+        "Shadows"
+    ));
     // Buttons row at bottom-2
     let btn_row = y + h - 2;
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
@@ -1583,7 +1610,16 @@ fn draw_editor(
         draw_inline_prompt(p, pal, rows, cols, "Save as:", q);
     }
     if let Some(c) = confirm {
-        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus, show_shadow);
+        draw_dialog_ync(
+            p,
+            cols,
+            rows,
+            pal,
+            &c.title,
+            &c.message,
+            c.focus,
+            show_shadow,
+        );
     }
 }
 
@@ -3028,7 +3064,16 @@ fn draw_diff(
         );
     }
     if let Some(c) = &state.confirm_exit {
-        draw_dialog_ync(p, cols, rows, pal, &c.title, &c.message, c.focus, show_shadow);
+        draw_dialog_ync(
+            p,
+            cols,
+            rows,
+            pal,
+            &c.title,
+            &c.message,
+            c.focus,
+            show_shadow,
+        );
     }
     Ok(())
 }
