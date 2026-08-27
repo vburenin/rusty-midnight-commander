@@ -1,7 +1,8 @@
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use rmc_core::find::{
-    find_dialog_height, FindDialogFocus as F, FindDialogState, FIND_DIALOG_LIST_TOP,
+    find_dialog_height, find_tree_picker_height, find_tree_picker_list_rows, FindDialogFocus as F,
+    FindDialogState, FIND_DIALOG_LIST_TOP,
 };
 
 pub fn draw_find_dialog(
@@ -78,15 +79,26 @@ pub fn draw_find_dialog(
             p.text(&format!("{t}{}", " ".repeat((w - 2) as usize - t.len())));
         };
     let field_w = w - 4;
+    let tree_txt = if matches!(st.focus, F::Tree) {
+        "< Tree >"
+    } else {
+        "[ Tree ]"
+    };
+    let tree_w = tree_txt.len() as u16;
+    let tree_x = x + w.saturating_sub(2).saturating_sub(tree_w);
+    let start_field_w = tree_x.saturating_sub(x + 12 + 1).max(2);
     draw_field(
         p,
         x + 12,
         y + 2,
-        field_w - 12,
+        start_field_w,
         &st.start_dir_edit,
         matches!(st.focus, F::StartDir),
         pal,
     );
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    p.goto(tree_x, y + 2);
+    p.text(tree_txt);
     // Name pattern
     let pat = match &st.params.name_pattern {
         rmc_core::find::NamePattern::Glob(s) => s.as_str(),
@@ -247,6 +259,104 @@ pub fn draw_find_dialog(
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    if let Some(picker) = &st.tree_picker {
+        draw_find_tree_picker(p, cols, rows, pal, picker);
+    }
+}
+
+fn draw_find_tree_picker(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    picker: &rmc_core::find::FindTreePicker,
+) {
+    let w = cols.min(60);
+    let h = find_tree_picker_height(rows);
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(
+        x + 1,
+        y,
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y);
+    p.text("┐");
+    p.vline(
+        x,
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        x + w.saturating_sub(1),
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h.saturating_sub(1));
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h.saturating_sub(1),
+        w.saturating_sub(2),
+        '─',
+        pal.frame_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
+    p.text("┘");
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = " Directory Tree ";
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(ttl);
+    let list_top = y + 2;
+    let list_h = find_tree_picker_list_rows(h);
+    for i in 0..list_h {
+        let row_y = list_top + i as u16;
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        p.goto(x + 2, row_y);
+        p.text(&" ".repeat(w.saturating_sub(4) as usize));
+        let idx = picker.scroll_top + i;
+        if let Some(ent) = picker.entries.get(idx) {
+            if idx == picker.selected_index {
+                p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+            } else {
+                p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+            }
+            let name = ent.path.file_name().and_then(|s| s.to_str()).unwrap_or("/");
+            let indent = "  ".repeat(ent.depth);
+            let disp = if ent.path == std::path::Path::new("/") {
+                "/".to_string()
+            } else {
+                format!("{indent}{name}/")
+            };
+            let t = truncate(&disp, w.saturating_sub(6) as usize);
+            p.goto(x + 3, row_y);
+            p.text(&t);
+        }
+    }
     p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
     p.hline(
         x + 1,

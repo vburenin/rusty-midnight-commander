@@ -19,8 +19,8 @@ use rmc_core::app::{
     ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::find::{
-    find_dialog_height, find_dialog_list_rows, search_files_streaming, CancelHandle,
-    FindDialogFocus as FF, FindDialogState,
+    find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, search_files_streaming,
+    CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::compute_chrome_geom;
@@ -3601,6 +3601,10 @@ impl TerminalApp {
                         }
                     }
                 }
+                if state.tree_picker.is_some() {
+                    handle_find_tree_picker_key(state, key, page_rows);
+                    return Ok(());
+                }
                 match key.code {
                     KeyCode::Esc => {
                         app.ui_mode = UiMode::Normal;
@@ -3612,12 +3616,7 @@ impl TerminalApp {
                         state.focus = state.focus.prev();
                     }
                     KeyCode::Up => {
-                        if state.focus.is_checkbox()
-                            || matches!(
-                                state.focus,
-                                FF::StartDir | FF::NamePattern | FF::Content | FF::IgnoreDirs
-                            )
-                        {
+                        if state.focus.is_form_widget() {
                             if !matches!(state.focus, FF::StartDir) {
                                 state.focus = state.focus.prev();
                             }
@@ -3636,12 +3635,7 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Down => {
-                        if state.focus.is_checkbox()
-                            || matches!(
-                                state.focus,
-                                FF::StartDir | FF::NamePattern | FF::Content | FF::IgnoreDirs
-                            )
-                        {
+                        if state.focus.is_form_widget() {
                             let n = state.focus.next();
                             // Do not wrap from the last form widget back to Start at.
                             if !matches!(n, FF::StartDir) {
@@ -3698,10 +3692,18 @@ impl TerminalApp {
                         }
                         _ => {}
                     },
-                    // Space toggles checkboxes before generic Char so typing still
-                    // inserts spaces into Start at / Filename / Content / Ignore dirs.
-                    KeyCode::Char(' ') if key.modifiers.is_empty() && state.focus.is_checkbox() => {
-                        let _ = state.toggle_focused_checkbox();
+                    // Space-before-generic-Char: only when Tree/checkboxes/buttons
+                    // focused so typing still inserts spaces into Start at /
+                    // Filename / Content / Ignore dirs.
+                    KeyCode::Char(' ')
+                        if key.modifiers.is_empty()
+                            && (state.focus.is_checkbox() || state.focus.is_button()) =>
+                    {
+                        if matches!(state.focus, FF::Tree) {
+                            open_find_tree_picker(&*app.vfs, state);
+                        } else if state.focus.is_checkbox() {
+                            let _ = state.toggle_focused_checkbox();
+                        }
                     }
                     KeyCode::Char(c) => {
                         if key.modifiers.is_empty() {
@@ -3746,6 +3748,9 @@ impl TerminalApp {
                             return Ok(());
                         }
                         match state.focus {
+                            FF::Tree => {
+                                open_find_tree_picker(&*app.vfs, state);
+                            }
                             FF::ButtonStart | FF::ButtonAgain => {
                                 if !state.running {
                                     // Prepare params (apply Start at edit)
@@ -7748,7 +7753,8 @@ fn build_tree_flat(
     let mut dirs: Vec<(std::path::PathBuf, usize)> = Vec::new();
     if let Ok(entries) = vfs.list_dir(start, false) {
         for e in entries {
-            if e.meta.is_dir {
+            // Local Vfs injects a ".." parent marker; it is not a child directory.
+            if e.meta.is_dir && e.name != ".." {
                 dirs.push((e.path, depth + 1));
             }
         }
@@ -7768,6 +7774,126 @@ fn build_tree_flat(
         }
     }
 }
+
+const FIND_TREE_MAX_ENTRIES: usize = 2048;
+
+/// Open the Find File directory-tree figure. Idempotent: a second open does not nest.
+fn open_find_tree_picker(vfs: &dyn rmc_fs::Vfs, state: &mut FindDialogState) {
+    if state.tree_picker.is_some() {
+        return;
+    }
+    let raw = state.start_dir_edit.trim();
+    let start = if raw.is_empty() {
+        state.params.start_dir.clone()
+    } else {
+        std::path::PathBuf::from(raw)
+    };
+    let start = if start.as_os_str().is_empty() {
+        std::path::PathBuf::from("/")
+    } else {
+        start
+    };
+    let chain = rmc_core::find::find_tree_ancestor_chain(&start);
+    let mut entries: Vec<rmc_core::panel::TreeEntry> = Vec::new();
+    for (i, p) in chain.iter().enumerate() {
+        if entries.len() >= FIND_TREE_MAX_ENTRIES {
+            break;
+        }
+        entries.push(rmc_core::panel::TreeEntry {
+            path: p.clone(),
+            depth: i,
+        });
+    }
+    let start_depth = chain.len().saturating_sub(1);
+    build_tree_flat(
+        vfs,
+        &start,
+        start_depth,
+        FIND_TREE_MAX_ENTRIES,
+        &mut entries,
+    );
+    let selected_index = entries.iter().position(|e| e.path == start).unwrap_or(0);
+    let mut picker = FindTreePicker {
+        entries,
+        selected_index,
+        scroll_top: selected_index,
+    };
+    picker.ensure_visible(find_tree_picker_list_rows(16));
+    state.tree_picker = Some(picker);
+}
+
+fn handle_find_tree_picker_key(state: &mut FindDialogState, key: KeyEvent, page_rows: usize) {
+    match key.code {
+        KeyCode::Esc | KeyCode::F(10) => {
+            state.tree_picker = None;
+        }
+        KeyCode::Enter => {
+            if let Some(picker) = state.tree_picker.take() {
+                if let Some(ent) = picker.entries.get(picker.selected_index) {
+                    state.start_dir_edit = ent.path.display().to_string();
+                    state.params.start_dir = ent.path.clone();
+                }
+            }
+            state.focus = FF::StartDir;
+        }
+        KeyCode::Up => {
+            if let Some(picker) = state.tree_picker.as_mut() {
+                if picker.selected_index > 0 {
+                    picker.selected_index -= 1;
+                    picker.ensure_visible(tree_picker_list_rows(page_rows));
+                }
+            }
+        }
+        KeyCode::Down => {
+            if let Some(picker) = state.tree_picker.as_mut() {
+                if picker.selected_index + 1 < picker.entries.len() {
+                    picker.selected_index += 1;
+                    picker.ensure_visible(tree_picker_list_rows(page_rows));
+                }
+            }
+        }
+        KeyCode::PageUp => {
+            if let Some(picker) = state.tree_picker.as_mut() {
+                let list_rows = tree_picker_list_rows(page_rows);
+                picker.selected_index = picker.selected_index.saturating_sub(list_rows);
+                picker.ensure_visible(list_rows);
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(picker) = state.tree_picker.as_mut() {
+                if !picker.entries.is_empty() {
+                    let list_rows = tree_picker_list_rows(page_rows);
+                    let max = picker.entries.len() - 1;
+                    picker.selected_index =
+                        picker.selected_index.saturating_add(list_rows).min(max);
+                    picker.ensure_visible(list_rows);
+                }
+            }
+        }
+        KeyCode::Home => {
+            if let Some(picker) = state.tree_picker.as_mut() {
+                picker.selected_index = 0;
+                picker.ensure_visible(tree_picker_list_rows(page_rows));
+            }
+        }
+        KeyCode::End => {
+            if let Some(picker) = state.tree_picker.as_mut() {
+                if !picker.entries.is_empty() {
+                    picker.selected_index = picker.entries.len() - 1;
+                    picker.ensure_visible(tree_picker_list_rows(page_rows));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Overlay list height for movement keys. Uses `page_rows` from `handle_key` so
+/// tests/CI without a TTY never call `crossterm::terminal::size()`.
+fn tree_picker_list_rows(page_rows: usize) -> usize {
+    page_rows.max(1)
+}
+
 impl TerminalApp {
     fn ensure_hunk_visible(state: &mut rmc_core::app::DiffState) {
         if state.hunks.is_empty() {
@@ -12538,6 +12664,156 @@ mod find_file_dialog_tests {
             rmc_core::find::NamePattern::Glob(s) => assert_eq!(s, "* "),
         }
 
+        // Space in Start at still inserts a space (does not open Tree).
+        find_state_mut(&mut app).focus = FF::StartDir;
+        let before = find_state(&app).start_dir_edit.clone();
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            find_state(&app).start_dir_edit,
+            format!("{before} "),
+            "Space in Start at must insert a space"
+        );
+        assert!(find_state(&app).tree_picker.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_from_start_dir_reaches_tree_and_space_enter_open_overlay() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::StartDir;
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::Tree);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            find_state(&app).tree_picker.is_some(),
+            "Space on Tree opens the directory-tree overlay"
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "Tree overlay must stay inside Find File"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(find_state(&app).tree_picker.is_none());
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            find_state(&app).tree_picker.is_some(),
+            "Enter on Tree opens the overlay"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_overlay_esc_and_f10_cancel_without_changing_start() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        let original = find_state(&app).start_dir_edit.clone();
+        find_state_mut(&mut app).focus = FF::Tree;
+        press(&mut app, KeyCode::Enter);
+        assert!(find_state(&app).tree_picker.is_some());
+        press(&mut app, KeyCode::Esc);
+        assert!(find_state(&app).tree_picker.is_none());
+        assert_eq!(find_state(&app).start_dir_edit, original);
+        assert!(matches!(app.ui_mode, UiMode::FindDialog(_)));
+
+        find_state_mut(&mut app).focus = FF::Tree;
+        press(&mut app, KeyCode::Enter);
+        assert!(find_state(&app).tree_picker.is_some());
+        press(&mut app, KeyCode::F(10));
+        assert!(find_state(&app).tree_picker.is_none());
+        assert_eq!(find_state(&app).start_dir_edit, original);
+        assert!(matches!(app.ui_mode, UiMode::FindDialog(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tree_overlay_enter_sets_start_at_and_stays_in_find_dialog() {
+        let root = temp_workspace();
+        let start = root.join("root");
+        let sub = start.join("sub");
+        let leaf = sub.join("leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        let mut app = make_app(&start);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(start.clone()));
+        find_state_mut(&mut app).focus = FF::Tree;
+        press(&mut app, KeyCode::Enter);
+        {
+            let st = find_state(&app);
+            let picker = st.tree_picker.as_ref().expect("tree overlay");
+            assert!(
+                picker.entries.iter().any(|e| e.path == sub),
+                "tree must include sub (dirs only): {:?}",
+                picker.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+            );
+            assert!(
+                picker.entries.iter().any(|e| e.path == leaf),
+                "tree must include leaf dir"
+            );
+        }
+        let (sel, sub_idx) = {
+            let picker = find_state(&app).tree_picker.as_ref().unwrap();
+            (
+                picker.selected_index,
+                picker
+                    .entries
+                    .iter()
+                    .position(|e| e.path == sub)
+                    .expect("sub"),
+            )
+        };
+        if sub_idx >= sel {
+            for _ in 0..(sub_idx - sel) {
+                press(&mut app, KeyCode::Down);
+            }
+        } else {
+            for _ in 0..(sel - sub_idx) {
+                press(&mut app, KeyCode::Up);
+            }
+        }
+        press(&mut app, KeyCode::Enter);
+        let st = find_state(&app);
+        assert!(st.tree_picker.is_none(), "overlay closes after Enter");
+        assert_eq!(st.start_dir_edit, sub.display().to_string());
+        assert_eq!(st.params.start_dir, sub);
+        assert_eq!(st.focus, FF::StartDir);
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "must remain FindDialog after picking a directory"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn opening_tree_twice_does_not_nest_a_second_overlay() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::Tree;
+        press(&mut app, KeyCode::Enter);
+        let first_len = find_state(&app)
+            .tree_picker
+            .as_ref()
+            .expect("first open")
+            .entries
+            .len();
+        let first_sel = find_state(&app)
+            .tree_picker
+            .as_ref()
+            .unwrap()
+            .selected_index;
+        // Overlay is modal: a second Space/Enter on Tree does not push another picker.
+        press(&mut app, KeyCode::Char(' '));
+        {
+            let picker = find_state(&app)
+                .tree_picker
+                .as_ref()
+                .expect("still one overlay after Space");
+            assert_eq!(picker.entries.len(), first_len);
+            assert_eq!(picker.selected_index, first_sel);
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

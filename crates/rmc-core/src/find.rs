@@ -1,3 +1,4 @@
+use crate::panel::TreeEntry;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -24,6 +25,33 @@ pub fn find_dialog_height(rows: u16) -> u16 {
 
 pub fn find_dialog_list_rows(dialog_h: u16) -> usize {
     dialog_h.saturating_sub(FIND_DIALOG_LIST_CHROME) as usize
+}
+
+/// Overlay height for the Find File directory-tree figure (mc(1) Tree button).
+pub fn find_tree_picker_height(rows: u16) -> u16 {
+    let cap = rows.min(16);
+    cap.max(rows.min(10))
+}
+
+/// List rows inside the directory-tree overlay (title/border chrome).
+pub fn find_tree_picker_list_rows(overlay_h: u16) -> usize {
+    overlay_h.saturating_sub(4) as usize
+}
+
+/// `/` first, then each ancestor down to `start`, so the tree figure can walk up.
+pub fn find_tree_ancestor_chain(start: &Path) -> Vec<PathBuf> {
+    let start = if start.as_os_str().is_empty() {
+        PathBuf::from("/")
+    } else {
+        start.to_path_buf()
+    };
+    let mut chain: Vec<PathBuf> = start.ancestors().map(|p| p.to_path_buf()).collect();
+    chain.reverse();
+    chain.retain(|p| !p.as_os_str().is_empty());
+    if chain.is_empty() {
+        chain.push(PathBuf::from("/"));
+    }
+    chain
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +86,8 @@ pub struct FindParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindDialogFocus {
     StartDir,
+    /// GNU mc(1) Find File **Tree** button (directory-tree figure).
+    Tree,
     NamePattern,
     Content,
     WholeWords,
@@ -79,7 +109,8 @@ pub enum FindDialogFocus {
 impl FindDialogFocus {
     pub fn next(self) -> Self {
         match self {
-            Self::StartDir => Self::NamePattern,
+            Self::StartDir => Self::Tree,
+            Self::Tree => Self::NamePattern,
             Self::NamePattern => Self::Content,
             Self::Content => Self::WholeWords,
             Self::WholeWords => Self::CaseSensitive,
@@ -102,7 +133,8 @@ impl FindDialogFocus {
     pub fn prev(self) -> Self {
         match self {
             Self::StartDir => Self::ButtonQuit,
-            Self::NamePattern => Self::StartDir,
+            Self::Tree => Self::StartDir,
+            Self::NamePattern => Self::Tree,
             Self::Content => Self::NamePattern,
             Self::WholeWords => Self::Content,
             Self::CaseSensitive => Self::WholeWords,
@@ -132,6 +164,58 @@ impl FindDialogFocus {
                 | Self::SkipHidden
                 | Self::EnableIgnoreDirs
         )
+    }
+
+    /// Tree plus the bottom-row action buttons (`< Start >`, …).
+    pub fn is_button(self) -> bool {
+        matches!(
+            self,
+            Self::Tree
+                | Self::ButtonStart
+                | Self::ButtonStop
+                | Self::ButtonAgain
+                | Self::ButtonChdir
+                | Self::ButtonPanelize
+                | Self::ButtonQuit
+        )
+    }
+
+    /// Fields, Tree, and checkboxes: Up/Down walk these instead of the results list.
+    pub fn is_form_widget(self) -> bool {
+        self.is_checkbox()
+            || matches!(
+                self,
+                Self::StartDir | Self::Tree | Self::NamePattern | Self::Content | Self::IgnoreDirs
+            )
+    }
+}
+
+/// Flattened directory-tree figure opened from Find File's Tree button.
+/// Lives on [`FindDialogState`] so Find File does not switch `UiMode`.
+#[derive(Debug, Clone)]
+pub struct FindTreePicker {
+    pub entries: Vec<TreeEntry>,
+    pub selected_index: usize,
+    pub scroll_top: usize,
+}
+
+impl FindTreePicker {
+    pub fn ensure_visible(&mut self, list_rows: usize) {
+        if list_rows == 0 || self.entries.is_empty() {
+            self.scroll_top = 0;
+            return;
+        }
+        if self.selected_index < self.scroll_top {
+            self.scroll_top = self.selected_index;
+        } else if self.selected_index >= self.scroll_top + list_rows {
+            self.scroll_top = self
+                .selected_index
+                .saturating_sub(list_rows.saturating_sub(1));
+        }
+        let max_top = self.entries.len().saturating_sub(list_rows);
+        if self.scroll_top > max_top {
+            self.scroll_top = max_top;
+        }
     }
 }
 
@@ -180,6 +264,8 @@ pub struct FindDialogState {
     pub results_rx: Option<Receiver<PathBuf>>,
     pub selected_index: usize,
     pub scroll_top: usize,
+    /// Directory-tree figure overlay (mc(1) Tree). `None` while closed.
+    pub tree_picker: Option<FindTreePicker>,
 }
 
 impl FindDialogState {
@@ -206,6 +292,7 @@ impl FindDialogState {
             results_rx: None,
             selected_index: 0,
             scroll_top: 0,
+            tree_picker: None,
         }
     }
 
@@ -934,5 +1021,35 @@ mod tests {
         assert!(!p.whole_words);
         assert!(!p.enable_ignore_dirs);
         assert!(p.ignore_dirs.is_empty());
+    }
+
+    #[test]
+    fn tree_focus_follows_start_dir_in_cycle() {
+        assert_eq!(FindDialogFocus::StartDir.next(), FindDialogFocus::Tree);
+        assert_eq!(FindDialogFocus::Tree.next(), FindDialogFocus::NamePattern);
+        assert_eq!(FindDialogFocus::NamePattern.prev(), FindDialogFocus::Tree);
+        assert_eq!(FindDialogFocus::Tree.prev(), FindDialogFocus::StartDir);
+        assert!(FindDialogFocus::Tree.is_button());
+        assert!(FindDialogFocus::Tree.is_form_widget());
+        assert!(!FindDialogFocus::Tree.is_checkbox());
+        assert!(!FindDialogFocus::StartDir.is_button());
+    }
+
+    #[test]
+    fn tree_ancestor_chain_starts_at_root() {
+        let chain = find_tree_ancestor_chain(Path::new("/tmp/a/b"));
+        assert_eq!(
+            chain,
+            vec![
+                PathBuf::from("/"),
+                PathBuf::from("/tmp"),
+                PathBuf::from("/tmp/a"),
+                PathBuf::from("/tmp/a/b"),
+            ]
+        );
+        assert_eq!(
+            find_tree_ancestor_chain(Path::new("/")),
+            vec![PathBuf::from("/")]
+        );
     }
 }
