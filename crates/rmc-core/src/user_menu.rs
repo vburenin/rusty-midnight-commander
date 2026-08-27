@@ -19,6 +19,13 @@ pub struct UserMenu {
     pub source_path: PathBuf,
 }
 
+/// Load only `cwd/.mc.menu` (GNU mc Auto menus). Does not walk parents and does
+/// not fall back to `~/.config/mc/menu` or the shipped `data/mc.menu`.
+/// Missing, unsafe, or unreadable files return `None`.
+pub fn try_load_local_menu(cwd: &Path) -> Option<UserMenu> {
+    load_menu_file(&cwd.join(".mc.menu"), true)
+}
+
 /// Load order similar to MC:
 /// 1) ./.mc.menu in the current working directory (safe-only)
 /// 2) ~/.config/mc/menu (safe-only)
@@ -37,13 +44,19 @@ pub fn load_menu(cwd: &Path) -> Result<UserMenu> {
     ));
 
     for (p, require_safe) in candidates {
-        if p.exists() && (!require_safe || is_safe_file(&p)) {
-            if let Ok(m) = parse_menu_file(&p) {
-                return Ok(m);
-            }
+        if let Some(m) = load_menu_file(&p, require_safe) {
+            return Ok(m);
         }
     }
     Err(anyhow!("No user menu file found"))
+}
+
+fn load_menu_file(path: &Path, require_safe: bool) -> Option<UserMenu> {
+    if path.exists() && (!require_safe || is_safe_file(path)) {
+        parse_menu_file(path).ok()
+    } else {
+        None
+    }
 }
 
 fn is_safe_file(path: &Path) -> bool {
@@ -229,6 +242,24 @@ mod tests {
         assert_eq!(m.entries[0].title, "Echo file");
         assert!(m.entries[0].command.contains("%f"));
         assert_eq!(m.entries[1].hotkey, None);
+    }
+
+    #[test]
+    fn try_load_local_menu_only_cwd_not_parent() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path();
+        let child = parent.join("sub");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(parent.join(".mc.menu"), "p: Parent only\n  echo parent\n").unwrap();
+        assert!(try_load_local_menu(parent).is_some());
+        assert!(
+            try_load_local_menu(&child).is_none(),
+            "Auto menus must not walk parent directories for .mc.menu"
+        );
+        std::fs::write(child.join(".mc.menu"), "c: Child menu\n  echo child\n").unwrap();
+        let m = try_load_local_menu(&child).expect("child .mc.menu");
+        assert_eq!(m.entries[0].title, "Child menu");
+        assert!(m.source_path.ends_with(".mc.menu"));
     }
 
     #[test]

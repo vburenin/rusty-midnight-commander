@@ -137,7 +137,11 @@ pub struct ConfigOptions {
     /// Select group, Unselect group, and the panel filter treat patterns as
     /// shell globs (`*.c`, `?`, `[abc]`). When false, those patterns are regexes.
     pub shell_patterns: bool,
-    pub auto_menus: bool, // default false; store only
+    /// GNU mc Options → Configuration → Auto menus. When true, a successful
+    /// `change_dir` into a different directory that contains a local `.mc.menu`
+    /// opens the User menu (same as F2). Default false. Reload, C-r, panelize,
+    /// and same-cwd `change_dir` do not auto-open.
+    pub auto_menus: bool,
     /// GNU mc Options → Configuration → Drop down menus. When true, F9
     /// immediately opens the current top-level pull-down (item 0 selected).
     /// When false (default), F9 highlights the menu bar until Down or Enter.
@@ -920,6 +924,7 @@ impl App {
             Copy | Move | Mkdir | Delete => {
                 // UI layer opens dialogs; core provides helpers
             }
+            ShowUserMenu => self.try_open_user_menu(),
             ViewerQuit => self.ui_mode = UiMode::Normal,
             ViewerToggleHex => {
                 if let UiMode::Viewer { hex, .. } = &mut self.ui_mode {
@@ -933,8 +938,10 @@ impl App {
 
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
         let new_cwd = path.to_path_buf();
+        let cwd_changed = self.active_panel().cwd != new_cwd;
         let reverse_files_only = self.panel_opts.reverse_files_only;
         let shell_patterns = self.config_opts.shell_patterns;
+        let auto_menus = self.config_opts.auto_menus;
         self.sync_vfs_dir_cache_timeout();
         // Re-entering a remote/archive/extfs dir within the timeout reuses the
         // cached listing (GNU mc). C-r / Refresh is the force-reload.
@@ -943,10 +950,40 @@ impl App {
         let entries = self.map_dir_entries(list);
         let show_hidden = self.show_hidden;
         let p = self.active_panel_mut();
-        p.cwd = new_cwd;
+        p.cwd = new_cwd.clone();
         p.set_entries_with(entries, reverse_files_only, shell_patterns);
         p.capture_dir_reload_stamp(show_hidden);
+        // Auto menus: only after a real directory change, and only for a local
+        // `.mc.menu` in the new panel cwd (not a parent, not reload/C-r/panelize).
+        if cwd_changed && auto_menus {
+            self.try_auto_open_local_user_menu(&new_cwd);
+        }
         Ok(())
+    }
+
+    /// Open the User menu the same way F2 does (`load_menu` fallbacks). Missing
+    /// menu is a no-op.
+    fn try_open_user_menu(&mut self) {
+        let cwd = self.active_panel().cwd.clone();
+        if let Ok(menu) = crate::user_menu::load_menu(&cwd) {
+            self.open_user_menu(menu);
+        }
+    }
+
+    /// Auto menus: open User menu only when `cwd/.mc.menu` itself is present
+    /// and readable. Does not walk parents or fall back to `~/.config/mc/menu`.
+    fn try_auto_open_local_user_menu(&mut self, cwd: &Path) {
+        if let Some(menu) = crate::user_menu::try_load_local_menu(cwd) {
+            self.open_user_menu(menu);
+        }
+    }
+
+    fn open_user_menu(&mut self, menu: crate::user_menu::UserMenu) {
+        self.ui_mode = UiMode::UserMenu {
+            title: menu.title,
+            entries: menu.entries,
+            selected_index: 0,
+        };
     }
 
     /// Select (`select == true`) or unselect files whose names match `pattern`.
