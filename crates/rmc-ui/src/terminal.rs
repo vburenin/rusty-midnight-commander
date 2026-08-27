@@ -5235,8 +5235,12 @@ impl TerminalApp {
                     app.ui_mode = UiMode::HotlistDialog(st);
                 }
                 Action::Mkdir => {
+                    let value = mkdir_dialog_initial_name(
+                        app.config_opts.mkdir_autoname,
+                        app.active_panel().current_entry(),
+                    );
                     app.ui_mode = UiMode::MkdirDialog {
-                        value: String::new(),
+                        value,
                         focus_ok: false,
                     };
                 }
@@ -5492,6 +5496,18 @@ fn handle_panel_enter(app: &mut App) -> Result<()> {
         return Ok(());
     }
     app.handle_action(Action::Enter)
+}
+
+/// GNU mc `mkdir_autoname`: F7 prefills Mkdir with the current panel entry name,
+/// skipping the `..` parent marker. Flag off (default) leaves the field empty.
+fn mkdir_dialog_initial_name(
+    autoname: bool,
+    current: Option<&rmc_core::panel::FileEntry>,
+) -> String {
+    match current {
+        Some(ent) if autoname && !ent.is_parent_marker() => ent.name.clone(),
+        _ => String::new(),
+    }
 }
 
 /// Prompt shown after a waited external command when `pause_after_run` is set.
@@ -6367,6 +6383,144 @@ mod pause_after_run_tests {
         app.ui_mode = UiMode::PauseAfterRun;
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod mkdir_autoname_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-mkdir-autoname-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn mkdir_value(app: &App) -> &str {
+        match &app.ui_mode {
+            UiMode::MkdirDialog { value, .. } => value.as_str(),
+            _ => panic!("expected MkdirDialog"),
+        }
+    }
+
+    #[test]
+    fn flag_false_mkdir_input_empty() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hi").unwrap();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let mut app = make_app(&root);
+        assert!(!app.config_opts.mkdir_autoname);
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_value(&app), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_file_prefills_name() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hi").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.mkdir_autoname = true;
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_value(&app), "notes.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_dir_prefills_name() {
+        let root = temp_workspace();
+        std::fs::create_dir(root.join("subdir")).unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.mkdir_autoname = true;
+        select_named(&mut app, "subdir");
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_value(&app), "subdir");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_parent_dotdot_empty() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hi").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.mkdir_autoname = true;
+        select_named(&mut app, "..");
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_value(&app), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn empty_ok_is_noop() {
+        let root = temp_workspace();
+        let before: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_value(&app), "");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let after: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ok_creates_directory_from_input() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hi").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.mkdir_autoname = true;
+        select_named(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_value(&app), "notes.txt");
+        press(&mut app, KeyCode::Char('_'));
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(mkdir_value(&app), "notes.txt_d");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(root.join("notes.txt_d").is_dir());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

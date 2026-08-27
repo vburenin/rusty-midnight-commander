@@ -134,7 +134,9 @@ pub struct ConfigOptions {
     pub shell_patterns: bool, // default true; store only
     pub auto_menus: bool,     // default false; store only
     pub drop_menus: bool,     // default false; store only
-    pub mkdir_autoname: bool, // default false; store only
+    /// GNU mc Options → Configuration → Mkdir autoname. When true, F7 prefills
+    /// the Mkdir name with the current panel entry (not `..`). Default false.
+    pub mkdir_autoname: bool,
 }
 
 impl Default for ConfigOptions {
