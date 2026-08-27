@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,24 +196,78 @@ pub struct RemoteEntry {
 }
 
 // -------- FTP implementation (via ftp crate) --------
+//
+// The `ftp` crate has no proxy/CONNECT API. GNU mc's ftpfs uses a USER@HOST
+// gateway: TCP connect to the proxy (default port 21), then login as
+// `user@realhost`. Virtual FS "Always use ftp proxy" installs the host via
+// `set_ftp_proxy` (empty host / flag off => direct).
+static FTP_PROXY: Mutex<Option<String>> = Mutex::new(None);
+
+fn ftp_proxy_guard() -> std::sync::MutexGuard<'static, Option<String>> {
+    FTP_PROXY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Install (or clear) the FTP USER@HOST gateway used by [`FtpClient`].
+/// `None` or whitespace-only disables the proxy (direct connect).
+pub fn set_ftp_proxy(proxy: Option<&str>) {
+    let val = proxy
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    *ftp_proxy_guard() = val;
+}
+
+pub fn current_ftp_proxy() -> Option<String> {
+    ftp_proxy_guard().clone()
+}
+
+/// TCP address and FTP USER name. When `proxy` is a non-empty host[:port],
+/// connect there and login as `user@realhost` (USER@HOST gateway).
+pub fn ftp_connect_target(url: &RemoteUrl, proxy: Option<&str>) -> (String, String) {
+    let user = url.user.as_deref().unwrap_or("anonymous");
+    match proxy.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(proxy) => {
+            let real = match url.port {
+                Some(p) if p != 21 => format!("{}:{p}", url.host),
+                _ => url.host.clone(),
+            };
+            (ftp_proxy_addr(proxy), format!("{user}@{real}"))
+        }
+        None => (
+            format!("{}:{}", url.host, url.port.unwrap_or(21)),
+            user.to_string(),
+        ),
+    }
+}
+
+fn ftp_proxy_addr(proxy: &str) -> String {
+    let s = proxy.strip_prefix("ftp://").unwrap_or(proxy);
+    let s = s.split('/').next().unwrap_or(s);
+    match s.rsplit_once(':') {
+        Some((_, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => s.to_string(),
+        _ => format!("{s}:21"),
+    }
+}
+
 struct FtpClient {
     inner: ftp::FtpStream,
 }
 
 impl FtpClient {
     fn connect(url: &RemoteUrl) -> FsResult<Self> {
-        let addr = format!("{}:{}", url.host, url.port.unwrap_or(21));
+        let proxy = current_ftp_proxy();
+        let (addr, login_user) = ftp_connect_target(url, proxy.as_deref());
         let mut ftp = ftp::FtpStream::connect(addr)
             .map_err(|e| FsError::Message(format!("FTP connect: {e}")))?;
-        // Login (anonymous if not provided)
+        // Login (anonymous if not provided). Through a proxy the USER is `user@host`.
         match &url.user {
-            Some(u) => {
+            Some(_) => {
                 let pass = url.pass.as_deref().unwrap_or("anonymous@");
-                ftp.login(u, pass)
+                ftp.login(&login_user, pass)
                     .map_err(|e| FsError::Message(format!("FTP login: {e}")))?;
             }
             None => {
-                ftp.login("anonymous", "anonymous@")
+                ftp.login(&login_user, "anonymous@")
                     .map_err(|e| FsError::Message(format!("FTP anonymous login: {e}")))?;
             }
         }
