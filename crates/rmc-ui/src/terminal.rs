@@ -19141,8 +19141,7 @@ mod panel_quickview_info_tests {
         press(&mut app, KeyCode::F(3));
         assert!(
             matches!(app.ui_mode, UiMode::Viewer { .. }),
-            "F3 must still open the full viewer, got {:?}",
-            app.ui_mode
+            "F3 must still open the full viewer"
         );
         assert_eq!(app.right.mode, PanelMode::QuickView);
         assert_eq!(app.left.mode, PanelMode::Listing);

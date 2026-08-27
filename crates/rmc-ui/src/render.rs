@@ -3,7 +3,7 @@ use crate::filehighlight::{listing_name_color, name_span_in_line};
 use crate::find::draw_find_dialog;
 use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
 use crate::mc_colors::McPalette;
-use crate::panel_preview::{info_lines_for_entry, preview_source_entry, quick_view_directory_line};
+use crate::panel_preview::{info_lines_for_panel, preview_source_entry, quick_view_directory_line};
 use crate::panelize::draw_external_panelize_dialog;
 use crate::widgets::Painter;
 use anyhow::Result;
@@ -3562,19 +3562,13 @@ fn draw_panel(
                 }
             }
             PanelMode::Info => {
-                if let Some(ent) = preview_source_entry(app, is_left) {
-                    let lines = info_lines_for_entry(
-                        ent,
-                        app.panel_opts.kilobyte_si,
-                        app.layout.show_free_space,
-                    );
-                    for (i, line) in lines.iter().enumerate() {
-                        if (i as u16) >= content_h {
-                            break;
-                        }
-                        p.goto(x + 1, content_top + i as u16);
-                        p.text(&truncate(line, (w - 2) as usize));
+                let lines = info_lines_for_panel(app, is_left);
+                for (i, line) in lines.iter().enumerate() {
+                    if (i as u16) >= content_h {
+                        break;
                     }
+                    p.goto(x + 1, content_top + i as u16);
+                    p.text(&truncate(line, (w - 2) as usize));
                 }
             }
             PanelMode::Tree => {
@@ -4639,26 +4633,6 @@ fn truncate(s: &str, max: usize) -> String {
             .chain("…".chars())
             .collect()
     }
-}
-
-fn perm_string(mode: u32, is_dir: bool) -> String {
-    let mut s = String::new();
-    s.push(if is_dir { 'd' } else { '-' });
-    let bits = [
-        (0o400, 'r'),
-        (0o200, 'w'),
-        (0o100, 'x'),
-        (0o040, 'r'),
-        (0o020, 'w'),
-        (0o010, 'x'),
-        (0o004, 'r'),
-        (0o002, 'w'),
-        (0o001, 'x'),
-    ];
-    for (bit, ch) in bits {
-        s.push(if mode & bit != 0 { ch } else { '-' });
-    }
-    s
 }
 
 fn human_bytes(b: u64) -> String {
