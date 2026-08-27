@@ -3,6 +3,7 @@ use crate::config::KeyMap;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::panel::{FileEntry, PanelState, SortBy};
+use crate::panelize::ExternalPanelizeDialogState;
 use crate::subshell::Subshell;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -499,6 +500,8 @@ pub enum UiMode {
     },
     // Directory Hotlist
     HotlistDialog(HotlistDialogState),
+    /// GNU External panelize: named commands + run/panelize.
+    ExternalPanelizeDialog(ExternalPanelizeDialogState),
     /// Background jobs list dialog (C-x j).
     JobsDialog {
         /// Selected row in the jobs list.
@@ -1608,6 +1611,7 @@ impl App {
             UiMode::ShellInput => "Panels".to_string(),
             UiMode::HistoryDialog { .. } => "Panels".to_string(),
             UiMode::HotlistDialog(_) => "Panels".to_string(),
+            UiMode::ExternalPanelizeDialog(_) => "External panelize".to_string(),
             UiMode::JobsDialog { .. } => "Panels".to_string(),
             UiMode::CompareDirsDialog { .. } => "Panels".to_string(),
             UiMode::LayoutDialog { .. } => "Panels".to_string(),

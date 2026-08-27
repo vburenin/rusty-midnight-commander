@@ -163,7 +163,7 @@ Per mc(1) “Find File” and “External panelize”:
 - [x] Exclude/ignore directories list (colon-separated), follow symlinks options
 - [ ] Buttons: OK, Stop/Start, Again, Chdir, Panelize, Quit
 - [x] Panelize results into panel; return to normal listing with “..” or switching mode
-- [ ] External Panelize: Ctrl-x !; run arbitrary shell command producing path list; save named commands; re-panelize results
+- [x] External Panelize: Ctrl-x !; run arbitrary shell command producing path list; save named commands; re-panelize results
 
 ---
 
