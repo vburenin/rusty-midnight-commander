@@ -7,6 +7,10 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Original Apache-2.0 `data/mc.ext.ini`, baked in so lookup works with no files on disk
+/// (package-cwd `cargo test`, installed binary, empty overlay).
+const SHIPPED_INI: &str = include_str!("../../../data/mc.ext.ini");
+
 /// Action taken when Enter opens a regular file by extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenAction {
@@ -56,16 +60,27 @@ impl OpenMap {
     }
 
     pub(crate) fn load_default() -> Self {
+        let mut map = Self::parse(SHIPPED_INI);
+        // Optional overlay: cwd first, then crate-relative. An empty `[open]`
+        // section must not wipe the shipped map.
         let candidates = [
             PathBuf::from("data/mc.ext.ini"),
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.ext.ini"),
         ];
         for p in candidates {
             if let Ok(s) = std::fs::read_to_string(&p) {
-                return Self::parse(&s);
+                map.apply_overlay(&s);
             }
         }
-        Self::default()
+        map
+    }
+
+    fn apply_overlay(&mut self, text: &str) {
+        let overlay = Self::parse(text);
+        if overlay.by_ext.is_empty() {
+            return;
+        }
+        self.by_ext.extend(overlay.by_ext);
     }
 
     pub(crate) fn lookup(&self, path: &Path) -> Option<OpenAction> {
@@ -121,8 +136,6 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    const SHIPPED: &str = include_str!("../../../data/mc.ext.ini");
-
     #[test]
     fn parse_ignores_extfs_and_unknown_actions() {
         let text = r#"
@@ -169,7 +182,7 @@ lsarc = extfs/ls-archive
 
     #[test]
     fn shipped_ini_open_section() {
-        let map = OpenMap::parse(SHIPPED);
+        let map = OpenMap::parse(SHIPPED_INI);
         assert_eq!(map.lookup(Path::new("notes.txt")), Some(OpenAction::View));
         assert_eq!(map.lookup(Path::new("README.md")), Some(OpenAction::View));
         assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
@@ -197,9 +210,33 @@ lsarc = extfs/ls-archive
     }
 
     #[test]
-    fn lookup_open_uses_shipped_map() {
+    fn lookup_open_uses_shipped_map_without_disk() {
+        // Baked include_str; must not depend on cwd `data/mc.ext.ini`.
         assert_eq!(lookup_open(Path::new("x.rs")), Some(OpenAction::View));
+        assert_eq!(lookup_open(Path::new("notes.txt")), Some(OpenAction::View));
         assert_eq!(lookup_open(Path::new("x.bin")), None);
+    }
+
+    #[test]
+    fn empty_overlay_does_not_wipe_shipped_map() {
+        let mut map = OpenMap::parse(SHIPPED_INI);
+        map.apply_overlay("[extfs]\nlsarc = extfs/ls-archive\n[open]\n");
+        assert_eq!(map.lookup(Path::new("notes.txt")), Some(OpenAction::View));
+        assert_eq!(map.lookup(Path::new("a.png")), Some(OpenAction::XdgOpen));
+        map.apply_overlay("");
+        assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
+    }
+
+    #[test]
+    fn overlay_extends_shipped_map() {
+        let mut map = OpenMap::parse(SHIPPED_INI);
+        map.apply_overlay("[open]\n.dat = view\n.txt = xdg-open\n");
+        assert_eq!(map.lookup(Path::new("a.dat")), Some(OpenAction::View));
+        assert_eq!(
+            map.lookup(Path::new("notes.txt")),
+            Some(OpenAction::XdgOpen)
+        );
+        assert_eq!(map.lookup(Path::new("lib.rs")), Some(OpenAction::View));
     }
 
     #[test]

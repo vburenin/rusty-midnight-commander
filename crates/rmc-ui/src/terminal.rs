@@ -5860,6 +5860,9 @@ mod enter_open_tests {
     fn make_app(cwd: &std::path::Path) -> App {
         let vfs = LocalFs::new();
         let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        // App::new overlays user setup; keep F3/Open on the internal viewer so
+        // tests never spawn `view`/`less` with `.status()`.
+        app.config_opts.use_internal_view = true;
         app.confirm.execute = true;
         app.change_dir(cwd).unwrap();
         app
@@ -5993,6 +5996,8 @@ mod lynx_like_motion_tests {
     fn make_app(cwd: &std::path::Path) -> App {
         let vfs = LocalFs::new();
         let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        // App::new overlays user setup; keep Open→view on the internal viewer.
+        app.config_opts.use_internal_view = true;
         app.change_dir(cwd).unwrap();
         app
     }
