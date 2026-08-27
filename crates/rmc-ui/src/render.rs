@@ -1,3 +1,4 @@
+use crate::filehighlight::{listing_name_color, name_span_in_line};
 use crate::find::draw_find_dialog;
 use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
 use crate::mc_colors::McPalette;
@@ -2730,13 +2731,17 @@ fn draw_panel(
                         (pal.core_default_fg, pal.core_default_bg)
                     };
                     p.set_fg_bg(fg, bg);
-                    // Name
+                    // Name (filehighlight fg when not selected/marked)
                     let display_name = format_entry_name(ent);
                     p.goto(x + 1, row_y);
                     let name_width = (w - 2).saturating_sub(26);
                     let name_trunc = truncate(&display_name, name_width as usize);
+                    let name_fg =
+                        listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
+                    p.set_fg_bg(name_fg, bg);
                     p.text(&name_trunc);
-                    // Size
+                    // Size / time stay row colors (not filehighlight)
+                    p.set_fg_bg(fg, bg);
                     p.goto(size_col, row_y);
                     p.text(&format_size(ent, app.panel_opts.kilobyte_si));
                     // Time
@@ -2786,7 +2791,11 @@ fn draw_panel(
                         p.goto(col_x, row_y);
                         let display_name = format_entry_name(ent);
                         let name_trunc = truncate(&display_name, per_col_width as usize);
+                        let name_fg =
+                            listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
+                        p.set_fg_bg(name_fg, bg);
                         p.text(&name_trunc);
+                        p.set_fg_bg(fg, bg);
                     }
                 }
             }
@@ -2824,11 +2833,21 @@ fn draw_panel(
                         format!("{:>8}", size)
                     };
                     let tm = format_time(ent);
-                    let mut line =
-                        format!("{perms}  {owner:>8} {group:>8} {size_s} {tm}  {}", ent.name);
-                    line = truncate(&line, (w - 2) as usize);
+                    let prefix = format!("{perms}  {owner:>8} {group:>8} {size_s} {tm}  ");
+                    let width = (w - 2) as usize;
                     p.goto(x + 1, row_y);
-                    p.text(&line);
+                    let prefix_len = prefix.chars().count();
+                    if prefix_len >= width {
+                        p.text(&truncate(&prefix, width));
+                    } else {
+                        p.text(&prefix);
+                        let name_trunc = truncate(&ent.name, width - prefix_len);
+                        let name_fg =
+                            listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
+                        p.set_fg_bg(name_fg, bg);
+                        p.text(&name_trunc);
+                        p.set_fg_bg(fg, bg);
+                    }
                 }
             }
         }
@@ -2863,7 +2882,9 @@ fn draw_panel(
                     );
                     line = truncate(&line, (w - 2) as usize);
                     p.goto(x + 1, row_y);
-                    p.text(&line);
+                    let name_fg =
+                        listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
+                    paint_line_with_name_color(p, &line, &ent.name, name_fg, fg, bg);
                 }
             }
         }
@@ -3460,6 +3481,33 @@ fn draw_diff_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.text(&" ".repeat(cols.saturating_sub(x) as usize));
     }
 }
+/// Paint a listing line, coloring only the filename span, then restore row fg/bg.
+fn paint_line_with_name_color(
+    p: &mut Painter,
+    line: &str,
+    name: &str,
+    name_fg: Color,
+    row_fg: Color,
+    row_bg: Color,
+) {
+    if name_fg == row_fg {
+        p.set_fg_bg(row_fg, row_bg);
+        p.text(line);
+        return;
+    }
+    if let Some((start, end)) = name_span_in_line(line, name) {
+        p.set_fg_bg(row_fg, row_bg);
+        p.text(&line[..start]);
+        p.set_fg_bg(name_fg, row_bg);
+        p.text(&line[start..end]);
+        p.set_fg_bg(row_fg, row_bg);
+        p.text(&line[end..]);
+    } else {
+        p.set_fg_bg(row_fg, row_bg);
+        p.text(line);
+    }
+}
+
 fn format_entry_name(ent: &FileEntry) -> String {
     if ent.name == ".." {
         "..".to_string()
