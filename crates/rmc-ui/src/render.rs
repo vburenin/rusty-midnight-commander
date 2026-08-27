@@ -4423,13 +4423,13 @@ fn draw_listing_mode_dialog(
     for (i, (label, kind)) in radios.iter().enumerate() {
         let row_y = y + 2 + i as u16;
         let sel = if *kind == listing { 'x' } else { ' ' };
-        let focused = match (i, focus) {
+        let focused = matches!(
+            (i, focus),
             (0, rmc_core::app::ListingModeFocus::RadioFull)
-            | (1, rmc_core::app::ListingModeFocus::RadioBrief)
-            | (2, rmc_core::app::ListingModeFocus::RadioLong)
-            | (3, rmc_core::app::ListingModeFocus::RadioUser) => true,
-            _ => false,
-        };
+                | (1, rmc_core::app::ListingModeFocus::RadioBrief)
+                | (2, rmc_core::app::ListingModeFocus::RadioLong)
+                | (3, rmc_core::app::ListingModeFocus::RadioUser)
+        );
         if focused {
             p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
         } else {
@@ -4458,7 +4458,11 @@ fn draw_listing_mode_dialog(
     let ok_focus = matches!(focus, rmc_core::app::ListingModeFocus::Ok);
     let cancel_focus = matches!(focus, rmc_core::app::ListingModeFocus::Cancel);
     let ok = if ok_focus { "< OK >" } else { "[ OK ]" };
-    let cancel = if cancel_focus { "< Cancel >" } else { "[ Cancel ]" };
+    let cancel = if cancel_focus {
+        "< Cancel >"
+    } else {
+        "[ Cancel ]"
+    };
     let btns = format!("{ok}  {cancel}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
