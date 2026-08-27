@@ -322,7 +322,7 @@ pub enum CopyMoveOp {
     Move,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverwriteFocus {
     Yes,
     No,
@@ -332,6 +332,114 @@ pub enum OverwriteFocus {
     Smaller,
     SizeDiffers,
     Append,
+    /// Resume: append source bytes after `dest_size`. Copy only, when
+    /// `0 < dest_size < src_size`. Hidden otherwise (not a disabled ghost).
+    Reget,
+    Abort,
+    /// GNU: "Don't overwrite with zero length file".
+    ZeroLength,
+}
+
+/// GNU replace-dialog checkbox label (mc(1) File Operations).
+pub const DONT_OVERWRITE_ZERO_LENGTH_LABEL: &str = "Don't overwrite with zero length file";
+
+impl OverwriteFocus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Yes => "Yes",
+            Self::No => "No",
+            Self::All => "All",
+            Self::Older => "Older",
+            Self::None => "None",
+            Self::Smaller => "Smaller",
+            Self::SizeDiffers => "Size differs",
+            Self::Append => "Append",
+            Self::Reget => "Reget",
+            Self::Abort => "Abort",
+            Self::ZeroLength => DONT_OVERWRITE_ZERO_LENGTH_LABEL,
+        }
+    }
+
+    pub fn is_button(self) -> bool {
+        !matches!(self, Self::ZeroLength)
+    }
+}
+
+/// GNU: Reget is offered only on Copy when dest size is non-zero and smaller
+/// than the source. Not offered on Move.
+pub fn reget_offered(op: CopyMoveOp, src_size: u64, dst_size: u64) -> bool {
+    matches!(op, CopyMoveOp::Copy) && dst_size > 0 && dst_size < src_size
+}
+
+/// Skip this file (treat as No) when the zero-length checkbox is on and a
+/// zero-sized source would replace a non-zero target.
+pub fn skip_zero_length_overwrite(dont_overwrite_zero: bool, src_size: u64, dst_size: u64) -> bool {
+    dont_overwrite_zero && src_size == 0 && dst_size > 0
+}
+
+/// Tab order: existing buttons, optional Reget, Abort, then the checkbox.
+pub fn overwrite_tab_order(op: CopyMoveOp, src_size: u64, dst_size: u64) -> Vec<OverwriteFocus> {
+    let mut order = vec![
+        OverwriteFocus::Yes,
+        OverwriteFocus::No,
+        OverwriteFocus::All,
+        OverwriteFocus::Older,
+        OverwriteFocus::None,
+        OverwriteFocus::Smaller,
+        OverwriteFocus::SizeDiffers,
+        OverwriteFocus::Append,
+    ];
+    if reget_offered(op, src_size, dst_size) {
+        order.push(OverwriteFocus::Reget);
+    }
+    order.push(OverwriteFocus::Abort);
+    order.push(OverwriteFocus::ZeroLength);
+    order
+}
+
+/// Button rows for the replace dialog. Reget is omitted (not a disabled ghost)
+/// when not offered. Abort is always on the last row.
+pub fn overwrite_button_rows(
+    op: CopyMoveOp,
+    src_size: u64,
+    dst_size: u64,
+) -> Vec<Vec<OverwriteFocus>> {
+    let mut row3 = Vec::new();
+    if reget_offered(op, src_size, dst_size) {
+        row3.push(OverwriteFocus::Reget);
+    }
+    row3.push(OverwriteFocus::Abort);
+    vec![
+        vec![
+            OverwriteFocus::Yes,
+            OverwriteFocus::No,
+            OverwriteFocus::All,
+            OverwriteFocus::Older,
+        ],
+        vec![
+            OverwriteFocus::None,
+            OverwriteFocus::Smaller,
+            OverwriteFocus::SizeDiffers,
+            OverwriteFocus::Append,
+        ],
+        row3,
+    ]
+}
+
+pub fn cycle_overwrite_focus(
+    cur: OverwriteFocus,
+    order: &[OverwriteFocus],
+    back: bool,
+) -> OverwriteFocus {
+    if order.is_empty() {
+        return cur;
+    }
+    match order.iter().position(|f| *f == cur) {
+        Some(i) if back => order[(i + order.len() - 1) % order.len()],
+        Some(i) => order[(i + 1) % order.len()],
+        None if back => *order.last().unwrap(),
+        None => order[0],
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -579,6 +687,8 @@ pub enum UiMode {
         src_path: PathBuf,
         dst_path: PathBuf,
         focus: OverwriteFocus,
+        /// GNU `file_op_context` "Don't overwrite with zero length file".
+        skip_zero_length: bool,
     },
     // Permissions dialog (GNU File → Chmod / C-x c)
     ChmodDialog {
@@ -1382,6 +1492,9 @@ pub struct App {
     pub completion_home: Option<PathBuf>,
     /// Last applied Select/Unselect pattern and checkboxes (process lifetime).
     pub select_group_last: Option<SelectGroupLast>,
+    /// GNU replace-dialog "Don't overwrite with zero length file" for the
+    /// current Copy/Move (`file_op_context`). Reset when F5/F6 opens a new dialog.
+    pub dont_overwrite_with_zero: bool,
     /// Selected skin name (e.g., "default")
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
@@ -1426,6 +1539,7 @@ impl App {
             completion_hosts_path: None,
             completion_home: None,
             select_group_last: None,
+            dont_overwrite_with_zero: false,
         };
         // Overlay user setup (if available) over defaults, then refresh panels.
         let _ = crate::config::load_user_setup(&mut app);
@@ -2717,6 +2831,64 @@ mod tests {
         app.change_dir(&right_dir).unwrap();
         app.active = PaneSide::Left;
         (app, tmp, left_dir, right_dir)
+    }
+
+    #[test]
+    fn reget_offered_only_for_copy_with_shorter_nonzero_dest() {
+        assert!(reget_offered(CopyMoveOp::Copy, 100, 40));
+        assert!(!reget_offered(CopyMoveOp::Copy, 100, 0));
+        assert!(!reget_offered(CopyMoveOp::Copy, 100, 100));
+        assert!(!reget_offered(CopyMoveOp::Copy, 100, 120));
+        assert!(!reget_offered(CopyMoveOp::Move, 100, 40));
+    }
+
+    #[test]
+    fn overwrite_tab_order_includes_reget_abort_and_checkbox() {
+        let with = overwrite_tab_order(CopyMoveOp::Copy, 100, 40);
+        assert!(with.contains(&OverwriteFocus::Reget));
+        assert!(with.contains(&OverwriteFocus::Abort));
+        assert_eq!(*with.last().unwrap(), OverwriteFocus::ZeroLength);
+        let rows = overwrite_button_rows(CopyMoveOp::Copy, 100, 40);
+        let flat: Vec<_> = rows.into_iter().flatten().collect();
+        assert!(flat.contains(&OverwriteFocus::Reget));
+        assert!(!flat.contains(&OverwriteFocus::ZeroLength));
+
+        let without = overwrite_tab_order(CopyMoveOp::Copy, 100, 0);
+        assert!(!without.contains(&OverwriteFocus::Reget));
+        assert!(without.contains(&OverwriteFocus::Abort));
+        let rows_empty = overwrite_button_rows(CopyMoveOp::Copy, 100, 0);
+        let flat_empty: Vec<_> = rows_empty.into_iter().flatten().collect();
+        assert!(!flat_empty.contains(&OverwriteFocus::Reget));
+
+        let move_order = overwrite_tab_order(CopyMoveOp::Move, 100, 40);
+        assert!(!move_order.contains(&OverwriteFocus::Reget));
+        let ge = overwrite_tab_order(CopyMoveOp::Copy, 50, 50);
+        assert!(!ge.contains(&OverwriteFocus::Reget));
+    }
+
+    #[test]
+    fn skip_zero_length_overwrite_only_when_checkbox_and_zero_src() {
+        assert!(skip_zero_length_overwrite(true, 0, 10));
+        assert!(!skip_zero_length_overwrite(false, 0, 10));
+        assert!(!skip_zero_length_overwrite(true, 5, 10));
+        assert!(!skip_zero_length_overwrite(true, 0, 0));
+    }
+
+    #[test]
+    fn cycle_overwrite_focus_wraps() {
+        let order = overwrite_tab_order(CopyMoveOp::Copy, 100, 40);
+        assert_eq!(
+            cycle_overwrite_focus(OverwriteFocus::Yes, &order, false),
+            OverwriteFocus::No
+        );
+        assert_eq!(
+            cycle_overwrite_focus(OverwriteFocus::ZeroLength, &order, false),
+            OverwriteFocus::Yes
+        );
+        assert_eq!(
+            cycle_overwrite_focus(OverwriteFocus::Yes, &order, true),
+            OverwriteFocus::ZeroLength
+        );
     }
 
     #[test]

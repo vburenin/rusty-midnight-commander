@@ -297,11 +297,27 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         }
         rmc_core::app::UiMode::OverwriteDialog {
             op,
-            src_path: _,
+            src_path,
             dst_path,
             focus,
+            skip_zero_length,
         } => {
-            draw_overwrite_dialog(p, cols, rows, pal, *op, dst_path, *focus, app.shadows);
+            let src_meta = app.vfs.stat(src_path).ok();
+            let dst_meta = app.vfs.stat(dst_path).ok();
+            draw_overwrite_dialog(
+                p,
+                cols,
+                rows,
+                pal,
+                *op,
+                dst_path,
+                src_meta.as_ref(),
+                dst_meta.as_ref(),
+                *focus,
+                *skip_zero_length,
+                app.panel_opts.kilobyte_si,
+                app.shadows,
+            );
         }
         rmc_core::app::UiMode::InputDialog {
             title,
@@ -859,13 +875,18 @@ fn draw_overwrite_dialog(
     pal: McPalette,
     op: rmc_core::app::CopyMoveOp,
     dst: &std::path::Path,
+    src_meta: Option<&rmc_fs::Metadata>,
+    dst_meta: Option<&rmc_fs::Metadata>,
     focus: rmc_core::app::OverwriteFocus,
+    skip_zero_length: bool,
+    si: bool,
     show_shadow: bool,
 ) {
+    use rmc_core::app::{overwrite_button_rows, OverwriteFocus, DONT_OVERWRITE_ZERO_LENGTH_LABEL};
     let w = (cols as usize).min(70) as u16;
-    let h = 9u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let h = 13u16.min(rows.saturating_sub(2)).max(11);
+    let x = (cols.saturating_sub(w)) / 2;
+    let y = (rows.saturating_sub(h)) / 2;
     // Frame
     p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
     p.goto(x, y);
@@ -905,48 +926,63 @@ fn draw_overwrite_dialog(
     p.text(ttl);
     // Destination path
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 2);
+    p.goto(x + 2, y + 1);
     let d = truncate(&dst.display().to_string(), (w - 4) as usize);
     p.text(&d);
-    // Buttons (two rows)
-    let row1 = [
-        rmc_core::app::OverwriteFocus::Yes,
-        rmc_core::app::OverwriteFocus::No,
-        rmc_core::app::OverwriteFocus::All,
-        rmc_core::app::OverwriteFocus::Older,
-    ];
-    let row2 = [
-        rmc_core::app::OverwriteFocus::None,
-        rmc_core::app::OverwriteFocus::Smaller,
-        rmc_core::app::OverwriteFocus::SizeDiffers,
-        rmc_core::app::OverwriteFocus::Append,
-    ];
-    let label = |k: rmc_core::app::OverwriteFocus| -> &'static str {
-        match k {
-            rmc_core::app::OverwriteFocus::Yes => "Yes",
-            rmc_core::app::OverwriteFocus::No => "No",
-            rmc_core::app::OverwriteFocus::All => "All",
-            rmc_core::app::OverwriteFocus::Older => "Older",
-            rmc_core::app::OverwriteFocus::None => "None",
-            rmc_core::app::OverwriteFocus::Smaller => "Smaller",
-            rmc_core::app::OverwriteFocus::SizeDiffers => "Size differs",
-            rmc_core::app::OverwriteFocus::Append => "Append",
+    // Dates and sizes of both files (GNU replace dialog).
+    let fmt_info = |meta: Option<&rmc_fs::Metadata>| -> String {
+        match meta {
+            Some(m) => {
+                let dt: OffsetDateTime = m.modified.into();
+                let ts = dt
+                    .format(&time::macros::format_description!(
+                        "[month repr:short] [day padding:space] [hour]:[minute]"
+                    ))
+                    .unwrap_or_default();
+                format!("{:>8}  {ts}", rmc_core::panel::format_byte_size(m.size, si))
+            }
+            None => "-".to_string(),
         }
     };
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 3);
+    p.text(&truncate(
+        &format!("New:      {}", fmt_info(src_meta)),
+        (w - 4) as usize,
+    ));
+    p.goto(x + 2, y + 4);
+    p.text(&truncate(
+        &format!("Existing: {}", fmt_info(dst_meta)),
+        (w - 4) as usize,
+    ));
+    // Checkbox
+    if focus == OverwriteFocus::ZeroLength {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 6);
+    p.text(&format!(
+        "[{}] {}",
+        if skip_zero_length { 'x' } else { ' ' },
+        DONT_OVERWRITE_ZERO_LENGTH_LABEL
+    ));
+    let src_size = src_meta.map(|m| m.size).unwrap_or(0);
+    let dst_size = dst_meta.map(|m| m.size).unwrap_or(0);
+    let rows_btns = overwrite_button_rows(op, src_size, dst_size);
     let draw_row = |p: &mut Painter,
                     pal: McPalette,
                     x: u16,
                     y: u16,
                     total_w: u16,
-                    btns: &[rmc_core::app::OverwriteFocus],
-                    focus: rmc_core::app::OverwriteFocus| {
-        // compute total width
+                    btns: &[OverwriteFocus],
+                    focus: OverwriteFocus| {
         let mut width = 0usize;
         for (i, k) in btns.iter().enumerate() {
             let t = if *k == focus {
-                format!("< {} >", label(*k))
+                format!("< {} >", k.label())
             } else {
-                format!("[ {} ]", label(*k))
+                format!("[ {} ]", k.label())
             };
             width += t.len();
             if i + 1 != btns.len() {
@@ -957,10 +993,10 @@ fn draw_overwrite_dialog(
         for (i, k) in btns.iter().enumerate() {
             let t = if *k == focus {
                 p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
-                format!("< {} >", label(*k))
+                format!("< {} >", k.label())
             } else {
                 p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-                format!("[ {} ]", label(*k))
+                format!("[ {} ]", k.label())
             };
             p.goto(cx, y);
             p.text(&t);
@@ -973,8 +1009,11 @@ fn draw_overwrite_dialog(
             }
         }
     };
-    draw_row(p, pal, x, y + h - 3, w, &row1, focus);
-    draw_row(p, pal, x, y + h - 2, w, &row2, focus);
+    let n_rows = rows_btns.len() as u16;
+    for (i, row) in rows_btns.iter().enumerate() {
+        let row_y = y + h - 1 - n_rows + i as u16;
+        draw_row(p, pal, x, row_y, w, row, focus);
+    }
     // Shadow
     if show_shadow {
         p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);

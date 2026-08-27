@@ -116,7 +116,7 @@ Dialogs and behavior per mc(1) “File Menu”, “File operations”, and repla
   - [x] Preallocate space / Use COW file cloning (same Configuration flags as Copy; copy+delete fallback honors them)
 - [ ] Delete (F8): confirmation; safe-delete option flips default to No
 - [ ] Mkdir (F7): input with optional auto-name
-- [ ] Replace/Overwrite dialog: Yes/No/All/Older/None/Smaller/Size differs/Append/Reget; “Don’t overwrite with zero length file”
+- [x] Replace/Overwrite dialog: Yes/No/All/Older/None/Smaller/Size differs/Append/Reget; “Don’t overwrite with zero length file”
 - [ ] Background jobs manager: stop/restart/kill for copy/move
 - [x] Chmod (C-x c): recursive, perm bits UI
 - [x] Chown (C-x o): owner/group changes
