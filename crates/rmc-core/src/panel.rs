@@ -1,3 +1,4 @@
+use crate::matchutil;
 use crate::selection::Selection;
 use crate::sorting::{self, SortDir};
 use serde::{Deserialize, Serialize};
@@ -140,7 +141,8 @@ pub struct PanelState {
     pub selection: Selection,
     // When panelized, entries show a virtual list; pressing `..` or leaving mode restores saved state.
     pub panelized: Option<PanelizeSaved>,
-    /// Optional filename filter (shell glob like *.c). `None` or "*" shows all.
+    /// Optional filename filter. `None`, empty, or "*" shows all.
+    /// Interpreted as a shell glob or regex per GNU mc Use shell patterns.
     pub filter_glob: Option<String>,
     /// Local dir mtime/ctime/nlink/size from the last listing (Fast reload).
     pub dir_reload_stamp: Option<DirReloadStamp>,
@@ -202,10 +204,15 @@ impl PanelState {
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
-        self.set_entries_with(entries, true);
+        self.set_entries_with(entries, true, true);
     }
 
-    pub fn set_entries_with(&mut self, mut entries: Vec<FileEntry>, reverse_files_only: bool) {
+    pub fn set_entries_with(
+        &mut self,
+        mut entries: Vec<FileEntry>,
+        reverse_files_only: bool,
+        shell_patterns: bool,
+    ) {
         // Separate parent marker (if any) to keep it visible and first.
         let mut parent_marker: Option<FileEntry> = None;
         entries.retain(|e| {
@@ -216,14 +223,14 @@ impl PanelState {
                 true
             }
         });
-        // Apply filename filter (shell glob) if present and not equal to "*".
+        // Apply filename filter if present and not equal to "*". Empty / "*" shows all.
         if let Some(pat) = self
             .filter_glob
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty() && *s != "*")
         {
-            entries.retain(|e| glob_match(pat, &e.name));
+            entries.retain(|e| matchutil::filename_pattern_matches(pat, &e.name, shell_patterns));
         }
         // Put parent marker back on top if exists.
         if let Some(pm) = parent_marker {
@@ -348,7 +355,7 @@ impl PanelState {
     }
 
     pub fn set_panelized_entries(&mut self, cwd_for_caption: PathBuf, entries: Vec<FileEntry>) {
-        self.set_panelized_entries_with(cwd_for_caption, entries, true);
+        self.set_panelized_entries_with(cwd_for_caption, entries, true, true);
     }
 
     pub fn set_panelized_entries_with(
@@ -356,6 +363,7 @@ impl PanelState {
         cwd_for_caption: PathBuf,
         entries: Vec<FileEntry>,
         reverse_files_only: bool,
+        shell_patterns: bool,
     ) {
         // Save current state
         self.panelized = Some(PanelizeSaved {
@@ -368,7 +376,7 @@ impl PanelState {
         self.cwd = cwd_for_caption;
         self.cursor = 0;
         self.scroll_top = 0;
-        self.set_entries_with(entries, reverse_files_only);
+        self.set_entries_with(entries, reverse_files_only, shell_patterns);
     }
 
     pub fn unpanelize(&mut self) {
@@ -667,40 +675,6 @@ pub fn format_user_listing_line(
 /// Column header for a parsed user listing format, truncated to `width`.
 pub fn format_user_listing_header(tokens: &[UserFormatToken], width: usize) -> String {
     join_user_parts(tokens, width, None, false)
-}
-
-// Simple glob matcher supporting '*' (any sequence) and '?' (single char).
-// Case-sensitive, anchored to full string.
-fn glob_match(pat: &str, name: &str) -> bool {
-    glob_match_impl(pat.as_bytes(), name.as_bytes())
-}
-
-fn glob_match_impl(p: &[u8], s: &[u8]) -> bool {
-    // Two-pointer with backtracking on '*'
-    let (mut i, mut j) = (0usize, 0usize);
-    let (mut star_i, mut star_j) = (None, 0usize);
-    while j < s.len() {
-        if i < p.len() && (p[i] == b'?' || p[i] == s[j]) {
-            i += 1;
-            j += 1;
-        } else if i < p.len() && p[i] == b'*' {
-            star_i = Some(i);
-            i += 1;
-            star_j = j;
-        } else if let Some(si) = star_i {
-            // backtrack: advance match under last '*'
-            i = si + 1;
-            star_j += 1;
-            j = star_j;
-        } else {
-            return false;
-        }
-    }
-    // Consume trailing '*' in pattern
-    while i < p.len() && p[i] == b'*' {
-        i += 1;
-    }
-    i == p.len()
 }
 
 #[cfg(test)]
