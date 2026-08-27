@@ -758,6 +758,11 @@ impl TerminalApp {
             }
             return Ok(());
         }
+        // After a waited external: any key dismisses so panels can redraw.
+        if matches!(app.ui_mode, UiMode::PauseAfterRun) {
+            app.ui_mode = UiMode::Normal;
+            return Ok(());
+        }
         // Dialog handling first
         match &mut app.ui_mode {
             UiMode::LearnKeysDialog {
@@ -5489,37 +5494,67 @@ fn handle_panel_enter(app: &mut App) -> Result<()> {
     app.handle_action(Action::Enter)
 }
 
+/// Prompt shown after a waited external command when `pause_after_run` is set.
+/// Public mailing-list wording for GNU mc's pause line (not copied from GPL C).
+pub(crate) const PAUSE_AFTER_RUN_PROMPT: &str = "Press any key to continue...";
+
 /// F3 / `[open] = view`: internal viewer when configured, else $PAGER / view / less.
 fn view_current_file(app: &mut App) -> Result<()> {
+    view_current_file_with_pager(app, None)
+}
+
+/// `pager_override` replaces `$PAGER` when `Some` (tests pass a command that exits immediately).
+fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> Result<()> {
     if app.config_opts.use_internal_view {
         app.handle_action(Action::ViewFile)?;
         return Ok(());
     }
     if let Some(ent) = app.active_panel().current_entry().cloned() {
         if !ent.is_dir {
-            // Prefer $PAGER; otherwise try view, then less
-            if let Some(pager) = std::env::var("PAGER").ok().filter(|s| !s.trim().is_empty()) {
-                let _ = std::process::Command::new(&pager)
-                    .arg(&ent.path)
-                    .current_dir(&app.active_panel().cwd)
-                    .status();
-            } else {
-                let tried_view = std::process::Command::new("view")
-                    .arg(&ent.path)
-                    .current_dir(&app.active_panel().cwd)
-                    .status()
-                    .is_ok();
-                if !tried_view {
-                    let _ = std::process::Command::new("less")
-                        .arg(&ent.path)
-                        .current_dir(&app.active_panel().cwd)
-                        .status();
-                }
-            }
+            run_waited_external_viewer(&ent.path, &app.active_panel().cwd, pager_override);
+            pause_after_waited_external(app);
             app.reload_panels()?;
         }
     }
     Ok(())
+}
+
+/// Waited `$PAGER` / `view` / `less`. Does not spawn fire-and-forget desktop open.
+fn run_waited_external_viewer(
+    path: &std::path::Path,
+    cwd: &std::path::Path,
+    pager_override: Option<&str>,
+) {
+    let pager = pager_override
+        .map(str::to_string)
+        .or_else(|| std::env::var("PAGER").ok().filter(|s| !s.trim().is_empty()));
+    if let Some(pager) = pager {
+        let _ = std::process::Command::new(&pager)
+            .arg(path)
+            .current_dir(cwd)
+            .status();
+        return;
+    }
+    let tried_view = std::process::Command::new("view")
+        .arg(path)
+        .current_dir(cwd)
+        .status()
+        .is_ok();
+    if !tried_view {
+        let _ = std::process::Command::new("less")
+            .arg(path)
+            .current_dir(cwd)
+            .status();
+    }
+}
+
+/// After a blocking external command returns, optionally keep the output visible
+/// until the user presses a key. No-op when the flag is off, and never used for
+/// fire-and-forget `.spawn()` (xdg-open).
+fn pause_after_waited_external(app: &mut App) {
+    if app.config_opts.pause_after_run {
+        app.ui_mode = UiMode::PauseAfterRun;
+    }
 }
 
 /// Enter on a regular non-executable file: consult mc.ext `[open]`.
@@ -5589,12 +5624,14 @@ fn try_enter_executable(app: &mut App) -> Result<bool> {
             message: format!("Do you want to execute? {cmd}"),
             on_ok: Box::new(move |app| {
                 let _ = rmc_core::user_menu::run_menu_command(app, &cmd_run);
+                pause_after_waited_external(app);
                 Ok(())
             }),
         };
         return Ok(true);
     }
     let _ = rmc_core::user_menu::run_menu_command(app, &cmd);
+    pause_after_waited_external(app);
     app.reload_panels()?;
     Ok(true)
 }
@@ -5792,6 +5829,7 @@ mod enter_executable_tests {
         assert!(app.active_panel().current_entry().unwrap().is_exe);
         assert!(try_enter_executable(&mut app).unwrap());
         assert!(marker.exists());
+        assert!(matches!(app.ui_mode, UiMode::Normal));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -6126,5 +6164,209 @@ mod ftp_proxy_opts_tests {
             Some("proxy.example.net")
         );
         assert_eq!(ftp_proxy_for_vfs_opts(true, "  gw:3128  "), Some("gw:3128"));
+    }
+}
+
+#[cfg(test)]
+mod pause_after_run_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-pause-run-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.confirm.execute = false;
+        app.config_opts.use_internal_view = true;
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn write_exe(root: &std::path::Path, name: &str, body: &str) {
+        let script = root.join(name);
+        std::fs::write(&script, body).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    #[test]
+    fn flag_false_execute_does_not_pause() {
+        let root = temp_workspace();
+        let marker = root.join("ran");
+        write_exe(
+            &root,
+            "runme.sh",
+            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        );
+        let mut app = make_app(&root);
+        app.config_opts.pause_after_run = false;
+        select_named(&mut app, "runme.sh");
+        assert!(try_enter_executable(&mut app).unwrap());
+        assert!(marker.exists());
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "pause_after_run=false must not show a pause dialog"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_execute_shows_pause_ui() {
+        let root = temp_workspace();
+        let marker = root.join("ran");
+        write_exe(
+            &root,
+            "runme.sh",
+            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        );
+        let mut app = make_app(&root);
+        app.config_opts.pause_after_run = true;
+        select_named(&mut app, "runme.sh");
+        assert!(try_enter_executable(&mut app).unwrap());
+        assert!(marker.exists());
+        assert!(
+            matches!(app.ui_mode, UiMode::PauseAfterRun),
+            "waited execute must pause when the flag is on"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_execute_confirm_ok_shows_pause_ui() {
+        let root = temp_workspace();
+        let marker = root.join("ran");
+        write_exe(
+            &root,
+            "runme.sh",
+            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        );
+        let mut app = make_app(&root);
+        app.confirm.execute = true;
+        app.config_opts.pause_after_run = true;
+        select_named(&mut app, "runme.sh");
+        assert!(try_enter_executable(&mut app).unwrap());
+        assert!(!marker.exists());
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, .. } => assert_eq!(title, "Execute command"),
+            _ => panic!("expected execute confirm before the command runs"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(marker.exists());
+        assert!(
+            matches!(app.ui_mode, UiMode::PauseAfterRun),
+            "waited execute-confirm path must pause after the command returns"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_false_external_viewer_does_not_pause() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hello").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.use_internal_view = false;
+        app.config_opts.pause_after_run = false;
+        select_named(&mut app, "notes.txt");
+        view_current_file_with_pager(&mut app, Some("true")).unwrap();
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "waited viewer must not pause when the flag is off"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_external_viewer_shows_pause_ui() {
+        let root = temp_workspace();
+        std::fs::write(root.join("notes.txt"), "hello").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.use_internal_view = false;
+        app.config_opts.pause_after_run = true;
+        select_named(&mut app, "notes.txt");
+        view_current_file_with_pager(&mut app, Some("true")).unwrap();
+        assert!(
+            matches!(app.ui_mode, UiMode::PauseAfterRun),
+            "waited external viewer must pause when the flag is on"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_true_internal_viewer_does_not_pause() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.use_internal_view = true;
+        app.config_opts.pause_after_run = true;
+        select_named(&mut app, "notes.txt");
+        view_current_file(&mut app).unwrap();
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            UiMode::PauseAfterRun => panic!("internal viewer must not pause"),
+            _ => panic!("expected internal Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn xdg_open_spawn_does_not_pause() {
+        let root = temp_workspace();
+        std::fs::write(root.join("shot.png"), b"not-a-real-png").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.pause_after_run = true;
+        select_named(&mut app, "shot.png");
+        assert!(try_open_by_extension(&mut app).unwrap());
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "fire-and-forget xdg-open must not pause"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn any_key_dismisses_pause_ui() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::PauseAfterRun;
+        press(&mut app, KeyCode::Char('x'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        app.ui_mode = UiMode::PauseAfterRun;
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        app.ui_mode = UiMode::PauseAfterRun;
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
