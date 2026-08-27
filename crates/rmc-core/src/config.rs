@@ -468,6 +468,25 @@ pub fn save_setup(app: &crate::app::App) -> Result<()> {
     writeln!(f, "\n[appearance]")?;
     writeln!(f, "skin={}", app.skin_name)?;
     writeln!(f, "shadows={}", app.shadows)?;
+    // [vfs]
+    writeln!(f, "\n[vfs]")?;
+    writeln!(
+        f,
+        "always_use_ftp_proxy={}",
+        app.vfs_opts.always_use_ftp_proxy
+    )?;
+    writeln!(f, "ftp_proxy_host={}", app.vfs_opts.ftp_proxy_host)?;
+    writeln!(f, "use_netrc={}", app.vfs_opts.use_netrc)?;
+    writeln!(
+        f,
+        "ftp_anon_password={}",
+        app.vfs_opts.ftp_anon_password
+    )?;
+    writeln!(
+        f,
+        "dir_cache_timeout_secs={}",
+        app.vfs_opts.dir_cache_timeout_secs
+    )?;
     // [configuration]
     writeln!(f, "\n[configuration]")?;
     writeln!(f, "verbose={}", app.config_opts.verbose)?;
@@ -550,6 +569,26 @@ pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
                     "simple_swap" => app.panel_opts.simple_swap = vb(&v),
                     "auto_save_setup" => app.panel_opts.auto_save_setup = vb(&v),
                     "lynx_like" => app.panel_opts.lynx_like = vb(&v),
+                    _ => {}
+                },
+                "vfs" => match k.as_str() {
+                    "always_use_ftp_proxy" => {
+                        app.vfs_opts.always_use_ftp_proxy = vb(&v)
+                    }
+                    "ftp_proxy_host" => {
+                        app.vfs_opts.ftp_proxy_host = v;
+                    }
+                    "use_netrc" => {
+                        app.vfs_opts.use_netrc = vb(&v);
+                    }
+                    "ftp_anon_password" => {
+                        app.vfs_opts.ftp_anon_password = v;
+                    }
+                    "dir_cache_timeout_secs" => {
+                        if let Ok(n) = v.parse::<u32>() {
+                            app.vfs_opts.dir_cache_timeout_secs = n;
+                        }
+                    }
                     _ => {}
                 },
                 "appearance" => match k.as_str() {
