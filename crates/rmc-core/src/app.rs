@@ -164,9 +164,10 @@ pub struct ConfigOptions {
     /// Does not apply to fire-and-forget desktop open (`xdg-open` `.spawn()`).
     pub pause_after_run: bool,
     /// GNU mc Options → Configuration → Use shell patterns. When true (default),
-    /// Select group and Unselect group treat patterns as shell globs (`*.c`, `?`,
-    /// `[abc]`). When false, those patterns are regexes. The Left/Right Filter
-    /// dialog has its own Regular expression checkbox.
+    /// filename patterns are shell globs (`*.c`, `?`, `[abc]`). When false, they
+    /// are regexes. The Select/Unselect dialog and Left/Right Filter dialog each
+    /// have their own Regular expression checkbox (Select/Unselect seeds that
+    /// checkbox from this option on first open).
     pub shell_patterns: bool,
     /// GNU mc Options → Configuration → Auto menus. When true, a successful
     /// `change_dir` into a different directory that contains a local `.mc.menu`
@@ -328,6 +329,28 @@ pub enum FilterDialogFocus {
     Cancel,
 }
 
+/// Focus within the GNU Select / Unselect group dialog (mc(1) `+` / `\\`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectGroupDialogFocus {
+    Pattern,
+    FilesOnly,
+    CaseSensitive,
+    RegularExpression,
+    Ok,
+    Cancel,
+}
+
+/// Last Select/Unselect pattern and checkbox state for this process.
+///
+/// Not written to ini; a later session starts from defaults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectGroupLast {
+    pub pattern: String,
+    pub files_only: bool,
+    pub case_sensitive: bool,
+    pub regular_expression: bool,
+}
+
 #[allow(clippy::large_enum_variant)] // Editor owns EditorBuffer; overlays are boxed where needed
 pub enum UiMode {
     Normal,
@@ -393,6 +416,16 @@ pub enum UiMode {
         files_only: bool,
         case_sensitive: bool,
         focus: FilterDialogFocus,
+    },
+    /// GNU mc(1) Select group (`+`) / Unselect group (`\\`) dialog.
+    SelectGroupDialog {
+        /// `true` = Select (mark matches); `false` = Unselect (unmark matches).
+        select: bool,
+        pattern: String,
+        files_only: bool,
+        case_sensitive: bool,
+        regular_expression: bool,
+        focus: SelectGroupDialogFocus,
     },
     Editor {
         buf: EditorBuffer,
@@ -1242,6 +1275,8 @@ pub struct App {
     pub completion_hosts_path: Option<PathBuf>,
     /// Test override for `~/` filename completion (`$HOME` by default).
     pub completion_home: Option<PathBuf>,
+    /// Last applied Select/Unselect pattern and checkboxes (process lifetime).
+    pub select_group_last: Option<SelectGroupLast>,
     /// Selected skin name (e.g., "default")
     pub skin_name: String,
     /// Whether to draw drop shadows for dialogs/menus
@@ -1282,6 +1317,7 @@ impl App {
             completion_passwd_path: None,
             completion_hosts_path: None,
             completion_home: None,
+            select_group_last: None,
         };
         // Overlay user setup (if available) over defaults, then refresh panels.
         let _ = crate::config::load_user_setup(&mut app);
@@ -1485,7 +1521,8 @@ impl App {
                 self.reload_panels()?;
             }
             InvertSelection => {
-                // Invert selection for all non-parent entries in the active panel
+                // GNU invert: marked ↔ unmarked for every entry except `..`.
+                // Directories are inverted (not files-only unless a later option).
                 let len = self.active_panel().entries.len();
                 for idx in 0..len {
                     let ent = &self.active_panel().entries[idx];
@@ -1495,26 +1532,10 @@ impl App {
                 }
             }
             SelectGroup => {
-                let title = "Select group (glob):".to_string();
-                self.ui_mode = UiMode::PromptInput {
-                    title,
-                    value: "*".to_string(),
-                    on_submit: Box::new(|app, pattern| {
-                        app.apply_group_pattern(pattern.trim(), true);
-                        Ok(())
-                    }),
-                };
+                self.open_select_group_dialog(true);
             }
             UnselectGroup => {
-                let title = "Unselect group (glob):".to_string();
-                self.ui_mode = UiMode::PromptInput {
-                    title,
-                    value: "*".to_string(),
-                    on_submit: Box::new(|app, pattern| {
-                        app.apply_group_pattern(pattern.trim(), false);
-                        Ok(())
-                    }),
-                };
+                self.open_select_group_dialog(false);
             }
             SwapPanels => {
                 std::mem::swap(&mut self.left, &mut self.right);
@@ -1707,18 +1728,55 @@ impl App {
         };
     }
 
-    /// Select (`select == true`) or unselect files whose names match `pattern`.
-    /// Honors Options → Configuration → Use shell patterns. Skips `..`.
-    fn apply_group_pattern(&mut self, pattern: &str, select: bool) {
-        let shell_patterns = self.config_opts.shell_patterns;
+    fn open_select_group_dialog(&mut self, select: bool) {
+        let (pattern, files_only, case_sensitive, regular_expression) =
+            if let Some(last) = &self.select_group_last {
+                (
+                    last.pattern.clone(),
+                    last.files_only,
+                    last.case_sensitive,
+                    last.regular_expression,
+                )
+            } else {
+                (String::new(), false, true, !self.config_opts.shell_patterns)
+            };
+        self.ui_mode = UiMode::SelectGroupDialog {
+            select,
+            pattern,
+            files_only,
+            case_sensitive,
+            regular_expression,
+            focus: SelectGroupDialogFocus::Pattern,
+        };
+    }
+
+    /// Select (`select == true`) or unselect names matching `pattern`.
+    ///
+    /// Uses the same glob/regex matcher as the Filter dialog. Never touches `..`.
+    /// When `files_only` is set, directories are left unchanged.
+    pub fn apply_group_pattern(
+        &mut self,
+        pattern: &str,
+        select: bool,
+        files_only: bool,
+        case_sensitive: bool,
+        regular_expression: bool,
+    ) {
+        let shell_glob = !regular_expression;
         let matches: Vec<usize> = self
             .active_panel()
             .entries
             .iter()
             .enumerate()
             .filter(|(_, e)| !e.is_parent_marker())
+            .filter(|(_, e)| !(files_only && e.is_dir))
             .filter(|(_, e)| {
-                crate::matchutil::filename_pattern_matches(pattern, &e.name, shell_patterns)
+                crate::matchutil::filename_pattern_matches_ex(
+                    pattern,
+                    &e.name,
+                    shell_glob,
+                    case_sensitive,
+                )
             })
             .map(|(i, _)| i)
             .collect();
@@ -1730,6 +1788,12 @@ impl App {
                 panel.selection.unselect(idx);
             }
         }
+        self.select_group_last = Some(SelectGroupLast {
+            pattern: pattern.to_string(),
+            files_only,
+            case_sensitive,
+            regular_expression,
+        });
     }
 }
 
@@ -1791,6 +1855,7 @@ impl App {
             UiMode::SortDialog { .. } => "Panels".to_string(),
             UiMode::ListingModeDialog { .. } => "Panels".to_string(),
             UiMode::FilterDialog { .. } => "Panels".to_string(),
+            UiMode::SelectGroupDialog { .. } => "Panels".to_string(),
             UiMode::Editor { .. } => "Editor".to_string(),
             UiMode::FindDialog(_) => "Find File".to_string(),
             UiMode::CopyDialog { title, .. } => {
