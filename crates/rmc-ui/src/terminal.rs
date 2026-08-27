@@ -1970,9 +1970,14 @@ impl TerminalApp {
     ) -> UiMode {
         match rmc_core::fileop::FileOpProgressState::prepare(vfs, op, &src, &dst, opts) {
             Ok(state) => {
+                let flags = opts.copy_flags();
                 let job_id = match op {
-                    rmc_core::app::CopyMoveOp::Copy => jobs.spawn_copy(&src, &dst),
-                    rmc_core::app::CopyMoveOp::Move => jobs.spawn_move(&src, &dst),
+                    rmc_core::app::CopyMoveOp::Copy => {
+                        jobs.spawn_copy_with_flags(&src, &dst, flags)
+                    }
+                    rmc_core::app::CopyMoveOp::Move => {
+                        jobs.spawn_move_with_flags(&src, &dst, flags)
+                    }
                 };
                 UiMode::FileOpProgress {
                     op,
@@ -4969,6 +4974,8 @@ impl TerminalApp {
                     F::Verbose,
                     F::ComputeTotals,
                     F::ClassicProgressbar,
+                    F::PreallocateSpace,
+                    F::UseCowFileCloning,
                     F::UseInternalViewer,
                     F::UseInternalEditor,
                     F::PauseAfterRun,
@@ -5020,6 +5027,10 @@ impl TerminalApp {
                         F::ClassicProgressbar => {
                             draft.classic_progressbar = !draft.classic_progressbar
                         }
+                        F::PreallocateSpace => draft.preallocate_space = !draft.preallocate_space,
+                        F::UseCowFileCloning => {
+                            draft.use_cow_file_cloning = !draft.use_cow_file_cloning
+                        }
                         F::UseInternalViewer => draft.use_internal_view = !draft.use_internal_view,
                         F::UseInternalEditor => draft.use_internal_edit = !draft.use_internal_edit,
                         F::PauseAfterRun => draft.pause_after_run = !draft.pause_after_run,
@@ -5035,6 +5046,10 @@ impl TerminalApp {
                         F::ComputeTotals => draft.compute_totals = !draft.compute_totals,
                         F::ClassicProgressbar => {
                             draft.classic_progressbar = !draft.classic_progressbar
+                        }
+                        F::PreallocateSpace => draft.preallocate_space = !draft.preallocate_space,
+                        F::UseCowFileCloning => {
+                            draft.use_cow_file_cloning = !draft.use_cow_file_cloning
                         }
                         F::UseInternalViewer => draft.use_internal_view = !draft.use_internal_view,
                         F::UseInternalEditor => draft.use_internal_edit = !draft.use_internal_edit,
@@ -5458,15 +5473,18 @@ impl TerminalApp {
                             }
                             F::Background => {
                                 // Enqueue background job; do not block.
+                                let flags = app.config_opts.copy_flags();
                                 if title == "Copy" {
-                                    app.jobs.spawn_copy(
+                                    app.jobs.spawn_copy_with_flags(
                                         src_path.clone(),
                                         Path::new(&*to).to_path_buf(),
+                                        flags,
                                     );
                                 } else {
-                                    app.jobs.spawn_move(
+                                    app.jobs.spawn_move_with_flags(
                                         src_path.clone(),
                                         Path::new(&*to).to_path_buf(),
+                                        flags,
                                     );
                                 }
                                 app.ui_mode = UiMode::Normal;
@@ -10450,6 +10468,161 @@ mod mkdir_autoname_tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert!(root.join("notes.txt_d").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod config_copy_flags_dialog_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ConfigOptionsFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-cfg-copy-flags-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn open_configuration(app: &mut App) {
+        app.ui_mode = UiMode::ConfigurationDialog {
+            draft: app.config_opts,
+            focus: ConfigOptionsFocus::Verbose,
+        };
+    }
+
+    fn focus(app: &App) -> ConfigOptionsFocus {
+        match &app.ui_mode {
+            UiMode::ConfigurationDialog { focus, .. } => *focus,
+            _ => panic!("expected ConfigurationDialog"),
+        }
+    }
+
+    fn tab_until(app: &mut App, want: ConfigOptionsFocus) {
+        for _ in 0..20 {
+            if focus(app) == want {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("never focused {want:?}, last {:?}", focus(app));
+    }
+
+    #[test]
+    fn defaults_match_gnu() {
+        let root = temp_workspace();
+        let app = make_app(&root);
+        assert!(!app.config_opts.preallocate_space);
+        assert!(app.config_opts.use_cow_file_cloning);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_order_includes_preallocate_and_cow() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_configuration(&mut app);
+        assert_eq!(focus(&app), ConfigOptionsFocus::Verbose);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), ConfigOptionsFocus::ComputeTotals);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), ConfigOptionsFocus::ClassicProgressbar);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), ConfigOptionsFocus::PreallocateSpace);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), ConfigOptionsFocus::UseCowFileCloning);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_and_enter_toggle_both_ok_commits() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(!app.config_opts.preallocate_space);
+        assert!(app.config_opts.use_cow_file_cloning);
+        let verbose = app.config_opts.verbose;
+        let totals = app.config_opts.compute_totals;
+        let classic = app.config_opts.classic_progressbar;
+        let mkdir = app.config_opts.mkdir_autoname;
+        open_configuration(&mut app);
+        tab_until(&mut app, ConfigOptionsFocus::PreallocateSpace);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, ConfigOptionsFocus::UseCowFileCloning);
+        press(&mut app, KeyCode::Enter);
+        tab_until(&mut app, ConfigOptionsFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.config_opts.preallocate_space);
+        assert!(!app.config_opts.use_cow_file_cloning);
+        assert_eq!(app.config_opts.verbose, verbose);
+        assert_eq!(app.config_opts.compute_totals, totals);
+        assert_eq!(app.config_opts.classic_progressbar, classic);
+        assert_eq!(app.config_opts.mkdir_autoname, mkdir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancel_discards_preallocate_and_cow_toggles() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.config_opts.preallocate_space = false;
+        app.config_opts.use_cow_file_cloning = true;
+        open_configuration(&mut app);
+        tab_until(&mut app, ConfigOptionsFocus::PreallocateSpace);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, ConfigOptionsFocus::UseCowFileCloning);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, ConfigOptionsFocus::Cancel);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!app.config_opts.preallocate_space);
+        assert!(app.config_opts.use_cow_file_cloning);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn neighboring_file_op_checkboxes_still_toggle() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        let verbose0 = app.config_opts.verbose;
+        let totals0 = app.config_opts.compute_totals;
+        let classic0 = app.config_opts.classic_progressbar;
+        let mkdir0 = app.config_opts.mkdir_autoname;
+        open_configuration(&mut app);
+        assert_eq!(focus(&app), ConfigOptionsFocus::Verbose);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, ConfigOptionsFocus::MkdirAutoname);
+        press(&mut app, KeyCode::Char(' '));
+        tab_until(&mut app, ConfigOptionsFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.config_opts.verbose, !verbose0);
+        assert_eq!(app.config_opts.compute_totals, !totals0);
+        assert_eq!(app.config_opts.classic_progressbar, !classic0);
+        assert_eq!(app.config_opts.mkdir_autoname, !mkdir0);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

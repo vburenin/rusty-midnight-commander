@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use rmc_fs::composite::CompositeFs;
 use rmc_fs::pathutil::is_virtual_path;
-use rmc_fs::Vfs;
+use rmc_fs::{CopyFlags, Vfs};
 
 const DEFAULT_CHUNK_SIZE: usize = 64 * 1024; // 64 KiB
 
@@ -53,6 +53,7 @@ pub struct BackgroundJob {
 struct JobEntry {
     job: BackgroundJob,
     cancel_flag: Arc<AtomicBool>,
+    copy_flags: CopyFlags,
 }
 
 #[derive(Debug, Default)]
@@ -83,17 +84,38 @@ impl JobQueue {
         }
     }
 
-    /// Spawn a copy job. Returns the JobId.
+    /// Spawn a copy job. Returns the JobId. Uses GNU Configuration defaults
+    /// (preallocate off, COW clone on).
     pub fn spawn_copy<P: Into<PathBuf>, Q: Into<PathBuf>>(&self, src: P, dst: Q) -> JobId {
-        self.enqueue(JobKind::Copy, src.into(), dst.into())
+        self.spawn_copy_with_flags(src, dst, CopyFlags::default())
+    }
+
+    /// Spawn a copy job honoring Options → Configuration copy flags.
+    pub fn spawn_copy_with_flags<P: Into<PathBuf>, Q: Into<PathBuf>>(
+        &self,
+        src: P,
+        dst: Q,
+        flags: CopyFlags,
+    ) -> JobId {
+        self.enqueue(JobKind::Copy, src.into(), dst.into(), flags)
     }
 
     /// Spawn a move job. Returns the JobId.
     pub fn spawn_move<P: Into<PathBuf>, Q: Into<PathBuf>>(&self, src: P, dst: Q) -> JobId {
-        self.enqueue(JobKind::Move, src.into(), dst.into())
+        self.spawn_move_with_flags(src, dst, CopyFlags::default())
     }
 
-    fn enqueue(&self, kind: JobKind, src: PathBuf, dst: PathBuf) -> JobId {
+    /// Spawn a move job. Copy+delete fallback honors the same flags as Copy.
+    pub fn spawn_move_with_flags<P: Into<PathBuf>, Q: Into<PathBuf>>(
+        &self,
+        src: P,
+        dst: Q,
+        flags: CopyFlags,
+    ) -> JobId {
+        self.enqueue(JobKind::Move, src.into(), dst.into(), flags)
+    }
+
+    fn enqueue(&self, kind: JobKind, src: PathBuf, dst: PathBuf, copy_flags: CopyFlags) -> JobId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(Mutex::new(JobEntry {
             job: BackgroundJob {
@@ -111,6 +133,7 @@ impl JobQueue {
                 error: None,
             },
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            copy_flags,
         }));
         let (lock, cvar) = &*self.inner;
         let mut inner = lock.lock().expect("JobQueue mutex poisoned");
@@ -254,7 +277,7 @@ fn next_queued_index(jobs: &[Arc<Mutex<JobEntry>>]) -> Option<usize> {
 }
 
 fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
-    let (kind, src, dst, cancel_flag, id) = {
+    let (kind, src, dst, cancel_flag, id, copy_flags) = {
         let job = job_arc.lock().expect("JobEntry mutex poisoned");
         (
             job.job.kind,
@@ -262,6 +285,7 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
             job.job.dst.clone(),
             Arc::clone(&job.cancel_flag),
             job.job.id,
+            job.copy_flags,
         )
     };
 
@@ -270,6 +294,7 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
         // archive `#` paths or ftp/sftp/extfs URLs. Abort is checked between
         // files; a non-chunked VFS op (one `vfs.copy`) finishes the current
         // file before the cancel flag is observed — no live byte counters.
+        // Preallocate / COW flags are no-ops on non-local VFS.
         let vfs = CompositeFs::new();
         match kind {
             JobKind::Copy => vfs_copy_tree(&vfs, job_arc, &src, &dst, &cancel_flag, &mut 0),
@@ -277,8 +302,8 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
         }
     } else {
         match kind {
-            JobKind::Copy => copy_streaming(job_arc, &src, &dst, &cancel_flag),
-            JobKind::Move => move_with_fallback(job_arc, &src, &dst, &cancel_flag),
+            JobKind::Copy => copy_streaming(job_arc, &src, &dst, &cancel_flag, copy_flags),
+            JobKind::Move => move_with_fallback(job_arc, &src, &dst, &cancel_flag, copy_flags),
         }
     };
 
@@ -316,9 +341,10 @@ fn copy_streaming(
     src: &Path,
     dst: &Path,
     cancel_flag: &AtomicBool,
+    flags: CopyFlags,
 ) -> io::Result<()> {
     let mut overall: u64 = 0;
-    copy_any(job_arc, src, dst, cancel_flag, &mut overall)
+    copy_any(job_arc, src, dst, cancel_flag, &mut overall, flags)
 }
 
 fn copy_any(
@@ -327,6 +353,7 @@ fn copy_any(
     dst: &Path,
     cancel_flag: &AtomicBool,
     overall: &mut u64,
+    flags: CopyFlags,
 ) -> io::Result<()> {
     if cancel_flag.load(Ordering::Relaxed) {
         return Ok(());
@@ -343,11 +370,18 @@ fn copy_any(
             if name == "." || name == ".." {
                 continue;
             }
-            copy_any(job_arc, &ent.path(), &dst.join(name), cancel_flag, overall)?;
+            copy_any(
+                job_arc,
+                &ent.path(),
+                &dst.join(name),
+                cancel_flag,
+                overall,
+                flags,
+            )?;
         }
         return Ok(());
     }
-    copy_file_chunks(job_arc, src, dst, cancel_flag, overall)
+    copy_file_chunks(job_arc, src, dst, cancel_flag, overall, flags)
 }
 
 fn copy_file_chunks(
@@ -356,6 +390,7 @@ fn copy_file_chunks(
     dst: &Path,
     cancel_flag: &AtomicBool,
     overall: &mut u64,
+    flags: CopyFlags,
 ) -> io::Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
@@ -382,6 +417,22 @@ fn copy_file_chunks(
         .truncate(true)
         .write(true)
         .open(dst)?;
+
+    if flags.use_cow_file_cloning && rmc_fs::copy_local::try_cow_clone(&src_f, &dst_f) {
+        *overall = overall.saturating_add(total);
+        {
+            let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+            job.job.files_done = job.job.files_done.saturating_add(1);
+            job.job.file_done = total;
+            job.job.file_total = total;
+            job.job.bytes_done = *overall;
+        }
+        return Ok(());
+    }
+
+    if flags.preallocate_space {
+        rmc_fs::copy_local::try_preallocate(&dst_f, total);
+    }
 
     let mut buf = vec![0_u8; DEFAULT_CHUNK_SIZE];
     let mut done: u64 = 0;
@@ -423,6 +474,7 @@ fn move_with_fallback(
     src: &Path,
     dst: &Path,
     cancel_flag: &AtomicBool,
+    flags: CopyFlags,
 ) -> io::Result<()> {
     // Try fast path: rename.
     let src_meta = fs::metadata(src);
@@ -444,8 +496,9 @@ fn move_with_fallback(
             }
         }
     }
-    // Fallback: copy then remove source if not cancelled.
-    copy_streaming(job_arc, src, dst, cancel_flag)?;
+    // Fallback: copy then remove source if not cancelled. Honors the same
+    // Preallocate / COW flags as a plain Copy.
+    copy_streaming(job_arc, src, dst, cancel_flag, flags)?;
     if !cancel_flag.load(Ordering::Relaxed) {
         // Remove original only if not cancelled.
         let md = fs::symlink_metadata(src)?;
@@ -747,5 +800,79 @@ mod tests {
         let snap = queue.snapshot();
         let j = snap.iter().find(|j| j.id == id).unwrap();
         assert!(j.files_done >= 1, "VFS copy records the completed file");
+    }
+
+    #[test]
+    fn copy_with_cow_off_writes_file_bytes() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        let data = b"ordinary-byte-copy-no-clone";
+        File::create(&src).unwrap().write_all(data).unwrap();
+
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                preallocate_space: false,
+                use_cow_file_cloning: false,
+            },
+        );
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(
+            status,
+            JobStatus::Done,
+            "{:?}",
+            queue.get(id).and_then(|j| j.error)
+        );
+        assert_eq!(fs::read(&dst).unwrap(), data);
+    }
+
+    #[test]
+    fn copy_with_preallocate_on_writes_file_bytes() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        let data = vec![0x3Cu8; 8192];
+        File::create(&src).unwrap().write_all(&data).unwrap();
+
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                preallocate_space: true,
+                use_cow_file_cloning: false,
+            },
+        );
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(
+            status,
+            JobStatus::Done,
+            "{:?}",
+            queue.get(id).and_then(|j| j.error)
+        );
+        assert_eq!(fs::read(&dst).unwrap(), data);
     }
 }

@@ -252,7 +252,10 @@ impl Vfs for CompositeFs {
         let src_cacheable = self.is_cacheable(src);
         let dst_cacheable = self.is_cacheable(dst);
         let result = match (self.route_kind(src), self.route_kind(dst)) {
-            (Route::Local { path: s }, Route::Local { path: d }) => self.local.copy(s, d),
+            (Route::Local { path: s }, Route::Local { path: d }) => {
+                self.local
+                    .copy_with_flags(s, d, crate::CopyFlags::default())
+            }
             (Route::Archive { ap, .. }, Route::Local { path: d }) => match ap.kind {
                 ArchiveKind::Tar | ArchiveKind::TarGz => {
                     crate::tarfs::copy_out(&ap.archive, ap.kind, &ap.inner, d)
@@ -304,6 +307,32 @@ impl Vfs for CompositeFs {
             }
         }
         result
+    }
+
+    fn copy_with_flags(
+        &self,
+        src: &Path,
+        dst: &Path,
+        flags: crate::copy_local::CopyFlags,
+    ) -> FsResult<()> {
+        match (self.route_kind(src), self.route_kind(dst)) {
+            (Route::Local { path: s }, Route::Local { path: d }) => {
+                let src_cacheable = self.is_cacheable(src);
+                let dst_cacheable = self.is_cacheable(dst);
+                let result = self.local.copy_with_flags(s, d, flags);
+                if result.is_ok() {
+                    if src_cacheable {
+                        self.invalidate_parent_listing(src);
+                    }
+                    if dst_cacheable {
+                        self.invalidate_parent_listing(dst);
+                    }
+                }
+                result
+            }
+            // Archive/remote/extfs: Configuration clone/preallocate are no-ops.
+            _ => self.copy(src, dst),
+        }
     }
 
     fn move_path(&self, src: &Path, dst: &Path) -> FsResult<()> {

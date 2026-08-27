@@ -1102,9 +1102,9 @@ fn draw_configuration_dialog(
     show_shadow: bool,
 ) {
     let title = "Configuration";
-    // Width based on longest label; 11 options + 2 rows for buttons/title
+    // Width based on longest label; 13 options + 2 rows for buttons/title
     let w = 60u16.min(cols.saturating_sub(2)).max(40);
-    let h = 17u16.min(rows.saturating_sub(2)).max(13);
+    let h = 19u16.min(rows.saturating_sub(2)).max(15);
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
@@ -1143,13 +1143,23 @@ fn draw_configuration_dialog(
     p.text(&ttl);
     // Options (checkboxes)
     use rmc_core::app::ConfigOptionsFocus as F;
-    let items: [(&str, bool, F); 11] = [
+    let items: [(&str, bool, F); 13] = [
         ("Verbose operation", draft.verbose, F::Verbose),
         ("Compute totals", draft.compute_totals, F::ComputeTotals),
         (
             "Classic progressbar",
             draft.classic_progressbar,
             F::ClassicProgressbar,
+        ),
+        (
+            "Preallocate space",
+            draft.preallocate_space,
+            F::PreallocateSpace,
+        ),
+        (
+            "Use COW file cloning",
+            draft.use_cow_file_cloning,
+            F::UseCowFileCloning,
         ),
         (
             "Use internal viewer",

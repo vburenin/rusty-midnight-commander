@@ -109,8 +109,11 @@ Note: Keymaps customizable via mc.keymap; terminal “Learn keys” dialog requi
 ## 4) File operations and dialogs — Status: Foundation (basic ops), Later (the rest)
 
 Dialogs and behavior per mc(1) “File Menu”, “File operations”, and replace/confirm dialogs:
-- [ ] Copy (F5): source mask, destination (defaults to other panel), background option, “Preallocate space”, “Use COW file cloning”
+- [ ] Copy (F5): source mask, destination (defaults to other panel), background option
+  - [x] Options → Configuration → Preallocate space (local→local Copy/Move; remote/archive no-ops)
+  - [x] Options → Configuration → Use COW file cloning (local→local Copy/Move; remote/archive no-ops)
 - [ ] Rename/Move (F6): analogous to Copy dialog/options
+  - [x] Preallocate space / Use COW file cloning (same Configuration flags as Copy; copy+delete fallback honors them)
 - [ ] Delete (F8): confirmation; safe-delete option flips default to No
 - [ ] Mkdir (F7): input with optional auto-name
 - [ ] Replace/Overwrite dialog: Yes/No/All/Older/None/Smaller/Size differs/Append/Reget; “Don’t overwrite with zero length file”

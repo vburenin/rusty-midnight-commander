@@ -118,6 +118,11 @@ pub trait Vfs: Send {
     fn mkdir(&self, path: &Path) -> FsResult<()>;
     fn remove(&self, path: &Path, recursive: bool) -> FsResult<()>;
     fn copy(&self, src: &Path, dst: &Path) -> FsResult<()>;
+    /// Local → local copy honoring GNU mc Preallocate space / Use COW file cloning.
+    /// Default ignores flags and calls [`Vfs::copy`] (remote/archive no-ops).
+    fn copy_with_flags(&self, src: &Path, dst: &Path, _flags: crate::CopyFlags) -> FsResult<()> {
+        self.copy(src, dst)
+    }
     fn move_path(&self, src: &Path, dst: &Path) -> FsResult<()>;
     fn read_file(&self, path: &Path) -> FsResult<Box<dyn Read + Send>>;
     fn write_file(&self, path: &Path) -> FsResult<Box<dyn Write + Send>>;
@@ -158,6 +163,8 @@ pub trait Vfs: Send {
 
 pub mod arfs;
 pub mod composite;
+pub mod copy_local;
+pub use copy_local::CopyFlags;
 pub mod cpiofs;
 pub mod debfs;
 pub mod dir_cache;
@@ -301,25 +308,16 @@ pub mod local {
         }
 
         fn copy(&self, src: &Path, dst: &Path) -> FsResult<()> {
-            let md = fs::symlink_metadata(src)?;
-            if md.is_dir() {
-                fs::create_dir_all(dst)?;
-                for e in WalkDir::new(src) {
-                    let e = e?;
-                    let rel = e.path().strip_prefix(src).unwrap();
-                    let target = dst.join(rel);
-                    if e.file_type().is_dir() {
-                        fs::create_dir_all(&target)?;
-                    } else {
-                        fs::copy(e.path(), &target)?;
-                    }
-                }
-            } else {
-                if let Some(parent) = dst.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::copy(src, dst)?;
-            }
+            self.copy_with_flags(src, dst, crate::copy_local::CopyFlags::default())
+        }
+
+        fn copy_with_flags(
+            &self,
+            src: &Path,
+            dst: &Path,
+            flags: crate::copy_local::CopyFlags,
+        ) -> FsResult<()> {
+            crate::copy_local::copy_path_with_flags(src, dst, flags)?;
             Ok(())
         }
 
