@@ -1,3 +1,4 @@
+mod filehighlight;
 pub mod find;
 pub mod help;
 pub mod hotlist;
