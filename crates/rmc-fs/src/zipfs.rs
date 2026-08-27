@@ -53,6 +53,7 @@ pub fn list_dir(
                                 permissions: 0o755,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         },
                     );
@@ -73,6 +74,7 @@ pub fn list_dir(
                             permissions: 0o644,
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -93,6 +95,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -138,6 +141,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let f = File::open(archive_path)?;
@@ -159,6 +163,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
                 permissions: if file.is_dir() { 0o755 } else { 0o644 },
                 owner: None,
                 group: None,
+                nlink: 1,
             });
         }
         if path.starts_with(&in_norm) {
@@ -175,6 +180,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         })
     } else {
         Err(FsError::Message(format!(

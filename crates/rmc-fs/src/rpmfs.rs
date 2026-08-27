@@ -117,6 +117,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let data = read_payload_bytes(archive_path)?;

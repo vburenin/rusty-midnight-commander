@@ -84,6 +84,7 @@ pub fn list_dir_from_bytes(
                                 permissions: 0o755,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         },
                     );
@@ -105,6 +106,7 @@ pub fn list_dir_from_bytes(
                             permissions: 0o644,
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -125,6 +127,7 @@ pub fn list_dir_from_bytes(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -166,6 +169,7 @@ pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let in_norm = norm(inner_full);
@@ -186,6 +190,7 @@ pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
                 permissions: 0o644,
                 owner: None,
                 group: None,
+                nlink: 1,
             });
         }
         if p.starts_with(&in_norm) {
@@ -202,6 +207,7 @@ pub fn stat_from_bytes(data: &[u8], inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         })
     } else {
         Err(FsError::Message(format!(
@@ -302,6 +308,7 @@ pub fn list_dir(
                                 permissions: 0o755,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         },
                     );
@@ -324,6 +331,7 @@ pub fn list_dir(
                             permissions: 0o644,
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -344,6 +352,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -390,6 +399,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let data = load_cpio_bytes(archive_path, kind)?;
@@ -411,6 +421,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
                 permissions: 0o644,
                 owner: None,
                 group: None,
+                nlink: 1,
             });
         }
         if p.starts_with(&in_norm) {
@@ -427,6 +438,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         })
     } else {
         Err(FsError::Message(format!(

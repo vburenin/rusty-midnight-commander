@@ -61,6 +61,8 @@ pub struct FileEntry {
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
+    /// Hard-link count (`st_nlink`). Parent markers and missing stat fall back to 1.
+    pub nlink: u64,
 }
 
 impl FileEntry {
@@ -528,7 +530,7 @@ fn render_user_token(
             None => fit_left("Modify time", 12),
         },
         UserFormatToken::Nlink => match ent {
-            Some(_) => fit_right("1", 4),
+            Some(e) => fit_right(&e.nlink.to_string(), 4),
             None => fit_left("Nl", 4),
         },
         UserFormatToken::Owner => {
@@ -650,6 +652,7 @@ mod tests {
             permissions: 0o755,
             owner: Some("user".into()),
             group: Some("group".into()),
+            nlink: 1,
         }
     }
 
@@ -828,5 +831,19 @@ mod tests {
         assert!(raw.contains("3400000"), "raw={raw:?}");
         let si = format_user_listing_line(&ent, &tokens, 16, true);
         assert!(si.contains("3.4M"), "si={si:?}");
+    }
+
+    #[test]
+    fn user_format_nlink_is_right_aligned() {
+        let now = SystemTime::now();
+        let mut ent = make_entry("file", 1, now, false);
+        let tokens = parse_user_listing_format("nlink name");
+        let line = format_user_listing_line(&ent, &tokens, 40, false);
+        assert!(line.contains("   1"), "nlink 1 line={line:?}");
+        ent.nlink = 2;
+        let line = format_user_listing_line(&ent, &tokens, 40, false);
+        assert!(line.contains("   2"), "nlink 2 line={line:?}");
+        let header = format_user_listing_header(&tokens, 40);
+        assert!(header.contains("Nl"), "header={header:?}");
     }
 }

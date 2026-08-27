@@ -137,3 +137,66 @@ fn panelize_uses_relative_names_for_disambiguation() -> Result<()> {
     assert!(names.iter().any(|n| n == "sub2/dup.txt"));
     Ok(())
 }
+
+#[test]
+fn listing_and_panelize_copy_nlink() -> Result<()> {
+    let dir = tempdir()?;
+    let root = dir.path().to_path_buf();
+    let f1 = root.join("plain.txt");
+    std::fs::write(&f1, "hello")?;
+    let vfs = FixedCwdFs::new(root.clone());
+    let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
+    let listed = app
+        .active_panel()
+        .entries
+        .iter()
+        .find(|e| e.name == "plain.txt")
+        .expect("plain.txt listed");
+    assert_eq!(listed.nlink, 1);
+    if let Some(parent) = app.active_panel().entries.iter().find(|e| e.name == "..") {
+        assert_eq!(parent.nlink, 1);
+    }
+
+    app.panelize_paths(std::slice::from_ref(&f1), Some(&root))?;
+    let panelized = app
+        .active_panel()
+        .entries
+        .iter()
+        .find(|e| e.name == "plain.txt")
+        .expect("plain.txt panelized");
+    assert_eq!(panelized.nlink, 1);
+    let parent = app
+        .active_panel()
+        .entries
+        .iter()
+        .find(|e| e.name == "..")
+        .expect("parent marker");
+    assert_eq!(parent.nlink, 1);
+
+    #[cfg(unix)]
+    {
+        let f2 = root.join("hard.txt");
+        std::fs::hard_link(&f1, &f2)?;
+        app.panelize_paths(&[f1.clone(), f2.clone()], Some(&root))?;
+        for name in ["plain.txt", "hard.txt"] {
+            let e = app
+                .active_panel()
+                .entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("missing panelized {name}"));
+            assert_eq!(e.nlink, 2, "panelized {name}");
+        }
+        app.reload_panels()?;
+        for name in ["plain.txt", "hard.txt"] {
+            let e = app
+                .active_panel()
+                .entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("missing listed {name}"));
+            assert_eq!(e.nlink, 2, "listed {name}");
+        }
+    }
+    Ok(())
+}

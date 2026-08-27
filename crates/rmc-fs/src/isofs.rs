@@ -65,6 +65,7 @@ pub fn list_dir(
                                 permissions: 0,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         }]);
                     }
@@ -104,6 +105,7 @@ pub fn list_dir(
                             permissions: 0o755,
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -122,6 +124,7 @@ pub fn list_dir(
                     permissions: 0o644,
                     owner: None,
                     group: None,
+                    nlink: 1,
                 },
             });
         }
@@ -140,6 +143,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -180,6 +184,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let mut f = File::open(archive_path)?;
@@ -197,6 +202,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             permissions: if fe.flags.directory { 0o755 } else { 0o644 },
             owner: None,
             group: None,
+            nlink: 1,
         }),
         Err(_) => Err(FsError::Message(format!(
             "Path not found in ISO: {}",

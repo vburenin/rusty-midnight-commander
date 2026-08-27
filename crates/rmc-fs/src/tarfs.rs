@@ -76,6 +76,7 @@ pub fn list_dir(
                                 permissions: 0o755,
                                 owner: None,
                                 group: None,
+                                nlink: 1,
                             },
                         },
                     );
@@ -99,6 +100,7 @@ pub fn list_dir(
                             permissions: header_mode(entry.header(), false),
                             owner: None,
                             group: None,
+                            nlink: 1,
                         },
                     },
                 );
@@ -122,6 +124,7 @@ pub fn list_dir(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -171,6 +174,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         });
     }
     let reader = open_tar_reader(archive_path, kind)?;
@@ -195,6 +199,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
                 permissions: mode,
                 owner: None,
                 group: None,
+                nlink: 1,
             });
         }
         if path.starts_with(&in_norm) {
@@ -212,6 +217,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             permissions: 0o755,
             owner: None,
             group: None,
+            nlink: 1,
         })
     } else {
         Err(FsError::Message(format!(

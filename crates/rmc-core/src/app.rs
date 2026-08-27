@@ -692,6 +692,7 @@ impl App {
                 permissions: e.meta.permissions,
                 owner: e.meta.owner,
                 group: e.meta.group,
+                nlink: e.meta.nlink,
             })
             .collect()
     }
@@ -1009,6 +1010,7 @@ impl App {
             permissions: 0,
             owner: None,
             group: None,
+            nlink: 1,
         });
         for p in paths {
             let meta = self.vfs.stat(p)?;
@@ -1032,6 +1034,7 @@ impl App {
                 permissions: meta.permissions,
                 owner: meta.owner,
                 group: meta.group,
+                nlink: meta.nlink,
             });
         }
         let caption = self.active_panel().cwd.clone();

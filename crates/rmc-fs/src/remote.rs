@@ -110,6 +110,7 @@ fn parent_marker(vfs_root: PathBuf) -> DirEntry {
             permissions: 0,
             owner: None,
             group: None,
+            nlink: 1,
         },
     }
 }
@@ -937,6 +938,7 @@ pub fn list_dir(url: &RemoteUrl, _vfs_root: &Path, show_hidden: bool) -> FsResul
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
@@ -1079,6 +1081,7 @@ pub fn list_dir_with_client(
                 permissions: 0,
                 owner: None,
                 group: None,
+                nlink: 1,
             },
         });
     }
