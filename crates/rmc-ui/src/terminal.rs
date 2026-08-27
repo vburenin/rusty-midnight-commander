@@ -2048,13 +2048,15 @@ impl TerminalApp {
         if app.pending_ctrl_x {
             return false;
         }
-        match app.ui_mode {
-            UiMode::Viewer { .. } | UiMode::Editor { .. } => false,
-            UiMode::LearnKeysDialog {
-                capturing: true, ..
-            } => false,
-            _ => true,
-        }
+        !matches!(
+            app.ui_mode,
+            UiMode::Viewer { .. }
+                | UiMode::Editor { .. }
+                | UiMode::LearnKeysDialog {
+                    capturing: true,
+                    ..
+                }
+        )
     }
 
     fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
@@ -2128,11 +2130,10 @@ impl TerminalApp {
         }
         // GNU mc(1) C-l: full screen repaint. Viewer/editor keep their own C-l;
         // Learn-keys capture records C-l; C-x chords are not stolen.
-        if Self::honors_cl_repaint(app) {
-            if matches!(app.keymap.resolve(&key), Some(Action::Repaint)) {
-                app.handle_action(Action::Repaint)?;
-                return Ok(());
-            }
+        if Self::honors_cl_repaint(app) && matches!(app.keymap.resolve(&key), Some(Action::Repaint))
+        {
+            app.handle_action(Action::Repaint)?;
+            return Ok(());
         }
         // GNU mc(1) Screen selector: Alt-} next, Alt-{ previous, Alt-` list.
         // Skip while a modal dialog (including editor/viewer/diff overlays) eats keys.
