@@ -209,11 +209,26 @@ impl KeyMap {
         writeln!(f, "# rmc keymap")?;
         writeln!(f, "[main]")?;
         for (key, action) in &self.bindings {
+            // Skip mouse pseudo-actions; skip unknown/unrepresentable keys.
+            if matches!(
+                action,
+                Action::MouseClick { .. } | Action::MouseScroll { .. }
+            ) {
+                continue;
+            }
             let k = format_key(key);
+            if k == "Unknown" {
+                continue;
+            }
             let a = format_action(action);
             writeln!(f, "{k} = {a}")?;
         }
         Ok(())
+    }
+
+    /// Remove all bindings associated with the given action.
+    pub fn remove_action_bindings(&mut self, action: &Action) {
+        self.bindings.retain(|(_, a)| a != action);
     }
 }
 
@@ -310,7 +325,15 @@ fn parse_action(s: &str) -> Option<Action> {
         "SortSize" => Some(Sort(SortBy::Size)),
         "SortTime" => Some(Sort(SortBy::Time)),
         "OpenHotlist" => Some(OpenHotlist),
-        _ => None,
+        _ => {
+            // FunctionKeyN pattern (e.g., FunctionKey4)
+            if let Some(num) = s.strip_prefix("FunctionKey") {
+                if let Ok(n) = num.parse::<u8>() {
+                    return Some(Action::FunctionKey(n));
+                }
+            }
+            None
+        }
     }
 }
 
@@ -585,6 +608,10 @@ mod tests {
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
             Some(Action::ShowHelp)
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(4))
         ));
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE)),

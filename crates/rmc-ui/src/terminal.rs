@@ -752,8 +752,13 @@ impl TerminalApp {
                             *capturing = true;
                         } else {
                             if *focus_ok {
-                                // Apply: write draft into app.keymap
-                                for (act, keyev) in draft.iter().cloned() {
+                                // Apply: for each action, unbind previous keys then set the new one.
+                                let pairs: Vec<(
+                                    rmc_core::actions::Action,
+                                    crossterm::event::KeyEvent,
+                                )> = draft.clone();
+                                for (act, keyev) in pairs {
+                                    app.keymap.remove_action_bindings(&act);
                                     app.keymap.set_binding(keyev, act);
                                 }
                                 app.ui_mode = UiMode::Normal;

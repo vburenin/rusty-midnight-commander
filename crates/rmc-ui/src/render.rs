@@ -3845,6 +3845,7 @@ fn draw_menu_dropdown(p: &mut Painter, pal: McPalette, top_index: usize, selecte
             "Find file",
             "Directory hotlist",
             "Compare dirs",
+            "External panelize",
         ],
         &[
             "Layout",
