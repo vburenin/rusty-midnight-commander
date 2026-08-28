@@ -25,9 +25,19 @@ pub enum JobKind {
 pub enum JobStatus {
     Queued,
     Running,
+    /// GNU mc(1) Background jobs **Stop**: paused without cancelling.
+    /// A queued job that was stopped never started; a running job is suspended
+    /// at a chunk/file boundary until **Restart**.
+    Stopped,
     Done,
     Failed,
     Cancelled,
+}
+
+impl JobStatus {
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +64,11 @@ pub struct BackgroundJob {
 struct JobEntry {
     job: BackgroundJob,
     cancel_flag: Arc<AtomicBool>,
+    pause_flag: Arc<AtomicBool>,
+    /// True once the worker has entered [`run_one_job`] for this entry.
+    /// Distinguishes a Stopped job that is mid-transfer (Restart resumes) from
+    /// one that was stopped while still queued (Restart re-queues).
+    started: bool,
     copy_flags: CopyFlags,
 }
 
@@ -134,6 +149,8 @@ impl JobQueue {
                 error: None,
             },
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            pause_flag: Arc::new(AtomicBool::new(false)),
+            started: false,
             copy_flags,
         }));
         let (lock, cvar) = &*self.inner;
@@ -144,8 +161,8 @@ impl JobQueue {
     }
 
     /// Cancel a job by id. Best-effort: running copies will stop mid-copy.
-    /// - If the job is queued, it transitions to Cancelled immediately.
-    /// - If the job is running, it will stop at the next chunk boundary.
+    /// - If the job is queued or stopped-before-start, it transitions to Cancelled immediately.
+    /// - If the job is running or paused mid-transfer, it will stop at the next chunk boundary.
     ///   Returns true if a job with this id existed.
     pub fn cancel(&self, id: JobId) -> bool {
         let (lock, cvar) = &*self.inner;
@@ -156,7 +173,9 @@ impl JobQueue {
             if job.job.id == id {
                 found = true;
                 job.cancel_flag.store(true, Ordering::Relaxed);
-                if job.job.status == JobStatus::Queued {
+                job.pause_flag.store(false, Ordering::Relaxed);
+                if matches!(job.job.status, JobStatus::Queued | JobStatus::Stopped) && !job.started
+                {
                     job.job.status = JobStatus::Cancelled;
                 }
                 break;
@@ -168,16 +187,88 @@ impl JobQueue {
         found
     }
 
+    /// GNU Background jobs **Stop**: pause a Queued or Running job. The job stays
+    /// listed as Stopped and does not continue transferring until [`Self::restart`].
+    pub fn stop(&self, id: JobId) -> bool {
+        let (lock, cvar) = &*self.inner;
+        let inner = lock.lock().expect("JobQueue mutex poisoned");
+        let mut found = false;
+        for job_arc in &inner.jobs {
+            let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+            if job.job.id == id {
+                found = true;
+                if matches!(job.job.status, JobStatus::Queued | JobStatus::Running) {
+                    job.pause_flag.store(true, Ordering::Relaxed);
+                    job.job.status = JobStatus::Stopped;
+                }
+                break;
+            }
+        }
+        if found {
+            cvar.notify_all();
+        }
+        found
+    }
+
+    /// GNU Background jobs **Restart** / **Resume**:
+    /// - Stopped mid-transfer: continue from the pause point.
+    /// - Stopped while still queued: re-queue so the worker will start it.
+    /// - Failed or Cancelled: re-run from the start with the same src/dst/flags.
+    pub fn restart(&self, id: JobId) -> bool {
+        let (lock, cvar) = &*self.inner;
+        let inner = lock.lock().expect("JobQueue mutex poisoned");
+        let mut found = false;
+        for job_arc in &inner.jobs {
+            let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+            if job.job.id == id {
+                found = true;
+                match job.job.status {
+                    JobStatus::Stopped => {
+                        job.pause_flag.store(false, Ordering::Relaxed);
+                        job.cancel_flag.store(false, Ordering::Relaxed);
+                        if job.started {
+                            job.job.status = JobStatus::Running;
+                        } else {
+                            job.job.status = JobStatus::Queued;
+                        }
+                    }
+                    JobStatus::Failed | JobStatus::Cancelled => {
+                        reset_entry_for_rerun(&mut job);
+                    }
+                    _ => {}
+                }
+                break;
+            }
+        }
+        if found {
+            cvar.notify_all();
+        }
+        found
+    }
+
+    /// GNU Background jobs **Kill**: abort the transfer and remove the job from
+    /// the list (Cancel + drop, including in-flight jobs).
+    pub fn kill(&self, id: JobId) -> bool {
+        if !self.cancel(id) {
+            return false;
+        }
+        let (lock, cvar) = &*self.inner;
+        let mut inner = lock.lock().expect("JobQueue mutex poisoned");
+        inner.jobs.retain(|job_arc| {
+            let job = job_arc.lock().expect("JobEntry mutex poisoned");
+            job.job.id != id
+        });
+        cvar.notify_all();
+        true
+    }
+
     /// Drop all finished (Done/Failed/Cancelled) jobs from the queue.
     pub fn drop_finished_jobs(&self) {
         let (lock, _cvar) = &*self.inner;
         let mut inner = lock.lock().expect("JobQueue mutex poisoned");
         inner.jobs.retain(|job_arc| {
             let job = job_arc.lock().expect("JobEntry mutex poisoned");
-            !matches!(
-                job.job.status,
-                JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
-            )
+            !job.job.status.is_finished()
         });
     }
 
@@ -251,6 +342,12 @@ fn worker_loop(inner: Arc<(Mutex<Inner>, Condvar)>) {
                     job.job.status = JobStatus::Cancelled;
                     continue;
                 }
+                // Stopped-while-queued stays Stopped until Restart.
+                if job.pause_flag.load(Ordering::Relaxed) {
+                    job.job.status = JobStatus::Stopped;
+                    continue;
+                }
+                job.started = true;
                 job.job.status = JobStatus::Running;
             }
             job_arc
@@ -260,6 +357,50 @@ fn worker_loop(inner: Arc<(Mutex<Inner>, Condvar)>) {
         run_one_job(&job_to_run);
         // Notify anyone waiting that job statuses have changed.
         cvar.notify_all();
+    }
+}
+
+fn reset_entry_for_rerun(job: &mut JobEntry) {
+    job.cancel_flag.store(false, Ordering::Relaxed);
+    job.pause_flag.store(false, Ordering::Relaxed);
+    job.started = false;
+    job.job.bytes_done = 0;
+    job.job.bytes_total = 0;
+    job.job.file_done = 0;
+    job.job.file_total = 0;
+    job.job.files_done = 0;
+    job.job.current_name.clear();
+    job.job.error = None;
+    job.job.status = JobStatus::Queued;
+}
+
+/// Block while the job is Stopped. Returns true if the job was cancelled.
+fn wait_if_paused(job_arc: &Arc<Mutex<JobEntry>>) -> bool {
+    loop {
+        let (paused, cancelled) = {
+            let job = job_arc.lock().expect("JobEntry mutex poisoned");
+            (
+                job.pause_flag.load(Ordering::Relaxed),
+                job.cancel_flag.load(Ordering::Relaxed),
+            )
+        };
+        if cancelled {
+            return true;
+        }
+        if !paused {
+            let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+            if job.job.status == JobStatus::Stopped && job.started {
+                job.job.status = JobStatus::Running;
+            }
+            return false;
+        }
+        {
+            let mut job = job_arc.lock().expect("JobEntry mutex poisoned");
+            if job.job.status == JobStatus::Running {
+                job.job.status = JobStatus::Stopped;
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -374,7 +515,7 @@ fn copy_any(
     flags: CopyFlags,
     links: &mut LinkState,
 ) -> io::Result<()> {
-    if cancel_flag.load(Ordering::Relaxed) {
+    if wait_if_paused(job_arc) {
         return Ok(());
     }
     let lmd = fs::symlink_metadata(src)?;
@@ -402,7 +543,7 @@ fn copy_any(
         }
         fs::create_dir_all(dst)?;
         for ent in fs::read_dir(src)? {
-            if cancel_flag.load(Ordering::Relaxed) {
+            if wait_if_paused(job_arc) {
                 return Ok(());
             }
             let ent = ent?;
@@ -465,10 +606,13 @@ fn copy_file_chunks(
     job_arc: &Arc<Mutex<JobEntry>>,
     src: &Path,
     dst: &Path,
-    cancel_flag: &AtomicBool,
+    _cancel_flag: &AtomicBool,
     overall: &mut u64,
     flags: CopyFlags,
 ) -> io::Result<()> {
+    if wait_if_paused(job_arc) {
+        return Ok(());
+    }
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -518,7 +662,7 @@ fn copy_file_chunks(
     let mut buf = vec![0_u8; DEFAULT_CHUNK_SIZE];
     let mut done: u64 = 0;
     loop {
-        if cancel_flag.load(Ordering::Relaxed) {
+        if wait_if_paused(job_arc) {
             // Best-effort cancel: leave partial file as-is.
             return Ok(());
         }
@@ -627,7 +771,7 @@ fn vfs_copy_tree(
     cancel_flag: &AtomicBool,
     overall: &mut u64,
 ) -> io::Result<()> {
-    if cancel_flag.load(Ordering::Relaxed) {
+    if wait_if_paused(job_arc) {
         return Ok(());
     }
     match vfs.stat(src) {
@@ -644,7 +788,7 @@ fn vfs_copy_tree(
                 if entry.name == ".." || entry.name == "." {
                     continue;
                 }
-                if cancel_flag.load(Ordering::Relaxed) {
+                if wait_if_paused(job_arc) {
                     return Ok(());
                 }
                 vfs_copy_tree(
@@ -1098,5 +1242,194 @@ mod tests {
             fs::metadata(&dst).unwrap().permissions().mode() & 0o777,
             0o707
         );
+    }
+
+    fn no_cow() -> CopyFlags {
+        CopyFlags {
+            use_cow_file_cloning: false,
+            preallocate_space: false,
+            ..CopyFlags::default()
+        }
+    }
+
+    fn write_big(path: &Path, mib: usize) {
+        let mut f = File::create(path).unwrap();
+        let chunk = vec![0xCDu8; 1024];
+        for _ in 0..(mib * 1024) {
+            f.write_all(&chunk).unwrap();
+        }
+    }
+
+    #[test]
+    fn stop_running_copy_pauses_then_restart_completes() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("big_src.bin");
+        let dst = dir.path().join("big_dst.bin");
+        write_big(&src, 8);
+
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(&src, &dst, no_cow());
+        let _ = wait_for_status(&queue, id, |s| s == JobStatus::Running, 5_000);
+        // Wait until some bytes have landed so Stop is mid-transfer.
+        let start = std::time::Instant::now();
+        loop {
+            if queue.get(id).map(|j| j.bytes_done).unwrap_or(0) > 0 {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "copy never advanced"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(queue.stop(id));
+        let status = wait_for_status(&queue, id, |s| s == JobStatus::Stopped, 5_000);
+        assert_eq!(status, JobStatus::Stopped);
+
+        let paused_at = queue.get(id).unwrap().bytes_done;
+        thread::sleep(Duration::from_millis(40));
+        let still = queue.get(id).unwrap();
+        assert_eq!(still.status, JobStatus::Stopped);
+        assert_eq!(
+            still.bytes_done, paused_at,
+            "stopped job must not keep transferring"
+        );
+        assert!(
+            paused_at < still.bytes_total || still.bytes_total == 0,
+            "stop should land before the copy finishes"
+        );
+
+        assert!(queue.restart(id));
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| s.is_finished() || s == JobStatus::Running,
+            5_000,
+        );
+        // Running is fine; wait for Done.
+        let status = if status == JobStatus::Running {
+            wait_for_status(&queue, id, JobStatus::is_finished, 10_000)
+        } else {
+            status
+        };
+        assert_eq!(status, JobStatus::Done, "{:?}", queue.get(id));
+        assert_eq!(fs::read(&src).unwrap(), fs::read(&dst).unwrap());
+    }
+
+    #[test]
+    fn stop_queued_job_stays_stopped_until_restart() {
+        let dir = tempdir().unwrap();
+        let src_a = dir.path().join("a.bin");
+        let dst_a = dir.path().join("a.out");
+        let src_b = dir.path().join("b.bin");
+        let dst_b = dir.path().join("b.out");
+        write_big(&src_a, 4);
+        File::create(&src_b).unwrap().write_all(b"queued").unwrap();
+
+        let queue = JobQueue::new();
+        let id_a = queue.spawn_copy_with_flags(&src_a, &dst_a, no_cow());
+        let id_b = queue.spawn_copy_with_flags(&src_b, &dst_b, no_cow());
+        assert!(queue.stop(id_b));
+        let _ = wait_for_status(&queue, id_b, |s| s == JobStatus::Stopped, 2_000);
+        assert_eq!(queue.get(id_b).unwrap().status, JobStatus::Stopped);
+
+        let _ = wait_for_status(&queue, id_a, JobStatus::is_finished, 10_000);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            queue.get(id_b).unwrap().status,
+            JobStatus::Stopped,
+            "stopped queued job must not start after the running job finishes"
+        );
+        assert!(!dst_b.exists(), "stopped job must not write dest");
+
+        assert!(queue.restart(id_b));
+        let status = wait_for_status(&queue, id_b, JobStatus::is_finished, 5_000);
+        assert_eq!(status, JobStatus::Done, "{:?}", queue.get(id_b));
+        assert_eq!(fs::read(&dst_b).unwrap(), b"queued");
+    }
+
+    #[test]
+    fn kill_removes_running_job() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("k_src.bin");
+        let dst = dir.path().join("k_dst.bin");
+        write_big(&src, 8);
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(&src, &dst, no_cow());
+        let _ = wait_for_status(&queue, id, |s| s == JobStatus::Running, 5_000);
+        assert!(queue.kill(id));
+        assert!(
+            queue.get(id).is_none(),
+            "Kill must abort and remove the job from the list"
+        );
+        // Worker may still be unwinding; dest should not become a full copy.
+        thread::sleep(Duration::from_millis(80));
+        if let Ok(meta) = fs::metadata(&dst) {
+            let src_len = fs::metadata(&src).unwrap().len();
+            assert!(meta.len() < src_len, "killed copy should be incomplete");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_failed_reruns_with_same_flags() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let blocker = dir.path().join("notadir");
+        fs::write(&src, b"payload").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o707)).unwrap();
+        fs::write(&blocker, b"file").unwrap();
+        let dst = blocker.join("out.bin");
+
+        let queue = JobQueue::new();
+        let flags = CopyFlags {
+            preserve_attrs: true,
+            use_cow_file_cloning: false,
+            ..CopyFlags::default()
+        };
+        let id = queue.spawn_copy_with_flags(&src, &dst, flags);
+        let status = wait_for_status(&queue, id, JobStatus::is_finished, 5_000);
+        assert_eq!(status, JobStatus::Failed, "{:?}", queue.get(id));
+
+        fs::remove_file(&blocker).unwrap();
+        fs::create_dir(&blocker).unwrap();
+        assert!(queue.restart(id));
+        let status = wait_for_status(&queue, id, JobStatus::is_finished, 5_000);
+        assert_eq!(status, JobStatus::Done, "{:?}", queue.get(id));
+        assert_eq!(fs::read(&dst).unwrap(), b"payload");
+        assert_eq!(
+            fs::metadata(&dst).unwrap().permissions().mode() & 0o777,
+            0o707,
+            "Restart of a failed job must keep the original copy flags"
+        );
+    }
+
+    #[test]
+    fn drop_finished_keeps_stopped_jobs() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("s.bin");
+        let dst = dir.path().join("d.bin");
+        write_big(&src, 4);
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy_with_flags(&src, &dst, no_cow());
+        let _ = wait_for_status(&queue, id, |s| s == JobStatus::Running, 5_000);
+        assert!(queue.stop(id));
+        let _ = wait_for_status(&queue, id, |s| s == JobStatus::Stopped, 5_000);
+        queue.drop_finished_jobs();
+        assert_eq!(
+            queue.get(id).unwrap().status,
+            JobStatus::Stopped,
+            "Clean up must not drop a stopped job"
+        );
+        // Finished jobs are still dropped.
+        let tiny = dir.path().join("t.bin");
+        File::create(&tiny).unwrap().write_all(b"x").unwrap();
+        // Kill the stopped job so the worker can run a tiny copy.
+        assert!(queue.kill(id));
+        let id_done = queue.spawn_copy_with_flags(&tiny, &dir.path().join("t.out"), no_cow());
+        let _ = wait_for_status(&queue, id_done, JobStatus::is_finished, 5_000);
+        queue.drop_finished_jobs();
+        assert!(queue.get(id_done).is_none());
     }
 }
