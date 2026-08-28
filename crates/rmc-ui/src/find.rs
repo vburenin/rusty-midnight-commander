@@ -1,8 +1,8 @@
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use rmc_core::find::{
-    FIND_DIALOG_LIST_TOP, FindDialogFocus as F, FindDialogState, find_dialog_height,
-    find_tree_picker_height, find_tree_picker_list_rows,
+    find_dialog_height, find_tree_picker_height, find_tree_picker_list_rows, FindDialogFocus as F,
+    FindDialogState, FIND_DIALOG_LIST_TOP,
 };
 
 /// GNU mc(1) Find File bottom-row labels. Stop/Start is one slot: Stop while
