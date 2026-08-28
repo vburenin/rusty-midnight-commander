@@ -236,11 +236,18 @@ fn assign_pair(
             pal.statusbar_bg = bg;
         }
         "statusbar" => {}
-        "viewer" if k.as_str() == "selected" => {
-            pal.viewer_selected_fg = fg;
-            pal.viewer_selected_bg = bg;
-        }
-        "viewer" => {}
+        "viewer" => match k.as_str() {
+            "_default_" => {
+                pal.viewer_default_fg = fg;
+                pal.viewer_default_bg = bg;
+            }
+            // Apache skins use `selected`; public GNU default.ini uses `viewselected`.
+            "selected" | "viewselected" => {
+                pal.viewer_selected_fg = fg;
+                pal.viewer_selected_bg = bg;
+            }
+            _ => {}
+        },
         "editor" => match k.as_str() {
             "_default_" | "editnormal" => {
                 pal.edit_normal_fg = fg;
@@ -443,6 +450,8 @@ mod tests {
         assert_eq!(pal.errdfocus_bg, Color::Grey);
         assert_eq!(pal.dir_color, Color::White);
         assert_eq!(pal.exec_color, Color::Green);
+        assert_eq!(pal.viewer_default_fg, Color::Grey);
+        assert_eq!(pal.viewer_default_bg, Color::Blue);
         assert_eq!(pal.viewer_selected_fg, Color::Yellow);
         assert_eq!(pal.viewer_selected_bg, Color::Cyan);
         assert_ne!(pal.viewer_selected_fg, pal.selected_fg);
@@ -457,6 +466,45 @@ mod tests {
         assert_eq!(pal.edit_linestate_bg, Color::Cyan);
         assert_ne!(pal.edit_marked_fg, pal.edit_bold_fg);
         assert_ne!(pal.edit_marked_bg, pal.marked_bg);
+    }
+
+    #[test]
+    fn viewer_default_pair_is_independent_of_core() {
+        let pal = parse_skin(
+            "[core]\n\
+             _default_ = white;red\n\
+             selected = black;cyan\n\
+             [viewer]\n\
+             _default_ = lightgray;blue\n\
+             selected = yellow;cyan\n",
+        )
+        .expect("parse");
+        assert_eq!(pal.core_default_fg, Color::White);
+        assert_eq!(pal.core_default_bg, Color::Red);
+        assert_eq!(pal.viewer_default_fg, Color::Grey);
+        assert_eq!(pal.viewer_default_bg, Color::Blue);
+        assert_eq!(pal.viewer_selected_fg, Color::Yellow);
+        assert_eq!(pal.viewer_selected_bg, Color::Cyan);
+        assert_ne!(
+            (pal.viewer_default_fg, pal.viewer_default_bg),
+            (pal.core_default_fg, pal.core_default_bg),
+            "mcview _default_ must not reuse [core] _default_"
+        );
+        assert_ne!(pal.viewer_selected_fg, pal.selected_fg);
+    }
+
+    #[test]
+    fn viewer_viewselected_alias_maps_yellow_cyan() {
+        let pal = parse_skin(
+            "[viewer]\n\
+             _default_ = lightgray;blue\n\
+             viewselected = yellow;cyan\n",
+        )
+        .expect("parse");
+        assert_eq!(pal.viewer_default_fg, Color::Grey);
+        assert_eq!(pal.viewer_default_bg, Color::Blue);
+        assert_eq!(pal.viewer_selected_fg, Color::Yellow);
+        assert_eq!(pal.viewer_selected_bg, Color::Cyan);
     }
 
     fn section_keys(text: &str) -> Vec<(String, String)> {

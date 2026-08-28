@@ -50,8 +50,11 @@ pub struct McPalette {
     pub archive_color: Color,
     pub source_color: Color,
     pub symlink_color: Color,
-    /// Viewer selection (GNU default.ini `[viewer] selected=yellow;cyan`).
-    /// Distinct from panel `selected` (black;cyan).
+    /// Viewer pairs from public default.ini `[viewer]`:
+    /// `_default_=lightgray;blue`, selected/`viewselected`=yellow;cyan.
+    /// Distinct from panel `selected` (black;cyan) and from `[core] _default_`.
+    pub viewer_default_fg: Color,
+    pub viewer_default_bg: Color,
     pub viewer_selected_fg: Color,
     pub viewer_selected_bg: Color,
     /// Editor pairs from public default.ini `[editor]`.
@@ -113,6 +116,8 @@ impl McPalette {
             archive_color: Color::Magenta, // brightmagenta approximation
             source_color: Color::Cyan,
             symlink_color: Color::Grey,
+            viewer_default_fg: Color::Grey, // lightgray
+            viewer_default_bg: Color::Blue,
             viewer_selected_fg: Color::Yellow,
             viewer_selected_bg: Color::Cyan,
             edit_normal_fg: Color::Grey,
