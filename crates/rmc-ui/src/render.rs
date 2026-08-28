@@ -7655,6 +7655,44 @@ mod gnu_default_chrome_colors_tests {
     }
 
     #[test]
+    fn user_listing_paints_format_tokens_and_mark() {
+        let mut app = panel_app(ListingFormat::User);
+        app.left.user_format = "type name mark | size | bsize perm mode".into();
+        app.left.selection.select(1);
+        {
+            let ent = &mut app.left.entries[1];
+            ent.is_exe = true;
+            ent.permissions = 0o755;
+        }
+
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 80, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 80, 12);
+
+        let header = row_str(&grid, 1);
+        assert!(header.contains("Name"), "header={header:?}");
+        assert!(header.contains("Size"), "header={header:?}");
+        assert!(header.contains("Perm"), "header={header:?}");
+        assert!(header.contains("Mode"), "header={header:?}");
+
+        let parent = row_str(&grid, 2);
+        assert!(parent.contains("UP--DIR"), "parent size/bsize={parent:?}");
+
+        let file = row_str(&grid, 3);
+        assert!(file.contains("readme.txt"), "file={file:?}");
+        assert!(
+            file.contains('*'),
+            "exe type and/or mark asterisk: {file:?}"
+        );
+        assert!(file.contains("42"), "size={file:?}");
+        assert!(file.contains("0755"), "octal mode={file:?}");
+        assert!(file.contains("rwx"), "perm={file:?}");
+        assert!(file.contains('|'), "column gap={file:?}");
+    }
+
+    #[test]
     fn full_listing_cols_pack_size_and_mtime_on_the_right() {
         let c = super::full_listing_cols(0, 40);
         assert_eq!(c.time_x, 25, "mtime stays at x+w-15");
