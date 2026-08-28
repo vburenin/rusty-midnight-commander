@@ -45,6 +45,7 @@ Reference only; implement an equivalent Apache-2.0 skin description without copy
 
 From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “Filter…”, “Panel options”, “Show hidden files”:
 - [x] Listing formats: Full, Brief (1–9 cols), Long (ls -l–like), User-defined (field spec)
+- [x] Full listing column bars: `│` (U+2502) between Name / Size / Modify time, `┬`/`┴` on the panel frame (GNU `|` token from `half type name | size | mtime`)
 - [ ] User-defined fields: name, size/bsize, type marks (* / @ = - + | ~ !), mark, mtime/atime/ctime, perm, mode, nlink, owner/group (name/num), inode, etc.
 - [x] Panel modes: Quick view, Info, Tree, Panelize (results)
   - [x] Quick view

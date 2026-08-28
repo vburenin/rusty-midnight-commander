@@ -3632,6 +3632,97 @@ fn draw_viewer(
     Ok(())
 }
 
+/// GNU mc `|` listing-format token: box-drawing vertical, never ASCII `|`.
+const LISTING_COL_BAR: char = '│'; // U+2502
+const LISTING_COL_TEE_TOP: char = '┬'; // U+252C
+const LISTING_COL_TEE_BOT: char = '┴'; // U+2534
+
+/// Full listing: name grows; modest right-aligned size; fixed mtime on the right.
+/// Bars sit in the 1-cell splits from GNU `half type name | size | mtime`.
+#[derive(Clone, Copy, Debug)]
+struct FullListingCols {
+    size_bar: u16,
+    size_x: u16,
+    time_bar: u16,
+    time_x: u16,
+}
+
+fn full_listing_cols(x: u16, w: u16) -> FullListingCols {
+    let left = x.saturating_add(1);
+    let inner_right = x.saturating_add(w.saturating_sub(2));
+    if inner_right <= left {
+        return FullListingCols {
+            size_bar: left,
+            size_x: left,
+            time_bar: left,
+            time_x: left,
+        };
+    }
+    // Keep the historical mtime start (`x + w - 15`): 12-char time plus padding.
+    let time_x = x
+        .saturating_add(w.saturating_sub(15))
+        .clamp(left, inner_right);
+    let time_bar = time_x.saturating_sub(1).clamp(left, inner_right);
+    let size_x = time_bar
+        .saturating_sub(8)
+        .clamp(left.saturating_add(1).min(inner_right), inner_right);
+    let size_bar = size_x.saturating_sub(1).clamp(left, inner_right);
+    FullListingCols {
+        size_bar,
+        size_x,
+        time_bar,
+        time_x,
+    }
+}
+
+fn full_listing_bar_xs(cols: FullListingCols, x: u16, w: u16) -> Vec<u16> {
+    let lo = x.saturating_add(1);
+    let hi = x.saturating_add(w.saturating_sub(2));
+    let mut xs = Vec::new();
+    if cols.size_bar >= lo && cols.size_bar <= hi && cols.size_bar < cols.time_bar {
+        xs.push(cols.size_bar);
+    }
+    if cols.time_bar >= lo && cols.time_bar <= hi && cols.time_bar != cols.size_bar {
+        xs.push(cols.time_bar);
+    }
+    xs
+}
+
+/// 1-cell gaps already reserved by `brief_column_width` (inner minus `n-1` seps).
+fn brief_column_bar_xs(x: u16, w: u16, columns: u8) -> Vec<u16> {
+    let n = rmc_core::panel::clamp_brief_columns(columns);
+    if n <= 1 {
+        return Vec::new();
+    }
+    let per = rmc_core::panel::brief_column_width(w, n);
+    let lo = x.saturating_add(1);
+    let hi = x.saturating_add(w.saturating_sub(2));
+    (1..n)
+        .map(|i| x.saturating_add(u16::from(i).saturating_mul(per.saturating_add(1))))
+        .filter(|&bx| bx >= lo && bx <= hi)
+        .collect()
+}
+
+fn listing_column_bar_xs(
+    listing: rmc_core::panel::ListingFormat,
+    x: u16,
+    w: u16,
+    brief_columns: u8,
+) -> Vec<u16> {
+    match listing {
+        rmc_core::panel::ListingFormat::Full => full_listing_bar_xs(full_listing_cols(x, w), x, w),
+        rmc_core::panel::ListingFormat::Brief => brief_column_bar_xs(x, w, brief_columns),
+        rmc_core::panel::ListingFormat::Long | rmc_core::panel::ListingFormat::User => Vec::new(),
+    }
+}
+
+fn paint_column_bars(p: &mut Painter, xs: &[u16], y: u16, fg: Color, bg: Color, ch: char) {
+    let glyph = ch.to_string();
+    for &bx in xs {
+        paint_span(p, bx, y, fg, bg, &glyph);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_panel(
     p: &mut Painter,
@@ -3849,11 +3940,22 @@ fn draw_panel(
     } else {
         panel.listing
     };
+    let full_cols = full_listing_cols(x, w);
+    let bar_xs = listing_column_bar_xs(listing, x, w, panel.brief_columns);
+    // Junctions share the listing-row split x: ┬ on the top frame (after the path).
+    paint_column_bars(p, &bar_xs, y, frame_fg, frame_bg, LISTING_COL_TEE_TOP);
     match listing {
         rmc_core::panel::ListingFormat::Full => {
             paint_span(p, x + 1, y + 1, header_fg, header_bg, "Name");
-            paint_span(p, x + w / 2, y + 1, header_fg, header_bg, "Size");
-            paint_span(p, x + w - 15, y + 1, header_fg, header_bg, "Modify time");
+            paint_span(p, full_cols.size_x, y + 1, header_fg, header_bg, "Size");
+            paint_span(
+                p,
+                full_cols.time_x,
+                y + 1,
+                header_fg,
+                header_bg,
+                "Modify time",
+            );
         }
         rmc_core::panel::ListingFormat::Brief => {
             paint_span(p, x + 1, y + 1, header_fg, header_bg, "Name");
@@ -3885,6 +3987,8 @@ fn draw_panel(
             paint_span(p, time_col, y + 1, header_fg, header_bg, "Modify time");
         }
     }
+    // Header `|` token is yellow;blue — do not skip this row.
+    paint_column_bars(p, &bar_xs, y + 1, header_fg, header_bg, LISTING_COL_BAR);
 
     // Content rows
     let content_top = y + 2;
@@ -3902,7 +4006,9 @@ fn draw_panel(
     let panel = if is_left { &app.left } else { &app.right };
     match listing {
         rmc_core::panel::ListingFormat::Full => {
-            let size_col = x + w / 2;
+            let name_width = full_cols.size_bar.saturating_sub(x.saturating_add(1));
+            let size_width = full_cols.time_bar.saturating_sub(full_cols.size_x);
+            let time_width = (x + w).saturating_sub(1).saturating_sub(full_cols.time_x);
             for i in 0..content_h as usize {
                 let row_y = content_top + i as u16;
                 // Clear row
@@ -3910,6 +4016,7 @@ fn draw_panel(
                 p.goto(x + 1, row_y);
                 p.text(&" ".repeat((w - 2) as usize));
                 let idx = panel.scroll_top + i;
+                let mut bar_bg = pal.frame_bg;
                 if let Some(ent) = panel.entries.get(idx) {
                     // active row highlight
                     let is_active_panel = (is_left
@@ -3927,24 +4034,24 @@ fn draw_panel(
                     } else {
                         (pal.core_default_fg, pal.core_default_bg)
                     };
-                    p.set_fg_bg(fg, bg);
-                    // Name (filehighlight fg when not selected/marked)
+                    // Fill so the `│` bar sits on the row bg (cyan when selected).
+                    paint_span(p, x + 1, row_y, fg, bg, &" ".repeat((w - 2) as usize));
                     let display_name = format_entry_name(ent);
-                    p.goto(x + 1, row_y);
-                    let name_width = (w - 2).saturating_sub(26);
                     let name_trunc = truncate(&display_name, name_width as usize);
                     let name_fg =
                         listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
-                    p.set_fg_bg(name_fg, bg);
-                    p.text(&name_trunc);
-                    // Size / time stay row colors (not filehighlight)
-                    p.set_fg_bg(fg, bg);
-                    p.goto(size_col, row_y);
-                    p.text(&format_size(ent, app.panel_opts.kilobyte_si));
-                    // Time
-                    p.goto(x + w - 15, row_y);
-                    p.text(&format_time(ent));
+                    paint_span(p, x + 1, row_y, name_fg, bg, &name_trunc);
+                    let size = truncate(
+                        &format_size(ent, app.panel_opts.kilobyte_si),
+                        size_width as usize,
+                    );
+                    paint_span(p, full_cols.size_x, row_y, fg, bg, &size);
+                    let time = truncate(&format_time(ent), time_width as usize);
+                    paint_span(p, full_cols.time_x, row_y, fg, bg, &time);
+                    bar_bg = bg;
                 }
+                // Frame pair on empty rows; selected/marked rows keep frame glyph on row bg.
+                paint_column_bars(p, &bar_xs, row_y, pal.frame_fg, bar_bg, LISTING_COL_BAR);
             }
         }
         rmc_core::panel::ListingFormat::Brief => {
@@ -3991,6 +4098,14 @@ fn draw_panel(
                         p.set_fg_bg(fg, bg);
                     }
                 }
+                paint_column_bars(
+                    p,
+                    &bar_xs,
+                    row_y,
+                    pal.frame_fg,
+                    pal.frame_bg,
+                    LISTING_COL_BAR,
+                );
             }
         }
         rmc_core::panel::ListingFormat::Long => {
@@ -4104,6 +4219,16 @@ fn draw_panel(
             &line,
         );
     }
+    // No dedicated `├─┴─┴─┤` mini-status separator row: ┴ sits on the bottom frame.
+    // Mini-status (when shown) stays a full-width line, not split into cells.
+    paint_column_bars(
+        p,
+        &bar_xs,
+        y + h.saturating_sub(1),
+        frame_fg,
+        frame_bg,
+        LISTING_COL_TEE_BOT,
+    );
     Ok(())
 }
 
@@ -7303,5 +7428,205 @@ mod gnu_default_chrome_colors_tests {
             Color::Cyan,
             "unselected rest stays menu cyan"
         );
+    }
+
+    fn row_str(grid: &[Vec<Cell>], y: usize) -> String {
+        grid[y].iter().map(|c| c.ch).collect()
+    }
+
+    fn inner_bars(grid: &[Vec<Cell>], y: usize, x0: usize, w: usize) -> Vec<usize> {
+        (x0 + 1..x0 + w - 1)
+            .filter(|&x| grid[y][x].ch == '│')
+            .collect()
+    }
+
+    fn epoch_file(name: &str, size: u64) -> FileEntry {
+        FileEntry {
+            name: name.into(),
+            path: PathBuf::from(name),
+            is_dir: false,
+            is_symlink: false,
+            is_exe: false,
+            size,
+            modified: SystemTime::UNIX_EPOCH,
+            accessed: SystemTime::UNIX_EPOCH,
+            changed: SystemTime::UNIX_EPOCH,
+            permissions: 0o644,
+            owner: None,
+            group: None,
+            nlink: 1,
+            inode: 0,
+        }
+    }
+
+    fn panel_app(listing: ListingFormat) -> App {
+        let mut app = App::new(Box::new(LocalFs::new()), KeyMap::mc_defaults()).unwrap();
+        app.active = PaneSide::Left;
+        app.left.listing = listing;
+        app.right.listing = listing;
+        app.left.entries = vec![epoch_parent(), epoch_file("readme.txt", 42)];
+        app.right.entries = vec![epoch_parent()];
+        app.left.cursor = 1;
+        app.right.cursor = 0;
+        app.panel_opts.show_mini_status = true;
+        app
+    }
+
+    #[test]
+    fn full_listing_cols_pack_size_and_mtime_on_the_right() {
+        let c = super::full_listing_cols(0, 40);
+        assert_eq!(c.time_x, 25, "mtime stays at x+w-15");
+        assert_eq!(c.time_bar, 24);
+        assert_eq!(c.size_x, 16);
+        assert_eq!(c.size_bar, 15);
+        assert!(c.size_bar > 1, "bar is inside the frame");
+        assert!(c.size_bar < c.size_x);
+        assert!(
+            c.size_x + 7 < c.time_bar,
+            "8-char size fits before time bar"
+        );
+        let bars = super::full_listing_bar_xs(c, 0, 40);
+        assert_eq!(bars, vec![15, 24]);
+    }
+
+    #[test]
+    fn full_listing_draws_box_column_bars_not_ascii_pipe() {
+        let app = panel_app(ListingFormat::Full);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+
+        let grid = rasterize(&buf, 40, 12);
+        let header = row_str(&grid, 1);
+        assert!(header.contains("Name"), "header={header:?}");
+        assert!(header.contains("Size"), "header={header:?}");
+        assert!(header.contains("Modify time"), "header={header:?}");
+        assert!(
+            !header.contains('|'),
+            "must not use ASCII pipe in Full header: {header:?}"
+        );
+
+        let name_at = header.find("Name").expect("Name");
+        let size_at = header.find("Size").expect("Size");
+        let time_at = header.find("Modify time").expect("Modify time");
+        assert!(
+            name_at < size_at && size_at < time_at,
+            "Name | Size | Modify time order: {header:?}"
+        );
+        let between_name_size: String = header[name_at + 4..size_at].chars().collect();
+        let between_size_time: String = header[size_at + 4..time_at].chars().collect();
+        assert!(
+            between_name_size.contains('│'),
+            "│ between Name and Size: {header:?}"
+        );
+        assert!(
+            between_size_time.contains('│'),
+            "│ between Size and Modify time: {header:?}"
+        );
+        assert!(
+            !between_name_size.contains('|') && !between_size_time.contains('|'),
+            "splits must be U+2502 not ASCII: {header:?}"
+        );
+
+        let bars = inner_bars(&grid, 1, 0, 40);
+        assert_eq!(bars.len(), 2, "exactly two Full splits: {header:?}");
+        for &bx in &bars {
+            assert_eq!(grid[1][bx].ch, '│');
+            assert_ne!(grid[1][bx].ch, '|');
+            assert_eq!(
+                (grid[1][bx].fg, grid[1][bx].bg),
+                (Color::Yellow, Color::Blue),
+                "header bar is yellow;blue"
+            );
+            assert_eq!(
+                grid[0][bx].ch,
+                '┬',
+                "top frame ┬ at {bx}: {}",
+                row_str(&grid, 0)
+            );
+            assert_eq!(
+                grid[11][bx].ch,
+                '┴',
+                "bottom frame ┴ at {bx}: {}",
+                row_str(&grid, 11)
+            );
+            // Listing rows including the selected file row (cursor=1 → y=3).
+            assert_eq!(grid[2][bx].ch, '│', "parent row bar");
+            assert_eq!(grid[3][bx].ch, '│', "selected row must still show │");
+            assert_eq!(
+                grid[3][bx].bg,
+                Color::Cyan,
+                "selected-row │ sits on selected cyan, not a space"
+            );
+            assert_eq!(grid[3][bx].fg, pal.frame_fg);
+            // Empty listing rows keep the bar (frame pair).
+            assert_eq!(grid[4][bx].ch, '│');
+            assert_eq!(grid[4][bx].bg, pal.frame_bg);
+            // Mini-status is full-width, not three cells.
+            assert_ne!(grid[10][bx].ch, '│');
+            assert_ne!(grid[10][bx].ch, '┬');
+            assert_ne!(grid[10][bx].ch, '┴');
+        }
+        let status = row_str(&grid, 10);
+        assert!(
+            status.contains("rw-r--r--") || status.contains("42"),
+            "mini-status is the current-entry line, not three column cells: {status:?}"
+        );
+        assert_eq!(grid[0][0].ch, '┌');
+        assert_eq!(grid[0][39].ch, '┐');
+        assert_eq!(grid[11][0].ch, '└');
+        assert_eq!(grid[11][39].ch, '┘');
+        assert_eq!(grid[1][0].ch, '│');
+        assert_eq!(grid[1][39].ch, '│');
+    }
+
+    #[test]
+    fn brief_listing_paints_bar_in_packed_column_gap() {
+        let mut app = panel_app(ListingFormat::Brief);
+        app.left.brief_columns = 2;
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let expected = super::brief_column_bar_xs(0, 40, 2);
+        assert_eq!(expected.len(), 1, "default Brief is two name columns");
+        let bx = expected[0] as usize;
+        assert_eq!(
+            grid[1][bx].ch,
+            '│',
+            "Brief header gap: {}",
+            row_str(&grid, 1)
+        );
+        assert_ne!(grid[1][bx].ch, '|');
+        assert_eq!(grid[0][bx].ch, '┬');
+        assert_eq!(grid[11][bx].ch, '┴');
+        assert_eq!(grid[2][bx].ch, '│');
+        let header = row_str(&grid, 1);
+        assert!(header.contains("Name"), "{header:?}");
+        assert!(!header.contains('|'), "no ASCII pipe: {header:?}");
+    }
+
+    #[test]
+    fn long_listing_does_not_insert_column_bars() {
+        let app = panel_app(ListingFormat::Long);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let top = row_str(&grid, 0);
+        let header = row_str(&grid, 1);
+        assert!(
+            !(1..39).any(|x| grid[0][x].ch == '┬'),
+            "Long has no ┬ junctions: {top:?}"
+        );
+        assert!(
+            inner_bars(&grid, 1, 0, 40).is_empty(),
+            "Long header is spaces not bars: {header:?}"
+        );
+        assert!(header.contains("Perms"), "{header:?}");
+        assert!(!header.contains('|'), "{header:?}");
     }
 }
