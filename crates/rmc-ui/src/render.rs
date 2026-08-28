@@ -4301,7 +4301,7 @@ fn panel_free_space_label(cwd: &std::path::Path) -> String {
                 0.0
             };
             format!(
-                "{} / {} ({:.0}%)",
+                " {} / {} ({:.0}%)",
                 human_bytes(used),
                 human_bytes(total),
                 pct
