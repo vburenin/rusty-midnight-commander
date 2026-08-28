@@ -782,19 +782,34 @@ fn draw_panel_options_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -804,7 +819,7 @@ fn draw_panel_options_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -897,19 +912,34 @@ fn draw_overwrite_dialog(
     let x = (cols.saturating_sub(w)) / 2;
     let y = (rows.saturating_sub(h)) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -919,7 +949,7 @@ fn draw_overwrite_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1053,19 +1083,34 @@ fn draw_confirmations_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1075,7 +1120,7 @@ fn draw_confirmations_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1156,19 +1201,34 @@ fn draw_configuration_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1178,7 +1238,7 @@ fn draw_configuration_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1286,19 +1346,34 @@ fn draw_vfs_options_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1308,7 +1383,7 @@ fn draw_vfs_options_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1432,19 +1507,34 @@ fn draw_learn_keys_dialog(
     let h = (grid_rows as u16 + 5).min(rows.saturating_sub(2)).max(10);
     let x = (cols.saturating_sub(w)) / 2;
     let y = (rows.saturating_sub(h)) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1454,7 +1544,7 @@ fn draw_learn_keys_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1558,19 +1648,34 @@ fn draw_compare_dirs_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1580,7 +1685,7 @@ fn draw_compare_dirs_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1670,19 +1775,34 @@ fn draw_user_menu_dialog(
     let x = (cols.saturating_sub(w)) / 2;
     let y = (rows.saturating_sub(h)) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1692,7 +1812,7 @@ fn draw_user_menu_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1744,19 +1864,34 @@ fn draw_layout_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1766,7 +1901,7 @@ fn draw_layout_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -1908,19 +2043,34 @@ fn draw_appearance_dialog(
     let x = (cols.saturating_sub(w)) / 2;
     let y = (rows.saturating_sub(h)) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -1930,7 +2080,7 @@ fn draw_appearance_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -2237,8 +2387,8 @@ fn draw_editor_menu_bar(p: &mut Painter, cols: u16, pal: McPalette, show_menu: O
     }
 }
 
-/// Menu chrome: default white;cyan, selected white;black, hotkey yellow;cyan
-/// (same pairs as the panel menu bar). First non-space letter is the hotkey.
+/// Menu chrome: default white;cyan, selected white;black, hotkey yellow;cyan,
+/// hotkey+selected yellow;black. First non-space letter is the hotkey.
 fn draw_menu_hotkey_label(
     p: &mut Painter,
     x: u16,
@@ -2253,25 +2403,30 @@ fn draw_menu_hotkey_label(
     while line.chars().count() < width {
         line.push(' ');
     }
-    if selected {
-        p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
-        p.text(&line.chars().take(width).collect::<String>());
-        return;
-    }
+    let (norm_fg, norm_bg, hot_fg, hot_bg) = if selected {
+        (
+            pal.menusel_fg,
+            pal.menusel_bg,
+            pal.menuhotsel_fg,
+            pal.menuhotsel_bg,
+        )
+    } else {
+        (pal.menu_fg, pal.menu_bg, pal.menuhot_fg, pal.menuhot_bg)
+    };
     let mut hotkey_done = false;
     let mut drawn = 0usize;
     for ch in line.chars().take(width) {
         if !hotkey_done && !ch.is_whitespace() {
-            p.set_fg_bg(pal.menuhot_fg, pal.menuhot_bg);
+            p.set_fg_bg(hot_fg, hot_bg);
             hotkey_done = true;
         } else {
-            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+            p.set_fg_bg(norm_fg, norm_bg);
         }
         p.text(&ch.to_string());
         drawn += 1;
     }
     if drawn < width {
-        p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        p.set_fg_bg(norm_fg, norm_bg);
         p.text(&" ".repeat(width - drawn));
     }
 }
@@ -2359,19 +2514,34 @@ fn draw_editor_search_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -2381,7 +2551,7 @@ fn draw_editor_search_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -2480,19 +2650,34 @@ fn draw_viewer_display_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame — same chrome as editor Search / Save as
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -2502,7 +2687,7 @@ fn draw_viewer_display_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -2588,19 +2773,34 @@ fn draw_editor_replace_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -2610,7 +2810,7 @@ fn draw_editor_replace_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -2731,19 +2931,34 @@ fn draw_editor_pipe_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -2753,7 +2968,7 @@ fn draw_editor_pipe_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -2830,19 +3045,34 @@ fn draw_editor_goto_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -2852,7 +3082,7 @@ fn draw_editor_goto_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -2928,19 +3158,34 @@ fn draw_editor_tab_spacing_dialog(
     }
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -2950,7 +3195,7 @@ fn draw_editor_tab_spacing_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -3038,19 +3283,34 @@ fn draw_editor_save_as_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -3060,7 +3320,7 @@ fn draw_editor_save_as_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -3120,6 +3380,125 @@ fn draw_editor_save_as_dialog(
     }
 }
 
+fn dialog_is_error_title(title: &str) -> bool {
+    title.eq_ignore_ascii_case("Error")
+}
+
+fn dialog_chrome_pair(pal: McPalette, error: bool) -> (Color, Color) {
+    if error {
+        (pal.error_default_fg, pal.error_default_bg)
+    } else {
+        (pal.dialog_default_fg, pal.dialog_default_bg)
+    }
+}
+
+fn dialog_title_pair(pal: McPalette, error: bool) -> (Color, Color) {
+    if error {
+        (pal.error_default_fg, pal.error_default_bg)
+    } else {
+        (pal.dtitle_fg, pal.dtitle_bg)
+    }
+}
+
+fn dialog_focus_pair(pal: McPalette, focused: bool, error: bool) -> (Color, Color) {
+    if error {
+        if focused {
+            (pal.errdfocus_fg, pal.errdfocus_bg)
+        } else {
+            (pal.error_default_fg, pal.error_default_bg)
+        }
+    } else if focused {
+        (pal.dfocus_fg, pal.dfocus_bg)
+    } else {
+        (pal.dialog_default_fg, pal.dialog_default_bg)
+    }
+}
+
+fn paint_dialog_frame(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    title: &str,
+    pal: McPalette,
+    error: bool,
+) {
+    let (fg, bg) = dialog_chrome_pair(pal, error);
+    p.fill_rect(x, y, w, h, fg, bg);
+    p.set_fg_bg(fg, bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(x + 1, y, w.saturating_sub(2), '─', fg, bg);
+    p.goto(x + w.saturating_sub(1), y);
+    p.text("┐");
+    p.vline(x, y + 1, h.saturating_sub(2), '│', fg, bg);
+    p.vline(
+        x + w.saturating_sub(1),
+        y + 1,
+        h.saturating_sub(2),
+        '│',
+        fg,
+        bg,
+    );
+    p.goto(x, y + h.saturating_sub(1));
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h.saturating_sub(1),
+        w.saturating_sub(2),
+        '─',
+        fg,
+        bg,
+    );
+    p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
+    p.text("┘");
+    let (tfg, tbg) = dialog_title_pair(pal, error);
+    p.set_fg_bg(tfg, tbg);
+    let title_str = format!(" {title} ");
+    let tx = x + (w.saturating_sub(title_str.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&title_str);
+}
+
+fn paint_dialog_button_cluster(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    pal: McPalette,
+    buttons: &[(&str, bool)],
+    error: bool,
+) {
+    let (gap_fg, gap_bg) = dialog_chrome_pair(pal, error);
+    let mut cx = x;
+    for (i, (label, focused)) in buttons.iter().enumerate() {
+        if i > 0 {
+            p.set_fg_bg(gap_fg, gap_bg);
+            p.goto(cx, y);
+            p.text("  ");
+            cx += 2;
+        }
+        let (fg, bg) = dialog_focus_pair(pal, *focused, error);
+        p.set_fg_bg(fg, bg);
+        p.goto(cx, y);
+        p.text(label);
+        cx += label.len() as u16;
+    }
+}
+
+fn paint_dialog_shadow(p: &mut Painter, x: u16, y: u16, w: u16, h: u16, pal: McPalette) {
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_dialog_ync(
     p: &mut Painter,
@@ -3131,80 +3510,41 @@ fn draw_dialog_ync(
     focus: rmc_core::app::YncFocus,
     show_shadow: bool,
 ) {
-    // Centered box
     let w = (cols as usize).min(60) as u16;
     let h = 7u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x, y);
-    p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x + w - 1, y);
-    p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(
-        x + w - 1,
-        y + 1,
-        h - 2,
-        '│',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x, y + h - 1);
-    p.text("└");
-    p.hline(
-        x + 1,
-        y + h - 1,
-        w - 2,
-        '─',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x + w - 1, y + h - 1);
-    p.text("┘");
-    // Title
-    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
-    let title_str = format!(" {title} ");
-    let tx = x + (w.saturating_sub(title_str.len() as u16)) / 2;
-    p.goto(tx, y);
-    p.text(&title_str);
-    // Message
-    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let error = dialog_is_error_title(title);
+    paint_dialog_frame(p, x, y, w, h, title, pal, error);
+    let (fg, bg) = dialog_chrome_pair(pal, error);
+    p.set_fg_bg(fg, bg);
     p.goto(x + 2, y + 2);
-    let msg = truncate(message, (w - 4) as usize);
-    p.text(&msg);
-    // Buttons
-    let sel = |want: rmc_core::app::YncFocus, txt: &str| {
-        if want == focus {
-            format!("< {txt} >")
-        } else {
-            format!("[ {txt} ]")
-        }
+    p.text(&truncate(message, (w - 4) as usize));
+    let yes = if matches!(focus, rmc_core::app::YncFocus::Yes) {
+        "< Yes >"
+    } else {
+        "[ Yes ]"
     };
-    let btns = format!(
-        "{}  {}  {}",
-        sel(rmc_core::app::YncFocus::Yes, "Yes"),
-        sel(rmc_core::app::YncFocus::No, "No"),
-        sel(rmc_core::app::YncFocus::Cancel, "Cancel")
-    );
-    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    p.goto(bx, y + h - 2);
-    p.text(&btns);
-    // Shadow
+    let no = if matches!(focus, rmc_core::app::YncFocus::No) {
+        "< No >"
+    } else {
+        "[ No ]"
+    };
+    let cancel = if matches!(focus, rmc_core::app::YncFocus::Cancel) {
+        "< Cancel >"
+    } else {
+        "[ Cancel ]"
+    };
+    let items = [
+        (yes, matches!(focus, rmc_core::app::YncFocus::Yes)),
+        (no, matches!(focus, rmc_core::app::YncFocus::No)),
+        (cancel, matches!(focus, rmc_core::app::YncFocus::Cancel)),
+    ];
+    let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2 * (items.len() - 1);
+    let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
+    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, error);
     if show_shadow {
-        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-        p.hline(
-            x + 1,
-            y + h,
-            w.saturating_sub(1),
-            ' ',
-            pal.shadow_fg,
-            pal.shadow_bg,
-        );
-        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+        paint_dialog_shadow(p, x, y, w, h, pal);
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -3218,68 +3558,27 @@ fn draw_dialog_box(
     buttons: &[&str],
     show_shadow: bool,
 ) {
-    // Centered box
     let w = (cols as usize).min(60) as u16;
     let h = 7u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x, y);
-    p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x + w - 1, y);
-    p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(
-        x + w - 1,
-        y + 1,
-        h - 2,
-        '│',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x, y + h - 1);
-    p.text("└");
-    p.hline(
-        x + 1,
-        y + h - 1,
-        w - 2,
-        '─',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x + w - 1, y + h - 1);
-    p.text("┘");
-    // Title
-    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
-    let title_str = format!(" {title} ");
-    let tx = x + (w.saturating_sub(title_str.len() as u16)) / 2;
-    p.goto(tx, y);
-    p.text(&title_str);
-    // Message
-    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    let error = dialog_is_error_title(title);
+    paint_dialog_frame(p, x, y, w, h, title, pal, error);
+    let (fg, bg) = dialog_chrome_pair(pal, error);
+    p.set_fg_bg(fg, bg);
     p.goto(x + 2, y + 2);
-    let msg = truncate(message, (w - 4) as usize);
-    p.text(&msg);
-    // Buttons: centered
-    let btns = buttons.join("  ");
-    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
-    p.goto(bx, y + h - 2);
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    p.text(&btns);
-    // Shadow
+    p.text(&truncate(message, (w - 4) as usize));
+    let items: Vec<(&str, bool)> = buttons
+        .iter()
+        .enumerate()
+        .map(|(i, label)| (*label, i == 0))
+        .collect();
+    let btns_w =
+        items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2 * items.len().saturating_sub(1);
+    let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
+    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, error);
     if show_shadow {
-        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-        p.hline(
-            x + 1,
-            y + h,
-            w.saturating_sub(1),
-            ' ',
-            pal.shadow_fg,
-            pal.shadow_bg,
-        );
-        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+        paint_dialog_shadow(p, x, y, w, h, pal);
     }
 }
 
@@ -3303,19 +3602,34 @@ fn draw_sort_dialog(
     let x = (cols.saturating_sub(w)) / 2;
     let y = (rows.saturating_sub(h)) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -3325,7 +3639,7 @@ fn draw_sort_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -4414,7 +4728,7 @@ fn draw_help(
         p.text(&" ".repeat(cols as usize));
     }
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(0, 0);
     p.text("┌");
     p.hline(
@@ -4422,7 +4736,7 @@ fn draw_help(
         0,
         cols.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(cols - 1, 0);
@@ -4432,7 +4746,7 @@ fn draw_help(
         1,
         rows.saturating_sub(3),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -4440,7 +4754,7 @@ fn draw_help(
         1,
         rows.saturating_sub(3),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     let frame_bottom = rows.saturating_sub(2);
@@ -4451,7 +4765,7 @@ fn draw_help(
         frame_bottom,
         cols.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(cols - 1, frame_bottom);
@@ -5122,65 +5436,19 @@ fn draw_mkdir_dialog(
     let h = 7u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x, y);
-    p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x + w - 1, y);
-    p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(
-        x + w - 1,
-        y + 1,
-        h - 2,
-        '│',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x, y + h - 1);
-    p.text("└");
-    p.hline(
-        x + 1,
-        y + h - 1,
-        w - 2,
-        '─',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x + w - 1, y + h - 1);
-    p.text("┘");
-    // Title
-    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
-    let title = " Create a new Directory ";
-    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
-    p.goto(tx, y);
-    p.text(title);
-    // Input line
+    paint_dialog_frame(p, x, y, w, h, "Create a new Directory", pal, false);
     p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     p.goto(x + 2, y + 2);
     let t = truncate(value, (w - 4) as usize);
     p.text(&format!("{t}{}", " ".repeat((w - 4) as usize - t.len())));
-    // Buttons
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok = if focus_ok { "< OK >" } else { "  OK  " };
     let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
-    let btns = format!("{ok}  {cancel}");
-    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
-    p.goto(bx, y + h - 2);
-    p.text(&btns);
-    // Shadow
+    let items = [(ok, focus_ok), (cancel, !focus_ok)];
+    let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2;
+    let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
+    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, false);
     if show_shadow {
-        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-        p.hline(
-            x + 1,
-            y + h,
-            w.saturating_sub(1),
-            ' ',
-            pal.shadow_fg,
-            pal.shadow_bg,
-        );
-        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+        paint_dialog_shadow(p, x, y, w, h, pal);
     }
 }
 
@@ -5200,69 +5468,22 @@ fn draw_input_dialog(
     let h = 9u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x, y);
-    p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
-    p.goto(x + w - 1, y);
-    p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
-    p.vline(
-        x + w - 1,
-        y + 1,
-        h - 2,
-        '│',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x, y + h - 1);
-    p.text("└");
-    p.hline(
-        x + 1,
-        y + h - 1,
-        w - 2,
-        '─',
-        pal.frame_fg,
-        pal.dialog_default_bg,
-    );
-    p.goto(x + w - 1, y + h - 1);
-    p.text("┘");
-    // Title
-    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
-    let ttl = format!(" {title} ");
-    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
-    p.goto(tx, y);
-    p.text(&ttl);
-    // Prompt
+    paint_dialog_frame(p, x, y, w, h, title, pal, false);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 2);
     p.text(&truncate(prompt, (w - 4) as usize));
-    // Input line
     p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     p.goto(x + 2, y + 4);
     let t = truncate(value, (w - 4) as usize);
     p.text(&format!("{t}{}", " ".repeat((w - 4) as usize - t.len())));
-    // Buttons
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
     let ok = if focus_ok { "< OK >" } else { "[ OK ]" };
     let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
-    let btns = format!("{ok}  {cancel}");
-    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
-    p.goto(bx, y + h - 2);
-    p.text(&btns);
-    // Shadow
+    let items = [(ok, focus_ok), (cancel, !focus_ok)];
+    let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2;
+    let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
+    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, false);
     if show_shadow {
-        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
-        p.hline(
-            x + 1,
-            y + h,
-            w.saturating_sub(1),
-            ' ',
-            pal.shadow_fg,
-            pal.shadow_bg,
-        );
-        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+        paint_dialog_shadow(p, x, y, w, h, pal);
     }
 }
 
@@ -5288,19 +5509,34 @@ fn draw_ftp_connect_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -5310,7 +5546,7 @@ fn draw_ftp_connect_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -5459,19 +5695,34 @@ fn draw_jobs_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -5481,7 +5732,7 @@ fn draw_jobs_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -5608,7 +5859,8 @@ fn draw_screen_list_dialog(
     let h = (list_h + 4).max(min_h).min(rows.saturating_sub(2));
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -5616,7 +5868,7 @@ fn draw_screen_list_dialog(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -5626,7 +5878,7 @@ fn draw_screen_list_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -5634,7 +5886,7 @@ fn draw_screen_list_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -5644,7 +5896,7 @@ fn draw_screen_list_dialog(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
@@ -5727,7 +5979,8 @@ fn draw_history_dialog(
     let h = (list_h + 4).max(min_h).min(rows.saturating_sub(2));
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -5735,7 +5988,7 @@ fn draw_history_dialog(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -5745,7 +5998,7 @@ fn draw_history_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -5753,7 +6006,7 @@ fn draw_history_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -5763,7 +6016,7 @@ fn draw_history_dialog(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
@@ -5859,7 +6112,8 @@ fn draw_completion_list(
     let h = (list_h + 2).max(min_h).min(rows.saturating_sub(2));
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -5867,7 +6121,7 @@ fn draw_completion_list(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -5877,7 +6131,7 @@ fn draw_completion_list(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -5885,7 +6139,7 @@ fn draw_completion_list(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -5895,7 +6149,7 @@ fn draw_completion_list(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
@@ -5969,19 +6223,34 @@ fn draw_copy_move_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -5991,7 +6260,7 @@ fn draw_copy_move_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -6146,19 +6415,34 @@ fn draw_file_op_progress_dialog(
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -6168,7 +6452,7 @@ fn draw_file_op_progress_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -6232,19 +6516,34 @@ fn draw_chmod_dialog(
     let h = 14u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -6254,7 +6553,7 @@ fn draw_chmod_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -6372,19 +6671,34 @@ fn draw_chown_dialog(
     let h = 10u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -6394,7 +6708,7 @@ fn draw_chown_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -6581,8 +6895,8 @@ fn draw_menu_dropdown(
     let y = 1u16;
     let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
     let h = items.len() as u16 + 2;
+    p.fill_rect(x, y, w, h, pal.menu_fg, pal.menu_bg);
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
-    // Frame
     p.goto(x, y);
     p.text("┌");
     p.hline(x + 1, y, w - 2, '─', pal.menu_fg, pal.menu_bg);
@@ -6595,22 +6909,12 @@ fn draw_menu_dropdown(
     p.hline(x + 1, y + h - 1, w - 2, '─', pal.menu_fg, pal.menu_bg);
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
-    // Items
+    let inner = (w - 2) as usize;
     for (i, it) in items.iter().enumerate() {
         let row = y + 1 + i as u16;
-        if i == selected {
-            p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
-        } else {
-            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
-        }
-        p.goto(x + 1, row);
-        let mut line = String::new();
-        line.push(' ');
+        let mut line = String::from(" ");
         line.push_str(it);
-        while line.len() < (w - 2) as usize {
-            line.push(' ');
-        }
-        p.text(&line);
+        draw_menu_hotkey_label(p, x + 1, row, &line, i == selected, pal, inner);
     }
 }
 
@@ -6633,19 +6937,34 @@ fn draw_listing_mode_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -6655,7 +6974,7 @@ fn draw_listing_mode_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -6755,7 +7074,8 @@ fn draw_filter_dialog(
     let h = 10u16.min(rows.saturating_sub(2)).max(9);
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -6763,7 +7083,7 @@ fn draw_filter_dialog(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -6773,7 +7093,7 @@ fn draw_filter_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -6781,7 +7101,7 @@ fn draw_filter_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -6791,7 +7111,7 @@ fn draw_filter_dialog(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
@@ -6881,7 +7201,8 @@ fn draw_select_group_dialog(
     let h = 10u16.min(rows.saturating_sub(2)).max(9);
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -6889,7 +7210,7 @@ fn draw_select_group_dialog(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -6899,7 +7220,7 @@ fn draw_select_group_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -6907,7 +7228,7 @@ fn draw_select_group_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -6917,7 +7238,7 @@ fn draw_select_group_dialog(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));
@@ -8008,6 +8329,242 @@ mod gnu_default_chrome_colors_tests {
             inner_bars(&grid, 1, 0, 40).len(),
             2,
             "still two Full `|` bars"
+        );
+    }
+
+    fn find_text(grid: &[Vec<Cell>], needle: &str) -> (usize, usize) {
+        for (y, row) in grid.iter().enumerate() {
+            let s: String = row.iter().map(|c| c.ch).collect();
+            if let Some(x) = s.find(needle) {
+                return (x, y);
+            }
+        }
+        panic!(
+            "missing {needle:?} in {}",
+            grid.iter()
+                .map(|row| row.iter().map(|c| c.ch).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    fn assert_span(grid: &[Vec<Cell>], x: usize, y: usize, text: &str, fg: Color, bg: Color) {
+        for (i, ch) in text.chars().enumerate() {
+            let cell = &grid[y][x + i];
+            assert_eq!(cell.ch, ch, "glyph at ({},{})", x + i, y);
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (fg, bg),
+                "pair for {ch:?} at ({},{})",
+                x + i,
+                y
+            );
+        }
+    }
+
+    #[test]
+    fn dialog_chrome_is_black_on_lightgray_title_blue_focus_cyan() {
+        let pal = McPalette::default();
+        assert_eq!(
+            (pal.dialog_default_fg, pal.dialog_default_bg),
+            (Color::Black, Color::Grey)
+        );
+        assert_eq!((pal.dfocus_fg, pal.dfocus_bg), (Color::Black, Color::Cyan));
+        assert_eq!((pal.dtitle_fg, pal.dtitle_bg), (Color::Blue, Color::Grey));
+
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_dialog_box(
+                &mut p,
+                80,
+                24,
+                pal,
+                "Confirmation",
+                "Delete this file?",
+                &["< OK >", "Cancel"],
+                false,
+            );
+        }
+        let grid = rasterize(&buf, 80, 24);
+        let w = 60usize;
+        let h = 7usize;
+        let x = (80 - w) / 2;
+        let y = (24 - h) / 2;
+        assert_eq!(grid[y][x].ch, '┌');
+        assert_eq!(grid[y][x + w - 1].ch, '┐');
+        assert_eq!(grid[y + h - 1][x].ch, '└');
+        assert_eq!(grid[y + h - 1][x + w - 1].ch, '┘');
+        for cell in [grid[y][x], grid[y][x + 1], grid[y + 1][x]] {
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (Color::Black, Color::Grey),
+                "dialog chrome is black;lightgray, not panel frame {:?}/{:?}",
+                pal.frame_fg,
+                pal.frame_bg
+            );
+            assert_ne!(cell.fg, pal.frame_fg);
+            assert_ne!(cell.bg, Color::Blue);
+        }
+        assert_eq!(
+            (grid[y + 1][x + 2].fg, grid[y + 1][x + 2].bg),
+            (Color::Black, Color::Grey),
+            "dialog interior fill is lightgray, not leftover panel blue"
+        );
+
+        let (tx, ty) = find_text(&grid, " Confirmation ");
+        assert_eq!(ty, y);
+        assert_span(&grid, tx, ty, " Confirmation ", Color::Blue, Color::Grey);
+
+        let (mx, my) = find_text(&grid, "Delete this file?");
+        assert_span(
+            &grid,
+            mx,
+            my,
+            "Delete this file?",
+            Color::Black,
+            Color::Grey,
+        );
+
+        let (ox, oy) = find_text(&grid, "< OK >");
+        assert_span(&grid, ox, oy, "< OK >", Color::Black, Color::Cyan);
+        let (cx, cy) = find_text(&grid, "Cancel");
+        assert_eq!(cy, oy);
+        assert_span(&grid, cx, cy, "Cancel", Color::Black, Color::Grey);
+        assert_ne!(
+            grid[cy][cx].bg,
+            Color::Cyan,
+            "unfocused button must not use buttonbar cyan"
+        );
+    }
+
+    #[test]
+    fn error_box_is_white_on_red_with_black_on_lightgray_focus() {
+        let pal = McPalette::default();
+        assert_eq!(
+            (pal.error_default_fg, pal.error_default_bg),
+            (Color::White, Color::Red)
+        );
+        assert_eq!(
+            (pal.errdfocus_fg, pal.errdfocus_bg),
+            (Color::Black, Color::Grey)
+        );
+
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_dialog_box(
+                &mut p,
+                80,
+                24,
+                pal,
+                "Error",
+                "Cannot hard-link a directory",
+                &["< OK >", "Cancel"],
+                false,
+            );
+        }
+        let grid = rasterize(&buf, 80, 24);
+        let w = 60usize;
+        let h = 7usize;
+        let x = (80 - w) / 2;
+        let y = (24 - h) / 2;
+        assert_eq!(grid[y][x].ch, '┌');
+        assert_eq!(
+            (grid[y][x].fg, grid[y][x].bg),
+            (Color::White, Color::Red),
+            "error frame is white;red, not dialog lightgray"
+        );
+        assert_ne!(grid[y][x].bg, pal.dialog_default_bg);
+        assert_eq!(
+            (grid[y + 1][x + 2].fg, grid[y + 1][x + 2].bg),
+            (Color::White, Color::Red)
+        );
+
+        let (tx, ty) = find_text(&grid, " Error ");
+        assert_span(&grid, tx, ty, " Error ", Color::White, Color::Red);
+        let (mx, my) = find_text(&grid, "Cannot hard-link a directory");
+        assert_span(
+            &grid,
+            mx,
+            my,
+            "Cannot hard-link a directory",
+            Color::White,
+            Color::Red,
+        );
+
+        let (ox, oy) = find_text(&grid, "< OK >");
+        assert_span(&grid, ox, oy, "< OK >", Color::Black, Color::Grey);
+        let (cx, cy) = find_text(&grid, "Cancel");
+        assert_span(&grid, cx, cy, "Cancel", Color::White, Color::Red);
+    }
+
+    #[test]
+    fn menu_dropdown_hotkeys_are_yellow_selected_hotkey_yellow_on_black() {
+        let pal = McPalette::default();
+        assert_eq!((pal.menu_fg, pal.menu_bg), (Color::White, Color::Cyan));
+        assert_eq!(
+            (pal.menusel_fg, pal.menusel_bg),
+            (Color::White, Color::Black)
+        );
+        assert_eq!(
+            (pal.menuhot_fg, pal.menuhot_bg),
+            (Color::Yellow, Color::Cyan)
+        );
+        assert_eq!(
+            (pal.menuhotsel_fg, pal.menuhotsel_bg),
+            (Color::Yellow, Color::Black)
+        );
+
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_dropdown(&mut p, pal, 1, 0, false);
+        }
+        let grid = rasterize(&buf, 40, 20);
+        let x = " Left ".len();
+        assert_eq!(grid[1][x].ch, '┌');
+        assert_eq!(
+            (grid[1][x].fg, grid[1][x].bg),
+            (Color::White, Color::Cyan),
+            "dropdown frame is menu white;cyan"
+        );
+
+        let (hx, hy) = find_text(&grid, " Help");
+        assert_eq!(hy, 2);
+        assert_eq!(grid[hy][hx].ch, ' ');
+        assert_eq!(
+            (grid[hy][hx].fg, grid[hy][hx].bg),
+            (Color::White, Color::Black)
+        );
+        assert_eq!(grid[hy][hx + 1].ch, 'H');
+        assert_eq!(
+            (grid[hy][hx + 1].fg, grid[hy][hx + 1].bg),
+            (Color::Yellow, Color::Black),
+            "selected hotkey is yellow;black"
+        );
+        assert_eq!(grid[hy][hx + 2].ch, 'e');
+        assert_eq!(
+            (grid[hy][hx + 2].fg, grid[hy][hx + 2].bg),
+            (Color::White, Color::Black)
+        );
+
+        let (vx, vy) = find_text(&grid, " View");
+        assert_eq!(grid[vy][vx].ch, ' ');
+        assert_eq!(
+            (grid[vy][vx].fg, grid[vy][vx].bg),
+            (Color::White, Color::Cyan)
+        );
+        assert_eq!(grid[vy][vx + 1].ch, 'V');
+        assert_eq!(
+            (grid[vy][vx + 1].fg, grid[vy][vx + 1].bg),
+            (Color::Yellow, Color::Cyan),
+            "idle hotkey is yellow;cyan"
+        );
+        assert_eq!(grid[vy][vx + 2].ch, 'i');
+        assert_eq!(
+            (grid[vy][vx + 2].fg, grid[vy][vx + 2].bg),
+            (Color::White, Color::Cyan)
         );
     }
 }

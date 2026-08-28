@@ -23,7 +23,8 @@ pub fn draw_directory_tree_dialog(
     let h = directory_tree_height(rows);
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -31,7 +32,7 @@ pub fn draw_directory_tree_dialog(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -41,7 +42,7 @@ pub fn draw_directory_tree_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -49,7 +50,7 @@ pub fn draw_directory_tree_dialog(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -59,7 +60,7 @@ pub fn draw_directory_tree_dialog(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));

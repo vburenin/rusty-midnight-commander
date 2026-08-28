@@ -29,6 +29,15 @@ pub struct McPalette {
     pub menusel_bg: Color,
     pub menuhot_fg: Color,
     pub menuhot_bg: Color,
+    /// Menu hotkey on the selected item (GNU `menuhotsel=yellow;black`).
+    pub menuhotsel_fg: Color,
+    pub menuhotsel_bg: Color,
+    /// Error dialog default (GNU `[error] _default_=white;red`).
+    pub error_default_fg: Color,
+    pub error_default_bg: Color,
+    /// Error dialog focused widget (GNU `errdfocus=black;lightgray`).
+    pub errdfocus_fg: Color,
+    pub errdfocus_bg: Color,
     pub buttonbar_hotkey_fg: Color,
     pub buttonbar_hotkey_bg: Color,
     pub buttonbar_button_fg: Color,
@@ -87,6 +96,12 @@ impl McPalette {
             menusel_bg: Color::Black,
             menuhot_fg: Color::Yellow,
             menuhot_bg: Color::Cyan,
+            menuhotsel_fg: Color::Yellow,
+            menuhotsel_bg: Color::Black,
+            error_default_fg: Color::White,
+            error_default_bg: Color::Red,
+            errdfocus_fg: Color::Black,
+            errdfocus_bg: Color::Grey,
             buttonbar_hotkey_fg: Color::White,
             buttonbar_hotkey_bg: Color::Black,
             buttonbar_button_fg: Color::Black,

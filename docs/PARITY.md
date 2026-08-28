@@ -34,9 +34,9 @@ Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”
 
 Visual spec: Default skin colors (summarized from misc/skins/default.ini; names are foreground;background)
 - [x] Core: default lightgray;blue, selected black;cyan, marked yellow;blue, mark+selected yellow;cyan, header yellow;blue, frame lightgray;blue
-- [ ] Dialogs: default black;lightgray, focus black;cyan, title blue;lightgray
-- [ ] Menus: default white;cyan, selected white;black, hotkey yellow;cyan, hotkey+selected yellow;black
-- [ ] Errors: default white;red (focus black;lightgray)
+- [x] Dialogs: default black;lightgray, focus black;cyan, title blue;lightgray
+- [x] Menus: default white;cyan, selected white;black, hotkey yellow;cyan, hotkey+selected yellow;black
+- [x] Errors: default white;red (focus black;lightgray)
 - [ ] Editor: default lightgray;blue (e.g., editbold yellow;green, editmarked black;cyan)
 - [ ] Viewer: default lightgray;blue, selected yellow;cyan
 Reference only; implement an equivalent Apache-2.0 skin description without copying MC skin files.
