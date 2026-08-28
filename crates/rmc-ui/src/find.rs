@@ -1,9 +1,78 @@
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use rmc_core::find::{
-    find_dialog_height, find_tree_picker_height, find_tree_picker_list_rows, FindDialogFocus as F,
-    FindDialogState, FIND_DIALOG_LIST_TOP,
+    FIND_DIALOG_LIST_TOP, FindDialogFocus as F, FindDialogState, find_dialog_height,
+    find_tree_picker_height, find_tree_picker_list_rows,
 };
+
+/// GNU mc(1) Find File bottom-row labels. Stop/Start is one slot: Stop while
+/// running, Start while a search is paused. OK is the start-new-search button.
+pub fn find_action_button_specs(focus: F, paused: bool) -> [(F, String); 6] {
+    let lab = |f: F, txt: &str| -> (F, String) {
+        let s = if focus == f {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        };
+        (f, s)
+    };
+    [
+        lab(F::ButtonOk, "OK"),
+        lab(F::ButtonStop, if paused { "Start" } else { "Stop" }),
+        lab(F::ButtonAgain, "Again"),
+        lab(F::ButtonChdir, "Chdir"),
+        lab(F::ButtonPanelize, "Panelize"),
+        lab(F::ButtonQuit, "Quit"),
+    ]
+}
+
+pub fn find_action_button_bar(focus: F, paused: bool) -> String {
+    find_action_button_specs(focus, paused)
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// Hit-test the GNU action row. `None` if the click is not on a button.
+pub fn find_action_button_at(
+    cols: u16,
+    rows: u16,
+    mx: u16,
+    my: u16,
+    focus: F,
+    paused: bool,
+) -> Option<F> {
+    let w = (cols as usize).min(76) as u16;
+    let h = find_dialog_height(rows);
+    if cols < w || rows < h {
+        return None;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    if my != y + h - 2 {
+        return None;
+    }
+    let specs = find_action_button_specs(focus, paused);
+    let bar: String = specs
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join("  ");
+    let bx = x + (w.saturating_sub(bar.len() as u16)) / 2;
+    let mut cx = bx;
+    for (i, (f, s)) in specs.iter().enumerate() {
+        let end = cx.saturating_add(s.len() as u16);
+        if mx >= cx && mx < end {
+            return Some(*f);
+        }
+        cx = end;
+        if i + 1 < specs.len() {
+            cx = cx.saturating_add(2);
+        }
+    }
+    None
+}
 
 pub fn draw_find_dialog(
     p: &mut Painter,
@@ -215,7 +284,9 @@ pub fn draw_find_dialog(
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 16);
     let n = st.results.paths.len();
-    let status = if st.running {
+    let status = if st.is_paused() {
+        format!("Stopped... {n} matches")
+    } else if st.running {
         format!("Searching... {n} matches")
     } else {
         format!("{n} matches")
@@ -252,24 +323,9 @@ pub fn draw_find_dialog(
             p.text(&t);
         }
     }
-    // Buttons
-    let sel = |f: F, txt: &str| -> String {
-        if st.focus == f {
-            format!("< {txt} >")
-        } else {
-            format!("[ {txt} ]")
-        }
-    };
+    // Buttons: GNU mc(1) OK, Stop/Start, Again, Chdir, Panelize, Quit
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let btns = format!(
-        "{}  {}  {}  {}  {}  {}",
-        sel(F::ButtonStart, "Start"),
-        sel(F::ButtonStop, "Stop"),
-        sel(F::ButtonAgain, "Again"),
-        sel(F::ButtonChdir, "Chdir"),
-        sel(F::ButtonPanelize, "Panelize"),
-        sel(F::ButtonQuit, "Quit")
-    );
+    let btns = find_action_button_bar(st.focus, st.is_paused());
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);
@@ -418,5 +474,138 @@ fn truncate(s: &str, max: usize) -> String {
             .take(max.saturating_sub(1))
             .chain("…".chars())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmc_core::find::FindDialogState;
+    use std::path::PathBuf;
+
+    fn rasterize(bytes: &[u8], cols: u16, rows: u16) -> Vec<String> {
+        let mut grid = vec![vec![' '; cols as usize]; rows as usize];
+        let mut x: usize = 0;
+        let mut y: usize = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                i += 2;
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b';') {
+                    i += 1;
+                }
+                if i >= bytes.len() {
+                    break;
+                }
+                let cmd = bytes[i];
+                let params = std::str::from_utf8(&bytes[start..i]).unwrap_or("");
+                i += 1;
+                if cmd == b'H' || cmd == b'f' {
+                    let mut it = params.split(';');
+                    let row = it.next().unwrap_or("1").parse::<usize>().unwrap_or(1);
+                    let col = it.next().unwrap_or("1").parse::<usize>().unwrap_or(1);
+                    y = row.saturating_sub(1);
+                    x = col.saturating_sub(1);
+                }
+                continue;
+            }
+            if bytes[i] == 0x1b {
+                i += 1;
+                continue;
+            }
+            if (0x20..=0x7e).contains(&bytes[i]) {
+                if y < rows as usize && x < cols as usize {
+                    grid[y][x] = bytes[i] as char;
+                    x += 1;
+                }
+            }
+            i += 1;
+        }
+        grid.into_iter()
+            .map(|row| row.into_iter().collect())
+            .collect()
+    }
+
+    fn screen_text(grid: &[String]) -> String {
+        grid.join("\n")
+    }
+
+    fn draw_state(st: &FindDialogState) -> Vec<String> {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            draw_find_dialog(&mut p, 80, 28, pal, st);
+        }
+        rasterize(&buf, 80, 28)
+    }
+
+    #[test]
+    fn raster_idle_buttons_are_ok_stop_again_chdir_panelize_quit() {
+        let st = FindDialogState::new(PathBuf::from("/tmp"));
+        let grid = draw_state(&st);
+        let text = screen_text(&grid);
+        assert!(
+            text.contains("[ OK ]"),
+            "OK must start a new search, got:\n{text}"
+        );
+        assert!(
+            text.contains("[ Stop ]"),
+            "idle Stop/Start slot is Stop, got:\n{text}"
+        );
+        assert!(text.contains("[ Again ]"), "{text}");
+        assert!(text.contains("[ Chdir ]"), "{text}");
+        assert!(text.contains("[ Panelize ]"), "{text}");
+        assert!(text.contains("[ Quit ]"), "{text}");
+        assert!(
+            !text.contains("[ Start ]") && !text.contains("< Start >"),
+            "standalone Start must not be the start-new-search button:\n{text}"
+        );
+        let btn_row = grid
+            .iter()
+            .find(|r| r.contains("[ OK ]") && r.contains("[ Stop ]"))
+            .expect("button row");
+        let ok = btn_row.find("[ OK ]").unwrap();
+        let stop = btn_row.find("[ Stop ]").unwrap();
+        let again = btn_row.find("[ Again ]").unwrap();
+        let chdir = btn_row.find("[ Chdir ]").unwrap();
+        let panelize = btn_row.find("[ Panelize ]").unwrap();
+        let quit = btn_row.find("[ Quit ]").unwrap();
+        assert!(ok < stop && stop < again && again < chdir && chdir < panelize && panelize < quit);
+    }
+
+    #[test]
+    fn raster_paused_stop_slot_is_start() {
+        let mut st = FindDialogState::new(PathBuf::from("/tmp"));
+        let h = rmc_core::find::CancelHandle::new();
+        h.pause();
+        st.cancel = Some(h);
+        st.running = true;
+        st.focus = F::ButtonStop;
+        let grid = draw_state(&st);
+        let text = screen_text(&grid);
+        assert!(text.contains("[ OK ]") || text.contains("< OK >"), "{text}");
+        assert!(
+            text.contains("< Start >"),
+            "paused Stop/Start slot is Start:\n{text}"
+        );
+        assert!(
+            !text.contains("[ Stop ]") && !text.contains("< Stop >"),
+            "paused pair must not still say Stop:\n{text}"
+        );
+        assert!(text.contains("[ Again ]"), "{text}");
+        assert!(text.contains("Stopped..."), "{text}");
+    }
+
+    #[test]
+    fn action_button_hit_ok() {
+        let st = FindDialogState::new(PathBuf::from("/tmp"));
+        let h = find_dialog_height(28);
+        let y = (28 - h) / 2;
+        let btn_y = y + h - 2;
+        let ok =
+            (0..80u16).find_map(|mx| find_action_button_at(80, 28, mx, btn_y, st.focus, false));
+        assert_eq!(ok, Some(F::ButtonOk));
     }
 }
