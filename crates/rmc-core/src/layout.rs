@@ -92,7 +92,8 @@ pub fn panel_split(total: u16, ratio: f32) -> u16 {
 /// Packing rules:
 /// - Optional top menubar at row 0 when enabled
 /// - Panels occupy from panel_top down to content_bottom (inclusive bottom border)
-/// - Bottom chrome packed from the last row upwards in order: fbar, cmd, hint, gauge
+/// - Bottom chrome packed from the last row upwards in order: fbar, cmd, hint
+/// - GNU "Show free space" is painted in each panel's bottom frame, not a chrome row
 pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions) -> ChromeGeom {
     let _ = cols;
     // Top area
@@ -112,15 +113,9 @@ pub fn compute_chrome_geom(cols: u16, rows: u16, opt: &crate::app::LayoutOptions
     } else {
         None
     };
-    if hint_row.is_some() && next > 0 {
-        next = next.saturating_sub(1);
-    }
-    let gauge_row = if opt.show_free_space {
-        Some(next)
-    } else {
-        None
-    };
-    // content_bottom is the row just above the nearest bottom chrome (gauge/hint/cmd/fbar).
+    // Free space lives in the panel bottom frame (mc(1) "bottom frame of panel").
+    let gauge_row = None;
+    // content_bottom is the row just above the nearest bottom chrome (hint/cmd/fbar).
     let content_bottom = {
         let mut first_bottom: Option<u16> = None;
         for y in [gauge_row, hint_row, cmd_row, fbar_row]
@@ -234,5 +229,23 @@ mod tests {
             above.h > below.h,
             "0.8 ratio should give the top pane more rows"
         );
+    }
+
+    #[test]
+    fn show_free_space_does_not_reserve_a_chrome_row() {
+        let on = LayoutOptions {
+            show_free_space: true,
+            ..LayoutOptions::default()
+        };
+        let off = LayoutOptions {
+            show_free_space: false,
+            ..LayoutOptions::default()
+        };
+        let a = compute_chrome_geom(80, 24, &on);
+        let b = compute_chrome_geom(80, 24, &off);
+        assert_eq!(a.content_bottom, b.content_bottom);
+        assert_eq!(a.gauge_row, None);
+        assert_eq!(b.gauge_row, None);
+        assert!(a.hint_row.is_some(), "hint bar stays below the panels");
     }
 }

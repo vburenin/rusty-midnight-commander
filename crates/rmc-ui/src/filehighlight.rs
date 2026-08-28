@@ -139,6 +139,7 @@ mod tests {
             group: None,
             nlink: 1,
             inode: 0,
+            is_stale_symlink: false,
         }
     }
 

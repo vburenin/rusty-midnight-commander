@@ -135,17 +135,20 @@ pub struct FileEntry {
     pub is_exe: bool,
     pub size: u64,
     pub modified: SystemTime,
-    /// Last access time (`st_atime`). Archives, remote, and `..` copy `modified`.
+    /// Last access time (`st_atime`). Archives and remote copy `modified`.
     pub accessed: SystemTime,
-    /// Inode status-change time (`st_ctime`). Archives, remote, and `..` copy `modified`.
+    /// Inode status-change time (`st_ctime`). Archives and remote copy `modified`.
     pub changed: SystemTime,
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
     /// Hard-link count (`st_nlink`). Parent markers and missing stat fall back to 1.
     pub nlink: u64,
-    /// Filesystem inode (`st_ino`). Archives, remote, and `..` use 0.
+    /// Filesystem inode (`st_ino`). Archives and remote use 0.
     pub inode: u64,
+    /// GNU mc(1) `type` `!`: symlink whose target does not exist.
+    #[serde(default)]
+    pub is_stale_symlink: bool,
 }
 
 impl FileEntry {
@@ -699,17 +702,68 @@ fn user_perm_string(mode: u32, is_dir: bool) -> String {
     s
 }
 
-fn user_type_char(ent: &FileEntry) -> char {
-    if ent.is_dir && ent.is_symlink {
-        '~'
-    } else if ent.is_dir {
-        '/'
-    } else if ent.is_symlink {
-        '@'
-    } else if ent.is_exe {
-        '*'
+/// GNU mc(1) `type` token (Full listing `half type name | size | mtime`).
+///
+/// `*` executable, `/` directory, `@` symlink, `=` socket, `-` char device,
+/// `+` block device, `|` FIFO, `~` symlink to a directory, `!` stale symlink.
+/// Parent `..` has no mark. Regular files are a space (omitted in the name column).
+pub fn listing_type_char(ent: &FileEntry) -> char {
+    if ent.is_parent_marker() {
+        return ' ';
+    }
+    if ent.is_stale_symlink {
+        return '!';
+    }
+    if ent.is_symlink && ent.is_dir {
+        return '~';
+    }
+    if ent.is_symlink {
+        return '@';
+    }
+    if ent.is_dir {
+        return '/';
+    }
+    // Unix `st_mode` file-type bits when present (local `lstat`).
+    match ent.permissions & 0o170_000 {
+        0o140_000 => '=',
+        0o020_000 => '-',
+        0o060_000 => '+',
+        0o010_000 => '|',
+        _ if ent.is_exe => '*',
+        _ => ' ',
+    }
+}
+
+/// GNU Full listing header sort mark (mc 4.8 screenshots / mc-devel).
+/// `.` = primary field ascending; `,` = reverse. Letter: n/e/m/a/c/s/i/u.
+pub fn full_listing_sort_indicator(by: SortBy, dir: SortDir) -> [char; 2] {
+    let mark = match dir {
+        SortDir::Asc => '.',
+        SortDir::Desc => ',',
+    };
+    let letter = match by {
+        SortBy::Name => 'n',
+        SortBy::Ext => 'e',
+        SortBy::Time => 'm',
+        SortBy::Atime => 'a',
+        SortBy::Ctime => 'c',
+        SortBy::Size => 's',
+        SortBy::Inode => 'i',
+        SortBy::Unsorted => 'u',
+    };
+    [mark, letter]
+}
+
+/// Full listing size cell: raw bytes by default (GNU `size`), SI abbreviations
+/// when Options → Panels → Use SI size units is on. Only `..` is `UP--DIR`.
+/// Directories show the directory inode size, not a blank or `UP--DIR`.
+pub fn format_full_listing_size(ent: &FileEntry, si: bool) -> String {
+    if ent.is_parent_marker() {
+        "UP--DIR".to_string()
+    } else if si {
+        format_byte_size(ent.size, true)
     } else {
-        ' '
+        ent.size.to_string()
     }
 }
 
@@ -929,7 +983,7 @@ fn render_user_token(
             None => fit_left("Perm", 10),
         },
         UserFormatToken::Type => match ent {
-            Some(e) => user_type_char(e).to_string(),
+            Some(e) => listing_type_char(e).to_string(),
             None => " ".to_string(),
         },
         UserFormatToken::Mtime => match ent {
@@ -1050,6 +1104,7 @@ mod tests {
             group: Some("group".into()),
             nlink: 1,
             inode: 0,
+            is_stale_symlink: false,
         }
     }
 
@@ -1350,6 +1405,7 @@ mod tests {
             group: None,
             nlink: 1,
             inode,
+            is_stale_symlink: false,
         }
     }
 
@@ -1514,6 +1570,37 @@ mod tests {
             format_user_listing_line(&link, &tokens, 40, false).starts_with('@'),
             "symlink type"
         );
+        let mut sock = make_entry("sock", 0, now, false);
+        sock.permissions = 0o140_000 | 0o666;
+        assert_eq!(listing_type_char(&sock), '=');
+        let mut fifo = make_entry("pipe", 0, now, false);
+        fifo.permissions = 0o010_000 | 0o666;
+        assert_eq!(listing_type_char(&fifo), '|');
+        let mut stale = make_entry("gone", 1, now, false);
+        stale.is_symlink = true;
+        stale.is_stale_symlink = true;
+        assert_eq!(listing_type_char(&stale), '!');
+        let mut linkdir = make_entry("linked-dir", 1, now, true);
+        linkdir.is_symlink = true;
+        assert_eq!(listing_type_char(&linkdir), '~');
+        assert_eq!(listing_type_char(&make_entry("..", 0, now, true)), ' ');
+        assert_eq!(
+            full_listing_sort_indicator(SortBy::Name, SortDir::Asc),
+            ['.', 'n']
+        );
+        assert_eq!(
+            full_listing_sort_indicator(SortBy::Size, SortDir::Desc),
+            [',', 's']
+        );
+        let dir = make_entry("src", 4096, now, true);
+        assert_eq!(format_full_listing_size(&dir, false), "4096");
+        let file = make_entry("Cargo.lock", 72688, now, false);
+        assert_eq!(format_full_listing_size(&file, false), "72688");
+        assert_eq!(
+            format_full_listing_size(&make_entry("..", 4096, now, true), false),
+            "UP--DIR"
+        );
+        assert_eq!(format_full_listing_size(&file, true), "72kB");
         let long = make_entry("very-long-filename-that-should-clip", 1, now, false);
         let clipped = format_user_listing_line(&long, &tokens, 12, false);
         assert!(clipped.chars().count() <= 12);

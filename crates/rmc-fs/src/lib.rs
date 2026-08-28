@@ -254,6 +254,61 @@ pub mod local {
         }
     }
 
+    /// `..` uses the parent directory's real `stat()` (mtime, inode size).
+    fn parent_marker(parent: &Path) -> DirEntry {
+        let meta = match fs::metadata(parent) {
+            Ok(md) => {
+                let mut m = meta_from(parent, md);
+                m.is_dir = true;
+                m.is_symlink = false;
+                m.symlink_target = None;
+                m.is_executable = false;
+                m
+            }
+            Err(_) => Metadata {
+                is_dir: true,
+                is_symlink: false,
+                symlink_target: None,
+                is_executable: false,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                accessed: SystemTime::UNIX_EPOCH,
+                changed: SystemTime::UNIX_EPOCH,
+                permissions: 0,
+                owner: None,
+                group: None,
+                nlink: 1,
+                inode: 0,
+            },
+        };
+        DirEntry {
+            name: "..".to_string(),
+            path: parent.to_path_buf(),
+            meta,
+        }
+    }
+
+    /// `lstat` so type marks see symlinks; follow to treat symlink-to-dir as a directory.
+    fn listing_meta(entry: &fs::DirEntry) -> FsResult<Metadata> {
+        let path = entry.path();
+        let lmd = fs::symlink_metadata(&path)?;
+        let is_symlink = lmd.file_type().is_symlink();
+        let mut meta = meta_from(&path, lmd);
+        if is_symlink {
+            match fs::metadata(&path) {
+                Ok(target) => {
+                    meta.is_dir = target.is_dir();
+                    meta.is_symlink = true;
+                }
+                Err(_) => {
+                    meta.is_symlink = true;
+                    meta.is_dir = false;
+                }
+            }
+        }
+        Ok(meta)
+    }
+
     impl Vfs for LocalFs {
         fn cwd(&self) -> FsResult<PathBuf> {
             Ok(std::env::current_dir()?)
@@ -261,27 +316,11 @@ pub mod local {
 
         fn list_dir(&self, path: &Path, show_hidden: bool) -> FsResult<Vec<DirEntry>> {
             let mut out = Vec::new();
-            // Add parent marker except root
+            // Parent `..` carries the real parent-directory mtime/size (GNU Full listing).
             if let Some(parent) = path.parent() {
-                out.push(DirEntry {
-                    name: "..".to_string(),
-                    path: parent.to_path_buf(),
-                    meta: Metadata {
-                        is_dir: true,
-                        is_symlink: false,
-                        symlink_target: None,
-                        is_executable: false,
-                        size: 0,
-                        modified: SystemTime::UNIX_EPOCH,
-                        accessed: SystemTime::UNIX_EPOCH,
-                        changed: SystemTime::UNIX_EPOCH,
-                        permissions: 0,
-                        owner: None,
-                        group: None,
-                        nlink: 1,
-                        inode: 0,
-                    },
-                });
+                if !parent.as_os_str().is_empty() {
+                    out.push(parent_marker(parent));
+                }
             }
             for entry in fs::read_dir(path)? {
                 let entry = entry?;
@@ -290,10 +329,11 @@ pub mod local {
                 if !show_hidden && name.starts_with('.') {
                     continue;
                 }
-                let path = entry.path();
-                let md = entry.metadata()?;
-                let meta = meta_from(&path, md);
-                out.push(DirEntry { name, path, meta });
+                out.push(DirEntry {
+                    name,
+                    path: entry.path(),
+                    meta: listing_meta(&entry)?,
+                });
             }
             // Directories first, then files by name
             out.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
@@ -606,7 +646,20 @@ mod tests {
         let ent = list.iter().find(|e| e.name == "plain.txt").unwrap();
         assert_eq!(ent.meta.nlink, 1);
         let parent = list.iter().find(|e| e.name == "..").unwrap();
-        assert_eq!(parent.meta.nlink, 1);
+        assert!(
+            parent.meta.nlink >= 1,
+            "parent `..` uses the real parent directory nlink"
+        );
+        assert_ne!(
+            parent.meta.modified,
+            SystemTime::UNIX_EPOCH,
+            "parent `..` mtime is the real parent directory, not epoch"
+        );
+        let expected = std::fs::metadata(dir.path().parent().expect("tempdir parent"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(parent.meta.modified, expected);
     }
 
     #[cfg(unix)]

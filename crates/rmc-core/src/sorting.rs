@@ -197,6 +197,7 @@ mod tests {
                 group: None,
                 nlink: 1,
                 inode: 0,
+                is_stale_symlink: false,
             }
         }
         let mut v = vec![e("file10"), e("file2"), e("file1")];

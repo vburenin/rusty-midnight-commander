@@ -22,6 +22,8 @@ Note: Keys are shown using MC conventions: C- for Ctrl, Alt- for Meta/Alt, S- fo
 Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”, “Directory Panels”, and function key labels:
 - [x] Menu bar top row, toggled with F9; menus: Left, File, Command, Options, Right
 - [x] Dual directory panels (current/other), selection bar indicates active panel
+- [x] Panel top-frame widgets: `<-` (history prev; `<` plus the frame line) and `.[^]>` (dotfiles / history / next); active path reverse-video (selected black;cyan)
+- [x] Free space `xxG / yyG (nn%)` embedded in each panel's bottom frame (mc(1) “bottom frame of panel”); not a separate chrome row
 - [x] Mini-status line (per-panel) showing selected file info and symlink targets
 - [x] Hint line (context/help hints when enabled)
 - [x] Shell command line (second line from bottom)
@@ -46,6 +48,10 @@ Reference only; implement an equivalent Apache-2.0 skin description without copy
 From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “Filter…”, “Panel options”, “Show hidden files”:
 - [x] Listing formats: Full, Brief (1–9 cols), Long (ls -l–like), User-defined (field spec)
 - [x] Full listing column bars: `│` (U+2502) between Name / Size / Modify time; `┬` on the top frame; `├─┴─┴─┤` above mini-status (GNU `|` token from `half type name | size | mtime`)
+- [x] Full listing sort-indicator `.n` at the left of the header (dot marks the primary sort field; letter is n/e/m/a/c/s/i/u; `,n` when reverse). Not a third `|` column — GNU `type` has no `|` before `name`
+- [x] Full listing `type` prefixes in the name column: `*` `/` `@` `=` `-` `+` `|` `~` `!` (mc(1) type token)
+- [x] Default Full listing `size` is raw bytes (e.g. 72688); directories show inode size (typically 4096); only `..` is `UP--DIR`. Options → Panels → Use SI size units still abbreviates
+- [x] Parent `..` mtime is the real parent directory mtime (not Unix epoch `Jan  1 00:00`)
 - [ ] User-defined fields: name, size/bsize, type marks (* / @ = - + | ~ !), mark, mtime/atime/ctime, perm, mode, nlink, owner/group (name/num), inode, etc.
 - [x] Panel modes: Quick view, Info, Tree, Panelize (results)
   - [x] Quick view
