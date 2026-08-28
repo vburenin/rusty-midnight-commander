@@ -713,9 +713,53 @@ pub fn save_setup_to(app: &crate::app::App, dir: &Path) -> Result<()> {
         app.config_opts.use_cow_file_cloning
     )?;
     writeln!(f, "complete_show_all={}", app.config_opts.complete_show_all)?;
+    write_terminal_sections(&mut f, &app.learned_keys)?;
     // Save keymap
     let keymap_path = dir.join("keymap");
     app.keymap.save_to_file(&keymap_path)?;
+    Ok(())
+}
+
+fn write_terminal_sections(f: &mut File, store: &crate::learn_keys::LearnedKeyStore) -> Result<()> {
+    for (term, pairs) in store.sections_to_write() {
+        if pairs.is_empty() {
+            continue;
+        }
+        writeln!(f, "\n[terminal:{term}]")?;
+        write!(
+            f,
+            "{}",
+            crate::learn_keys::format_terminal_section_body(&pairs)
+        )?;
+    }
+    Ok(())
+}
+
+/// Persist Options → Learn keys into `[terminal:TERM]` of the user `ini`.
+/// Other ini sections are preserved (mc(1) writes only redefined sequences).
+pub fn save_learned_keys(app: &crate::app::App) -> Result<()> {
+    save_learned_keys_to(app, &default_config_dir())
+}
+
+pub fn save_learned_keys_to(app: &crate::app::App, dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    let ini_path = dir.join("ini");
+    let sections = app.learned_keys.sections_to_write();
+    if sections.is_empty() {
+        return Ok(());
+    }
+    let existing = if ini_path.exists() {
+        fs::read_to_string(&ini_path)?
+    } else {
+        String::new()
+    };
+    let mut contents = existing;
+    for (term, pairs) in sections {
+        let body = crate::learn_keys::format_terminal_section_body(&pairs);
+        let section = format!("terminal:{term}");
+        contents = crate::learn_keys::upsert_ini_section(&contents, &section, &body);
+    }
+    fs::write(&ini_path, contents)?;
     Ok(())
 }
 
@@ -831,6 +875,10 @@ pub fn load_user_setup_from(app: &mut crate::app::App, dir: &Path) -> Result<()>
                     "complete_show_all" => app.config_opts.complete_show_all = vb(&v),
                     _ => {}
                 },
+                _ if section.starts_with("terminal:") => {
+                    let term = &section["terminal:".len()..];
+                    app.learned_keys.load_ini_pair(term, &k, &v);
+                }
                 _ => {}
             }
         }
@@ -1113,5 +1161,44 @@ mod tests {
         assert!(!app2.config_opts.compute_totals);
         assert!(app2.config_opts.classic_progressbar);
         assert!(app2.config_opts.mkdir_autoname);
+    }
+
+    #[test]
+    fn learned_keys_terminal_section_roundtrip() {
+        use crate::app::App;
+        use crate::learn_keys::{KeySig, LearnKey};
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.learned_keys.term = "xterm-test".into();
+        app.learned_keys.set_binding(
+            LearnKey::F(13),
+            KeySig::from_event(&crossterm::event::KeyEvent::new(
+                KeyCode::F(15),
+                KeyModifiers::NONE,
+            )),
+        );
+        save_learned_keys_to(&app, tmp.path()).expect("save learned keys");
+        let ini = std::fs::read_to_string(tmp.path().join("ini")).unwrap();
+        assert!(
+            ini.contains("[terminal:xterm-test]"),
+            "GNU [terminal:TERM] section, got {ini}"
+        );
+        assert!(
+            ini.contains("f13="),
+            "redefined F13 must be saved, got {ini}"
+        );
+
+        let vfs2 = LocalFs::new();
+        let mut app2 = App::new(Box::new(vfs2), KeyMap::mc_defaults()).unwrap();
+        app2.learned_keys = crate::learn_keys::LearnedKeyStore::for_term("xterm-test".into());
+        load_user_setup_from(&mut app2, tmp.path()).expect("load");
+        let got = app2.learned_keys.remap(crossterm::event::KeyEvent::new(
+            KeyCode::F(15),
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(got.code, KeyCode::F(13), "learned F15 must act as F13");
     }
 }

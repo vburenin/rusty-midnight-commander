@@ -711,20 +711,20 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             draw_compare_dirs_dialog(p, cols, rows, pal, *mode, *focus, app.shadows);
         }
         rmc_core::app::UiMode::LearnKeysDialog {
-            draft,
+            keys,
             selected,
             capturing,
-            focus_ok,
+            focus_save,
         } => {
             draw_learn_keys_dialog(
                 p,
                 cols,
                 rows,
                 pal,
-                draft,
+                keys,
                 *selected,
                 *capturing,
-                *focus_ok,
+                *focus_save,
                 app.shadows,
             );
         }
@@ -1417,73 +1417,21 @@ fn draw_learn_keys_dialog(
     cols: u16,
     rows: u16,
     pal: McPalette,
-    draft: &[(rmc_core::actions::Action, crossterm::event::KeyEvent)],
+    keys: &[rmc_core::learn_keys::LearnKeyRow],
     selected: usize,
     capturing: bool,
-    focus_ok: bool,
+    focus_save: bool,
     show_shadow: bool,
 ) {
+    use rmc_core::learn_keys::grid_col_row;
     let title = "Learn keys";
-    // Labels matching the draft order
-    let labels: [&str; 15] = [
-        "Help",
-        "User menu",
-        "View",
-        "Edit",
-        "Copy",
-        "Rename/Move",
-        "Make directory",
-        "Delete",
-        "Pull down",
-        "Quit",
-        "Select",
-        "Subshell",
-        "Hidden files",
-        "Swap panels",
-        "Refresh",
-    ];
-    // Helper to format keys similar to config writer
-    let fmt_key = |ev: &crossterm::event::KeyEvent| -> String {
-        use crossterm::event::{KeyCode, KeyModifiers};
-        let mut out = String::new();
-        if ev.modifiers.contains(KeyModifiers::CONTROL) {
-            out.push_str("C-");
-        }
-        if ev.modifiers.contains(KeyModifiers::ALT) {
-            out.push_str("Alt-");
-        }
-        match ev.code {
-            KeyCode::Up => out.push_str("Up"),
-            KeyCode::Down => out.push_str("Down"),
-            KeyCode::Left => out.push_str("Left"),
-            KeyCode::Right => out.push_str("Right"),
-            KeyCode::Home => out.push_str("Home"),
-            KeyCode::End => out.push_str("End"),
-            KeyCode::PageUp => out.push_str("PageUp"),
-            KeyCode::PageDown => out.push_str("PageDown"),
-            KeyCode::Tab => out.push_str("Tab"),
-            KeyCode::Enter => out.push_str("Enter"),
-            KeyCode::Backspace => out.push_str("Backspace"),
-            KeyCode::Insert => out.push_str("Insert"),
-            KeyCode::Char(' ') => out.push_str("Space"),
-            KeyCode::Char(ch) => out.push(ch),
-            KeyCode::F(n) => out.push_str(&format!("F{n}")),
-            _ => out.push('?'),
-        }
-        out
-    };
-    let rows_len = draft.len().min(labels.len());
-    // Compute width based on longest "label    key"
-    let mut max_line = 0usize;
-    for i in 0..rows_len {
-        let key = fmt_key(&draft[i].1);
-        max_line = max_line.max(labels[i].len() + 2 + key.len());
-    }
-    let w = (max_line + 8).clamp(40, 72) as u16;
-    let h = (rows_len as u16 + 6).min(rows.saturating_sub(2)).max(10);
+    let col_w = 22usize;
+    let nkeys = keys.len();
+    let grid_rows = *rmc_core::learn_keys::COL_LENS.iter().max().unwrap_or(&12);
+    let w = (col_w * 3 + 6).clamp(40, (cols.saturating_sub(2)) as usize) as u16;
+    let h = (grid_rows as u16 + 5).min(rows.saturating_sub(2)).max(10);
     let x = (cols.saturating_sub(w)) / 2;
     let y = (rows.saturating_sub(h)) / 2;
-    // Frame
     p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
@@ -1511,54 +1459,59 @@ fn draw_learn_keys_dialog(
     );
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
-    // Title
     p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
     let ttl = format!(" {title} ");
     let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
     p.goto(tx, y);
     p.text(&ttl);
-    // Hint while capturing
-    if capturing {
+    // Fill interior
+    for r in 1..h.saturating_sub(1) {
         p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-        p.goto(x + 2, y + 1);
-        p.text("Press the wanted key or Esc to skip");
+        p.goto(x + 1, y + r);
+        p.text(&" ".repeat((w.saturating_sub(2)) as usize));
     }
-    // Rows
-    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    let list_top = y + 2;
-    for i in 0..rows_len {
-        let row_y = list_top + i as u16;
+    let list_top = y + 1;
+    for (i, row) in keys.iter().enumerate() {
+        let Some((col, r)) = grid_col_row(i) else {
+            continue;
+        };
+        let row_y = list_top + r as u16;
+        if row_y >= y + h - 2 {
+            continue;
+        }
+        let cell_x = x + 2 + (col as u16) * (col_w as u16);
         if selected == i {
             p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
         } else {
             p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
         }
-        p.goto(x + 2, row_y);
-        let key = fmt_key(&draft[i].1);
-        let mut line = format!("{}  {}", labels[i], key);
-        while line.len() < (w - 4) as usize {
+        let ok = if row.ok { "OK" } else { "  " };
+        let mut line = format!("{:<16} {ok}", row.key.label());
+        while line.len() < col_w.saturating_sub(1) {
             line.push(' ');
         }
+        if line.len() > col_w.saturating_sub(1) {
+            line.truncate(col_w.saturating_sub(1));
+        }
+        p.goto(cell_x, row_y);
         p.text(&line);
     }
-    // Buttons
     let btn_row = y + h - 2;
-    let ok_txt = if selected == rows_len && focus_ok {
-        "< OK >"
+    let save_txt = if selected == nkeys && focus_save {
+        "< Save >"
     } else {
-        "  OK  "
+        "  Save  "
     };
-    let cancel_txt = if selected == rows_len && !focus_ok {
+    let cancel_txt = if selected == nkeys && !focus_save {
         "[ Cancel ]"
     } else {
         "  Cancel  "
     };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let btns = format!("{ok_txt}  {cancel_txt}");
+    let btns = format!("{save_txt}  {cancel_txt}");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, btn_row);
     p.text(&btns);
-    // Shadow
     if show_shadow {
         p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
         p.hline(
@@ -1570,6 +1523,23 @@ fn draw_learn_keys_dialog(
             pal.shadow_bg,
         );
         p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+    if capturing {
+        let label = keys
+            .get(selected)
+            .map(|r| r.key.label())
+            .unwrap_or("that key");
+        let msg = format!("Press {label}");
+        draw_dialog_box(
+            p,
+            cols,
+            rows,
+            pal,
+            "Learn keys",
+            &msg,
+            &["Esc aborts"],
+            show_shadow,
+        );
     }
 }
 
