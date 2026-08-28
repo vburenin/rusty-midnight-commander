@@ -509,14 +509,14 @@ mod tests {
         );
         let left = from_left.view(default_bar_width(), false);
         let right = from_right.view(default_bar_width(), false);
-        let file = left.file_bar.expect("File gauge");
-        let total = left.total_bar.expect("Total gauge");
+        let file = left.file_bar.as_deref().expect("File gauge");
+        let total = left.total_bar.as_deref().expect("Total gauge");
         assert!(
             file.contains('*') && file.starts_with('[') && file.contains('%'),
             "{file}"
         );
         assert!(total.contains('*'), "{total}");
-        let fill = gauge_fill(&file);
+        let fill = gauge_fill(file);
         assert!(
             fill.starts_with('*') && fill.ends_with(' '),
             "classic LTR fill starts on the left: {file}"

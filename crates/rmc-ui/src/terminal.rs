@@ -2067,6 +2067,7 @@ impl TerminalApp {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn file_op_progress_mode(
         vfs: &dyn rmc_fs::Vfs,
         jobs: &rmc_core::jobs::JobQueue,
