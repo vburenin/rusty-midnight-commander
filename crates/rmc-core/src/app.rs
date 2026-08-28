@@ -790,6 +790,12 @@ pub enum UiMode {
         message: String,
         on_ok: UiOkCb,
     },
+    /// GNU mc(1) SFTP filesystem host-key dialog: Yes / Ignore / No.
+    SftpHostKeyDialog {
+        prompt: rmc_fs::sftpfs::HostKeyPrompt,
+        pending_path: PathBuf,
+        focus: SftpHostKeyFocus,
+    },
     PromptInput {
         title: String,
         value: String,
@@ -937,6 +943,26 @@ pub struct HelpState {
     pub cursor: usize,        // index within current node links
     pub scroll_top: usize,    // first visible content line
     pub history: Vec<String>, // simple back stack
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SftpHostKeyFocus {
+    Yes,
+    Ignore,
+    No,
+}
+
+impl SftpHostKeyFocus {
+    pub fn cycle(self, reverse: bool) -> Self {
+        use SftpHostKeyFocus::*;
+        const ORDER: [SftpHostKeyFocus; 3] = [Yes, Ignore, No];
+        let i = ORDER.iter().position(|f| *f == self).unwrap_or(2);
+        if reverse {
+            ORDER[(i + ORDER.len() - 1) % ORDER.len()]
+        } else {
+            ORDER[(i + 1) % ORDER.len()]
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1561,6 +1587,8 @@ pub struct App {
     pub use_subshell: bool,
     /// Sequences from Options → Learn keys (`[terminal:TERM]` in the user ini).
     pub learned_keys: LearnedKeyStore,
+    /// Stashed SFTP/SSH host-key prompt from a failed `change_dir`.
+    pub sftp_host_key: Option<(rmc_fs::sftpfs::HostKeyPrompt, PathBuf)>,
 }
 
 impl App {
@@ -1597,6 +1625,7 @@ impl App {
             mouse_enabled: true,
             use_subshell: true,
             learned_keys: LearnedKeyStore::default(),
+            sftp_host_key: None,
             completion_retry: false,
             completion_beep: false,
             completion_path_override: None,
@@ -2068,7 +2097,14 @@ impl App {
         // Re-entering a remote/archive/extfs dir within the timeout reuses the
         // cached listing (GNU mc). C-r / Refresh is the force-reload.
         // Acquire listing before mutably borrowing panel to avoid aliasing
-        let list = self.vfs.list_dir(&new_cwd, self.show_hidden)?;
+        let list = match self.vfs.list_dir(&new_cwd, self.show_hidden) {
+            Ok(list) => list,
+            Err(err) => {
+                self.sftp_host_key =
+                    rmc_fs::sftpfs::take_host_key_prompt().map(|prompt| (prompt, new_cwd.clone()));
+                return Err(err.into());
+            }
+        };
         let entries = self.map_dir_entries(list);
         let show_hidden = self.show_hidden;
         let p = self.active_panel_mut();
@@ -2082,6 +2118,14 @@ impl App {
         }
         self.sync_other_preview_target();
         Ok(())
+    }
+
+    /// Consume a stashed SFTP filesystem host-key prompt from the last
+    /// failed [`Self::change_dir`].
+    pub fn take_sftp_host_key_prompt(
+        &mut self,
+    ) -> Option<(rmc_fs::sftpfs::HostKeyPrompt, PathBuf)> {
+        self.sftp_host_key.take()
     }
 
     /// Open the User menu the same way F2 does (`load_menu` fallbacks). Missing
@@ -2214,7 +2258,17 @@ impl App {
     }
 
     /// Show a modal error (unknown user, dest exists, VFS failure). Does not panic.
+    /// When the last `change_dir` stashed an SFTP host-key prompt, that dialog
+    /// is shown instead (GNU mc(1) SFTP filesystem Yes / Ignore / No).
     pub fn show_error_dialog(&mut self, message: String) {
+        if let Some((prompt, pending_path)) = self.take_sftp_host_key_prompt() {
+            self.ui_mode = UiMode::SftpHostKeyDialog {
+                prompt,
+                pending_path,
+                focus: SftpHostKeyFocus::No,
+            };
+            return;
+        }
         self.ui_mode = UiMode::DialogConfirm {
             title: "Error".into(),
             message,
@@ -2451,6 +2505,7 @@ impl App {
             UiMode::AppearanceDialog { .. } => "Panels".to_string(),
             UiMode::ConfigurationDialog { .. } => "Panels".to_string(),
             UiMode::VfsOptionsDialog { .. } => "Panels".to_string(),
+            UiMode::SftpHostKeyDialog { .. } => "SFTP filesystem".to_string(),
             UiMode::PauseAfterRun => "Panels".to_string(),
         }
     }
@@ -3496,5 +3551,41 @@ mod tests {
         app.handle_action(Action::CycleListingFormat).unwrap();
         assert_eq!(app.left.mode, PanelMode::Listing);
         assert_eq!(app.left.listing, ListingFormat::User);
+    }
+
+    #[test]
+    fn show_error_dialog_opens_sftp_host_key_when_stashed() {
+        let (mut app, _tmp, left_dir, _) = app_with_distinct_panes();
+        app.sftp_host_key = Some((
+            rmc_fs::sftpfs::HostKeyPrompt {
+                kind: rmc_fs::sftpfs::HostKeyKind::Unknown,
+                host: "example.com".into(),
+                port: 22,
+                key_type: "ssh-ed25519".into(),
+                fingerprint: "SHA256:test".into(),
+                known_hosts_line: "example.com ssh-ed25519 AAAA".into(),
+            },
+            left_dir,
+        ));
+        app.show_error_dialog("ignored".into());
+        match &app.ui_mode {
+            UiMode::SftpHostKeyDialog { focus, prompt, .. } => {
+                assert_eq!(*focus, SftpHostKeyFocus::No);
+                assert_eq!(prompt.dialog_title(), "SFTP filesystem");
+                assert!(prompt.dialog_message().contains("Yes"));
+                assert!(prompt.dialog_message().contains("Ignore"));
+                assert!(prompt.dialog_message().contains("No"));
+            }
+            _ => panic!("expected SftpHostKeyDialog"),
+        }
+        assert!(app.sftp_host_key.is_none());
+    }
+
+    #[test]
+    fn sftp_host_key_focus_cycles_yes_ignore_no() {
+        assert_eq!(SftpHostKeyFocus::No.cycle(false), SftpHostKeyFocus::Yes);
+        assert_eq!(SftpHostKeyFocus::Yes.cycle(false), SftpHostKeyFocus::Ignore);
+        assert_eq!(SftpHostKeyFocus::Ignore.cycle(false), SftpHostKeyFocus::No);
+        assert_eq!(SftpHostKeyFocus::No.cycle(true), SftpHostKeyFocus::Ignore);
     }
 }

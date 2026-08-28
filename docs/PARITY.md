@@ -169,7 +169,7 @@ From README and mc(1):
 - [x] Archives (initial): tar, tar.gz/tgz, zip — browse; copy/extract out
 - [ ] Archives (others): cpio, ar, rpm, lha, rar, zoo, deb (via extfs), etc.
 - [x] Remote ftpfs (FTP): `ftp://` and GNU `/#ftp:` enter, list, stat, read/copy-out; `..` leaves. Upload/write is a follow-up.
-- [ ] Remote: sftpfs (SFTP), fish (SSH-based)
+- [x] Remote sftpfs (SFTP), fish (SSH-based): `sftp://` / `#sftp:`, `sh://` / `#sh:` enter, list, stat, read/copy-out; `..` leaves. Upload/write is a follow-up.
 - [x] extfs framework: minimal helper-driven VFS (list + copy-out)
 - [x] Transparent enter-to-open for supported archives; “..” leaves the archive
 - [ ] Panel operations on other VFS backends as if local (within VFS limits)

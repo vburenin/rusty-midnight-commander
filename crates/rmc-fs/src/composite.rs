@@ -87,6 +87,10 @@ impl CompositeFs {
             ),
             Route::Remote { url } => match url.scheme {
                 crate::remote::RemoteScheme::Ftp => crate::ftpfs::list_dir(&url, path, show_hidden),
+                crate::remote::RemoteScheme::Sftp => {
+                    crate::sftpfs::list_dir(&url, path, show_hidden)
+                }
+                crate::remote::RemoteScheme::Fish => crate::fish::list_dir(&url, path, show_hidden),
                 _ => crate::remote::list_dir(&url, path, show_hidden),
             },
         }
@@ -190,7 +194,9 @@ impl Vfs for CompositeFs {
     }
 
     fn canonicalize_path(&self, path: &Path) -> PathBuf {
-        crate::ftpfs::canonicalize_panel_path(path)
+        let p = crate::ftpfs::canonicalize_panel_path(path);
+        let p = crate::sftpfs::canonicalize_panel_path(&p);
+        crate::fish::canonicalize_panel_path(&p)
     }
 
     fn enter_path(&self, path: &Path) -> Option<PathBuf> {
@@ -198,9 +204,9 @@ impl Vfs for CompositeFs {
         if parse_archive_path(path).is_some() || self.extfs.parse_extfs_path(path).is_some() {
             return None;
         }
-        // Remote URLs are enterable; ftpfs uses GNU `/#ftp:` so `..` leaves.
+        // Remote URLs are enterable; GNU `#ftp:` / `#sftp:` / `#sh:` so `..` leaves.
         if remote::is_remote_url(path) {
-            return Some(crate::ftpfs::canonicalize_panel_path(path));
+            return Some(self.canonicalize_path(path));
         }
         if crate::pathutil::detect_archive_kind(path).is_some() {
             // Ensure the file exists and is a regular file
@@ -283,6 +289,8 @@ impl Vfs for CompositeFs {
             }
             (Route::Remote { url, .. }, Route::Local { path: d }) => match url.scheme {
                 crate::remote::RemoteScheme::Ftp => crate::ftpfs::copy_out(&url, d),
+                crate::remote::RemoteScheme::Sftp => crate::sftpfs::copy_out(&url, d),
+                crate::remote::RemoteScheme::Fish => crate::fish::copy_out(&url, d),
                 _ => crate::remote::copy_out(&url, d),
             },
             (Route::Local { path: s }, Route::Remote { url, .. }) => {
@@ -374,6 +382,8 @@ impl Vfs for CompositeFs {
             )),
             Route::Remote { url, .. } => match url.scheme {
                 crate::remote::RemoteScheme::Ftp => crate::ftpfs::read_file(&url),
+                crate::remote::RemoteScheme::Sftp => crate::sftpfs::read_file(&url),
+                crate::remote::RemoteScheme::Fish => crate::fish::read_file(&url),
                 _ => {
                     let f = crate::remote::read_file_to_temp(&url)?;
                     Ok(Box::new(f))
@@ -426,6 +436,8 @@ impl Vfs for CompositeFs {
             )),
             Route::Remote { url } => match url.scheme {
                 crate::remote::RemoteScheme::Ftp => crate::ftpfs::stat(&url),
+                crate::remote::RemoteScheme::Sftp => crate::sftpfs::stat(&url),
+                crate::remote::RemoteScheme::Fish => crate::fish::stat(&url),
                 _ => Err(FsError::Message("stat on remote is not implemented".into())),
             },
         }
@@ -504,6 +516,9 @@ mod tests {
         assert!(!vfs.is_local_fs_path(Path::new("ftp://host/pub")));
         assert!(!vfs.is_local_fs_path(Path::new("/#ftp:host/pub")));
         assert!(!vfs.is_local_fs_path(Path::new("sftp://user@host/tmp")));
+        assert!(!vfs.is_local_fs_path(Path::new("/#sftp:user@host/tmp")));
+        assert!(!vfs.is_local_fs_path(Path::new("sh://host/tmp")));
+        assert!(!vfs.is_local_fs_path(Path::new("/#sh:host/tmp")));
     }
 
     #[test]
@@ -516,6 +531,25 @@ mod tests {
         assert_eq!(
             vfs.canonicalize_path(Path::new("ftp://127.0.0.1:2121/")),
             PathBuf::from("/#ftp:127.0.0.1:2121")
+        );
+    }
+
+    #[test]
+    fn enter_path_normalizes_sftp_and_sh_urls() {
+        let vfs = CompositeFs::new();
+        assert_eq!(
+            vfs.enter_path(Path::new("sftp://user@host:2222/tmp"))
+                .expect("sftp enterable"),
+            PathBuf::from("/#sftp:user@host:2222/tmp")
+        );
+        assert_eq!(
+            vfs.enter_path(Path::new("sh://joe@somehost.ssh.edu/private"))
+                .expect("sh enterable"),
+            PathBuf::from("/#sh:joe@somehost.ssh.edu/private")
+        );
+        assert_eq!(
+            vfs.canonicalize_path(Path::new("fish://user@host:C/dir")),
+            PathBuf::from("/#sh:user@host:C/dir")
         );
     }
 }

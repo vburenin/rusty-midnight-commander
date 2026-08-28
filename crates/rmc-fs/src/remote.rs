@@ -28,6 +28,10 @@ pub struct RemoteUrl {
     pub host: String,
     pub port: Option<u16>,
     pub path: String, // absolute remote path starting with '/'
+    /// FISH/`sh://` option `C`: request SSH compression.
+    pub compression: bool,
+    /// FISH/`sh://` option `r`: use rsh instead of ssh.
+    pub use_rsh: bool,
 }
 
 pub fn is_remote_url(path: &Path) -> bool {
@@ -40,6 +44,8 @@ pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
     } else if let Some(t) = s.strip_prefix("sftp://") {
         (RemoteScheme::Sftp, t)
     } else if let Some(t) = s.strip_prefix("fish://") {
+        (RemoteScheme::Fish, t)
+    } else if let Some(t) = s.strip_prefix("sh://") {
         (RemoteScheme::Fish, t)
     } else if let Some(t) = s.strip_prefix("smb://") {
         (RemoteScheme::Smb, t)
@@ -64,15 +70,7 @@ pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
     } else {
         (None, None)
     };
-    let (host_str, port_opt) = match hostport.rsplit_once(':') {
-        Some((h, pstr)) if !pstr.is_empty() && pstr.chars().all(|c| c.is_ascii_digit()) => {
-            let port = pstr
-                .parse::<u16>()
-                .map_err(|e| FsError::Message(format!("invalid port: {e}")))?;
-            (h.to_string(), Some(port))
-        }
-        _ => (hostport.to_string(), None),
-    };
+    let (host_str, port_opt, compression, use_rsh) = parse_host_options(scheme, hostport)?;
     let path = if path_part.is_empty() {
         "/".to_string()
     } else {
@@ -85,7 +83,61 @@ pub fn parse_remote_url_str(s: &str) -> Result<RemoteUrl, FsError> {
         host: host_str,
         port: port_opt,
         path,
+        compression,
+        use_rsh,
     })
+}
+
+/// FISH `sh://[user@]machine[:options]/` options: `C` (compression), `r` (rsh),
+/// and/or a numeric port (mc(1) Virtual File System / FISH).
+fn parse_host_options(
+    scheme: RemoteScheme,
+    hostport: &str,
+) -> Result<(String, Option<u16>, bool, bool), FsError> {
+    match hostport.rsplit_once(':') {
+        Some((h, pstr)) if !pstr.is_empty() && pstr.chars().all(|c| c.is_ascii_digit()) => {
+            let port = pstr
+                .parse::<u16>()
+                .map_err(|e| FsError::Message(format!("invalid port: {e}")))?;
+            Ok((h.to_string(), Some(port), false, false))
+        }
+        Some((h, opt)) if scheme == RemoteScheme::Fish && is_fish_option_token(opt) => {
+            let (compression, use_rsh, port) = parse_fish_option_token(opt)?;
+            Ok((h.to_string(), port, compression, use_rsh))
+        }
+        _ => Ok((hostport.to_string(), None, false, false)),
+    }
+}
+
+fn is_fish_option_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c == 'C' || c == 'c' || c == 'r' || c.is_ascii_digit())
+        && s.chars().any(|c| c == 'C' || c == 'c' || c == 'r')
+}
+
+fn parse_fish_option_token(opt: &str) -> Result<(bool, bool, Option<u16>), FsError> {
+    let mut compression = false;
+    let mut use_rsh = false;
+    let mut digits = String::new();
+    for c in opt.chars() {
+        match c {
+            'C' | 'c' => compression = true,
+            'r' => use_rsh = true,
+            d if d.is_ascii_digit() => digits.push(d),
+            _ => return Err(FsError::Message(format!("invalid FISH options: {opt}"))),
+        }
+    }
+    let port = if digits.is_empty() {
+        None
+    } else {
+        Some(
+            digits
+                .parse::<u16>()
+                .map_err(|e| FsError::Message(format!("invalid port: {e}")))?,
+        )
+    };
+    Ok((compression, use_rsh, port))
 }
 
 pub fn parse_remote_url(path: &Path) -> Result<RemoteUrl, FsError> {
@@ -166,6 +218,42 @@ impl RemoteUrl {
         }
         auth
     }
+
+    /// FISH option suffix (`C`, `r`, and/or a port), empty when none.
+    pub fn fish_option_suffix(&self) -> String {
+        let mut s = String::new();
+        if self.use_rsh {
+            s.push('r');
+        }
+        if self.compression {
+            s.push('C');
+        }
+        if let Some(p) = self.port {
+            s.push_str(&p.to_string());
+        }
+        s
+    }
+
+    /// Authority as stored in a GNU `#` panel path (FISH includes `C`/`r`/port).
+    pub fn vfs_authority(&self) -> String {
+        if self.scheme == RemoteScheme::Fish {
+            let mut auth = String::new();
+            if let Some(u) = &self.user {
+                auth.push_str(u);
+                auth.push('@');
+            }
+            auth.push_str(&self.host);
+            let opt = self.fish_option_suffix();
+            if !opt.is_empty() {
+                auth.push(':');
+                auth.push_str(&opt);
+            }
+            auth
+        } else {
+            self.authority()
+        }
+    }
+
     pub fn to_root_string(&self) -> String {
         match self.scheme {
             RemoteScheme::Ftp => format!("ftp://{}", self.authority()),
