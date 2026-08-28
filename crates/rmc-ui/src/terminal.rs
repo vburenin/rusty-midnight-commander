@@ -1730,6 +1730,10 @@ impl TerminalApp {
                     matches!(app.active, PaneSide::Left),
                     qs_active,
                 ),
+                rmc_core::panel::listing_has_column_split_sep(
+                    app.left.listing,
+                    app.left.brief_columns,
+                ),
             ) as usize;
             let right_rows = rmc_core::panel::panel_listing_content_rows(
                 right_pr.h,
@@ -1737,6 +1741,10 @@ impl TerminalApp {
                     app.panel_opts.show_mini_status,
                     matches!(app.active, PaneSide::Right),
                     qs_active,
+                ),
+                rmc_core::panel::listing_has_column_split_sep(
+                    app.right.listing,
+                    app.right.brief_columns,
                 ),
             ) as usize;
             let left_capacity = rmc_core::panel::listing_page_capacity(
@@ -2082,6 +2090,7 @@ impl TerminalApp {
                 matches!(app.active, PaneSide::Left),
                 qs_active,
             ),
+            rmc_core::panel::listing_has_column_split_sep(app.left.listing, app.left.brief_columns),
         ) as usize;
         let right_rows = rmc_core::panel::panel_listing_content_rows(
             right_pr.h,
@@ -2089,6 +2098,10 @@ impl TerminalApp {
                 app.panel_opts.show_mini_status,
                 matches!(app.active, PaneSide::Right),
                 qs_active,
+            ),
+            rmc_core::panel::listing_has_column_split_sep(
+                app.right.listing,
+                app.right.brief_columns,
             ),
         ) as usize;
         let left_capacity = rmc_core::panel::listing_page_capacity(
@@ -2190,6 +2203,16 @@ impl TerminalApp {
             } else {
                 right_rect
             };
+            let listing = if matches!(side, PaneSide::Left) {
+                app.left.listing
+            } else {
+                app.right.listing
+            };
+            let brief_n = if matches!(side, PaneSide::Left) {
+                app.left.brief_columns
+            } else {
+                app.right.brief_columns
+            };
             let content_top = _py + 2;
             let content_h = rmc_core::panel::panel_listing_content_rows(
                 ph,
@@ -2198,20 +2221,11 @@ impl TerminalApp {
                     true,
                     app.quick_search.is_some(),
                 ),
+                rmc_core::panel::listing_has_column_split_sep(listing, brief_n),
             );
             if my >= content_top && my < content_top.saturating_add(content_h) {
                 let row_i = (my - content_top) as usize;
                 let (brief_cols, per_col_width) = {
-                    let listing = if matches!(side, PaneSide::Left) {
-                        app.left.listing
-                    } else {
-                        app.right.listing
-                    };
-                    let brief_n = if matches!(side, PaneSide::Left) {
-                        app.left.brief_columns
-                    } else {
-                        app.right.brief_columns
-                    };
                     if matches!(listing, rmc_core::panel::ListingFormat::Brief) {
                         let n = rmc_core::panel::clamp_brief_columns(brief_n);
                         (n, rmc_core::panel::brief_column_width(pw, n))

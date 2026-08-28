@@ -772,8 +772,27 @@ pub fn reserve_panel_mini_status(
 
 /// Listing body rows inside a panel of height `panel_h` (including frames).
 /// Chrome is top frame + header + bottom frame, plus the mini-status row when reserved.
-pub fn panel_listing_content_rows(panel_h: u16, reserve_mini_status: bool) -> u16 {
-    panel_h.saturating_sub(if reserve_mini_status { 4 } else { 3 })
+/// GNU Full/Brief also draw a `├─┴─┴─┤` split-line above mini-status (`column_split_sep`);
+/// that line is not a listing row. Mini-status off: no extra line, `┴` sits on the bottom frame.
+pub fn panel_listing_content_rows(
+    panel_h: u16,
+    reserve_mini_status: bool,
+    column_split_sep: bool,
+) -> u16 {
+    let mut chrome = if reserve_mini_status { 4 } else { 3 };
+    if reserve_mini_status && column_split_sep {
+        chrome += 1;
+    }
+    panel_h.saturating_sub(chrome)
+}
+
+/// GNU `|` tokens in Full, and Brief packed-name gaps (2+ columns).
+pub fn listing_has_column_split_sep(listing: ListingFormat, brief_columns: u8) -> bool {
+    match listing {
+        ListingFormat::Full => true,
+        ListingFormat::Brief => clamp_brief_columns(brief_columns) > 1,
+        ListingFormat::Long | ListingFormat::User => false,
+    }
 }
 
 /// Current-entry mini-status: perms, owner, group, size ([`format_byte_size`]), mtime.
@@ -1519,7 +1538,16 @@ mod tests {
             "GNU mc Show mini-status defaults to on"
         );
         assert!(reserve_panel_mini_status(true, false, false));
-        assert_eq!(panel_listing_content_rows(20, true), 16);
+        assert_eq!(
+            panel_listing_content_rows(20, true, false),
+            16,
+            "Long/User mini-status: top+header+status+bottom"
+        );
+        assert_eq!(
+            panel_listing_content_rows(20, true, true),
+            15,
+            "Full/Brief mini-status also reserves the ├─┴─┴─┤ split-line"
+        );
     }
 
     #[test]
@@ -1579,7 +1607,12 @@ mod tests {
         );
         assert!(!reserve_panel_mini_status(false, false, false));
         assert!(!reserve_panel_mini_status(false, true, false));
-        assert_eq!(panel_listing_content_rows(20, false), 17);
+        assert_eq!(panel_listing_content_rows(20, false, false), 17);
+        assert_eq!(
+            panel_listing_content_rows(20, false, true),
+            17,
+            "mini-status off: ┴ is on the bottom frame, no extra row"
+        );
         // Quick search on the active panel still uses the row.
         assert_eq!(
             panel_mini_status_line(false, true, Some("foo"), Some(&ent), false).as_deref(),
@@ -1711,6 +1744,11 @@ mod tests {
         let p = PanelState::new(".");
         assert_eq!(p.brief_columns, BRIEF_COLUMNS_DEFAULT);
         assert_eq!(p.listing, ListingFormat::Full);
+        assert!(listing_has_column_split_sep(ListingFormat::Full, 2));
+        assert!(listing_has_column_split_sep(ListingFormat::Brief, 2));
+        assert!(!listing_has_column_split_sep(ListingFormat::Brief, 1));
+        assert!(!listing_has_column_split_sep(ListingFormat::Long, 2));
+        assert!(!listing_has_column_split_sep(ListingFormat::User, 2));
     }
 
     #[test]
