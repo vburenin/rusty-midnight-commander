@@ -315,7 +315,7 @@ mod tests {
         std::fs::write(second.join("mine.keymap"), "F5 = Copy\n").unwrap();
         let found = resolve_keymap_spec("mine", &[first.clone(), second.clone()]).unwrap();
         assert_eq!(found, first.join("mine.keymap"));
-        let by_ext = resolve_keymap_spec("mine.keymap", &[second.clone()]).unwrap();
+        let by_ext = resolve_keymap_spec("mine.keymap", std::slice::from_ref(&second)).unwrap();
         assert_eq!(by_ext, second.join("mine.keymap"));
         assert!(resolve_keymap_spec("missing", &[first, second]).is_none());
     }

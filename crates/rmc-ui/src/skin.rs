@@ -420,7 +420,7 @@ fn apply_mc_color_table_env(mut pal: McPalette) -> McPalette {
 pub fn skin_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let root = rmc_core::paths::profile_root();
-    if root != PathBuf::from(".") {
+    if root.as_os_str() != "." {
         dirs.push(root.join(".local/share/mc/skins"));
         dirs.push(root.join(".config/mc/skins"));
     }
@@ -497,12 +497,12 @@ pub fn list_available_skins() -> Vec<String> {
 /// back to [`load_default_palette`] — the same path Options → Appearance uses.
 /// `$MC_COLOR_TABLE` is applied once after the skin (not twice on fallback).
 pub fn load_palette_by_name(name: &str) -> McPalette {
-    let pal = if let Some(path) = find_skin_path_by_name(name) {
-        load_from_file(&path).unwrap_or_else(|_| load_default_palette_unoverlaid())
-    } else {
-        load_default_palette_unoverlaid()
-    };
-    apply_mc_color_table_env(pal)
+    if let Some(path) = find_skin_path_by_name(name) {
+        if let Ok(pal) = load_from_file(&path) {
+            return apply_mc_color_table_env(pal);
+        }
+    }
+    load_default_palette()
 }
 
 /// Resolve a skin name or path. Command-line / `MC_SKIN` / ini may be an
