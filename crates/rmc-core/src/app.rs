@@ -3,6 +3,7 @@ use crate::config::KeyMap;
 use crate::dirtree::DirectoryTreeState;
 use crate::find::FindDialogState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
+use crate::learn_keys::{LearnKeyRow, LearnedKeyStore};
 use crate::panel::{
     listing_page_capacity, FileEntry, ListingFormat, PanelMode, PanelState, SortBy,
     DEFAULT_USER_LISTING_FORMAT,
@@ -11,7 +12,6 @@ use crate::panelize::ExternalPanelizeDialogState;
 use crate::sorting::SortDir;
 use crate::subshell::Subshell;
 use anyhow::Result;
-use crossterm::event::KeyEvent;
 use rmc_diff;
 use rmc_edit::EditorBuffer;
 use rmc_fs::{DirEntry, Vfs};
@@ -842,14 +842,14 @@ pub enum UiMode {
     },
     /// GNU mc Options → Learn keys dialog
     LearnKeysDialog {
-        /// Draft bindings for the limited set of actions we expose.
-        draft: Vec<(crate::actions::Action, KeyEvent)>,
-        /// Selected row index; when equal to draft.len(), the bottom buttons are focused.
+        /// One row per teachable key (arrows, F1–F20, keypad, Complete, Back Tab).
+        keys: Vec<LearnKeyRow>,
+        /// Selected key index; when equal to `keys.len()`, Save/Cancel are focused.
         selected: usize,
-        /// True while waiting for the next key press to assign to the selected row.
+        /// True while the “press that key” message box is waiting for a sequence.
         capturing: bool,
-        /// When buttons are focused, true => OK, false => Cancel.
-        focus_ok: bool,
+        /// When buttons are focused, true => Save, false => Cancel.
+        focus_save: bool,
     },
     /// GNU mc Options → Appearance dialog
     AppearanceDialog {
@@ -1515,6 +1515,8 @@ pub struct App {
     /// (false). Default true, matching a build with subshell support. C-o still
     /// toggles the panels/output screen; a PTY is spawned only when this is true.
     pub use_subshell: bool,
+    /// Sequences from Options → Learn keys (`[terminal:TERM]` in the user ini).
+    pub learned_keys: LearnedKeyStore,
 }
 
 impl App {
@@ -1550,6 +1552,7 @@ impl App {
             shadows: true,
             mouse_enabled: true,
             use_subshell: true,
+            learned_keys: LearnedKeyStore::default(),
             completion_retry: false,
             completion_beep: false,
             completion_path_override: None,
@@ -2373,7 +2376,7 @@ impl App {
             UiMode::LayoutDialog { .. } => "Panels".to_string(),
             UiMode::ConfirmationsDialog { .. } => "Panels".to_string(),
             UiMode::PanelOptionsDialog { .. } => "Panels".to_string(),
-            UiMode::LearnKeysDialog { .. } => "Panels".to_string(),
+            UiMode::LearnKeysDialog { .. } => "Learn keys".to_string(),
             UiMode::AppearanceDialog { .. } => "Panels".to_string(),
             UiMode::ConfigurationDialog { .. } => "Panels".to_string(),
             UiMode::VfsOptionsDialog { .. } => "Panels".to_string(),

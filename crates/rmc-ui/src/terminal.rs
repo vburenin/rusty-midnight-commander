@@ -1380,6 +1380,167 @@ fn open_external_panelize_dialog(app: &mut App) {
     app.ui_mode = UiMode::ExternalPanelizeDialog(ExternalPanelizeDialogState::new(commands));
 }
 
+fn open_learn_keys_dialog(app: &mut App) {
+    app.ui_mode = UiMode::LearnKeysDialog {
+        keys: rmc_core::learn_keys::dialog_rows(),
+        selected: 0,
+        capturing: false,
+        focus_save: true,
+    };
+}
+
+enum LearnKeysOutcome {
+    Stay,
+    Close,
+    Help,
+    Save,
+}
+
+fn handle_learn_keys_dialog(app: &mut App, key: KeyEvent) -> Result<LearnKeysOutcome> {
+    use rmc_core::learn_keys::{KeySig, LearnKey};
+    let UiMode::LearnKeysDialog {
+        keys,
+        selected,
+        capturing,
+        focus_save,
+    } = &mut app.ui_mode
+    else {
+        return Ok(LearnKeysOutcome::Stay);
+    };
+    let nkeys = keys.len();
+    if *capturing {
+        match key.code {
+            KeyCode::Esc => {
+                *capturing = false;
+            }
+            _ => {
+                if *selected < nkeys {
+                    let logical = keys[*selected].key;
+                    let sig = KeySig::from_event(&key);
+                    keys[*selected].ok = true;
+                    let canon = KeySig::from_event(&logical.canonical_event());
+                    keys[*selected].captured = if sig == canon { None } else { Some(sig) };
+                }
+                *capturing = false;
+            }
+        }
+        return Ok(LearnKeysOutcome::Stay);
+    }
+    // Tab always moves between widgets (mc(1)).
+    if matches!(key.code, KeyCode::Tab) && !key.modifiers.contains(KeyModifiers::ALT) {
+        if *selected < nkeys {
+            *selected += 1;
+            if *selected == nkeys {
+                *focus_save = true;
+            }
+        } else if *focus_save {
+            *focus_save = false;
+        } else {
+            *selected = 0;
+        }
+        return Ok(LearnKeysOutcome::Stay);
+    }
+    // First press of a teachable key only marks OK (mc(1)).
+    if let Some(lk) = LearnKey::from_event(&key) {
+        if let Some(row) = keys.iter_mut().find(|r| r.key == lk) {
+            if !row.ok {
+                row.ok = true;
+                return Ok(LearnKeysOutcome::Stay);
+            }
+            if lk == LearnKey::F(1) {
+                return Ok(LearnKeysOutcome::Help);
+            }
+        }
+    }
+    let activate = matches!(key.code, KeyCode::Enter)
+        || (matches!(key.code, KeyCode::Char(' ')) && key.modifiers.is_empty());
+    if activate {
+        if *selected < nkeys {
+            *capturing = true;
+        } else if *focus_save {
+            return Ok(LearnKeysOutcome::Save);
+        } else {
+            return Ok(LearnKeysOutcome::Close);
+        }
+        return Ok(LearnKeysOutcome::Stay);
+    }
+    match key.code {
+        KeyCode::Esc => return Ok(LearnKeysOutcome::Close),
+        KeyCode::F(10) => {
+            // First F10 marked OK above; a later F10 dismisses like other dialogs.
+            return Ok(LearnKeysOutcome::Close);
+        }
+        KeyCode::Char('h') if key.modifiers.is_empty() => {
+            learn_keys_move(selected, nkeys, focus_save, -1, 0);
+        }
+        KeyCode::Char('l') if key.modifiers.is_empty() => {
+            learn_keys_move(selected, nkeys, focus_save, 1, 0);
+        }
+        KeyCode::Char('k') if key.modifiers.is_empty() => {
+            learn_keys_move(selected, nkeys, focus_save, 0, -1);
+        }
+        KeyCode::Char('j') if key.modifiers.is_empty() => {
+            learn_keys_move(selected, nkeys, focus_save, 0, 1);
+        }
+        KeyCode::Left => learn_keys_move(selected, nkeys, focus_save, -1, 0),
+        KeyCode::Right => learn_keys_move(selected, nkeys, focus_save, 1, 0),
+        KeyCode::Up => learn_keys_move(selected, nkeys, focus_save, 0, -1),
+        KeyCode::Down => learn_keys_move(selected, nkeys, focus_save, 0, 1),
+        _ => {}
+    }
+    Ok(LearnKeysOutcome::Stay)
+}
+
+fn learn_keys_move(selected: &mut usize, nkeys: usize, focus_save: &mut bool, dc: i32, dr: i32) {
+    use rmc_core::learn_keys::{grid_col_row, grid_index, COL_LENS};
+    if *selected >= nkeys {
+        if dr < 0 {
+            let col = if *focus_save { 1 } else { 2 };
+            let col = col.min(COL_LENS.len() - 1);
+            let row = COL_LENS[col].saturating_sub(1);
+            if let Some(i) = grid_index(col, row) {
+                *selected = i;
+            }
+            return;
+        }
+        if dc < 0 {
+            *focus_save = true;
+        } else if dc > 0 {
+            *focus_save = false;
+        }
+        return;
+    }
+    let Some((col, row)) = grid_col_row(*selected) else {
+        return;
+    };
+    if dc < 0 && col > 0 {
+        let ncol = col - 1;
+        let nrow = row.min(COL_LENS[ncol] - 1);
+        if let Some(i) = grid_index(ncol, nrow) {
+            *selected = i;
+        }
+    } else if dc > 0 && col + 1 < COL_LENS.len() {
+        let ncol = col + 1;
+        let nrow = row.min(COL_LENS[ncol] - 1);
+        if let Some(i) = grid_index(ncol, nrow) {
+            *selected = i;
+        }
+    } else if dr < 0 && row > 0 {
+        if let Some(i) = grid_index(col, row - 1) {
+            *selected = i;
+        }
+    } else if dr > 0 {
+        if row + 1 < COL_LENS[col] {
+            if let Some(i) = grid_index(col, row + 1) {
+                *selected = i;
+            }
+        } else {
+            *selected = nkeys;
+            *focus_save = true;
+        }
+    }
+}
+
 /// Run `cmd` via `sh -c` in the active panel cwd and panelize stdout paths.
 /// Empty command is a no-op (does not wipe the panel or close the dialog).
 fn run_external_panelize_command(app: &mut App, cmd: &str) -> Result<()> {
@@ -2384,7 +2545,17 @@ impl TerminalApp {
         )
     }
 
-    fn handle_key(app: &mut App, key: KeyEvent, page_rows: usize) -> Result<()> {
+    fn handle_key(app: &mut App, mut key: KeyEvent, page_rows: usize) -> Result<()> {
+        let capturing_learn = matches!(
+            app.ui_mode,
+            UiMode::LearnKeysDialog {
+                capturing: true,
+                ..
+            }
+        );
+        if !capturing_learn {
+            key = app.learned_keys.remap(key);
+        }
         let active_cwd = app.active_panel().cwd.clone();
         let pending_ctrl_x = app.pending_ctrl_x;
         // Subshell full-screen mode: C-o toggles back; support PgUp/PgDn/Up/Down scrolling.
@@ -2520,94 +2691,29 @@ impl TerminalApp {
         }
         // Dialog handling first
         match &mut app.ui_mode {
-            UiMode::LearnKeysDialog {
-                draft,
-                selected,
-                capturing,
-                focus_ok,
-            } => {
-                let rows_len = draft.len();
-                // When capturing, take next key except Esc; F10 should not quit.
-                if *capturing {
-                    match key.code {
-                        KeyCode::Esc => {
-                            *capturing = false;
-                        }
-                        _ => {
-                            if *selected < rows_len {
-                                // Update binding for this row in draft
-                                draft[*selected].1 = key;
-                            }
-                            *capturing = false;
-                        }
-                    }
-                    return Ok(());
-                }
-                // Not capturing: navigate and accept/cancel
-                match key.code {
-                    KeyCode::Esc | KeyCode::F(10) => {
+            UiMode::LearnKeysDialog { .. } => {
+                match handle_learn_keys_dialog(app, key)? {
+                    LearnKeysOutcome::Stay => {}
+                    LearnKeysOutcome::Close => {
                         app.ui_mode = UiMode::Normal;
                     }
-                    KeyCode::Up => {
-                        if *selected == rows_len {
-                            // Move from buttons to last row
-                            if rows_len > 0 {
-                                *selected = rows_len - 1;
+                    LearnKeysOutcome::Help => {
+                        app.handle_action(Action::ShowHelp)?;
+                    }
+                    LearnKeysOutcome::Save => {
+                        if let UiMode::LearnKeysDialog { keys, .. } = &app.ui_mode {
+                            let rows = keys.clone();
+                            app.learned_keys.apply_dialog(&rows);
+                        }
+                        match rmc_core::config::save_learned_keys(app) {
+                            Ok(()) => {
+                                app.ui_mode = UiMode::Normal;
                             }
-                        } else if *selected > 0 {
-                            *selected -= 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if *selected < rows_len.saturating_sub(1) {
-                            *selected += 1;
-                        } else {
-                            // Move focus to buttons
-                            *selected = rows_len;
-                        }
-                    }
-                    KeyCode::Tab => {
-                        if *selected < rows_len {
-                            *selected = rows_len; // move to buttons
-                            *focus_ok = true;
-                        } else {
-                            *focus_ok = !*focus_ok;
-                        }
-                    }
-                    KeyCode::Left => {
-                        if *selected == rows_len {
-                            *focus_ok = true;
-                        }
-                    }
-                    KeyCode::Right => {
-                        if *selected == rows_len {
-                            *focus_ok = false;
-                        }
-                    }
-                    KeyCode::Enter | KeyCode::Char(' ') => {
-                        if *selected < rows_len {
-                            // Start capturing next key
-                            *capturing = true;
-                        } else {
-                            if *focus_ok {
-                                // Apply: for each action, unbind previous keys then set the new one.
-                                let pairs: Vec<(
-                                    rmc_core::actions::Action,
-                                    crossterm::event::KeyEvent,
-                                )> = draft.clone();
-                                // Close the dialog first.
-                                app.ui_mode = UiMode::Normal;
-                                for (act, keyev) in pairs {
-                                    app.keymap.remove_action_bindings(&act);
-                                    app.keymap.set_binding(keyev, act);
-                                }
-                            } else {
-                                // Cancel
-                                app.ui_mode = UiMode::Normal;
+                            Err(e) => {
+                                app.show_error_dialog(format!("{e}"));
                             }
                         }
                     }
-                    _ => {}
                 }
                 return Ok(());
             }
@@ -6385,46 +6491,7 @@ impl TerminalApp {
                                 };
                             }
                             "Learn keys" => {
-                                // Build draft list of actions with their current first key.
-                                use rmc_core::actions::Action as A;
-                                let actions: [(&str, A); 15] = [
-                                    ("Help", A::ShowHelp),
-                                    ("User menu", A::ShowUserMenu),
-                                    ("View", A::ViewFile),
-                                    ("Edit", A::FunctionKey(4)),
-                                    ("Copy", A::Copy),
-                                    ("Rename/Move", A::Move),
-                                    ("Make directory", A::Mkdir),
-                                    ("Delete", A::Delete),
-                                    ("Pull down", A::FocusMenu),
-                                    ("Quit", A::Quit),
-                                    ("Select", A::ToggleSelect),
-                                    ("Subshell", A::ToggleSubshell),
-                                    ("Hidden files", A::ToggleHidden),
-                                    ("Swap panels", A::SwapPanels),
-                                    ("Refresh", A::Refresh),
-                                ];
-                                let mut draft: Vec<(A, crossterm::event::KeyEvent)> = Vec::new();
-                                for (_label, act) in actions {
-                                    if let Some(k) = app.keymap.first_key_for_action(&act) {
-                                        draft.push((act.clone(), k));
-                                    } else {
-                                        // Fallback: keep row but use a dummy Enter; renderer will show it
-                                        draft.push((
-                                            act.clone(),
-                                            crossterm::event::KeyEvent::new(
-                                                crossterm::event::KeyCode::Char('?'),
-                                                crossterm::event::KeyModifiers::NONE,
-                                            ),
-                                        ));
-                                    }
-                                }
-                                app.ui_mode = UiMode::LearnKeysDialog {
-                                    draft,
-                                    selected: 0,
-                                    capturing: false,
-                                    focus_ok: true,
-                                };
+                                open_learn_keys_dialog(app);
                             }
                             "Save setup" => {
                                 // Save options + keymap to user config dir and show confirmation.
@@ -28088,6 +28155,226 @@ mod copy_mask_dialog_tests {
             .unwrap()
             .file_type()
             .is_symlink());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod learn_keys_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::config::KeyMap;
+    use rmc_core::learn_keys::LearnKey;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-learn-keys-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_ev(app: &mut App, ev: KeyEvent) {
+        TerminalApp::handle_key(app, ev, 10).unwrap();
+    }
+
+    fn open_via_options_menu(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        for _ in 0..6 {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn dialog_selected(app: &App) -> usize {
+        match &app.ui_mode {
+            UiMode::LearnKeysDialog { selected, .. } => *selected,
+            _ => panic!("expected LearnKeysDialog"),
+        }
+    }
+
+    fn f13_index() -> usize {
+        rmc_core::learn_keys::LEARNABLE_KEYS
+            .iter()
+            .position(|k| *k == LearnKey::F(13))
+            .expect("F13 is teachable")
+    }
+
+    #[test]
+    fn options_menu_opens_learn_keys_dialog() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_via_options_menu(&mut app);
+        match &app.ui_mode {
+            UiMode::LearnKeysDialog {
+                keys,
+                capturing,
+                focus_save,
+                ..
+            } => {
+                assert!(!*capturing);
+                assert!(*focus_save);
+                assert!(keys.iter().any(|r| r.key == LearnKey::F(1)));
+                assert!(keys.iter().any(|r| r.key == LearnKey::Up));
+                assert!(keys.iter().any(|r| r.key == LearnKey::Complete));
+                assert!(keys.iter().any(|r| r.key == LearnKey::BackTab));
+                assert_eq!(keys.len(), rmc_core::learn_keys::LEARNABLE_KEYS.len());
+            }
+            _ => panic!("Options → Learn keys must open the dialog"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn first_f1_marks_ok_second_opens_help() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_learn_keys_dialog(&mut app);
+        press(&mut app, KeyCode::F(1));
+        match &app.ui_mode {
+            UiMode::LearnKeysDialog { keys, .. } => {
+                let row = keys.iter().find(|r| r.key == LearnKey::F(1)).unwrap();
+                assert!(row.ok, "first F1 only tests the key");
+            }
+            _ => panic!("still in Learn keys dialog after first F1"),
+        }
+        press(&mut app, KeyCode::F(1));
+        assert!(
+            matches!(app.ui_mode, UiMode::Help { .. }),
+            "mc(1): after OK, F1 shows help"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn learned_f13_roundtrip_takes_effect_and_persists() {
+        let root = temp_workspace();
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let prev = std::env::var("MCR_CONFIG_DIR").ok();
+        std::env::set_var("MCR_CONFIG_DIR", &cfg);
+
+        let mut app = make_app(&root);
+        app.learned_keys.term = "xterm-learn".into();
+        open_learn_keys_dialog(&mut app);
+        if let UiMode::LearnKeysDialog { selected, .. } = &mut app.ui_mode {
+            *selected = f13_index();
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::LearnKeysDialog { capturing, .. } => {
+                assert!(*capturing, "Enter on a key button asks to press that key");
+            }
+            _ => panic!("expected capture prompt"),
+        }
+        press(&mut app, KeyCode::F(15));
+        match &app.ui_mode {
+            UiMode::LearnKeysDialog {
+                keys, capturing, ..
+            } => {
+                assert!(!*capturing);
+                let row = keys.iter().find(|r| r.key == LearnKey::F(13)).unwrap();
+                assert!(row.ok);
+                assert!(row.captured.is_some());
+            }
+            _ => panic!("expected dialog after capture"),
+        }
+        if let UiMode::LearnKeysDialog { selected, .. } = &mut app.ui_mode {
+            *selected = rmc_core::learn_keys::LEARNABLE_KEYS.len();
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Save closes the dialog"
+        );
+        let remapped = app
+            .learned_keys
+            .remap(KeyEvent::new(KeyCode::F(15), KeyModifiers::NONE));
+        assert_eq!(remapped.code, KeyCode::F(13));
+
+        let ini = std::fs::read_to_string(cfg.join("ini")).unwrap_or_default();
+        assert!(
+            ini.contains("[terminal:xterm-learn]"),
+            "GNU-compatible [terminal:TERM] under config root, got {ini}"
+        );
+        assert!(ini.contains("f13="), "redefined F13 must be written: {ini}");
+
+        let mut app2 = make_app(&root);
+        app2.learned_keys = rmc_core::learn_keys::LearnedKeyStore::for_term("xterm-learn".into());
+        rmc_core::config::load_user_setup_from(&mut app2, &cfg).unwrap();
+        let got = app2
+            .learned_keys
+            .remap(KeyEvent::new(KeyCode::F(15), KeyModifiers::NONE));
+        assert_eq!(got.code, KeyCode::F(13), "reload must restore the remap");
+
+        match prev {
+            Some(v) => std::env::set_var("MCR_CONFIG_DIR", v),
+            None => std::env::remove_var("MCR_CONFIG_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_always_moves_and_esc_aborts_capture() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_learn_keys_dialog(&mut app);
+        assert_eq!(dialog_selected(&app), 0);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(dialog_selected(&app), 1);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        match &app.ui_mode {
+            UiMode::LearnKeysDialog { capturing, .. } => {
+                assert!(!*capturing, "Esc aborts the press-that-key box");
+            }
+            _ => panic!("Esc should abort capture and stay in the dialog"),
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keymap_c_backslash_unrelated_to_learn_keys() {
+        let km = KeyMap::mc_defaults();
+        assert!(matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL)),
+            Some(Action::OpenHotlist)
+        ));
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_learn_keys_dialog(&mut app);
+        press(&mut app, KeyCode::Esc);
+        press_ev(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::HotlistDialog(_)),
+            "C-\\\\ still opens the hotlist after Learn keys"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
