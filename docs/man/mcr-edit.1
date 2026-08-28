@@ -1,0 +1,59 @@
+.TH MCR-EDIT 1 "August 2026" "rusty-midnight-commander" "User Commands"
+.SH NAME
+mcr-edit \- internal editor started as mcr \-\-edit
+.SH SYNOPSIS
+.B mcr
+.BR \-e " | " \-\-edit
+[\fIFILE\fR...]
+.br
+.B mcr
+.BI \-\-edit= FILE
+[\fIFILE\fR...]
+.SH DESCRIPTION
+Opens rusty-midnight-commander’s internal editor (the
+.B mcedit
+equivalent) instead of the dual-pane listing.
+.PP
+With no files, one empty untitled buffer is created. Each given path
+is opened as a separate editor screen (Screen list switches among
+them). This page is original Apache-2.0 text covering the shipped
+editor CLI and keys. It is not a copy of GNU
+.BR mcedit (1).
+.SH KEYS
+.TP
+.B F2
+Save.
+.TP
+.B F4
+Replace.
+.TP
+.B F7
+Search.
+.TP
+.B F9
+Editor menu (File / Edit / Search / Command / Options).
+.TP
+.B F10
+Quit (confirm if the buffer is dirty). Esc Esc also quits.
+.TP
+.B F12
+Save as (Shift-F2 on terminals that send F12).
+.TP
+.B Alt-l
+Go to line.
+.TP
+.B |
+Pipe the selected block through an external command.
+.TP
+.B Ctrl-r / Ctrl-a
+Record / replay a macro.
+.PP
+Insert vs overwrite, autoindent, tab width, and syntax highlighting
+are editor options. F4 from a directory panel edits the highlighted
+file without using this CLI.
+.SH SEE ALSO
+.BR mcr (1),
+.BR mcr-view (1),
+.BR mcr-diff (1)
+.SH COPYRIGHT
+Apache License 2.0.

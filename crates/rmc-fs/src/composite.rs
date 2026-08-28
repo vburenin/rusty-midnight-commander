@@ -13,7 +13,7 @@ use std::time::Instant;
 
 /// Composite virtual filesystem that routes operations to:
 /// - Local filesystem
-/// - Archive files (tar, tar.gz, zip) when the path contains an `archive#` anchor
+/// - Archive files when the path contains an `archive#` anchor
 #[derive(Debug)]
 pub struct CompositeFs {
     local: LocalFs,
@@ -76,6 +76,9 @@ impl CompositeFs {
                 }
                 ArchiveKind::Rar => {
                     crate::rarfs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
+                }
+                ArchiveKind::Lha => {
+                    crate::lhafs::list_dir(&ap.archive, vfs_root, &ap.inner, show_hidden)
                 }
             },
             Route::Extfs { xp, vfs_root } => crate::extfs::list_dir(
@@ -283,6 +286,7 @@ impl Vfs for CompositeFs {
                 ArchiveKind::SevenZ => crate::sevenzfs::copy_out(&ap.archive, &ap.inner, d),
                 ArchiveKind::Iso => crate::isofs::copy_out(&ap.archive, &ap.inner, d),
                 ArchiveKind::Rar => crate::rarfs::copy_out(&ap.archive, &ap.inner, d),
+                ArchiveKind::Lha => crate::lhafs::copy_out(&ap.archive, &ap.inner, d),
             },
             (Route::Extfs { xp, .. }, Route::Local { path: d }) => {
                 crate::extfs::copy_out(&xp.helper_cmd, &xp.archive, &xp.inner, d)
@@ -376,6 +380,7 @@ impl Vfs for CompositeFs {
                 ArchiveKind::SevenZ => crate::sevenzfs::read_file(&ap.archive, &ap.inner),
                 ArchiveKind::Iso => crate::isofs::read_file(&ap.archive, &ap.inner),
                 ArchiveKind::Rar => crate::rarfs::read_file(&ap.archive, &ap.inner),
+                ArchiveKind::Lha => crate::lhafs::read_file(&ap.archive, &ap.inner),
             },
             Route::Extfs { .. } => Err(FsError::Message(
                 "read_file inside extfs is not supported; use copy-out".into(),
@@ -430,6 +435,7 @@ impl Vfs for CompositeFs {
                 ArchiveKind::SevenZ => crate::sevenzfs::stat(&ap.archive, &ap.inner),
                 ArchiveKind::Iso => crate::isofs::stat(&ap.archive, &ap.inner),
                 ArchiveKind::Rar => crate::rarfs::stat(&ap.archive, &ap.inner),
+                ArchiveKind::Lha => crate::lhafs::stat(&ap.archive, &ap.inner),
             },
             Route::Extfs { .. } => Err(FsError::Message(
                 "stat inside extfs is not supported in this minimal implementation".into(),

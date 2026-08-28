@@ -107,6 +107,51 @@ fn build_rar(path: &Path, src_root: &Path) {
     builder.write_to_path(path, None).unwrap();
 }
 
+fn crc16_lha(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= u16::from(b);
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+/// Minimal stored (`-lh0-`) LHA/LZH archive (level 0 headers). Public format.
+fn build_lha(path: &Path, files: &[(&str, &[u8])]) {
+    let mut out = Vec::new();
+    for (name, data) in files {
+        let name_b = name.as_bytes();
+        assert!(name_b.len() <= 255, "lha level-0 name too long");
+        let packed = u32::try_from(data.len()).expect("lha member too large");
+        let crc = crc16_lha(data);
+        let mut rest = Vec::new();
+        rest.extend_from_slice(b"-lh0-");
+        rest.extend_from_slice(&packed.to_le_bytes());
+        rest.extend_from_slice(&packed.to_le_bytes());
+        rest.extend_from_slice(&0u16.to_le_bytes());
+        rest.extend_from_slice(&0u16.to_le_bytes());
+        rest.push(0x20);
+        rest.push(0);
+        rest.push(u8::try_from(name_b.len()).expect("name len"));
+        rest.extend_from_slice(name_b);
+        rest.extend_from_slice(&crc.to_le_bytes());
+        let header_size = u8::try_from(rest.len()).expect("lha header too large");
+        let checksum = rest.iter().fold(0u8, |a, b| a.wrapping_add(*b));
+        out.push(header_size);
+        out.push(checksum);
+        out.extend_from_slice(&rest);
+        out.extend_from_slice(data);
+    }
+    out.push(0);
+    fs::write(path, out).expect("write lha");
+}
+
 #[test]
 fn cpio_and_gz_browse_and_copy_out() {
     let tmp = tempdir().unwrap();
@@ -192,4 +237,66 @@ fn sevenz_iso_rar_browse() {
         .collect();
     assert!(namesr.contains(&"dir1".to_string()));
     assert!(namesr.contains(&"root.txt".to_string()));
+}
+
+#[test]
+fn lha_and_lzh_browse_and_copy_out() {
+    use std::io::Read;
+    let tmp = tempdir().unwrap();
+    let lha_path = tmp.path().join("sample.lha");
+    let lzh_path = tmp.path().join("sample.lzh");
+    let files: &[(&str, &[u8])] = &[
+        ("root.txt", b"root"),
+        ("dir1/file1.txt", b"hello"),
+        ("dir1/sub/inner.txt", b"inner"),
+    ];
+    build_lha(&lha_path, files);
+    build_lha(&lzh_path, files);
+
+    let vfs = CompositeFs::new();
+    let root = vfs.enter_path(&lha_path).expect("enter lha");
+    let names: Vec<_> = vfs
+        .list_dir(&root, true)
+        .unwrap()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert!(names.contains(&"dir1".to_string()));
+    assert!(names.contains(&"root.txt".to_string()));
+
+    let mut r = vfs.read_file(&root.join("root.txt")).unwrap();
+    let mut s = String::new();
+    r.read_to_string(&mut s).unwrap();
+    assert_eq!(s, "root");
+
+    let nested = root.join("dir1").join("file1.txt");
+    let mut r2 = vfs.read_file(&nested).unwrap();
+    let mut s2 = String::new();
+    r2.read_to_string(&mut s2).unwrap();
+    assert_eq!(s2, "hello");
+
+    let dst = tmp.path().join("out-root.txt");
+    vfs.copy(&root.join("root.txt"), &dst).unwrap();
+    assert_eq!(fs::read(&dst).unwrap(), b"root");
+
+    let dst_dir = tmp.path().join("out-dir");
+    vfs.copy(&root.join("dir1"), &dst_dir).unwrap();
+    assert_eq!(fs::read(dst_dir.join("file1.txt")).unwrap(), b"hello");
+    assert_eq!(
+        fs::read(dst_dir.join("sub").join("inner.txt")).unwrap(),
+        b"inner"
+    );
+
+    let root_lzh = vfs.enter_path(&lzh_path).expect("enter lzh");
+    let names_lzh: Vec<_> = vfs
+        .list_dir(&root_lzh, true)
+        .unwrap()
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    assert!(names_lzh.contains(&"root.txt".to_string()));
+    let mut r3 = vfs.read_file(&root_lzh.join("root.txt")).unwrap();
+    let mut s3 = String::new();
+    r3.read_to_string(&mut s3).unwrap();
+    assert_eq!(s3, "root");
 }

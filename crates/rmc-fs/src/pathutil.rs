@@ -56,6 +56,7 @@ pub enum ArchiveKind {
     Ar,
     Deb,
     Rpm,
+    Lha,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +168,8 @@ pub fn detect_archive_kind(path: &Path) -> Option<ArchiveKind> {
         Some(ArchiveKind::Deb)
     } else if name.ends_with(".rpm") {
         Some(ArchiveKind::Rpm)
+    } else if name.ends_with(".lha") || name.ends_with(".lzh") {
+        Some(ArchiveKind::Lha)
     } else {
         None
     }
@@ -223,6 +226,19 @@ mod tests {
         assert!(is_virtual_path(Path::new("sh://host/tmp")));
         assert!(is_virtual_path(Path::new("/#sh:user@host:C22/tmp")));
         assert!(is_virtual_path(Path::new("smb://host/share")));
+    }
+
+    #[test]
+    fn detect_lha_and_lzh_extensions() {
+        assert_eq!(
+            detect_archive_kind(Path::new("a.lha")),
+            Some(ArchiveKind::Lha)
+        );
+        assert_eq!(
+            detect_archive_kind(Path::new("A.LZH")),
+            Some(ArchiveKind::Lha)
+        );
+        assert_eq!(detect_archive_kind(Path::new("pack.zoo")), None);
     }
 
     #[test]

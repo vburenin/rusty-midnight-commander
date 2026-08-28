@@ -167,7 +167,8 @@ From mcedit(1):
 From README and mc(1):
 - [x] Local filesystem
 - [x] Archives (initial): tar, tar.gz/tgz, zip — browse; copy/extract out
-- [ ] Archives (others): cpio, ar, rpm, lha, rar, zoo, deb (via extfs), etc.
+- [x] Archives (others): cpio (incl. .cpio.gz), ar, rpm, lha/lzh, rar, deb, iso, 7z — browse + copy-out (native VFS; not GPL C)
+- [ ] Archives (others): zoo — no Apache-2.0/MIT Rust decoder in-tree; the available crate (`newtua-dos`) is LGPL-3.0, and a full LZW/LZH zoo decompressor is out of reach this PR
 - [x] Remote ftpfs (FTP): `ftp://` and GNU `/#ftp:` enter, list, stat, read/copy-out; `..` leaves. Upload/write is a follow-up.
 - [x] Remote sftpfs (SFTP), fish (SSH-based): `sftp://` / `#sftp:`, `sh://` / `#sh:` enter, list, stat, read/copy-out; `..` leaves. Upload/write is a follow-up.
 - [x] extfs framework: minimal helper-driven VFS (list + copy-out)
@@ -231,7 +232,7 @@ Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “U
 
 From mc(1):
 - [x] Built-in hypertext help (F1) context-sensitive
-- [ ] Online manpages: mc, mcedit, mcview, mcdiff
+- [x] Online manpages: mc, mcedit, mcview, mcdiff equivalents as `mcr`(1), `mcr-edit`(1), `mcr-view`(1), `mcr-diff`(1) — original Apache-2.0 text covering the shipped CLI (`man mcr` / `man -l docs/man/mcr.1`; see README). Not verbatim GNU GPL man pages.
 - [ ] Project website docs
 
 ---

@@ -1,0 +1,63 @@
+.TH MCR-VIEW 1 "August 2026" "rusty-midnight-commander" "User Commands"
+.SH NAME
+mcr-view \- internal viewer started as mcr \-\-view
+.SH SYNOPSIS
+.B mcr
+.BR \-v " | " \-\-view
+.I FILE
+.br
+.B mcr
+.BI \-\-view= FILE
+.br
+.B mcr
+.BI \-v FILE
+.SH DESCRIPTION
+Opens rusty-midnight-commander’s internal viewer (the
+.B mcview
+equivalent) on
+.IR FILE .
+This always uses the built-in viewer, not
+.BR $PAGER .
+.PP
+This page is original Apache-2.0 text covering the shipped viewer CLI
+and keys. It is not a copy of GNU
+.BR mcview (1).
+.SH KEYS
+.TP
+.B F2
+Wrap / unwrap.
+.TP
+.B F3 / q / F10
+Quit.
+.TP
+.B F4
+Hex / text.
+.TP
+.B F5
+Go to a line or offset.
+.TP
+.B F7 / /
+Search.
+.TP
+.B n / F17
+Next match.
+.TP
+.B F8
+Parsed vs raw.
+.TP
+.B F9
+Format / unformat (nroff-style).
+.TP
+.B |
+Apply an external filter to the viewed bytes.
+.PP
+Display options cover line numbers, CR shown as ^M, wrap, and hex.
+Shift+arrows extend a selection. Some compressed files are shown
+through a filter. F3 from a directory panel views the highlighted
+file; Shift-F3 views raw on-disk bytes.
+.SH SEE ALSO
+.BR mcr (1),
+.BR mcr-edit (1),
+.BR mcr-diff (1)
+.SH COPYRIGHT
+Apache License 2.0.

@@ -18,6 +18,7 @@ pub(crate) enum FileHighlightKind {
 
 const ARCHIVE_EXTS: &[&str] = &[
     "tar", "gz", "tgz", "bz2", "xz", "zst", "zip", "7z", "rar", "cpio", "iso", "deb", "rpm", "ar",
+    "lha", "lzh",
 ];
 
 const SOURCE_EXTS: &[&str] = &[
@@ -206,6 +207,8 @@ mod tests {
             "a.deb",
             "a.rpm",
             "a.ar",
+            "a.lha",
+            "a.lzh",
             "Archive.ZIP",
             "src.tar.gz",
         ] {

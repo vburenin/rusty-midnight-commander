@@ -826,6 +826,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "delharc"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfdcd2bee8dc367afd9064f3b0849156a4c29fc70d98370dae62773594d04dd"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "chrono 0.4.45",
+ "memchr 2.8.3",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2565,6 +2577,7 @@ dependencies = [
  "ar",
  "base64",
  "cpio_reader",
+ "delharc",
  "flate2",
  "ftp",
  "gpt_disk_io",
