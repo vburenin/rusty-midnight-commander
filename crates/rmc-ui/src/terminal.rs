@@ -31,8 +31,8 @@ use rmc_core::complete::{
 };
 use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
-    find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, search_files_streaming,
-    CancelHandle, FindDialogFocus as FF, FindDialogState, FindTreePicker,
+    find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, FindDialogFocus as FF,
+    FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::{compute_chrome_geom, dual_panel_rects, menu_bar_titles};
@@ -2216,7 +2216,8 @@ impl TerminalApp {
 
     /// Mouse entry used by the event loop and unit tests. GNU `-d`/`--nomouse`
     /// never handles events. Shift+mouse is a passthrough so the terminal can
-    /// select/paste. Editor/dialog modes do not consume clicks.
+    /// select/paste. Editor/dialog modes do not consume clicks except Find File
+    /// action buttons (GNU OK / Stop-Start / Again / Chdir / Panelize / Quit).
     fn dispatch_mouse(
         app: &mut App,
         mev: MouseEvent,
@@ -2241,6 +2242,11 @@ impl TerminalApp {
                 PaneSide::Right => right_rows,
             };
             return Self::handle_mouse(app, mev, active_page_rows);
+        }
+        if matches!(app.ui_mode, UiMode::FindDialog(_))
+            && matches!(mev.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            return handle_find_dialog_mouse(app, mev, cols, rows);
         }
         if !matches!(app.ui_mode, UiMode::Normal) {
             return Ok(());
@@ -4447,6 +4453,7 @@ impl TerminalApp {
                         return Ok(());
                     }
                     KeyCode::Esc => {
+                        state.abort_search();
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Tab => {
@@ -4543,6 +4550,9 @@ impl TerminalApp {
                             open_find_tree_picker(&*app.vfs, state);
                         } else if state.focus.is_checkbox() {
                             let _ = state.toggle_focused_checkbox();
+                        } else if state.focus.is_action_button() {
+                            let focus = state.focus;
+                            activate_find_file_button(app, focus, &active_cwd)?;
                         }
                     }
                     KeyCode::Char(c) => {
@@ -4591,68 +4601,8 @@ impl TerminalApp {
                             FF::Tree => {
                                 open_find_tree_picker(&*app.vfs, state);
                             }
-                            FF::ButtonStart | FF::ButtonAgain => {
-                                if !state.running {
-                                    // Prepare params (apply Start at edit)
-                                    let start_str = state.start_dir_edit.trim().to_string();
-                                    let start_dir = if start_str.is_empty() {
-                                        active_cwd.clone()
-                                    } else {
-                                        std::path::PathBuf::from(start_str)
-                                    };
-                                    state.params.start_dir = start_dir;
-                                    // Reset results and selection
-                                    state.results.paths.clear();
-                                    state.selected_index = 0;
-                                    state.scroll_top = 0;
-                                    // Kick off background search (streaming)
-                                    let params = state.params.clone();
-                                    let cancel = CancelHandle::new();
-                                    let flag = cancel.flag();
-                                    let (tx, rx) = std::sync::mpsc::channel();
-                                    state.cancel = Some(cancel);
-                                    state.results_rx = Some(rx);
-                                    state.running = true;
-                                    std::thread::spawn(move || {
-                                        search_files_streaming(&params, &flag, |p| {
-                                            let _ = tx.send(p);
-                                        });
-                                        // dropping tx signals completion
-                                    });
-                                }
-                            }
-                            FF::ButtonStop => {
-                                if let Some(ch) = &state.cancel {
-                                    ch.cancel();
-                                }
-                            }
-                            FF::ButtonChdir => {
-                                if let Some(p) =
-                                    state.results.paths.get(state.selected_index).cloned()
-                                {
-                                    if let Ok(md) = app.vfs.stat(&p) {
-                                        let dest = if md.is_dir {
-                                            p
-                                        } else {
-                                            p.parent()
-                                                .map(|x| x.to_path_buf())
-                                                .unwrap_or(active_cwd.clone())
-                                        };
-                                        let _ = app.change_dir(&dest);
-                                        app.ui_mode = UiMode::Normal;
-                                    }
-                                }
-                            }
-                            FF::ButtonPanelize => {
-                                if !state.running && !state.results.paths.is_empty() {
-                                    let paths = state.results.paths.clone();
-                                    let base = state.params.start_dir.clone();
-                                    app.panelize_paths(&paths, Some(&base))?;
-                                    app.ui_mode = UiMode::Normal;
-                                }
-                            }
-                            FF::ButtonQuit => {
-                                app.ui_mode = UiMode::Normal;
+                            focus if focus.is_action_button() => {
+                                activate_find_file_button(app, focus, &active_cwd)?;
                             }
                             _ => {}
                         }
@@ -9882,6 +9832,98 @@ fn directory_tree_delete(app: &mut App) {
 }
 
 const FIND_TREE_MAX_ENTRIES: usize = 2048;
+
+/// GNU mc(1) Find File action buttons. OK starts a new search; Stop/Start
+/// pauses or continues; Again returns to parameters.
+fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> Result<()> {
+    match focus {
+        FF::ButtonOk => {
+            if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                state.start_new_search(fallback_cwd.to_path_buf());
+            }
+        }
+        FF::ButtonStop => {
+            if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                if state.is_paused() {
+                    state.resume_search();
+                } else {
+                    state.pause_search();
+                }
+            }
+        }
+        FF::ButtonAgain => {
+            if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                state.again_parameters();
+            }
+        }
+        FF::ButtonChdir => {
+            let dest = if let UiMode::FindDialog(state) = &app.ui_mode {
+                state.results.paths.get(state.selected_index).cloned()
+            } else {
+                None
+            };
+            if let Some(p) = dest {
+                if let Ok(md) = app.vfs.stat(&p) {
+                    let dest = if md.is_dir {
+                        p
+                    } else {
+                        p.parent()
+                            .map(|x| x.to_path_buf())
+                            .unwrap_or_else(|| fallback_cwd.to_path_buf())
+                    };
+                    if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                        state.abort_search();
+                    }
+                    let _ = app.change_dir(&dest);
+                    app.ui_mode = UiMode::Normal;
+                }
+            }
+        }
+        FF::ButtonPanelize => {
+            let (paths, base, searching) = if let UiMode::FindDialog(state) = &app.ui_mode {
+                (
+                    state.results.paths.clone(),
+                    state.params.start_dir.clone(),
+                    state.running && !state.is_paused(),
+                )
+            } else {
+                return Ok(());
+            };
+            if !searching && !paths.is_empty() {
+                if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                    state.abort_search();
+                }
+                app.panelize_paths(&paths, Some(&base))?;
+                app.ui_mode = UiMode::Normal;
+            }
+        }
+        FF::ButtonQuit => {
+            if let UiMode::FindDialog(state) = &mut app.ui_mode {
+                state.abort_search();
+            }
+            app.ui_mode = UiMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_find_dialog_mouse(app: &mut App, mev: MouseEvent, cols: u16, rows: u16) -> Result<()> {
+    let cwd = app.active_panel().cwd.clone();
+    let (focus, paused) = match &app.ui_mode {
+        UiMode::FindDialog(st) => (st.focus, st.is_paused()),
+        _ => return Ok(()),
+    };
+    let Some(hit) =
+        crate::find::find_action_button_at(cols, rows, mev.column, mev.row, focus, paused)
+    else {
+        return Ok(());
+    };
+    if let UiMode::FindDialog(st) = &mut app.ui_mode {
+        st.focus = hit;
+    }
+    activate_find_file_button(app, hit, &cwd)
+}
 
 /// Open the Find File directory-tree figure. Idempotent: a second open does not nest.
 fn open_find_tree_picker(vfs: &dyn rmc_fs::Vfs, state: &mut FindDialogState) {
@@ -15406,9 +15448,11 @@ mod editor_macro_tests {
 #[cfg(test)]
 mod find_file_dialog_tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use rmc_core::config::KeyMap;
-    use rmc_core::find::{FindDialogFocus as FF, FindDialogState};
+    use rmc_core::find::{CancelHandle, FindDialogFocus as FF, FindDialogState};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -15559,7 +15603,7 @@ mod find_file_dialog_tests {
 
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Tab);
-        assert_eq!(find_state(&app).focus, FF::ButtonStart);
+        assert_eq!(find_state(&app).focus, FF::ButtonOk);
 
         // Typing still goes to Filename when that field is focused; Space inserts.
         find_state_mut(&mut app).focus = FF::NamePattern;
@@ -15719,6 +15763,216 @@ mod find_file_dialog_tests {
             assert_eq!(picker.selected_index, first_sel);
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn wait_find_idle(app: &mut App) {
+        let start = std::time::Instant::now();
+        while find_state(app).running && start.elapsed() < std::time::Duration::from_secs(3) {
+            press(app, KeyCode::Left);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn ok_starts_a_new_search() {
+        let root = temp_workspace();
+        std::fs::write(root.join("hit.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::ButtonOk;
+        press(&mut app, KeyCode::Enter);
+        wait_find_idle(&mut app);
+        let st = find_state(&app);
+        assert!(
+            st.results
+                .paths
+                .iter()
+                .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("hit.txt")),
+            "OK must start a new search, hits={:?}",
+            st.results.paths
+        );
+        assert!(!st.running);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stop_pauses_a_running_search_start_resumes() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        let handle = CancelHandle::new();
+        find_state_mut(&mut app).cancel = Some(handle);
+        find_state_mut(&mut app).running = true;
+        find_state_mut(&mut app).focus = FF::ButtonStop;
+        assert!(!find_state(&app).is_paused());
+        press(&mut app, KeyCode::Enter);
+        assert!(find_state(&app).is_paused(), "Stop pauses a running search");
+        assert!(find_state(&app).running, "paused search stays in-flight");
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            !find_state(&app).is_paused(),
+            "Start continues a stopped search"
+        );
+        assert!(find_state(&app).running);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn idle_stop_start_does_not_begin_a_new_search() {
+        let root = temp_workspace();
+        std::fs::write(root.join("hit.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::ButtonStop;
+        press(&mut app, KeyCode::Enter);
+        assert!(!find_state(&app).running, "Start is not a synonym for OK");
+        assert!(find_state(&app).results.paths.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn again_reopens_parameters_without_searching() {
+        let root = temp_workspace();
+        std::fs::write(root.join("hit.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::ButtonOk;
+        press(&mut app, KeyCode::Enter);
+        wait_find_idle(&mut app);
+        assert!(!find_state(&app).results.paths.is_empty());
+        find_state_mut(&mut app).focus = FF::ButtonAgain;
+        press(&mut app, KeyCode::Enter);
+        let st = find_state(&app);
+        assert_eq!(st.focus, FF::NamePattern, "Again asks for new parameters");
+        assert!(!st.running, "Again must not start a search");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn chdir_cds_current_panel_to_selected_hit() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let hit = sub.join("hit.txt");
+        std::fs::write(&hit, "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        {
+            let st = find_state_mut(&mut app);
+            st.results.paths.push(hit);
+            st.selected_index = 0;
+            st.focus = FF::ButtonChdir;
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active_panel().cwd, sub);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn panelize_fills_current_panel() {
+        let root = temp_workspace();
+        let hit = root.join("hit.txt");
+        std::fs::write(&hit, "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        {
+            let st = find_state_mut(&mut app);
+            st.results.paths.push(hit.clone());
+            st.params.start_dir = root.clone();
+            st.focus = FF::ButtonPanelize;
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let names: Vec<_> = app
+            .active_panel()
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(names.contains(&"hit.txt"), "{names:?}");
+        assert!(app.active_panel().panelized.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quit_dismisses_without_panelize() {
+        let root = temp_workspace();
+        let hit = root.join("hit.txt");
+        std::fs::write(&hit, "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        {
+            let st = find_state_mut(&mut app);
+            st.results.paths.push(hit);
+            st.focus = FF::ButtonQuit;
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.active_panel().panelized.is_none());
+        assert_eq!(app.active_panel().cwd, root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_and_mouse_on_ok_start_search() {
+        let root = temp_workspace();
+        std::fs::write(root.join("hit.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.mouse_enabled = true;
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::ButtonOk;
+        press(&mut app, KeyCode::Char(' '));
+        wait_find_idle(&mut app);
+        assert!(
+            find_state(&app)
+                .results
+                .paths
+                .iter()
+                .any(|p| p.ends_with("hit.txt")),
+            "Space on OK starts a search"
+        );
+
+        let root2 = temp_workspace();
+        std::fs::write(root2.join("other.txt"), "y").unwrap();
+        let mut app = make_app(&root2);
+        app.mouse_enabled = true;
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root2.clone()));
+        let h = find_dialog_height(28);
+        let y = (28 - h) / 2 + h - 2;
+        let mx = (0..80u16)
+            .find(|&x| {
+                crate::find::find_action_button_at(80, 28, x, y, FF::NamePattern, false)
+                    == Some(FF::ButtonOk)
+            })
+            .expect("OK button x");
+        let mut last_t = None;
+        let mut last_tgt = None;
+        TerminalApp::dispatch_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: mx,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            },
+            80,
+            28,
+            &mut last_t,
+            &mut last_tgt,
+        )
+        .unwrap();
+        wait_find_idle(&mut app);
+        assert!(
+            find_state(&app)
+                .results
+                .paths
+                .iter()
+                .any(|p| p.ends_with("other.txt")),
+            "mouse on OK starts a search"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root2);
     }
 }
 

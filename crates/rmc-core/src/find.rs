@@ -98,9 +98,11 @@ pub enum FindDialogFocus {
     SkipHidden,
     EnableIgnoreDirs,
     IgnoreDirs,
-    ButtonStart,
-    ButtonAgain,
+    /// GNU mc(1) **OK**: start a new search (not the in-search Start resume).
+    ButtonOk,
+    /// GNU mc(1) **Stop** / **Start** pair: pause a running search, resume a stopped one.
     ButtonStop,
+    ButtonAgain,
     ButtonChdir,
     ButtonPanelize,
     ButtonQuit,
@@ -120,11 +122,11 @@ impl FindDialogFocus {
             Self::FollowSymlinks => Self::SkipHidden,
             Self::SkipHidden => Self::EnableIgnoreDirs,
             Self::EnableIgnoreDirs => Self::IgnoreDirs,
-            Self::IgnoreDirs => Self::ButtonStart,
-            Self::ButtonStart => Self::ButtonStop,
-            Self::ButtonStop => Self::ButtonChdir,
-            Self::ButtonChdir => Self::ButtonAgain,
-            Self::ButtonAgain => Self::ButtonPanelize,
+            Self::IgnoreDirs => Self::ButtonOk,
+            Self::ButtonOk => Self::ButtonStop,
+            Self::ButtonStop => Self::ButtonAgain,
+            Self::ButtonAgain => Self::ButtonChdir,
+            Self::ButtonChdir => Self::ButtonPanelize,
             Self::ButtonPanelize => Self::ButtonQuit,
             Self::ButtonQuit => Self::StartDir,
         }
@@ -144,11 +146,11 @@ impl FindDialogFocus {
             Self::SkipHidden => Self::FollowSymlinks,
             Self::EnableIgnoreDirs => Self::SkipHidden,
             Self::IgnoreDirs => Self::EnableIgnoreDirs,
-            Self::ButtonStart => Self::IgnoreDirs,
-            Self::ButtonStop => Self::ButtonStart,
-            Self::ButtonChdir => Self::ButtonStop,
-            Self::ButtonAgain => Self::ButtonChdir,
-            Self::ButtonPanelize => Self::ButtonAgain,
+            Self::ButtonOk => Self::IgnoreDirs,
+            Self::ButtonStop => Self::ButtonOk,
+            Self::ButtonAgain => Self::ButtonStop,
+            Self::ButtonChdir => Self::ButtonAgain,
+            Self::ButtonPanelize => Self::ButtonChdir,
             Self::ButtonQuit => Self::ButtonPanelize,
         }
     }
@@ -166,12 +168,16 @@ impl FindDialogFocus {
         )
     }
 
-    /// Tree plus the bottom-row action buttons (`< Start >`, …).
+    /// Tree plus the bottom-row action buttons (`< OK >`, Stop/Start, …).
     pub fn is_button(self) -> bool {
+        self == Self::Tree || self.is_action_button()
+    }
+
+    /// Bottom-row GNU actions: OK, Stop/Start, Again, Chdir, Panelize, Quit.
+    pub fn is_action_button(self) -> bool {
         matches!(
             self,
-            Self::Tree
-                | Self::ButtonStart
+            Self::ButtonOk
                 | Self::ButtonStop
                 | Self::ButtonAgain
                 | Self::ButtonChdir
@@ -226,24 +232,40 @@ pub struct FindResults {
 
 #[derive(Debug, Clone)]
 pub struct CancelHandle {
-    inner: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
 }
 
 impl CancelHandle {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            pause: Arc::new(AtomicBool::new(false)),
         }
     }
     pub fn flag(&self) -> Arc<AtomicBool> {
-        self.inner.clone()
+        self.cancel.clone()
+    }
+    pub fn pause_flag(&self) -> Arc<AtomicBool> {
+        self.pause.clone()
     }
     pub fn cancel(&self) {
-        self.inner.store(true, Ordering::Relaxed);
+        self.cancel.store(true, Ordering::Relaxed);
     }
     pub fn is_canceled(&self) -> bool {
-        self.inner.load(Ordering::Relaxed)
+        self.cancel.load(Ordering::Relaxed)
+    }
+    /// GNU Find File **Stop**: pause without discarding the walk.
+    pub fn pause(&self) {
+        self.pause.store(true, Ordering::Relaxed);
+    }
+    /// GNU Find File **Start**: continue a stopped search.
+    pub fn resume(&self) {
+        self.pause.store(false, Ordering::Relaxed);
+    }
+    pub fn is_paused(&self) -> bool {
+        self.pause.load(Ordering::Relaxed)
     }
 }
 
@@ -330,17 +352,97 @@ impl FindDialogState {
             _ => false,
         }
     }
+
+    /// GNU mc(1) **Stop** is in effect: the worker is alive but waiting.
+    pub fn is_paused(&self) -> bool {
+        self.running && self.cancel.as_ref().is_some_and(|c| c.is_paused())
+    }
+
+    /// Drop the worker channel and request cancel so a paused walk cannot hang.
+    pub fn abort_search(&mut self) {
+        if let Some(ch) = &self.cancel {
+            ch.cancel();
+            ch.resume();
+        }
+        self.running = false;
+        self.cancel = None;
+        self.results_rx = None;
+    }
+
+    /// GNU **OK**: start a new search from the current fields.
+    pub fn start_new_search(&mut self, fallback_cwd: PathBuf) {
+        self.abort_search();
+        let start_str = self.start_dir_edit.trim().to_string();
+        self.params.start_dir = if start_str.is_empty() {
+            fallback_cwd
+        } else {
+            PathBuf::from(start_str)
+        };
+        self.results.paths.clear();
+        self.selected_index = 0;
+        self.scroll_top = 0;
+        let params = self.params.clone();
+        let cancel = CancelHandle::new();
+        let flag = cancel.flag();
+        let pause = cancel.pause_flag();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.cancel = Some(cancel);
+        self.results_rx = Some(rx);
+        self.running = true;
+        std::thread::spawn(move || {
+            search_files_streaming(&params, &flag, &pause, |p| {
+                let _ = tx.send(p);
+            });
+        });
+    }
+
+    /// GNU **Stop**: pause a running search. No-op if idle or already stopped.
+    pub fn pause_search(&mut self) {
+        if self.running {
+            if let Some(ch) = &self.cancel {
+                ch.pause();
+            }
+        }
+    }
+
+    /// GNU **Start**: continue a stopped search. Does not start a new one.
+    pub fn resume_search(&mut self) {
+        if self.is_paused() {
+            if let Some(ch) = &self.cancel {
+                ch.resume();
+            }
+        }
+    }
+
+    /// GNU **Again**: ask for new parameters (focus the filename field; do not search).
+    pub fn again_parameters(&mut self) {
+        self.abort_search();
+        self.focus = FindDialogFocus::NamePattern;
+    }
 }
 
 pub fn search_files(params: &FindParams, cancel: &Arc<AtomicBool>) -> Vec<PathBuf> {
+    let pause = Arc::new(AtomicBool::new(false));
     let mut out = Vec::new();
-    search_files_streaming(params, cancel, |p| out.push(p));
+    search_files_streaming(params, cancel, &pause, |p| out.push(p));
     out
+}
+
+/// Returns true if the caller should stop the walk (cancel).
+fn wait_while_paused(cancel: &AtomicBool, pause: &AtomicBool) -> bool {
+    while pause.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    cancel.load(Ordering::Relaxed)
 }
 
 pub fn search_files_streaming<F: FnMut(PathBuf)>(
     params: &FindParams,
     cancel: &Arc<AtomicBool>,
+    pause: &Arc<AtomicBool>,
     mut on_hit: F,
 ) {
     let name_pat = match &params.name_pattern {
@@ -379,7 +481,7 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
         .filter_entry(|e| keep_walk_entry(e, skip_hidden, ignore.as_ref()))
         .filter_map(Result::ok)
     {
-        if cancel.load(Ordering::Relaxed) {
+        if wait_while_paused(cancel, pause) {
             break;
         }
         let p = entry.path();
@@ -1051,5 +1153,73 @@ mod tests {
             find_tree_ancestor_chain(Path::new("/")),
             vec![PathBuf::from("/")]
         );
+    }
+
+    #[test]
+    fn action_buttons_tab_in_gnu_order() {
+        assert_eq!(
+            FindDialogFocus::IgnoreDirs.next(),
+            FindDialogFocus::ButtonOk
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonOk.next(),
+            FindDialogFocus::ButtonStop
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonStop.next(),
+            FindDialogFocus::ButtonAgain
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonAgain.next(),
+            FindDialogFocus::ButtonChdir
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonChdir.next(),
+            FindDialogFocus::ButtonPanelize
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonPanelize.next(),
+            FindDialogFocus::ButtonQuit
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonQuit.next(),
+            FindDialogFocus::StartDir
+        );
+        assert_eq!(
+            FindDialogFocus::ButtonOk.prev(),
+            FindDialogFocus::IgnoreDirs
+        );
+        assert!(FindDialogFocus::ButtonOk.is_action_button());
+        assert!(FindDialogFocus::ButtonStop.is_action_button());
+        assert!(!FindDialogFocus::Tree.is_action_button());
+    }
+
+    #[test]
+    fn search_pause_blocks_until_resume() {
+        let dir = tempdir().unwrap();
+        let hit = dir.path().join("a.txt");
+        std::fs::write(&hit, "x").unwrap();
+        let p = params(dir.path().to_path_buf());
+        let handle = CancelHandle::new();
+        handle.pause();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let flag = handle.flag();
+        let pause = handle.pause_flag();
+        let worker = std::thread::spawn(move || {
+            search_files_streaming(&p, &flag, &pause, |path| {
+                let _ = tx.send(path);
+            });
+        });
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(
+            rx.try_recv().is_err(),
+            "paused walk must not emit hits until Start"
+        );
+        handle.resume();
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("resume must continue the walk");
+        assert_eq!(got, hit);
+        worker.join().unwrap();
     }
 }
