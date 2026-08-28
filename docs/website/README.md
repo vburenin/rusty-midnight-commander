@@ -31,14 +31,15 @@ line, and F1–F10 labels. The same binary also starts the internal
 viewer (`mcr --view` / F3), editor (`mcr --edit` / F4), and side-by-side
 diff (`mcr --diff`).
 
-**In this tree:** dual-pane chrome, listings and file ops, viewer /
-editor / diff / Find File, directory tree, panelize, user menu, hotlist,
-skins and keymaps, optional PTY subshell (Ctrl-O), F1 help, archive
-browse + copy-out (not zoo), and FTP/SFTP/fish browse + copy-out (no
-upload).
+**In this tree:** dual-pane chrome, listings and file ops (F5/F6/F7/F8
+go through VFS), viewer / editor / diff / Find File, directory tree,
+panelize, user menu, hotlist, skins and keymaps, user `ini` load/save,
+optional PTY subshell (Ctrl-O), F1 help, local full read/write, archive
+and extfs browse + extract (writes refused as read-only; not zoo), and
+FTP/SFTP/fish copy-in and other panel ops when the server allows.
 
-**Not claimed:** zoo archives; writing into archives or remote VFS;
-full config auto-save. See [PARITY.md](../PARITY.md) for unchecked
+**Not claimed:** zoo archives (no Apache-2.0/MIT decoder; PARITY.md
+stays unchecked). See [PARITY.md](../PARITY.md) for any other open
 items.
 
 ## Quick start

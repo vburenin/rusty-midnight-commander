@@ -55,7 +55,11 @@ mcr -h</code></pre>
           <tr><td><code>--diff file1 file2</code></td><td>Start the internal side-by-side diff viewer</td></tr>
         </tbody>
       </table>
-      <p>Environment variables honored for paths and helpers include <code>SHELL</code>, <code>MC_SKIN</code>, <code>MC_KEYMAP</code>, <code>MC_COLOR_TABLE</code>, <code>MC_DATADIR</code>, <code>MC_PROFILE_ROOT</code>, <code>EDITOR</code>, and <code>VIEWER</code>. Full GNU-style config auto-save is still an open parity item; see <a href="../PARITY.md">PARITY.md</a> section 11.</p>
+      <p>Environment variables honored for paths and helpers include <code>SHELL</code>, <code>MC_SKIN</code>, <code>MC_KEYMAP</code>, <code>MC_COLOR_TABLE</code>, <code>MC_DATADIR</code>, <code>MC_PROFILE_ROOT</code>, <code>EDITOR</code>, and <code>VIEWER</code>.</p>
+
+      <h2>Configuration files</h2>
+      <p>Setup is loaded in order: compiled-in defaults, then the first existing system file (<code>/etc/mc/mc.ini</code>, else <code>$MC_DATADIR/mc.ini</code> or <code>/usr/share/mc/mc.ini</code>), then the user file <code>~/.config/mc/ini</code>. <code>MC_PROFILE_ROOT</code> (absolute) relocates the profile; otherwise <code>$XDG_CONFIG_HOME/mc</code> or <code>~/.config/mc</code>. <code>MCR_CONFIG_DIR</code> overrides the setup directory for tests.</p>
+      <p>Options → Save setup writes the user ini (creating <code>~/.config/mc/</code> as needed). Quit does the same when Options → Panels → Auto save setup is on. Unknown keys and sections are preserved, including Left/Right panel modes and appearance.</p>
 
       <h2>Manual pages</h2>
       <p>From a source checkout:</p>

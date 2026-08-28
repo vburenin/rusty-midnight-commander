@@ -45,9 +45,21 @@ still honored. Last of `-U`/`-u` wins.
 
 Environment variables honored for paths and helpers include `SHELL`,
 `MC_SKIN`, `MC_KEYMAP`, `MC_COLOR_TABLE`, `MC_DATADIR`,
-`MC_PROFILE_ROOT`, `EDITOR`, and `VIEWER`. Full GNU-style config
-auto-save is still an open parity item; see [PARITY.md](../PARITY.md)
-section 11.
+`MC_PROFILE_ROOT`, `EDITOR`, and `VIEWER`.
+
+## Configuration files
+
+Setup is loaded in order: compiled-in defaults, then the first existing
+system file (`/etc/mc/mc.ini`, else `$MC_DATADIR/mc.ini` or
+`/usr/share/mc/mc.ini`), then the user file `~/.config/mc/ini`.
+`MC_PROFILE_ROOT` (absolute) relocates the profile; otherwise
+`$XDG_CONFIG_HOME/mc` or `~/.config/mc`. `MCR_CONFIG_DIR` overrides the
+setup directory for tests.
+
+Options → Save setup writes the user ini (creating `~/.config/mc/` as
+needed). Quit does the same when Options → Panels → Auto save setup is
+on. Unknown keys and sections are preserved, including Left/Right panel
+modes and appearance.
 
 ## Manual pages
 

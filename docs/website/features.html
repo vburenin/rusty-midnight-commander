@@ -42,7 +42,7 @@
           <tr>
             <td>File ops</td>
             <td>mc(1) File menu</td>
-            <td>Copy, rename/move, mkdir, delete, chmod/chown, links, overwrite dialog, background jobs, progress totals</td>
+            <td>Copy, rename/move, mkdir, delete (F5/F6/F7/F8 go through VFS), chmod/chown, links, overwrite dialog, background jobs, progress totals</td>
           </tr>
           <tr>
             <td>Viewer</td>
@@ -67,17 +67,22 @@
           <tr>
             <td>VFS (local + archives)</td>
             <td>mc(1) Virtual File System</td>
-            <td>Enter to browse; <code>..</code> leaves; copy-out to local. tar, tar.gz/tgz, zip, cpio, ar, rpm, deb, iso, rar, 7z, lha/lzh. extfs helpers for list + copy-out</td>
+            <td>Enter to browse; <code>..</code> leaves; copy-out to local. tar, tar.gz/tgz, zip, cpio, ar, rpm, deb, iso, rar, 7z, lha/lzh and extfs stay browse+extract — create/delete/copy-in is refused with a GNU-class “Cannot … / Read-only file system” error</td>
           </tr>
           <tr>
             <td>VFS (remote)</td>
             <td>mc(1) ftpfs / sftpfs / fish</td>
-            <td>Browse, stat, and copy-out for <code>ftp://</code>, SFTP, and fish. Upload/write is not shipped</td>
+            <td><code>ftp://</code> / <code>/#ftp:</code>, SFTP, and fish: browse, stat, copy-out, and copy-in / mkdir / rename / delete when the server allows</td>
           </tr>
           <tr>
             <td>Subshell</td>
             <td>mc(1) subshell</td>
             <td>Ctrl-O PTY; <code>-U</code>/<code>-u</code>; <code>SHELL</code> selects the shell</td>
+          </tr>
+          <tr>
+            <td>Config</td>
+            <td>mc(1) Configuration</td>
+            <td>Compiled defaults, then system <code>mc.ini</code> (<code>/etc/mc/mc.ini</code> else <code>$MC_DATADIR</code> or <code>/usr/share/mc</code>), then user <code>~/.config/mc/ini</code> (<code>MC_PROFILE_ROOT</code> / <code>XDG_CONFIG_HOME</code> / <code>MCR_CONFIG_DIR</code>). Save setup and Auto save setup write the user ini without clobbering unknown keys</td>
           </tr>
           <tr>
             <td>Skins / keys / menus</td>
@@ -95,11 +100,9 @@
       <h2>Not claimed (unchecked or out of scope)</h2>
       <p>Do not treat these as done because GNU <code>mc</code> has them:</p>
       <ul class="plain">
-        <li><strong>Zoo archives</strong> — no Apache-2.0/MIT decoder in this tree; browse is not implemented</li>
-        <li><strong>Writing into archives or remote VFS</strong> — copy/create/delete <em>into</em> an archive, and FTP/SFTP/fish upload, are follow-ups. Panel operations on non-local backends are not “as if local”</li>
-        <li><strong>Full config auto-save</strong> — system defaults vs user <code>~/.config/mc/ini</code> auto-save remains an open parity item (section 11)</li>
+        <li><strong>Zoo archives</strong> — no Apache-2.0/MIT decoder in this tree; browse is not implemented. The PARITY.md zoo checkbox stays unchecked on purpose.</li>
       </ul>
-      <p class="note">Anything still unchecked in <a href="../PARITY.md">PARITY.md</a> is unfinished, even if GNU Midnight Commander already does it.</p>
+      <p class="note">Anything still unchecked in <a href="../PARITY.md">PARITY.md</a> is unfinished, even if GNU Midnight Commander already does it. Archive write is <em>claimed as refused</em> (read-only), not as missing: tar/zip/cpio/ar/rpm/lha/rar/deb/iso/7z and extfs stay browse+extract.</p>
     </main>
     <footer>
       <p>Original Apache-2.0 project website docs — not a copy of the GNU Midnight Commander website or GPL manuals.</p>
