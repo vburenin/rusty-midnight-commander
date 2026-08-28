@@ -613,9 +613,9 @@ fn open_user_config_in_editor(app: &mut App, path: PathBuf) {
 /// `--diff` / `--edit` / `--view` later on the line.
 ///
 /// `-U`/`--subshell` and `-u`/`--nosubshell` are mutually exclusive; last one
-/// wins. `--skin` overrides the ini/default name for this process; a missing
-/// named skin keeps that name and falls back visually the same way Options →
-/// Appearance does (default palette / `MC_SKIN`).
+/// wins. `--skin` overrides `MC_SKIN` and the ini/default name for this process;
+/// a missing named skin keeps that name and falls back visually the same way
+/// Options → Appearance does (default palette).
 pub fn apply_cli_args(app: &mut App, args: &[String]) -> Result<()> {
     let mut i = 0;
     while i < args.len() {
@@ -634,6 +634,14 @@ pub fn apply_cli_args(app: &mut App, args: &[String]) -> Result<()> {
         i += 1;
     }
     Ok(())
+}
+
+/// GNU mc(1): `MC_SKIN` selects the skin after user ini and before `-S`/`--skin`.
+/// Empty or unset values leave `app.skin_name` unchanged (ini / default).
+pub fn apply_mc_skin_env(app: &mut App) {
+    if let Some(name) = crate::skin::mc_skin_env_name() {
+        app.skin_name = name;
+    }
 }
 
 fn is_cli_option(s: &str) -> bool {
@@ -5642,6 +5650,9 @@ impl TerminalApp {
                     KeyCode::Up => {
                         if matches!(*focus, F::SkinList) && *selected > 0 {
                             *selected -= 1;
+                            if let Some(name) = skins.get(*selected) {
+                                *draft_skin = name.clone();
+                            }
                         }
                     }
                     KeyCode::Down => {
@@ -5649,6 +5660,9 @@ impl TerminalApp {
                             let max = skins.len().saturating_sub(1);
                             if *selected < max {
                                 *selected += 1;
+                                if let Some(name) = skins.get(*selected) {
+                                    *draft_skin = name.clone();
+                                }
                             }
                         }
                     }
@@ -5676,7 +5690,11 @@ impl TerminalApp {
                             *draft_shadows = !*draft_shadows;
                         }
                         F::Ok => {
-                            app.skin_name = draft_skin.clone();
+                            if let Some(name) = skins.get(*selected) {
+                                app.skin_name = name.clone();
+                            } else {
+                                app.skin_name = draft_skin.clone();
+                            }
                             app.shadows = *draft_shadows;
                             app.ui_mode = UiMode::Normal;
                         }
@@ -6505,9 +6523,16 @@ impl TerminalApp {
                             }
                             "Appearance" => {
                                 // Build list of available skins; always include default
+                                // and the current name/path so a custom MC_SKIN path is shown.
                                 let mut skins = crate::skin::list_available_skins();
                                 if skins.is_empty() {
                                     skins.push("default".to_string());
+                                }
+                                if !app.skin_name.is_empty()
+                                    && !skins.iter().any(|s| s == &app.skin_name)
+                                {
+                                    skins.push(app.skin_name.clone());
+                                    skins.sort();
                                 }
                                 // Prefill selection from current app.skin_name
                                 let mut selected = 0usize;
@@ -18720,6 +18745,77 @@ mod cli_startup_flags_tests {
         .unwrap();
     }
 
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn lock_cli_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::skin::lock_skin_env()
+    }
+
+    struct EnvRestore {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvRestore {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn open_appearance(app: &mut App) {
+        app.config_opts.drop_menus = true;
+        press(app, KeyCode::F(9));
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        press(app, KeyCode::Right);
+        for _ in 0..4 {
+            press(app, KeyCode::Down);
+        }
+        press(app, KeyCode::Enter);
+    }
+
+    fn appearance_list(app: &App) -> (Vec<String>, usize, bool) {
+        match &app.ui_mode {
+            UiMode::AppearanceDialog {
+                skins,
+                selected,
+                draft_shadows,
+                ..
+            } => (skins.clone(), *selected, *draft_shadows),
+            _ => panic!("expected AppearanceDialog"),
+        }
+    }
+
+    fn select_appearance_skin(app: &mut App, name: &str) {
+        let (skins, selected, _) = appearance_list(app);
+        let target = skins
+            .iter()
+            .position(|s| s == name)
+            .unwrap_or_else(|| panic!("skin {name} not in {skins:?}"));
+        if target > selected {
+            for _ in 0..(target - selected) {
+                press(app, KeyCode::Down);
+            }
+        } else {
+            for _ in 0..(selected - target) {
+                press(app, KeyCode::Up);
+            }
+        }
+    }
+
     #[test]
     fn defaults_enable_mouse_and_subshell() {
         let root = temp_workspace();
@@ -18773,6 +18869,86 @@ mod cli_startup_flags_tests {
         let fallback = crate::skin::load_palette_by_name(&app.skin_name);
         let default = crate::skin::load_default_palette();
         assert_eq!(fallback.core_default_bg, default.core_default_bg);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mc_skin_selects_named_skin_and_cli_wins() {
+        let _lock = lock_cli_env();
+        let root = temp_workspace();
+        let _skin = EnvRestore::set("MC_SKIN", "dark");
+        let mut app = make_app(&root);
+        apply_mc_skin_env(&mut app);
+        assert_eq!(app.skin_name, "dark");
+        let pal = crate::skin::load_palette_by_name(&app.skin_name);
+        let default = crate::skin::load_default_palette();
+        assert_ne!(pal.core_default_bg, default.core_default_bg);
+
+        apply_cli_args(&mut app, &["-S".into(), "classic".into()]).unwrap();
+        assert_eq!(app.skin_name, "classic", "-S must beat MC_SKIN");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_mc_skin_keeps_name_and_falls_back() {
+        let _lock = lock_cli_env();
+        let root = temp_workspace();
+        let _skin = EnvRestore::set("MC_SKIN", "no-such-skin-rmc");
+        let mut app = make_app(&root);
+        apply_mc_skin_env(&mut app);
+        assert_eq!(app.skin_name, "no-such-skin-rmc");
+        let fallback = crate::skin::load_palette_by_name(&app.skin_name);
+        let default = crate::skin::load_default_palette();
+        assert_eq!(fallback.core_default_bg, default.core_default_bg);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn appearance_lists_skins_apply_changes_palette_and_shadows() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        assert!(app.shadows, "GNU default: Shadows on");
+        open_appearance(&mut app);
+        let (skins, _, draft_shadows) = appearance_list(&app);
+        assert!(
+            skins.iter().any(|s| s == "default"),
+            "Appearance must list default: {skins:?}"
+        );
+        assert!(
+            skins.iter().any(|s| s == "dark"),
+            "Appearance must list installed dark: {skins:?}"
+        );
+        assert!(draft_shadows);
+
+        select_appearance_skin(&mut app, "dark");
+        // Tab: SkinList → Shadows → Ok
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.skin_name, "dark");
+        let applied = crate::skin::load_palette_by_name(&app.skin_name);
+        let default = crate::skin::load_default_palette();
+        assert_ne!(
+            applied.core_default_bg, default.core_default_bg,
+            "applying Appearance skin must change palette pairs"
+        );
+
+        let cfg = root.join("cfg");
+        rmc_core::config::save_setup_to(&app, &cfg).unwrap();
+        let ini = std::fs::read_to_string(cfg.join("ini")).unwrap();
+        assert!(
+            ini.contains("skin=dark"),
+            "Save setup must persist the Appearance skin, got {ini}"
+        );
+
+        open_appearance(&mut app);
+        press(&mut app, KeyCode::Tab); // Shadows
+        press(&mut app, KeyCode::Char(' '));
+        let (_, _, draft_shadows) = appearance_list(&app);
+        assert!(!draft_shadows, "Space toggles Shadows");
+        press(&mut app, KeyCode::Tab); // Ok
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.shadows, "OK applies Shadows for this process");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -4,24 +4,35 @@ use crossterm::style::Color;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Load the default palette from data/skins/default.ini.
-/// Search order:
-/// 1) MC_SKIN (path to a skin ini file)
-/// 2) ./data/skins/default.ini relative to current working directory
-/// 3) Workspace default relative to crate: <workspace>/data/skins/default.ini
-///
-/// Falls back to McPalette::default() if not found or parse fails.
+/// Non-empty trimmed `MC_SKIN` (skin name or path). `None` if unset or blank.
+/// GNU mc(1): this sits between `-S`/`--skin` and the ini `skin=` value.
+pub fn mc_skin_env_name() -> Option<String> {
+    match std::env::var("MC_SKIN") {
+        Ok(val) => {
+            let val = val.trim();
+            if val.is_empty() {
+                None
+            } else {
+                Some(val.to_string())
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// Load the shipped default palette (`default.ini` via the skin search order).
+/// Unknown / unreadable named skins fall back here — not to `MC_SKIN`.
 pub fn load_default_palette() -> McPalette {
-    if let Ok(p) = std::env::var("MC_SKIN") {
-        if let Ok(pal) = load_from_file(Path::new(&p)) {
+    if let Some(path) = find_skin_path_by_name("default") {
+        if let Ok(pal) = load_from_file(&path) {
             return pal;
         }
     }
-    let candidates = [
+    let bundled = [
         PathBuf::from("data/skins/default.ini"),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/skins/default.ini"),
     ];
-    for p in candidates {
+    for p in bundled {
         if let Ok(pal) = load_from_file(&p) {
             return pal;
         }
@@ -284,46 +295,86 @@ fn parse_color_name(name: &str) -> Option<Color> {
     }
 }
 
-/// Return a list of available skin names (without .ini), always including "default".
-/// Search in:
-/// - $MC_SKIN (basename without extension)
-/// - ./data/skins/*.ini
-/// - <workspace>/data/skins/*.ini
+/// GNU mc(1) directories searched for a named skin (first match wins):
+/// `~/.local/share/mc/skins`, `~/.config/mc/skins`, `/etc/mc/skins`,
+/// `/usr/share/mc/skins`, then the Apache-2.0 skins shipped in `data/skins`.
+pub fn skin_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            let home = PathBuf::from(home);
+            dirs.push(home.join(".local/share/mc/skins"));
+            dirs.push(home.join(".config/mc/skins"));
+        }
+    }
+    dirs.push(PathBuf::from("/etc/mc/skins"));
+    dirs.push(PathBuf::from("/usr/share/mc/skins"));
+    dirs.push(PathBuf::from("data/skins"));
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/skins"));
+    dirs
+}
+
+fn is_explicit_path(name: &str) -> bool {
+    Path::new(name).is_absolute() || name.contains('/')
+}
+
+/// Resolve `path` as a skin file, trying with and without a `.ini` suffix.
+fn existing_skin_file(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    let ext = path.extension().and_then(|s| s.to_str());
+    if ext.is_some_and(|e| e.eq_ignore_ascii_case("ini")) {
+        let no_ext = path.with_extension("");
+        if no_ext.is_file() {
+            return Some(no_ext);
+        }
+    } else {
+        let mut with_ini = path.to_path_buf();
+        with_ini.set_extension("ini");
+        if with_ini.is_file() {
+            return Some(with_ini);
+        }
+    }
+    None
+}
+
+fn scan_skin_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        let p = ent.path();
+        if !p.is_file() {
+            continue;
+        }
+        let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem.is_empty() {
+            continue;
+        }
+        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if ext.is_empty() || ext.eq_ignore_ascii_case("ini") {
+            out.insert(stem.to_string());
+        }
+    }
+}
+
+/// Return available skin names (without `.ini`), always including `"default"`.
+/// Names come from [`skin_search_dirs`] (user, system, then shipped files).
 pub fn list_available_skins() -> Vec<String> {
     use std::collections::BTreeSet;
     let mut names: BTreeSet<String> = BTreeSet::new();
     names.insert("default".to_string());
-    if let Ok(p) = std::env::var("MC_SKIN") {
-        let path = PathBuf::from(p);
-        if path.is_file() {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                names.insert(stem.to_string());
-            }
-        }
+    for dir in skin_search_dirs() {
+        scan_skin_dir(&dir, &mut names);
     }
-    let scan_dir = |dir: &Path, out: &mut BTreeSet<String>| {
-        if let Ok(rd) = fs::read_dir(dir) {
-            for ent in rd.flatten() {
-                let p = ent.path();
-                if p.extension().and_then(|s| s.to_str()).unwrap_or("") == "ini" {
-                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                        out.insert(stem.to_string());
-                    }
-                }
-            }
-        }
-    };
-    scan_dir(&PathBuf::from("data/skins"), &mut names);
-    scan_dir(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/skins"),
-        &mut names,
-    );
     names.into_iter().collect()
 }
 
-/// Load the palette for a skin name. Missing or unreadable names fall back to
-/// [`load_default_palette`] — the same path Options → Appearance uses when a
-/// named skin cannot be resolved (including `"default"`, which is not a file).
+/// Load the palette for a skin name or path. Missing or unreadable names fall
+/// back to [`load_default_palette`] — the same path Options → Appearance uses.
 pub fn load_palette_by_name(name: &str) -> McPalette {
     if let Some(path) = find_skin_path_by_name(name) {
         if let Ok(pal) = load_from_file(&path) {
@@ -333,27 +384,28 @@ pub fn load_palette_by_name(name: &str) -> McPalette {
     load_default_palette()
 }
 
-/// Resolve a skin name to a file path according to the same search order
-/// used by `list_available_skins` (except that "default" returns None).
+/// Resolve a skin name or path. Command-line / `MC_SKIN` / ini may be an
+/// absolute path (with or without `.ini`); otherwise search [`skin_search_dirs`].
 pub fn find_skin_path_by_name(name: &str) -> Option<PathBuf> {
-    if name.eq_ignore_ascii_case("default") {
+    let name = name.trim();
+    if name.is_empty() {
         return None;
     }
-    if let Ok(p) = std::env::var("MC_SKIN") {
-        let path = PathBuf::from(&p);
-        if path.is_file() {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if stem.eq_ignore_ascii_case(name) {
-                    return Some(path);
-                }
-            }
+    if is_explicit_path(name) {
+        return existing_skin_file(Path::new(name));
+    }
+    for dir in skin_search_dirs() {
+        if let Some(path) = existing_skin_file(&dir.join(name)) {
+            return Some(path);
         }
     }
-    let candidates = [
-        PathBuf::from("data/skins").join(format!("{name}.ini")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../data/skins/{name}.ini")),
-    ];
-    candidates.into_iter().find(|p| p.is_file())
+    None
+}
+
+#[cfg(test)]
+pub(crate) fn lock_skin_env() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
@@ -472,6 +524,144 @@ mod tests {
         assert_eq!(missing.core_default_fg, default.core_default_fg);
         let named_default = load_palette_by_name("default");
         assert_eq!(named_default.core_default_bg, default.core_default_bg);
+        assert!(
+            find_skin_path_by_name("default").is_some(),
+            "shipped default.ini must resolve by name"
+        );
+    }
+
+    fn lock_skin_env() -> std::sync::MutexGuard<'static, ()> {
+        super::lock_skin_env()
+    }
+
+    struct EnvRestore {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvRestore {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn write_core_skin(path: &Path, pair: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(
+            path,
+            format!("[core]\n_default_ = {pair}\nselected = black;cyan\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mc_skin_env_selects_named_skin_and_missing_falls_back() {
+        let _lock = lock_skin_env();
+        let _skin = EnvRestore::set("MC_SKIN", "dark");
+        let name = mc_skin_env_name().expect("MC_SKIN");
+        assert_eq!(name, "dark");
+        let dark = load_palette_by_name(&name);
+        let default = load_default_palette();
+        assert_ne!(
+            dark.core_default_bg, default.core_default_bg,
+            "MC_SKIN=dark must load the dark palette"
+        );
+
+        let _skin = EnvRestore::set("MC_SKIN", "no-such-skin-rmc");
+        let missing_name = mc_skin_env_name().expect("MC_SKIN");
+        assert_eq!(missing_name, "no-such-skin-rmc");
+        assert!(find_skin_path_by_name(&missing_name).is_none());
+        let missing = load_palette_by_name(&missing_name);
+        assert_eq!(missing.core_default_bg, default.core_default_bg);
+        assert_eq!(missing.core_default_fg, default.core_default_fg);
+    }
+
+    #[test]
+    fn skin_search_user_dirs_first_match_wins_with_or_without_ini() {
+        let _lock = lock_skin_env();
+        let root = std::env::temp_dir().join(format!(
+            "rmc-skin-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = root.join("home");
+        let local = home.join(".local/share/mc/skins");
+        let config = home.join(".config/mc/skins");
+        write_core_skin(&local.join("orderskin.ini"), "red;blue");
+        write_core_skin(&config.join("orderskin.ini"), "white;green");
+        write_core_skin(&config.join("bareext"), "yellow;red");
+
+        let _home = EnvRestore::set("HOME", home.to_str().unwrap());
+        let listed = list_available_skins();
+        assert!(
+            listed.iter().any(|s| s == "orderskin"),
+            "Appearance list missing orderskin: {listed:?}"
+        );
+        assert!(listed.iter().any(|s| s == "bareext"));
+        assert!(listed.iter().any(|s| s == "default"));
+        assert!(listed.iter().any(|s| s == "dark"));
+
+        let order_path = find_skin_path_by_name("orderskin").expect("orderskin");
+        assert_eq!(order_path, local.join("orderskin.ini"));
+        let pal = load_from_file(&order_path).unwrap();
+        assert_eq!(pal.core_default_bg, Color::Blue, "local share wins");
+
+        let by_ext = find_skin_path_by_name("orderskin.ini").expect("orderskin.ini");
+        assert_eq!(by_ext, local.join("orderskin.ini"));
+
+        let bare = find_skin_path_by_name("bareext").expect("bareext");
+        assert_eq!(bare, config.join("bareext"));
+        let bare_ini = find_skin_path_by_name("bareext.ini").expect("bareext.ini");
+        assert_eq!(bare_ini, config.join("bareext"));
+
+        let abs = local.join("orderskin.ini");
+        assert_eq!(
+            find_skin_path_by_name(abs.to_str().unwrap()).as_deref(),
+            Some(abs.as_path())
+        );
+        assert_eq!(
+            find_skin_path_by_name(abs.with_extension("").to_str().unwrap()).as_deref(),
+            Some(abs.as_path()),
+            "absolute path without .ini finds the .ini file"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mc_skin_path_loads_without_searching_dirs() {
+        let _lock = lock_skin_env();
+        let root = std::env::temp_dir().join(format!(
+            "rmc-skin-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = root.join("custom.ini");
+        write_core_skin(&file, "black;magenta");
+        let _skin = EnvRestore::set("MC_SKIN", file.to_str().unwrap());
+        let name = mc_skin_env_name().unwrap();
+        let pal = load_palette_by_name(&name);
+        assert_eq!(pal.core_default_bg, Color::Magenta);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
