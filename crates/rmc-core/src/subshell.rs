@@ -1,9 +1,80 @@
 use anyhow::{anyhow, Result};
 use std::env;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use users::os::unix::UserExt;
+
+/// GNU mc(1) “The subshell support”: the concurrent subshell (and command-line
+/// `-c` execution) is the binary in `$SHELL`; if that is unset or empty, the
+/// login shell from `/etc/passwd`; last resort `/bin/sh`.
+///
+/// GNU documents the invocation override as `SHELL=/bin/myshell mc` — there is
+/// no dedicated CLI flag for the shell binary (`-U`/`-u` only enable/disable
+/// the concurrent PTY).
+pub fn resolve_user_shell() -> PathBuf {
+    resolve_user_shell_with(
+        env::var_os("SHELL").map(PathBuf::from),
+        login_shell_from_passwd(),
+    )
+}
+
+/// Select a subshell binary with GNU mc(1) precedence. Empty `$SHELL` is treated
+/// as unset (an empty path cannot be exec'd).
+pub fn resolve_user_shell_with(
+    shell_env: Option<PathBuf>,
+    passwd_shell: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(p) = shell_env {
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    if let Some(p) = passwd_shell {
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+    PathBuf::from("/bin/sh")
+}
+
+fn login_shell_from_passwd() -> Option<PathBuf> {
+    let user = users::get_user_by_uid(users::get_current_uid())?;
+    let shell = user.shell();
+    if shell.as_os_str().is_empty() {
+        None
+    } else {
+        Some(shell.to_path_buf())
+    }
+}
+
+/// GNU mc(1) concurrent subshell works with bash, ash (BusyBox and Debian),
+/// (o/m)ksh, tcsh, zsh and fish. Those (and POSIX `sh`/`dash`) accept `-i`.
+/// Custom `SHELL=/bin/myshell` overrides are spawned without extra flags so a
+/// wrapper that does not implement `-i` still attaches.
+fn wants_interactive_flag(shell: &Path) -> bool {
+    let name = shell.file_name().and_then(OsStr::to_str).unwrap_or("");
+    matches!(
+        name,
+        "bash"
+            | "rbash"
+            | "zsh"
+            | "fish"
+            | "tcsh"
+            | "csh"
+            | "ksh"
+            | "mksh"
+            | "oksh"
+            | "pdksh"
+            | "ksh93"
+            | "dash"
+            | "ash"
+            | "sh"
+            | "busybox"
+    )
+}
 
 /// State for the shell command line and output buffer.
 #[derive(Debug, Clone)]
@@ -326,11 +397,16 @@ impl Subshell {
         self.history_draft = None;
     }
 
-    /// Execute the current command line using the user's shell.
-    /// - Uses $SHELL or falls back to /bin/sh
-    /// - Runs with `current_dir` set to `cwd`
-    /// - Captures combined stdout+stderr into output_lines
+    /// Execute the current command line using the GNU-selected user shell.
+    ///
+    /// Uses [`resolve_user_shell`] (`$SHELL`, else passwd login shell, else
+    /// `/bin/sh`) with `-c`, `current_dir` set to `cwd`, and combined
+    /// stdout+stderr captured into `output_lines`.
     pub fn execute_current(&mut self, cwd: &Path) -> Result<ExecOutcome> {
+        self.execute_with_shell(cwd, &resolve_user_shell())
+    }
+
+    fn execute_with_shell(&mut self, cwd: &Path, shell: &Path) -> Result<ExecOutcome> {
         let cmd_owned = self.cmdline.trim().to_string();
         if cmd_owned.is_empty() {
             return Ok(ExecOutcome {
@@ -338,9 +414,7 @@ impl Subshell {
                 output_collected: false,
             });
         }
-        // Determine shell to use
-        let shell_path = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let child = Command::new(shell_path)
+        let child = Command::new(shell)
             .arg("-c")
             .arg(&cmd_owned)
             .current_dir(cwd)
@@ -348,7 +422,14 @@ impl Subshell {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| anyhow!("failed to spawn shell for command '{}': {}", cmd_owned, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "failed to spawn shell '{}' for command '{}': {}",
+                    shell.display(),
+                    cmd_owned,
+                    e
+                )
+            })?;
         let output = child
             .wait_with_output()
             .map_err(|e| anyhow!("failed to wait for command '{}': {}", cmd_owned, e))?;
@@ -541,14 +622,26 @@ pub struct PtySession {
     writer: Box<dyn std::io::Write + Send>,
     output: Arc<Mutex<Vec<u8>>>,
     // Best-effort current dir tracking; updated only via hints in spawn().
-    cwd_hint: Option<std::path::PathBuf>,
+    cwd_hint: Option<PathBuf>,
+    /// Binary exec'd for this session ([`resolve_user_shell`] at spawn).
+    shell_path: PathBuf,
 }
 
 impl PtySession {
-    /// Spawn a persistent $SHELL (or /bin/sh) under a PTY.
+    /// Spawn a persistent GNU-selected user shell under a PTY (C-o when `-U`).
+    ///
+    /// Uses [`resolve_user_shell`] so `SHELL=/bin/myshell mcr` overrides the
+    /// passwd login shell and the `/bin/sh` last resort. Known interactive
+    /// shells (bash, zsh, fish, tcsh, …) get `-i`; custom override binaries
+    /// do not.
+    ///
     /// - `cwd`: working directory to start in
     /// - `rows`, `cols`: initial terminal size
     pub fn spawn(cwd: &Path, rows: u16, cols: u16) -> Result<Self> {
+        Self::spawn_with_shell(&resolve_user_shell(), cwd, rows, cols)
+    }
+
+    fn spawn_with_shell(shell: &Path, cwd: &Path, rows: u16, cols: u16) -> Result<Self> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(portable_pty::PtySize {
@@ -559,13 +652,15 @@ impl PtySession {
             })
             .map_err(|e| anyhow!("failed to open PTY: {}", e))?;
 
-        let shell_path = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut cmd = portable_pty::CommandBuilder::new(shell_path);
-        // Request an interactive shell; many shells auto-detect TTY and become interactive,
-        // but explicit -i improves compatibility without affecting `echo` in tests.
-        cmd.arg("-i");
+        let mut cmd = portable_pty::CommandBuilder::new(shell);
+        // Known GNU mc(1) subshell binaries accept `-i`; a custom SHELL override
+        // may not. A PTY already makes bash/zsh/fish/tcsh interactive.
+        if wants_interactive_flag(shell) {
+            cmd.arg("-i");
+        }
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
+        cmd.env("SHELL", shell.as_os_str());
 
         let child = pair
             .slave
@@ -610,6 +705,7 @@ impl PtySession {
             writer,
             output,
             cwd_hint: Some(cwd.to_path_buf()),
+            shell_path: shell.to_path_buf(),
         })
     }
 
@@ -661,6 +757,11 @@ impl PtySession {
     /// Best-effort hint of the cwd initially requested at spawn time.
     pub fn current_dir_hint(&self) -> Option<&Path> {
         self.cwd_hint.as_deref()
+    }
+
+    /// Shell binary exec'd for this PTY session.
+    pub fn shell_path(&self) -> &Path {
+        &self.shell_path
     }
 }
 
@@ -879,5 +980,227 @@ mod tests {
         ss.delete_char();
         assert_eq!(ss.cmdline, "caf");
         assert_eq!(ss.cursor(), 3);
+    }
+
+    #[test]
+    fn resolve_user_shell_env_wins_over_passwd_and_bin_sh() {
+        let override_path = PathBuf::from("/bin/myshell");
+        let passwd = PathBuf::from("/usr/bin/zsh");
+        assert_eq!(
+            resolve_user_shell_with(Some(override_path.clone()), Some(passwd.clone())),
+            override_path,
+            "GNU invocation override: SHELL=/bin/myshell mcr"
+        );
+        assert_eq!(
+            resolve_user_shell_with(None, Some(passwd.clone())),
+            passwd,
+            "unset SHELL uses passwd login shell, not /bin/sh"
+        );
+        assert_eq!(
+            resolve_user_shell_with(Some(PathBuf::new()), Some(passwd.clone())),
+            passwd,
+            "empty SHELL is treated as unset"
+        );
+        assert_eq!(
+            resolve_user_shell_with(None, None),
+            PathBuf::from("/bin/sh")
+        );
+        assert_eq!(
+            resolve_user_shell_with(None, Some(PathBuf::new())),
+            PathBuf::from("/bin/sh")
+        );
+    }
+
+    #[test]
+    fn resolve_user_shell_live_env_wins_over_hardcoded_bin_sh() {
+        match env::var_os("SHELL") {
+            Some(s) if !s.is_empty() => {
+                let got = resolve_user_shell();
+                assert_eq!(got, PathBuf::from(&s));
+                if Path::new(&s) != Path::new("/bin/sh") {
+                    assert_ne!(
+                        got,
+                        PathBuf::from("/bin/sh"),
+                        "$SHELL must win over the /bin/sh last resort"
+                    );
+                }
+            }
+            _ => {
+                let got = resolve_user_shell();
+                if let Some(passwd) = login_shell_from_passwd() {
+                    assert_eq!(got, passwd);
+                } else {
+                    assert_eq!(got, PathBuf::from("/bin/sh"));
+                }
+            }
+        }
+    }
+
+    fn write_recording_shell(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+        let shell = dir.join(name);
+        let argv_log = dir.join(format!("{name}.argv"));
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nexec /bin/sh \"$@\"\n",
+            argv_log.display()
+        );
+        fs::write(&shell, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&shell).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&shell, perms).unwrap();
+        }
+        (shell, argv_log)
+    }
+
+    fn wait_for_argv_log(path: &Path) -> String {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(s) = fs::read_to_string(path) {
+                if !s.trim().is_empty() {
+                    return s;
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[test]
+    fn execute_with_shell_override_wins_over_default() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let (wrapper, argv_log) = write_recording_shell(cwd, "myshell");
+        let mut ss = Subshell::new();
+        ss.cmdline = "echo override-c-exec".to_string();
+        let out = ss.execute_with_shell(cwd, &wrapper).unwrap();
+        assert_eq!(out.exit_code, 0);
+        let got = ss.output_lines.join("\n");
+        assert!(got.contains("override-c-exec"), "output: {got}");
+        let logged = fs::read_to_string(&argv_log).unwrap_or_default();
+        assert!(
+            logged.contains(wrapper.file_name().unwrap().to_str().unwrap()),
+            "must exec SHELL override, not /bin/sh; argv log: {logged}"
+        );
+        assert!(
+            logged.lines().any(|l| l == "-c"),
+            "command-line execution uses -c; argv log: {logged}"
+        );
+    }
+
+    #[test]
+    fn execute_current_runs_resolved_shell_as_dollar_zero() {
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let mut ss = Subshell::new();
+        ss.cmdline = "printf '%s\\n' \"$0\"".to_string();
+        ss.execute_current(cwd).unwrap();
+        let got = ss.output_lines.join("\n");
+        let shell = resolve_user_shell();
+        let shell_s = shell.to_string_lossy();
+        let name = shell.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        assert!(
+            got.contains(shell_s.as_ref()) || (!name.is_empty() && got.contains(name)),
+            "execute_current must run resolve_user_shell() as $0, got {got:?} want {shell_s}"
+        );
+    }
+
+    #[test]
+    fn execute_with_dash_override_is_not_bin_sh_when_dash_exists() {
+        let dash = Path::new("/bin/dash");
+        if !dash.exists() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let cwd = dir.path();
+        let mut ss = Subshell::new();
+        ss.cmdline = "readlink -f /proc/$$/exe".to_string();
+        ss.execute_with_shell(cwd, dash).unwrap();
+        let got = ss.output_lines.join("\n");
+        let exe = got.lines().next().unwrap_or("").trim();
+        let base = Path::new(exe)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        assert_eq!(
+            base, "dash",
+            "SHELL=/bin/dash must exec dash, not sh; output: {got}"
+        );
+    }
+
+    #[test]
+    fn pty_spawn_records_override_shell_and_skips_dash_i_for_custom_name() {
+        let dir = match tempdir() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let cwd = dir.path();
+        let (wrapper, argv_log) = write_recording_shell(cwd, "myshell");
+        let mut sess = match PtySession::spawn_with_shell(&wrapper, cwd, 24, 80) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        assert_eq!(sess.shell_path(), wrapper.as_path());
+        let logged = wait_for_argv_log(&argv_log);
+        let _ = sess.kill();
+        assert!(
+            logged.contains("myshell"),
+            "C-o PTY must exec SHELL override; argv log: {logged}"
+        );
+        assert!(
+            !logged.lines().any(|l| l == "-i"),
+            "custom override must not be given -i; argv log: {logged}"
+        );
+    }
+
+    #[test]
+    fn pty_spawn_passes_interactive_flag_for_bash_named_override() {
+        let dir = match tempdir() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let cwd = dir.path();
+        let (wrapper, argv_log) = write_recording_shell(cwd, "bash");
+        let mut sess = match PtySession::spawn_with_shell(&wrapper, cwd, 24, 80) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        assert_eq!(sess.shell_path(), wrapper.as_path());
+        let logged = wait_for_argv_log(&argv_log);
+        let _ = sess.kill();
+        assert!(
+            logged.lines().any(|l| l == "-i"),
+            "bash/zsh/fish/tcsh PTY subshell is interactive; argv log: {logged}"
+        );
+    }
+
+    #[test]
+    fn pty_session_public_spawn_uses_resolved_user_shell() {
+        let dir = match tempdir() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let mut sess = match PtySession::spawn(dir.path(), 24, 80) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        assert_eq!(sess.shell_path(), resolve_user_shell().as_path());
+        let _ = sess.kill();
+    }
+
+    #[test]
+    fn wants_interactive_flag_for_gnu_embedded_shells() {
+        for name in [
+            "bash", "zsh", "fish", "tcsh", "dash", "ash", "ksh", "mksh", "sh",
+        ] {
+            assert!(
+                wants_interactive_flag(Path::new(&format!("/usr/bin/{name}"))),
+                "{name}"
+            );
+        }
+        assert!(!wants_interactive_flag(Path::new("/bin/myshell")));
+        assert!(!wants_interactive_flag(Path::new("/tmp/custom-shell")));
     }
 }

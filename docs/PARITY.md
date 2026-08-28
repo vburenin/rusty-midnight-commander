@@ -195,9 +195,9 @@ From mcdiff(1) and mc(1) “Internal Diff Viewer”:
 ## 10) Subshell / command line — Status: Later
 
 From mc(1) “Shell Command Line”, “The subshell support”:
-- [ ] Embedded subshell (bash, zsh, tcsh, fish, etc. where enabled)
+- [x] Embedded subshell (bash, zsh, tcsh, fish, etc. where enabled): C-o PTY execs the GNU-selected shell (`$SHELL`, else passwd login shell) when `-U`/subshell is on
 - [x] Toggle panels vs subshell/output: C-o; suspend/return behavior
-- [ ] SHELL override on invocation
+- [x] SHELL override on invocation (`SHELL=/bin/myshell mcr`; no dedicated CLI flag — matches GNU mc(1))
 - [x] `-U`/`--subshell` or `-u`/`--nosubshell` flags (last of the pair wins; `-u` does not spawn/attach a PTY on C-o)
 - [x] Command line editing keys (Emacs-like) and filename helpers (see Section 3)
 

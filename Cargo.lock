@@ -1702,6 +1702,7 @@ dependencies = [
  "time 0.3.55",
  "toml",
  "unicode-width",
+ "users",
  "walkdir",
  "zip",
 ]

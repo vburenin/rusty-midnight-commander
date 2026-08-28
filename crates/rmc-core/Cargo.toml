@@ -22,6 +22,7 @@ rmc-diff = { path = "../rmc-diff" }
 walkdir.workspace = true
 portable-pty = "0.8"
 regex = "1"
+users.workspace = true
 
 [dev-dependencies]
 tempfile = "3.10"
