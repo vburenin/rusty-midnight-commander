@@ -810,7 +810,7 @@ fn draw_sftp_host_key_dialog(
     show_shadow: bool,
 ) {
     let title = rmc_fs::sftpfs::HostKeyPrompt::dialog_title();
-    let w = (cols as usize).min(72).max(40) as u16;
+    let w = (cols as usize).clamp(40, 72) as u16;
     let inner = w.saturating_sub(4) as usize;
     let lines = wrap_dialog_lines(&prompt.dialog_message(), inner);
     let h = (lines.len() as u16 + 6).min(rows.saturating_sub(2)).max(8);

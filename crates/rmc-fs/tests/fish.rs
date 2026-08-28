@@ -1,5 +1,5 @@
 //! FISH / shell VFS against a local fake SSH server (no internet).
-#[path = "fake_ssh.rs"]
+#[path = "support/fake_ssh.rs"]
 mod fake_ssh;
 
 use fake_ssh::{fixture_tree, lock_host_keys, FakeSsh};

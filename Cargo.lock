@@ -2574,6 +2574,7 @@ dependencies = [
  "isobemak",
  "libc",
  "librarium",
+ "rand_core 0.6.4",
  "rars",
  "russh",
  "russh-sftp",

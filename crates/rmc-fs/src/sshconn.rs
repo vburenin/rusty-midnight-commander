@@ -163,9 +163,7 @@ fn key_type_name(key: &PublicKey) -> String {
 }
 
 fn fingerprint_sha256(key: &PublicKey) -> String {
-    match key.fingerprint(HashAlg::Sha256) {
-        fp => format!("{fp}"),
-    }
+    format!("{}", key.fingerprint(HashAlg::Sha256))
 }
 
 fn known_hosts_line(host: &str, port: u16, key: &PublicKey) -> String {
@@ -349,11 +347,10 @@ async fn try_publickey(session: &mut Handle<ClientHandler>, user: &str) -> FsRes
 /// Open an SSH session (password and/or default public keys).
 pub(crate) async fn connect_handle(url: &RemoteUrl) -> FsResult<Handle<ClientHandler>> {
     let port = url.port.unwrap_or(22);
-    let mut config = russh::client::Config::default();
-    config.inactivity_timeout = Some(CONNECT_TIMEOUT);
-    if url.compression {
-        // Best-effort; russh default preferred list may already include zlib.
-    }
+    let config = russh::client::Config {
+        inactivity_timeout: Some(CONNECT_TIMEOUT),
+        ..Default::default()
+    };
     lock_state().last_prompt = None;
     let handler = ClientHandler {
         host: url.host.clone(),

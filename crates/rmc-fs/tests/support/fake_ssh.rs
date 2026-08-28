@@ -2,9 +2,7 @@
 use rand_core::OsRng;
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId, CryptoVec};
-use russh_sftp::protocol::{
-    Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode, Version,
-};
+use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Status, StatusCode};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -370,6 +368,7 @@ pub struct FakeSsh {
     join: Option<JoinHandle<()>>,
 }
 
+#[allow(dead_code)] // included from both sftpfs and fish integration tests
 impl FakeSsh {
     pub fn spawn(tree: BTreeMap<String, Node>) -> Self {
         let (tx, rx) = mpsc::channel();

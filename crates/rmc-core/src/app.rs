@@ -945,7 +945,7 @@ pub struct HelpState {
     pub history: Vec<String>, // simple back stack
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SftpHostKeyFocus {
     Yes,
     Ignore,
@@ -3571,7 +3571,10 @@ mod tests {
         match &app.ui_mode {
             UiMode::SftpHostKeyDialog { focus, prompt, .. } => {
                 assert_eq!(*focus, SftpHostKeyFocus::No);
-                assert_eq!(prompt.dialog_title(), "SFTP filesystem");
+                assert_eq!(
+                    rmc_fs::sftpfs::HostKeyPrompt::dialog_title(),
+                    "SFTP filesystem"
+                );
                 assert!(prompt.dialog_message().contains("Yes"));
                 assert!(prompt.dialog_message().contains("Ignore"));
                 assert!(prompt.dialog_message().contains("No"));

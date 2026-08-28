@@ -1,5 +1,5 @@
 //! sftpfs against a local fake SSH/SFTP server (no internet).
-#[path = "fake_ssh.rs"]
+#[path = "support/fake_ssh.rs"]
 mod fake_ssh;
 
 use fake_ssh::{fixture_tree, lock_host_keys, FakeSsh};
@@ -162,7 +162,10 @@ fn sftpfs_unknown_host_key_stashes_prompt_yes_adds() {
     let prompt = take_host_key_prompt().expect("host key prompt");
     assert!(matches!(prompt.kind, rmc_fs::sftpfs::HostKeyKind::Unknown));
     assert!(err.to_string().contains("known_hosts"));
-    assert_eq!(prompt.dialog_title(), "SFTP filesystem");
+    assert_eq!(
+        rmc_fs::sftpfs::HostKeyPrompt::dialog_title(),
+        "SFTP filesystem"
+    );
     assert!(prompt.dialog_message().contains("Yes"));
     assert!(prompt.dialog_message().contains("Ignore"));
     assert!(prompt.dialog_message().contains("No"));
