@@ -187,13 +187,15 @@ pub struct ConfigOptions {
     /// the per-file name is omitted (totals/bar only).
     pub verbose: bool,
     /// GNU mc Options → Configuration → Compute totals. Default **true**.
-    /// When true, Copy/Move pre-scans total size/count so the progress bar has
-    /// a real denominator. When false, skip the pre-scan (progress may be
-    /// indeterminate / file-by-file only).
+    /// When true (and Verbose operation is on), Copy/Move pre-scans total
+    /// size/count so the progress bar has a real denominator. When false, skip
+    /// the pre-scan (progress may be indeterminate / file-by-file only).
+    /// Has no effect if Verbose operation is disabled (GNU mc(1)).
     pub compute_totals: bool,
     /// GNU mc Options → Configuration → Classic progressbar. Default **true**.
-    /// When true, Copy/Move uses GNU mc's classic one-line `****` bar. When
-    /// false, use two bars (File + Total).
+    /// Appearance preference for Copy/Move gauge growth: when true, bars always
+    /// fill left-to-right; when false, fill follows the operation direction
+    /// (left panel → right panel, or right panel → left panel).
     pub classic_progressbar: bool,
     pub use_internal_view: bool, // default true — keep F3 internal viewer by default
     pub use_internal_edit: bool, // default true — keep F4 internal editor by default
@@ -2793,6 +2795,7 @@ impl App {
             &src,
             &dst,
             &self.config_opts,
+            self.active,
         )?;
         let mut flags = self.config_opts.copy_flags();
         flags.follow_links = self.copy_op_flags.follow_links;
@@ -3215,9 +3218,68 @@ mod tests {
                 assert_eq!(state.bytes_total, None);
                 let view = state.view(47, false);
                 assert!(view.total_bytes.is_none());
+                assert!(view.total_bar.is_none());
+                assert!(view.file_bar.is_some());
             }
             _ => panic!("expected FileOpProgress"),
         }
+    }
+
+    #[test]
+    fn begin_file_op_skips_prescan_when_verbose_off() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, vec![0xCDu8; 900]).unwrap();
+        app.config_opts.compute_totals = true;
+        app.config_opts.verbose = false;
+        app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+        match &app.ui_mode {
+            UiMode::FileOpProgress { state, .. } => {
+                assert_eq!(
+                    state.bytes_total, None,
+                    "GNU mc: Compute totals has no effect when Verbose is off"
+                );
+                assert!(!state.compute_totals);
+                let view = state.view(47, false);
+                assert!(view.total_bytes.is_none());
+                assert!(view.total_bar.is_none());
+            }
+            _ => panic!("expected FileOpProgress"),
+        }
+        app.abort_file_op().unwrap();
+    }
+
+    #[test]
+    fn begin_file_op_classic_off_right_panel_grows_rtl() {
+        let (mut app, tmp, _, _) = app_with_distinct_panes();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        std::fs::write(&src, vec![0xABu8; 100]).unwrap();
+        app.active = PaneSide::Right;
+        app.config_opts.classic_progressbar = false;
+        app.config_opts.compute_totals = true;
+        app.config_opts.verbose = true;
+        app.begin_file_op(CopyMoveOp::Copy, src, dst).unwrap();
+        match &app.ui_mode {
+            UiMode::FileOpProgress { state, .. } => {
+                assert!(state.grow_rtl);
+                // Seed mid-copy counters so fill direction is visible.
+                let mut mid = state.clone();
+                mid.apply_counters(50, 100, 50, 0, "src.bin");
+                let view = mid.view(47, false);
+                let bar = view.file_bar.expect("File gauge");
+                let start = bar.find('[').unwrap();
+                let end = bar.find(']').unwrap();
+                let fill = &bar[start + 1..end];
+                assert!(
+                    fill.starts_with(' ') && fill.ends_with('*'),
+                    "right→left Copy fills RTL: {bar}"
+                );
+            }
+            _ => panic!("expected FileOpProgress"),
+        }
+        app.abort_file_op().unwrap();
     }
 
     #[test]
