@@ -4,9 +4,8 @@
 //! - `/#sftp:[user@]machine:[port]/[remote-dir]`
 //! - `sftp://[user@]machine:[port]/[remote-dir]`
 //!
-//! Browse (`list_dir`), `stat`, `read_file`, and copy-out are supported.
-//! Upload / write / mkdir / delete are a follow-up (CompositeFs still routes
-//! those through the generic remote helpers).
+//! Browse (`list_dir`), `stat`, `read_file`, copy-out, and write ops
+//! (copy-in, mkdir, delete, rename) when credentials allow.
 //!
 //! Host keys are checked against `~/.ssh/known_hosts`. Missing or mismatched
 //! keys stash a [`sshconn::HostKeyPrompt`] for the GNU SFTP filesystem
@@ -162,6 +161,92 @@ pub fn read_file(url: &RemoteUrl) -> FsResult<Box<dyn Read + Send>> {
         .map_err(|e| FsError::Message(format!("temp reopen: {e}")))?;
     drop(tmp);
     Ok(Box::new(f))
+}
+
+pub fn copy_in(src: &Path, url: &RemoteUrl) -> FsResult<()> {
+    let data = std::fs::read(src)?;
+    sshconn::block_on(async {
+        let live = sftp_session(url).await?;
+        live.sftp
+            .write(&url.path, &data)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP write: {e}")))?;
+        Ok(())
+    })
+}
+
+pub fn mkdir(url: &RemoteUrl) -> FsResult<()> {
+    sshconn::block_on(async {
+        let live = sftp_session(url).await?;
+        live.sftp
+            .create_dir(&url.path)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP mkdir: {e}")))?;
+        Ok(())
+    })
+}
+
+pub fn remove(url: &RemoteUrl, recursive: bool) -> FsResult<()> {
+    sshconn::block_on(async {
+        let live = sftp_session(url).await?;
+        remove_at(&live.sftp, &url.path, recursive).await
+    })
+}
+
+async fn remove_at(sftp: &SftpSession, path: &str, recursive: bool) -> FsResult<()> {
+    let attrs = sftp.metadata(path).await.ok();
+    let is_dir = attrs.as_ref().map(|a| a.is_dir()).unwrap_or(false);
+    if is_dir && recursive {
+        let read = sftp
+            .read_dir(path)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP readdir: {e}")))?;
+        for ent in read {
+            let name = ent.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child = if path.ends_with('/') {
+                format!("{path}{name}")
+            } else if path == "/" {
+                format!("/{name}")
+            } else {
+                format!("{path}/{name}")
+            };
+            Box::pin(remove_at(sftp, &child, true)).await?;
+        }
+        sftp.remove_dir(path)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP rmdir: {e}")))?;
+        return Ok(());
+    }
+    if is_dir {
+        sftp.remove_dir(path)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP rmdir: {e}")))
+    } else {
+        sftp.remove_file(path)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP rm: {e}")))
+    }
+}
+
+pub fn rename(src: &RemoteUrl, dst: &RemoteUrl) -> FsResult<()> {
+    sshconn::block_on(async {
+        let live = sftp_session(src).await?;
+        live.sftp
+            .rename(&src.path, &dst.path)
+            .await
+            .map_err(|e| FsError::Message(format!("SFTP rename: {e}")))?;
+        Ok(())
+    })
+}
+
+pub fn write_file(url: &RemoteUrl) -> FsResult<Box<dyn std::io::Write + Send>> {
+    let url = url.clone();
+    Ok(Box::new(crate::staging::StagingWrite::new(move |p| {
+        copy_in(p, &url)
+    })?))
 }
 
 pub use sshconn::{

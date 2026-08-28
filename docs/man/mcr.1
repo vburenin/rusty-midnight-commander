@@ -73,9 +73,16 @@ Print a short usage summary and exit.
 Enter on a supported archive browses it as a directory;
 .B ..
 leaves it. Copy from inside an archive to a local panel extracts
-(copy-out). Creating, deleting, or copying
+(copy-out). Creating, deleting, renaming, or copying
 .I into
-an archive is not supported.
+an archive is refused (read-only file system). FTP
+.RB ( ftp://
+/ \fB/#ftp:\fR), SFTP
+.RB ( sftp://
+/ \fB/#sftp:\fR), and FISH
+.RB ( sh://
+/ \fB/#sh:\fR) panels support copy-in, mkdir, rename, and delete when
+the server allows.
 .PP
 Shipped browse + copy-out backends: tar, tar.gz/tgz, zip, cpio
 (and cpio.gz), ar, rpm, deb, iso, rar, 7z, lha/lzh.

@@ -4,9 +4,8 @@
 //! - `/#ftp:[!][user[:pass]@]machine[:port]/[remote-dir]`
 //! - `ftp://[user[:pass]@]machine[:port]/[remote-dir]`
 //!
-//! Browse (`list_dir`), `stat`, `read_file`, and copy-out are supported.
-//! Upload / write / mkdir / delete are a follow-up (CompositeFs still routes
-//! those through the generic remote helpers).
+//! Browse (`list_dir`), `stat`, `read_file`, copy-out, and write ops
+//! (copy-in, mkdir, delete, rename) when the server allows.
 //!
 //! The `ftp` crate always uses PASV; a GNU `#ftp:!` prefix is accepted and
 //! ignored. Errors are plain [`FsError`] strings for the existing error dialog.
@@ -333,6 +332,91 @@ pub fn read_file(url: &RemoteUrl) -> FsResult<Box<dyn Read + Send>> {
         .map_err(|e| FsError::Message(format!("temp reopen: {e}")))?;
     drop(tmp);
     Ok(Box::new(f))
+}
+
+pub fn copy_in(src: &Path, url: &RemoteUrl) -> FsResult<()> {
+    let mut f = std::fs::File::open(src)?;
+    let mut session = FtpSession::connect(url)?;
+    session
+        .inner
+        .put(&url.path, &mut f)
+        .map_err(|e| FsError::Message(format!("FTP STOR: {e}")))?;
+    Ok(())
+}
+
+pub fn mkdir(url: &RemoteUrl) -> FsResult<()> {
+    let mut session = FtpSession::connect(url)?;
+    session
+        .inner
+        .mkdir(&url.path)
+        .map_err(|e| FsError::Message(format!("FTP MKD: {e}")))?;
+    Ok(())
+}
+
+pub fn remove(url: &RemoteUrl, recursive: bool) -> FsResult<()> {
+    let mut session = FtpSession::connect(url)?;
+    remove_at(&mut session, &url.path, recursive)
+}
+
+fn remove_at(session: &mut FtpSession, path: &str, recursive: bool) -> FsResult<()> {
+    if recursive {
+        if let Ok(entries) = session.list_entries(path) {
+            for e in entries {
+                let child = child_remote_path(path, &e.name);
+                if e.is_dir {
+                    remove_at(session, &child, true)?;
+                } else {
+                    session
+                        .inner
+                        .rm(&child)
+                        .map_err(|e| FsError::Message(format!("FTP DELE: {e}")))?;
+                }
+            }
+            #[allow(deprecated)]
+            session
+                .inner
+                .rmdir(path)
+                .map_err(|e| FsError::Message(format!("FTP RMDIR: {e}")))?;
+            return Ok(());
+        }
+    }
+    match session.inner.rm(path) {
+        Ok(()) => Ok(()),
+        Err(_) =>
+        {
+            #[allow(deprecated)]
+            session
+                .inner
+                .rmdir(path)
+                .map_err(|e| FsError::Message(format!("FTP DELE: {e}")))
+        }
+    }
+}
+
+fn child_remote_path(parent: &str, name: &str) -> String {
+    if parent.ends_with('/') {
+        format!("{parent}{name}")
+    } else if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+pub fn rename(src: &RemoteUrl, dst: &RemoteUrl) -> FsResult<()> {
+    let mut session = FtpSession::connect(src)?;
+    session
+        .inner
+        .rename(&src.path, &dst.path)
+        .map_err(|e| FsError::Message(format!("FTP RNFR/RNTO: {e}")))?;
+    Ok(())
+}
+
+pub fn write_file(url: &RemoteUrl) -> FsResult<Box<dyn std::io::Write + Send>> {
+    let url = url.clone();
+    Ok(Box::new(crate::staging::StagingWrite::new(move |p| {
+        copy_in(p, &url)
+    })?))
 }
 
 #[cfg(test)]

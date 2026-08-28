@@ -5746,7 +5746,10 @@ impl TerminalApp {
                         if *focus_ok {
                             if !value.is_empty() {
                                 let dir = active_cwd.join(value.clone());
-                                app.vfs.mkdir(&dir)?;
+                                if let Err(e) = app.vfs.mkdir(&dir) {
+                                    app.show_error_dialog(format!("{e}"));
+                                    return Ok(());
+                                }
                             }
                             app.reload_panels()?;
                         }
@@ -5830,7 +5833,10 @@ impl TerminalApp {
                     KeyCode::Tab => *focus_ok = !*focus_ok,
                     KeyCode::Enter => {
                         if *focus_ok {
-                            app.vfs.remove(path, true)?;
+                            if let Err(e) = app.vfs.remove(path, true) {
+                                app.show_error_dialog(format!("{e}"));
+                                return Ok(());
+                            }
                             app.reload_panels()?;
                         }
                         app.ui_mode = UiMode::Normal;
@@ -8176,7 +8182,10 @@ impl TerminalApp {
                                 focus_ok: app.config_opts.delete_confirm_focus_ok(),
                             };
                         } else {
-                            let _ = app.vfs.remove(&path, true);
+                            if let Err(e) = app.vfs.remove(&path, true) {
+                                app.show_error_dialog(format!("{e}"));
+                                return Ok(());
+                            }
                             app.reload_panels()?;
                         }
                     }

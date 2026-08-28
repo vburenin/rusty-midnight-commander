@@ -196,3 +196,45 @@ fn zip_parent_navigation_dots() {
     let p3 = find_parent_path(&vfs, &p2);
     assert_eq!(p3, zip_path.parent().unwrap().to_path_buf());
 }
+
+#[test]
+fn archive_writes_are_readonly_file_system() {
+    let tmp = tempdir().unwrap();
+    let src_root = tmp.path().join("src");
+    fs::create_dir_all(&src_root).unwrap();
+    make_sample_tree(&src_root);
+    let tar_path = tmp.path().join("sample.tar");
+    build_tar(&tar_path, &src_root);
+    let zip_path = tmp.path().join("sample.zip");
+    build_zip(&zip_path, &src_root);
+
+    let vfs = CompositeFs::new();
+    for archive in [&tar_path, &zip_path] {
+        let root = anchor_path(archive);
+        assert!(!vfs.is_writable(&root), "{}", archive.display());
+        let mkdir_err = vfs.mkdir(&root.join("newdir")).unwrap_err().to_string();
+        assert!(mkdir_err.contains("Cannot create directory"), "{mkdir_err}");
+        assert!(mkdir_err.contains("Read-only file system"), "{mkdir_err}");
+        let del_err = vfs
+            .remove(&root.join("root.txt"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(del_err.contains("Cannot delete file"), "{del_err}");
+        assert!(del_err.contains("Read-only file system"), "{del_err}");
+        let local = tmp.path().join("probe.txt");
+        fs::write(&local, b"nope").unwrap();
+        let copy_err = vfs
+            .copy(&local, &root.join("probe.txt"))
+            .unwrap_err()
+            .to_string();
+        assert!(copy_err.contains("Cannot create target file"), "{copy_err}");
+        assert!(copy_err.contains("Read-only file system"), "{copy_err}");
+        // Copy-out still works.
+        let out = tmp.path().join(format!(
+            "out-{}",
+            archive.file_name().unwrap().to_string_lossy()
+        ));
+        vfs.copy(&root.join("root.txt"), &out).unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), "root");
+    }
+}
