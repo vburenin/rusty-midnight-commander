@@ -142,7 +142,8 @@ pub struct FileEntry {
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
-    /// Hard-link count (`st_nlink`). Parent markers and missing stat fall back to 1.
+    /// Hard-link count (`st_nlink`). Missing stat falls back to 1. Local listing
+    /// `..` uses the parent directory's real nlink; panelize markers stay 1.
     pub nlink: u64,
     /// Filesystem inode (`st_ino`). Archives and remote use 0.
     pub inode: u64,

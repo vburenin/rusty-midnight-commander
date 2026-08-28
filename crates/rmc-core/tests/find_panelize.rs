@@ -161,7 +161,23 @@ fn listing_and_panelize_copy_nlink() -> Result<()> {
         .expect("plain.txt listed");
     assert_eq!(listed.nlink, 1);
     if let Some(parent) = app.active_panel().entries.iter().find(|e| e.name == "..") {
-        assert_eq!(parent.nlink, 1);
+        // Listing `..` stats the real parent directory (GNU Full listing). Do not
+        // assume nlink == 1; GHA/cloud parents often have many subdirectory links.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let expected = std::fs::metadata(root.parent().expect("tempdir parent"))
+                .map(|m| m.nlink())
+                .unwrap_or(1);
+            assert_eq!(
+                parent.nlink, expected,
+                "listing `..` nlink matches parent dir"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(parent.nlink >= 1);
+        }
     }
 
     app.panelize_paths(std::slice::from_ref(&f1), Some(&root))?;

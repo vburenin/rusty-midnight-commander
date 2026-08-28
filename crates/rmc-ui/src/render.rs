@@ -7946,10 +7946,17 @@ mod gnu_default_chrome_colors_tests {
         );
         assert!(!file_row.contains("70K") && !file_row.contains("71K"));
 
-        assert!(
-            bottom.contains(" / ") && bottom.contains('%'),
-            "free-space in bottom frame: {bottom:?}"
+        let cwd = &app.left.cwd;
+        let expect_free = matches!(
+            (fs2::available_space(cwd), fs2::total_space(cwd)),
+            (Ok(_), Ok(_))
         );
+        if expect_free {
+            assert!(
+                bottom.contains(" / ") && bottom.contains('%'),
+                "free-space in bottom frame: {bottom:?}"
+            );
+        }
         assert_eq!(bottom.chars().next(), Some('└'));
         assert_eq!(bottom.chars().last(), Some('┘'));
         assert_eq!(

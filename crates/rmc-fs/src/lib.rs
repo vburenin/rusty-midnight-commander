@@ -23,9 +23,11 @@ pub struct Metadata {
     pub permissions: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
-    /// Hard-link count (`st_nlink`). Archives, remote VFS, and `..` markers use 1.
+    /// Hard-link count (`st_nlink`). Archives and remote VFS use 1. Local listing
+    /// `..` uses the parent directory's real `st_nlink`.
     pub nlink: u64,
-    /// Filesystem inode (`st_ino`). Archives, remote, extfs, and `..` use 0.
+    /// Filesystem inode (`st_ino`). Archives, remote, and extfs use 0. Local listing
+    /// `..` uses the parent directory inode.
     pub inode: u64,
 }
 
@@ -646,20 +648,24 @@ mod tests {
         let ent = list.iter().find(|e| e.name == "plain.txt").unwrap();
         assert_eq!(ent.meta.nlink, 1);
         let parent = list.iter().find(|e| e.name == "..").unwrap();
-        assert!(
-            parent.meta.nlink >= 1,
-            "parent `..` uses the real parent directory nlink"
-        );
-        assert_ne!(
-            parent.meta.modified,
-            SystemTime::UNIX_EPOCH,
-            "parent `..` mtime is the real parent directory, not epoch"
-        );
-        let expected = std::fs::metadata(dir.path().parent().expect("tempdir parent"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        assert_eq!(parent.meta.modified, expected);
+        let parent_path = dir.path().parent().expect("tempdir parent");
+        let disk = std::fs::metadata(parent_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                parent.meta.nlink,
+                disk.nlink(),
+                "parent `..` uses the real parent directory nlink"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(parent.meta.nlink >= 1);
+        }
+        // Match disk even when the parent timestamp is Unix epoch (common on
+        // cloud/GHA checkouts). Do not require non-epoch unless the fixture sets mtime.
+        assert_eq!(parent.meta.modified, disk.modified().unwrap());
     }
 
     #[cfg(unix)]
