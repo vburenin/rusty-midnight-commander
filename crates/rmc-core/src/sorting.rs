@@ -197,6 +197,8 @@ mod tests {
                 group: None,
                 nlink: 1,
                 inode: 0,
+                uid: 0,
+                gid: 0,
                 is_stale_symlink: false,
             }
         }
