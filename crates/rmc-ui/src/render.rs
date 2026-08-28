@@ -538,7 +538,9 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::MkdirDialog { value, focus_ok } => {
             draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok, app.shadows);
         }
-        rmc_core::app::UiMode::DeleteDialog { name, .. } => {
+        rmc_core::app::UiMode::DeleteDialog { name, focus_ok, .. } => {
+            let yes = if *focus_ok { "< Yes >" } else { "  Yes  " };
+            let no = if *focus_ok { "  No  " } else { "< No >" };
             draw_dialog_box(
                 p,
                 cols,
@@ -546,7 +548,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 pal,
                 "Delete",
                 &format!("Delete \"{name}\"?"),
-                &["< Yes >", "No"],
+                &[yes, no],
                 app.shadows,
             );
         }
@@ -1151,9 +1153,9 @@ fn draw_configuration_dialog(
     show_shadow: bool,
 ) {
     let title = "Configuration";
-    // Width based on longest label; 13 options + 2 rows for buttons/title
+    // Width based on longest label; 14 options + 2 rows for buttons/title
     let w = 60u16.min(cols.saturating_sub(2)).max(40);
-    let h = 19u16.min(rows.saturating_sub(2)).max(15);
+    let h = 20u16.min(rows.saturating_sub(2)).max(16);
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
@@ -1192,7 +1194,7 @@ fn draw_configuration_dialog(
     p.text(&ttl);
     // Options (checkboxes)
     use rmc_core::app::ConfigOptionsFocus as F;
-    let items: [(&str, bool, F); 13] = [
+    let items: [(&str, bool, F); 14] = [
         ("Verbose operation", draft.verbose, F::Verbose),
         ("Compute totals", draft.compute_totals, F::ComputeTotals),
         (
@@ -1230,6 +1232,7 @@ fn draw_configuration_dialog(
             draft.complete_show_all,
             F::CompleteShowAll,
         ),
+        ("Safe delete", draft.safe_delete, F::SafeDelete),
     ];
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     for (i, (label, on, lf)) in items.iter().enumerate() {
