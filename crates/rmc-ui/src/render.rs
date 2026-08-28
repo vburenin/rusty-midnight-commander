@@ -8514,12 +8514,11 @@ mod gnu_default_chrome_colors_tests {
             grid[6][2].ch, 'C',
             "Cargo.lock starts after the type cell: {file_row:?}"
         );
-        assert_eq!(
-            grid[3][2].ch, 'd',
-            "docs starts after `/`: {dir_row:?}"
-        );
+        assert_eq!(grid[3][2].ch, 'd', "docs starts after `/`: {dir_row:?}");
         let docs_x = dir_row.find("/docs").expect("/docs in listing row");
-        let lock_x = file_row.find("Cargo.lock").expect("Cargo.lock in listing row");
+        let lock_x = file_row
+            .find("Cargo.lock")
+            .expect("Cargo.lock in listing row");
         assert_eq!(
             lock_x,
             docs_x + 1,

@@ -1713,14 +1713,19 @@ mod tests {
         assert_eq!(listing_type_char(&make_entry("..", 0, now, true)), ' ');
         let regular = make_entry("Cargo.lock", 72688, now, false);
         assert_eq!(listing_type_char(&regular), ' ');
-        assert!(
-            format_user_listing_line(&regular, &tokens, 40, false, false).starts_with(" Cargo.lock"),
-            "type cell space is not optional for regular files"
+        let regular_line = format_user_listing_line(&regular, &tokens, 40, false, false);
+        assert_eq!(
+            regular_line.chars().next(),
+            Some(' '),
+            "type cell space is not optional for regular files: {regular_line:?}"
         );
-        assert!(
-            format_user_listing_line(&make_entry("..", 0, now, true), &tokens, 40, false, false)
-                .starts_with(" .."),
-            "parent `..` keeps the GNU type-cell space"
+        assert!(regular_line.contains("Cargo.lock"), "{regular_line:?}");
+        let parent_line =
+            format_user_listing_line(&make_entry("..", 0, now, true), &tokens, 40, false, false);
+        assert_eq!(
+            parent_line.chars().next(),
+            Some(' '),
+            "parent `..` keeps the GNU type-cell space: {parent_line:?}"
         );
         assert_eq!(
             full_listing_sort_indicator(SortBy::Name, SortDir::Asc),
