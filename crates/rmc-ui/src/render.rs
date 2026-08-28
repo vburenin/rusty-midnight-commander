@@ -5484,6 +5484,7 @@ fn draw_jobs_dialog(
             let status = match job.status {
                 rmc_core::jobs::JobStatus::Queued => "Queued",
                 rmc_core::jobs::JobStatus::Running => "Running",
+                rmc_core::jobs::JobStatus::Stopped => "Stopped",
                 rmc_core::jobs::JobStatus::Done => "Done",
                 rmc_core::jobs::JobStatus::Failed => "Failed",
                 rmc_core::jobs::JobStatus::Cancelled => "Cancelled",
@@ -5492,7 +5493,7 @@ fn draw_jobs_dialog(
             p.text(&st);
         }
     }
-    // Buttons
+    // GNU mc Background jobs: Stop / Restart / Kill, plus Clean up and OK.
     let sel_btn = |want: rmc_core::app::JobsDialogFocus, txt: &str| {
         if focus == want {
             format!("< {txt} >")
@@ -5501,12 +5502,11 @@ fn draw_jobs_dialog(
         }
     };
     p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    let btns = format!(
-        "{}  {}  {}",
-        sel_btn(rmc_core::app::JobsDialogFocus::Cancel, "Cancel"),
-        sel_btn(rmc_core::app::JobsDialogFocus::Cleanup, "Clean up"),
-        sel_btn(rmc_core::app::JobsDialogFocus::Ok, "OK")
-    );
+    let btns = rmc_core::app::JOBS_DIALOG_BUTTONS
+        .iter()
+        .map(|(f, txt)| sel_btn(*f, txt))
+        .collect::<Vec<_>>()
+        .join("  ");
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
     p.goto(bx, y + h - 2);
     p.text(&btns);

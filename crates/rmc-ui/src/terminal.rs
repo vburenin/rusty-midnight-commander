@@ -5895,20 +5895,22 @@ impl TerminalApp {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Tab => {
-                        *focus = match *focus {
-                            JF::List => JF::Cancel,
-                            JF::Cancel => JF::Cleanup,
-                            JF::Cleanup => JF::Ok,
-                            JF::Ok => JF::List,
-                        };
+                        *focus = focus.cycle(false);
                     }
                     KeyCode::BackTab => {
-                        *focus = match *focus {
-                            JF::List => JF::Ok,
-                            JF::Cancel => JF::List,
-                            JF::Cleanup => JF::Cancel,
-                            JF::Ok => JF::Cleanup,
-                        };
+                        *focus = focus.cycle(true);
+                    }
+                    KeyCode::Left if !matches!(*focus, JF::List) => {
+                        *focus = focus.cycle(true);
+                        if matches!(*focus, JF::List) {
+                            *focus = JF::Ok;
+                        }
+                    }
+                    KeyCode::Right if !matches!(*focus, JF::List) => {
+                        *focus = focus.cycle(false);
+                        if matches!(*focus, JF::List) {
+                            *focus = JF::Stop;
+                        }
                     }
                     KeyCode::Up => {
                         if matches!(*focus, JF::List) && *selected_index > 0 {
@@ -5923,12 +5925,49 @@ impl TerminalApp {
                             }
                         }
                     }
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        let id = app.jobs.snapshot().get(*selected_index).map(|j| j.id);
+                        if let Some(id) = id {
+                            let _ = app.jobs.stop(id);
+                        }
+                    }
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        let id = app.jobs.snapshot().get(*selected_index).map(|j| j.id);
+                        if let Some(id) = id {
+                            let _ = app.jobs.restart(id);
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Char('K') => {
+                        let id = app.jobs.snapshot().get(*selected_index).map(|j| j.id);
+                        if let Some(id) = id {
+                            let _ = app.jobs.kill(id);
+                            let total = app.jobs.snapshot().len();
+                            if *selected_index >= total {
+                                *selected_index = total.saturating_sub(1);
+                            }
+                        }
+                    }
                     KeyCode::Enter => match *focus {
-                        JF::Cancel => {
-                            let snap = app.jobs.snapshot();
-                            if !snap.is_empty() && *selected_index < snap.len() {
-                                let id = snap[*selected_index].id;
-                                let _ = app.jobs.cancel(id);
+                        JF::Stop => {
+                            let id = app.jobs.snapshot().get(*selected_index).map(|j| j.id);
+                            if let Some(id) = id {
+                                let _ = app.jobs.stop(id);
+                            }
+                        }
+                        JF::Restart => {
+                            let id = app.jobs.snapshot().get(*selected_index).map(|j| j.id);
+                            if let Some(id) = id {
+                                let _ = app.jobs.restart(id);
+                            }
+                        }
+                        JF::Kill => {
+                            let id = app.jobs.snapshot().get(*selected_index).map(|j| j.id);
+                            if let Some(id) = id {
+                                let _ = app.jobs.kill(id);
+                                let total = app.jobs.snapshot().len();
+                                if *selected_index >= total {
+                                    *selected_index = total.saturating_sub(1);
+                                }
                             }
                         }
                         JF::Cleanup => {
@@ -7823,7 +7862,7 @@ impl TerminalApp {
                             // Open Background jobs dialog
                             app.ui_mode = UiMode::JobsDialog {
                                 selected_index: 0,
-                                focus: rmc_core::app::JobsDialogFocus::Cancel,
+                                focus: rmc_core::app::JobsDialogFocus::List,
                             };
                             return Ok(());
                         }
@@ -28556,5 +28595,229 @@ mod learn_keys_tests {
             "C-\\\\ still opens the hotlist after Learn keys"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod jobs_dialog_stop_restart_kill_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::{App, JobsDialogFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::jobs::JobStatus;
+    use rmc_fs::local::LocalFs;
+    use rmc_fs::CopyFlags;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    fn temp_workspace() -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-jobs-dialog-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn press_ctrl(app: &mut App, c: char) {
+        TerminalApp::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+            10,
+        )
+        .unwrap();
+    }
+
+    fn open_jobs_dialog(app: &mut App) {
+        press_ctrl(app, 'x');
+        press(app, KeyCode::Char('j'));
+    }
+
+    fn jobs_focus(app: &App) -> JobsDialogFocus {
+        match &app.ui_mode {
+            UiMode::JobsDialog { focus, .. } => *focus,
+            _ => panic!("expected JobsDialog"),
+        }
+    }
+
+    fn wait_status(app: &App, id: rmc_core::jobs::JobId, want: JobStatus, ms: u64) {
+        let start = Instant::now();
+        loop {
+            if app.jobs.get(id).map(|j| j.status) == Some(want) {
+                return;
+            }
+            if start.elapsed() > Duration::from_millis(ms) {
+                panic!("job {id} did not reach {want:?}: {:?}", app.jobs.get(id));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn ctrl_x_j_opens_jobs_dialog_on_list() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_jobs_dialog(&mut app);
+        assert!(matches!(
+            app.ui_mode,
+            UiMode::JobsDialog {
+                selected_index: 0,
+                focus: JobsDialogFocus::List,
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_cycles_stop_restart_kill_cleanup_ok() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_jobs_dialog(&mut app);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::List);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Stop);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Restart);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Kill);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Cleanup);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Ok);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::List);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Ok);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stop_restart_enter_and_letter_keys() {
+        let root = temp_workspace();
+        let src = root.join("big.bin");
+        let dst = root.join("out.bin");
+        std::fs::write(&src, vec![0xABu8; 8 * 1024 * 1024]).unwrap();
+        let mut app = make_app(&root);
+        let id = app.jobs.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                use_cow_file_cloning: false,
+                preallocate_space: false,
+                ..CopyFlags::default()
+            },
+        );
+        let start = Instant::now();
+        loop {
+            match app.jobs.get(id).map(|j| j.status) {
+                Some(JobStatus::Running) if app.jobs.get(id).unwrap().bytes_done > 0 => break,
+                Some(s) if s.is_finished() => {
+                    panic!("copy finished before Stop could be tested: {s:?}");
+                }
+                _ => {}
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                panic!("copy never advanced: {:?}", app.jobs.get(id));
+            }
+            std::thread::yield_now();
+        }
+        open_jobs_dialog(&mut app);
+        press(&mut app, KeyCode::Tab); // Stop
+        press(&mut app, KeyCode::Enter);
+        wait_status(&app, id, JobStatus::Stopped, 5_000);
+
+        press(&mut app, KeyCode::Tab); // Restart
+        press(&mut app, KeyCode::Enter);
+        let start = Instant::now();
+        loop {
+            match app.jobs.get(id).map(|j| j.status) {
+                Some(JobStatus::Running | JobStatus::Done) => break,
+                Some(JobStatus::Stopped) => {}
+                other => panic!("unexpected after Restart: {other:?}"),
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                panic!("Restart did not resume: {:?}", app.jobs.get(id));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Kill via GNU accelerator, whether still running or already done.
+        press(&mut app, KeyCode::Char('k'));
+        assert!(
+            app.jobs.get(id).is_none(),
+            "Kill letter-key must remove the job"
+        );
+        assert!(matches!(app.ui_mode, UiMode::JobsDialog { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn kill_button_removes_and_cleanup_drops_finished() {
+        let root = temp_workspace();
+        let src = root.join("tiny.bin");
+        let dst = root.join("tiny.out");
+        std::fs::write(&src, b"hi").unwrap();
+        let mut app = make_app(&root);
+        let id = app.jobs.spawn_copy_with_flags(
+            &src,
+            &dst,
+            CopyFlags {
+                use_cow_file_cloning: false,
+                ..CopyFlags::default()
+            },
+        );
+        let start = Instant::now();
+        loop {
+            if app
+                .jobs
+                .get(id)
+                .map(|j| j.status.is_finished())
+                .unwrap_or(false)
+            {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                panic!("tiny copy did not finish: {:?}", app.jobs.get(id));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.jobs.get(id).unwrap().status, JobStatus::Done);
+        open_jobs_dialog(&mut app);
+        // List → Stop → Restart → Kill → Cleanup
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Tab);
+        }
+        assert_eq!(jobs_focus(&app), JobsDialogFocus::Cleanup);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.jobs.get(id).is_none(), "Clean up drops finished jobs");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gnu_button_labels_are_stop_restart_kill() {
+        assert_eq!(
+            rmc_core::app::JOBS_DIALOG_BUTTONS
+                .iter()
+                .map(|(_, s)| *s)
+                .collect::<Vec<_>>(),
+            vec!["Stop", "Restart", "Kill", "Clean up", "OK"]
+        );
     }
 }

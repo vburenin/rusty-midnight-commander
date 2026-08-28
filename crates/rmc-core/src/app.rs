@@ -37,16 +37,49 @@ pub enum CompareDirsFocus {
     Cancel,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobsDialogFocus {
     /// The list of jobs has focus; Up/Down change selection.
     List,
-    /// Bottom-row buttons focus: Cancel selected job.
-    Cancel,
-    /// Bottom-row buttons focus: Drop finished jobs.
+    /// GNU Background jobs **Stop** (pause without cancelling).
+    Stop,
+    /// GNU Background jobs **Restart** (resume a stopped job, or re-run failed/cancelled).
+    Restart,
+    /// GNU Background jobs **Kill** (abort and remove).
+    Kill,
+    /// Drop finished (Done/Failed/Cancelled) jobs.
     Cleanup,
-    /// Bottom-row buttons focus: Close dialog (OK).
+    /// Close dialog (OK). Esc/F10 also close.
     Ok,
+}
+
+/// GNU mc Background jobs button row, plus Clean up / OK for finished jobs and dismiss.
+pub const JOBS_DIALOG_BUTTONS: &[(JobsDialogFocus, &str)] = &[
+    (JobsDialogFocus::Stop, "Stop"),
+    (JobsDialogFocus::Restart, "Restart"),
+    (JobsDialogFocus::Kill, "Kill"),
+    (JobsDialogFocus::Cleanup, "Clean up"),
+    (JobsDialogFocus::Ok, "OK"),
+];
+
+impl JobsDialogFocus {
+    pub fn cycle(self, reverse: bool) -> Self {
+        use JobsDialogFocus::*;
+        const ORDER: [JobsDialogFocus; 6] = [List, Stop, Restart, Kill, Cleanup, Ok];
+        let i = ORDER.iter().position(|f| *f == self).unwrap_or(0);
+        if reverse {
+            ORDER[(i + ORDER.len() - 1) % ORDER.len()]
+        } else {
+            ORDER[(i + 1) % ORDER.len()]
+        }
+    }
+
+    pub fn button_label(self) -> Option<&'static str> {
+        JOBS_DIALOG_BUTTONS
+            .iter()
+            .find(|(f, _)| *f == self)
+            .map(|(_, s)| *s)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2716,7 +2749,9 @@ impl App {
             );
         }
         match job.status {
-            crate::jobs::JobStatus::Queued | crate::jobs::JobStatus::Running => Ok(()),
+            crate::jobs::JobStatus::Queued
+            | crate::jobs::JobStatus::Running
+            | crate::jobs::JobStatus::Stopped => Ok(()),
             crate::jobs::JobStatus::Done | crate::jobs::JobStatus::Cancelled => {
                 self.finish_file_op_dialog()
             }
@@ -2924,6 +2959,23 @@ mod tests {
             cycle_overwrite_focus(OverwriteFocus::Yes, &order, true),
             OverwriteFocus::ZeroLength
         );
+    }
+
+    #[test]
+    fn jobs_dialog_focus_cycles_gnu_buttons() {
+        use JobsDialogFocus::*;
+        assert_eq!(List.cycle(false), Stop);
+        assert_eq!(Stop.cycle(false), Restart);
+        assert_eq!(Restart.cycle(false), Kill);
+        assert_eq!(Kill.cycle(false), Cleanup);
+        assert_eq!(Cleanup.cycle(false), Ok);
+        assert_eq!(Ok.cycle(false), List);
+        assert_eq!(List.cycle(true), Ok);
+        assert_eq!(Stop.cycle(true), List);
+        assert_eq!(Stop.button_label(), Some("Stop"));
+        assert_eq!(Restart.button_label(), Some("Restart"));
+        assert_eq!(Kill.button_label(), Some("Kill"));
+        assert_eq!(List.button_label(), None);
     }
 
     #[test]
