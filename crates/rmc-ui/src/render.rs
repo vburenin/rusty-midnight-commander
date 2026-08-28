@@ -5456,15 +5456,10 @@ pub(crate) fn panel_header_colors(pal: &McPalette) -> (Color, Color) {
 }
 
 fn format_entry_name(ent: &FileEntry) -> String {
-    if ent.is_parent_marker() {
-        return "..".to_string();
-    }
+    // GNU `type` is always one cell, including a leading space for regular
+    // files and parent `..` so names line up with `/docs` and `*run.sh`.
     let mark = rmc_core::panel::listing_type_char(ent);
-    if mark == ' ' {
-        ent.name.clone()
-    } else {
-        format!("{mark}{}", ent.name)
-    }
+    format!("{mark}{}", ent.name)
 }
 
 fn fit_right_cell(s: &str, width: usize) -> String {
@@ -8136,6 +8131,43 @@ mod gnu_default_chrome_colors_tests {
     }
 
     #[test]
+    fn format_entry_name_keeps_gnu_type_cell_including_space() {
+        let parent = epoch_parent();
+        assert_eq!(super::format_entry_name(&parent), " ..");
+        let mut dir = epoch_file("docs", 4096);
+        dir.is_dir = true;
+        assert_eq!(super::format_entry_name(&dir), "/docs");
+        let mut exe = epoch_file("run.sh", 128);
+        exe.is_exe = true;
+        assert_eq!(super::format_entry_name(&exe), "*run.sh");
+        let mut link = epoch_file("alias", 7);
+        link.is_symlink = true;
+        assert_eq!(super::format_entry_name(&link), "@alias");
+        let file = epoch_file("Cargo.lock", 72688);
+        assert_eq!(super::format_entry_name(&file), " Cargo.lock");
+        let mut sock = epoch_file("sock", 0);
+        sock.permissions = 0o140_000 | 0o666;
+        assert_eq!(super::format_entry_name(&sock), "=sock");
+        let mut fifo = epoch_file("pipe", 0);
+        fifo.permissions = 0o010_000 | 0o666;
+        assert_eq!(super::format_entry_name(&fifo), "|pipe");
+        let mut chr = epoch_file("tty", 0);
+        chr.permissions = 0o020_000 | 0o666;
+        assert_eq!(super::format_entry_name(&chr), "-tty");
+        let mut blk = epoch_file("sda", 0);
+        blk.permissions = 0o060_000 | 0o666;
+        assert_eq!(super::format_entry_name(&blk), "+sda");
+        let mut stale = epoch_file("gone", 1);
+        stale.is_symlink = true;
+        stale.is_stale_symlink = true;
+        assert_eq!(super::format_entry_name(&stale), "!gone");
+        let mut linkdir = epoch_file("linked-dir", 1);
+        linkdir.is_dir = true;
+        linkdir.is_symlink = true;
+        assert_eq!(super::format_entry_name(&linkdir), "~linked-dir");
+    }
+
+    #[test]
     fn user_listing_paints_format_tokens_and_mark() {
         let mut app = panel_app(ListingFormat::User);
         app.left.user_format = "type name mark | size | bsize perm mode".into();
@@ -8438,6 +8470,11 @@ mod gnu_default_chrome_colors_tests {
         assert!(top.contains(".[^]>"), "right widgets: {top:?}");
 
         assert!(parent_row.contains(".."), "{parent_row:?}");
+        let parent_type_name: String = grid[2][1..4].iter().map(|c| c.ch).collect();
+        assert_eq!(
+            parent_type_name, " ..",
+            "GNU parent Full listing is type-cell space then `..`: {parent_row:?}"
+        );
         assert!(
             parent_row.contains("UP--DIR"),
             "only `..` is UP--DIR: {parent_row:?}"
@@ -8454,6 +8491,7 @@ mod gnu_default_chrome_colors_tests {
         );
 
         assert!(dir_row.contains("/docs"), "dir type prefix: {dir_row:?}");
+        assert_eq!(grid[3][1].ch, '/', "dir type cell: {dir_row:?}");
         assert!(dir_row.contains("4096"), "dir inode size: {dir_row:?}");
         assert!(
             !dir_row.contains("UP--DIR"),
@@ -8461,11 +8499,32 @@ mod gnu_default_chrome_colors_tests {
         );
 
         assert!(exe_row.contains("*run.sh"), "exe type prefix: {exe_row:?}");
+        assert_eq!(grid[4][1].ch, '*', "exe type cell: {exe_row:?}");
         assert!(
             link_row.contains("@alias"),
             "symlink type prefix: {link_row:?}"
         );
+        assert_eq!(grid[5][1].ch, '@', "symlink type cell: {link_row:?}");
         assert!(file_row.contains("Cargo.lock"), "{file_row:?}");
+        assert_eq!(
+            grid[6][1].ch, ' ',
+            "regular file type cell is a space, not omitted: {file_row:?}"
+        );
+        assert_eq!(
+            grid[6][2].ch, 'C',
+            "Cargo.lock starts after the type cell: {file_row:?}"
+        );
+        assert_eq!(
+            grid[3][2].ch, 'd',
+            "docs starts after `/`: {dir_row:?}"
+        );
+        let docs_x = dir_row.find("/docs").expect("/docs in listing row");
+        let lock_x = file_row.find("Cargo.lock").expect("Cargo.lock in listing row");
+        assert_eq!(
+            lock_x,
+            docs_x + 1,
+            "Cargo.lock lines up one cell right of /docs (type cell): docs={docs_x} lock={lock_x} dir={dir_row:?} file={file_row:?}"
+        );
         assert!(
             file_row.contains("72688"),
             "raw byte size, not human 70K: {file_row:?}"

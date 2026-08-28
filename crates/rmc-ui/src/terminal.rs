@@ -46,6 +46,25 @@ use std::time::{Duration, Instant};
 
 pub struct TerminalApp;
 
+/// When the event loop may queue a full-screen `Renderer::draw` (Clear+repaint).
+///
+/// GNU mc is idle-stable: it does not full-repaint unless input, C-l, or a timer
+/// that actually changed a cell (progress bars, find results, PTY output, Esc
+/// prefix expiry). The listing cursor does not blink the whole screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaintNeed {
+    /// First frame, or a key/mouse/resize was handled since the last paint.
+    input_or_first_frame: bool,
+    /// GNU C-l (`needs_full_clear`).
+    force_clear: bool,
+    /// File-op progress, find-result drain, PTY output, skin change, resize.
+    timed_ui_changed: bool,
+}
+
+fn should_full_paint(need: PaintNeed) -> bool {
+    need.input_or_first_frame || need.force_clear || need.timed_ui_changed
+}
+
 // Keep the current viewer's effective bytes alive across renders and filtering.
 // Stores the original display path and the current ViewData (may reference a temp file).
 pub(crate) struct ViewerState {
@@ -1880,7 +1899,9 @@ impl TerminalApp {
         let palette = crate::skin::load_palette_by_name(&app.skin_name);
         let mut renderer = Renderer::new(palette);
         let mut current_skin = app.skin_name.clone();
-        let mut last_draw = Instant::now();
+        // First frame must paint; after that only input / C-l / real timed UI.
+        let mut need_paint = true;
+        let mut last_term_size: Option<(u16, u16)> = None;
         // pending_ctrl_x lives on App; no local flag here
         // Double-click detection for listing rows
         let mut last_click_time: Option<Instant> = None;
@@ -1933,13 +1954,16 @@ impl TerminalApp {
                 let right = &mut app.right;
                 right.ensure_visible(right_capacity);
             }
+            let size_changed = last_term_size.replace((cols, rows)) != Some((cols, rows));
             // While subshell full-screen is shown and PTY is alive, drain and append output.
+            let mut subshell_dirty = false;
             if app.subshell.show_output_screen {
                 if let Ok(mut guard) = SUBSHELL_PTY.lock() {
                     if let Some(sess) = guard.as_mut() {
                         if sess.is_alive() {
                             let bytes = sess.drain_output();
                             if !bytes.is_empty() {
+                                subshell_dirty = true;
                                 // Convert to text, strip simple CRs, and split into lines.
                                 let text = String::from_utf8_lossy(&bytes).replace('\r', "");
                                 for line in text.split_inclusive('\n') {
@@ -1961,14 +1985,15 @@ impl TerminalApp {
                     }
                 }
             }
-            // Draw at least at 30 FPS-equivalent idle to react to resize
-            // Also check for background find results to update UI even without keypresses
+            // Background find results update the dialog even without keypresses.
+            let mut find_dirty = false;
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
                 if state.running {
                     if let Some(rx) = &state.results_rx {
                         loop {
                             match rx.try_recv() {
                                 Ok(p) => {
+                                    find_dirty = true;
                                     state.results.paths.push(p);
                                     if state.selected_index >= state.results.paths.len() {
                                         state.selected_index =
@@ -1977,6 +2002,7 @@ impl TerminalApp {
                                 }
                                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    find_dirty = true;
                                     state.running = false;
                                     state.cancel = None;
                                     state.results_rx = None;
@@ -1989,29 +2015,41 @@ impl TerminalApp {
             }
             // Apply pending skin change by reloading palette (unknown names
             // fall back the same way as startup / Options → Appearance).
+            let mut skin_dirty = false;
             if app.skin_name != current_skin {
                 renderer.set_palette(crate::skin::load_palette_by_name(&app.skin_name));
                 current_skin = app.skin_name.clone();
+                skin_dirty = true;
             }
             // Poll the jobs worker without blocking the copy. Redraw the GNU mc
             // progress dialog on every tick so File/Total bars fill, and redraw
             // immediately when Abort or completion returns to Normal.
-            let file_op = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
+            let file_op_before = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
             app.drive_pending_file_op()?;
+            let file_op_after = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
+            // GNU mc Esc-number: idle timeout must not leave a stuck Esc prefix.
+            let had_esc = app.pending_esc.is_some();
+            app.expire_esc_number_prefix();
+            let esc_expired = had_esc && app.pending_esc.is_none();
             // GNU mc(1) C-l: full clear+redraw from current App state (draw already
             // queues Clear(All)). Consume the flag before draw; do not reload panels.
             let force_repaint = app.take_needs_full_clear();
-            if force_repaint
-                || last_draw.elapsed() > Duration::from_millis(33)
-                || file_op
-                || matches!(app.ui_mode, UiMode::FileOpProgress { .. })
-            {
+            let timed_ui_changed = size_changed
+                || subshell_dirty
+                || find_dirty
+                || skin_dirty
+                || file_op_before
+                || file_op_after
+                || esc_expired;
+            if should_full_paint(PaintNeed {
+                input_or_first_frame: need_paint,
+                force_clear: force_repaint,
+                timed_ui_changed,
+            }) {
                 renderer.draw(app)?;
-                last_draw = Instant::now();
+                need_paint = false;
             }
 
-            // GNU mc Esc-number: idle timeout must not leave a stuck Esc prefix.
-            app.expire_esc_number_prefix();
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -2023,6 +2061,7 @@ impl TerminalApp {
                             rmc_core::actions::PaneSide::Right => right_rows,
                         };
                         Self::handle_key(app, key, active_page_rows)?;
+                        need_paint = true;
                     }
                     Event::Mouse(mev) => {
                         Self::dispatch_mouse(
@@ -2033,6 +2072,7 @@ impl TerminalApp {
                             &mut last_click_time,
                             &mut last_click_target,
                         )?;
+                        need_paint = true;
                     }
                     Event::Resize(c, r) => {
                         // Resize PTY if alive; redraw next loop
@@ -2041,6 +2081,7 @@ impl TerminalApp {
                                 let _ = sess.resize(r, c);
                             }
                         }
+                        need_paint = true;
                     }
                     _ => {}
                 }
@@ -26101,6 +26142,52 @@ mod panel_toggle_mark_tests {
             "OK applies Fast directory reload on"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod idle_paint_tests {
+    use super::{should_full_paint, PaintNeed};
+
+    #[test]
+    fn idle_timeout_does_not_full_paint() {
+        assert!(
+            !should_full_paint(PaintNeed::default()),
+            "idle poll timeout with nothing dirty must skip Clear+repaint"
+        );
+        assert!(!should_full_paint(PaintNeed {
+            input_or_first_frame: false,
+            force_clear: false,
+            timed_ui_changed: false,
+        }));
+    }
+
+    #[test]
+    fn consecutive_identical_idle_ticks_are_skipped() {
+        let idle = PaintNeed::default();
+        let mut paints = 0u32;
+        for _ in 0..8 {
+            if should_full_paint(idle) {
+                paints += 1;
+            }
+        }
+        assert_eq!(paints, 0, "eight idle ticks must not queue a full paint");
+    }
+
+    #[test]
+    fn input_c_l_and_timed_ui_do_paint() {
+        assert!(should_full_paint(PaintNeed {
+            input_or_first_frame: true,
+            ..PaintNeed::default()
+        }));
+        assert!(should_full_paint(PaintNeed {
+            force_clear: true,
+            ..PaintNeed::default()
+        }));
+        assert!(should_full_paint(PaintNeed {
+            timed_ui_changed: true,
+            ..PaintNeed::default()
+        }));
     }
 }
 
