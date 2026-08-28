@@ -117,10 +117,10 @@ Note: Keymaps customizable via mc.keymap; terminal “Learn keys” dialog requi
 ## 4) File operations and dialogs — Status: Foundation (basic ops), Later (the rest)
 
 Dialogs and behavior per mc(1) “File Menu”, “File operations”, and replace/confirm dialogs:
-- [ ] Copy (F5): source mask, destination (defaults to other panel), background option
+- [x] Copy (F5): source mask, destination (defaults to other panel), background option
   - [x] Options → Configuration → Preallocate space (local→local Copy/Move; remote/archive no-ops)
   - [x] Options → Configuration → Use COW file cloning (local→local Copy/Move; remote/archive no-ops)
-- [ ] Rename/Move (F6): analogous to Copy dialog/options
+- [x] Rename/Move (F6): analogous to Copy dialog/options
   - [x] Preallocate space / Use COW file cloning (same Configuration flags as Copy; copy+delete fallback honors them)
 - [x] Delete (F8): confirmation; safe-delete option flips default to No
 - [x] Mkdir (F7): input with optional auto-name
@@ -130,7 +130,7 @@ Dialogs and behavior per mc(1) “File Menu”, “File operations”, and repla
 - [x] Chown (C-x o): owner/group changes
 - [x] Links: hardlink (C-x l), absolute symlink (C-x s), relative symlink (C-x v)
   (Existing dest is refused with an error; overwrite/replace confirm is out of scope.)
-- [ ] Compute totals, classic progress bar direction (appearance preference)
+- [x] Compute totals, classic progress bar direction (appearance preference)
 
 Mark each sub-feature internally with Foundation (Copy/Move/Delete/Mkdir) vs Later (chmod/chown/links/advanced options).
 

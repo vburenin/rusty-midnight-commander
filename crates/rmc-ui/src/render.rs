@@ -6479,10 +6479,6 @@ fn draw_file_op_progress_dialog(
     }
     body.push("Target".to_string());
     body.push(view.target_path.clone());
-    if let Some(bar) = &view.classic_bar {
-        body.push(String::new());
-        body.push(bar.clone());
-    }
     if let Some(bar) = &view.file_bar {
         body.push("File".to_string());
         body.push(bar.clone());

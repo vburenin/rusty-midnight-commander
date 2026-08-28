@@ -1,5 +1,5 @@
 //! Copy/Move progress helpers honoring GNU mc Options → Configuration flags:
-//! verbose operation, compute totals, and classic progressbar.
+//! verbose operation, compute totals, and classic progressbar (fill direction).
 //!
 //! Local transfers get live 64 KiB job counters. Copy/Move from archive or
 //! remote VFS uses `vfs.copy` / `vfs.move_path`; Abort is honored between
@@ -7,6 +7,7 @@
 //! strings match the GNU mc file-operations dialog as closely as the
 //! existing Copy dialog already does. No live TUI is required to test this.
 
+use crate::actions::PaneSide;
 use crate::app::{ConfigOptions, CopyMoveOp};
 use crate::panel::format_byte_size;
 use anyhow::{bail, Result};
@@ -14,6 +15,18 @@ use rmc_fs::Vfs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+
+/// GNU mc(1): Compute totals has no effect when Verbose operation is off.
+pub fn compute_totals_active(opts: &ConfigOptions) -> bool {
+    opts.compute_totals && opts.verbose
+}
+
+/// GNU mc(1) Classic progressbar: always left-to-right when enabled.
+/// When disabled, the bar grows with the Copy/Move direction: left panel →
+/// right panel (LTR) and right panel → left panel (RTL).
+pub fn gauge_grows_right_to_left(classic_progressbar: bool, source_panel: PaneSide) -> bool {
+    !classic_progressbar && matches!(source_panel, PaneSide::Right)
+}
 
 /// Pre-scan result used as the progress-bar denominator when Compute totals is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,8 +51,11 @@ pub struct FileOpProgressState {
     pub files_done: u64,
     pub files_total: u64,
     pub verbose: bool,
+    /// Effective Compute totals (false when Verbose is off, per GNU mc(1)).
     pub compute_totals: bool,
     pub classic_progressbar: bool,
+    /// True when Classic progressbar is off and the source is the right panel.
+    pub grow_rtl: bool,
 }
 
 /// Lines the UI draws. Built from [`FileOpProgressState`] plus bar width / SI flag.
@@ -49,11 +65,9 @@ pub struct FileOpProgressView {
     /// Current file name. `None` when Verbose operation is off.
     pub source_name: Option<String>,
     pub target_path: String,
-    /// GNU mc classic one-line `****` gauge. Present when classic_progressbar is on.
-    pub classic_bar: Option<String>,
-    /// Current-file gauge. Present when classic_progressbar is off.
+    /// Current-file gauge (`****` fill; LTR or RTL per Classic progressbar).
     pub file_bar: Option<String>,
-    /// Overall-bytes gauge. Present when classic_progressbar is off and totals are known.
+    /// Overall-bytes gauge. Present when Compute totals is active.
     pub total_bar: Option<String>,
     pub files_processed: String,
     /// `Total: X of Y` byte counters. Present when Compute totals is on.
@@ -61,15 +75,20 @@ pub struct FileOpProgressView {
 }
 
 impl FileOpProgressState {
-    /// Build progress state, optionally pre-scanning `src` when `opts.compute_totals`.
+    /// Build progress state, optionally pre-scanning `src` when Compute totals
+    /// is on and Verbose operation is on. `source_panel` is the panel the files
+    /// are copied/moved from (active panel); it selects RTL fill when Classic
+    /// progressbar is off.
     pub fn prepare(
         vfs: &dyn Vfs,
         op: CopyMoveOp,
         src: &Path,
         dst: &Path,
         opts: &ConfigOptions,
+        source_panel: PaneSide,
     ) -> Result<Self> {
-        let totals = if opts.compute_totals {
+        let do_totals = compute_totals_active(opts);
+        let totals = if do_totals {
             match scan_totals(vfs, src) {
                 Ok(t) => Some(t),
                 Err(err) => {
@@ -109,8 +128,9 @@ impl FileOpProgressState {
             files_done: 0,
             files_total,
             verbose: opts.verbose,
-            compute_totals: opts.compute_totals,
+            compute_totals: do_totals,
             classic_progressbar: opts.classic_progressbar,
+            grow_rtl: gauge_grows_right_to_left(opts.classic_progressbar, source_panel),
         })
     }
 
@@ -167,38 +187,21 @@ impl FileOpProgressState {
             None
         };
         let overall_den = self.bytes_total.filter(|t| *t > 0);
-
-        if self.classic_progressbar {
-            // One-line **** bar: overall size when totals were scanned, else this file.
-            let (done, den) = match overall_den {
-                Some(t) => (self.bytes_done, Some(t)),
-                None => (self.file_done, file_den),
-            };
-            FileOpProgressView {
-                title,
-                source_name,
-                target_path: self.target_path.clone(),
-                classic_bar: Some(classic_gauge(done, den, bar_width)),
-                file_bar: None,
-                total_bar: None,
-                files_processed,
-                total_bytes,
-            }
-        } else {
-            FileOpProgressView {
-                title,
-                source_name,
-                target_path: self.target_path.clone(),
-                classic_bar: None,
-                file_bar: Some(classic_gauge(self.file_done, file_den, bar_width)),
-                total_bar: if self.compute_totals {
-                    Some(classic_gauge(self.bytes_done, overall_den, bar_width))
-                } else {
-                    None
-                },
-                files_processed,
-                total_bytes,
-            }
+        let rtl = self.grow_rtl;
+        // GNU mc(1) file-operations dialog: up to two bars (current file +
+        // overall). Classic progressbar only chooses fill *direction*.
+        FileOpProgressView {
+            title,
+            source_name,
+            target_path: self.target_path.clone(),
+            file_bar: Some(classic_gauge(self.file_done, file_den, bar_width, rtl)),
+            total_bar: if self.compute_totals {
+                Some(classic_gauge(self.bytes_done, overall_den, bar_width, rtl))
+            } else {
+                None
+            },
+            files_processed,
+            total_bytes,
         }
     }
 }
@@ -238,8 +241,9 @@ fn scan_dir(vfs: &dyn Vfs, path: &Path, totals: &mut OpTotals) -> Result<()> {
     Ok(())
 }
 
-/// GNU mc classic gauge: `[****    ]  42%`. `total == None` is indeterminate (empty fill, no %).
-pub fn classic_gauge(done: u64, total: Option<u64>, width: usize) -> String {
+/// GNU mc gauge: `[****    ]  42%` (LTR) or `[    ****]  42%` (RTL).
+/// `total == None` is indeterminate (empty fill, no %).
+pub fn classic_gauge(done: u64, total: Option<u64>, width: usize, rtl: bool) -> String {
     // "[] 100%" is 7 columns; keep at least one fill column.
     let inner = width.saturating_sub(7).max(1);
     match total {
@@ -248,8 +252,13 @@ pub fn classic_gauge(done: u64, total: Option<u64>, width: usize) -> String {
             let pct = ((done.min(t) as u128 * 100) / t as u128) as u32;
             let mut s = String::with_capacity(inner + 7);
             s.push('[');
-            s.extend(std::iter::repeat_n('*', filled));
-            s.extend(std::iter::repeat_n(' ', inner - filled));
+            if rtl {
+                s.extend(std::iter::repeat_n(' ', inner - filled));
+                s.extend(std::iter::repeat_n('*', filled));
+            } else {
+                s.extend(std::iter::repeat_n('*', filled));
+                s.extend(std::iter::repeat_n(' ', inner - filled));
+            }
             s.push(']');
             s.push_str(&format!(" {pct:3}%"));
             s
@@ -355,6 +364,7 @@ fn skip_bytes(r: &mut dyn Read, mut n: u64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::PaneSide;
     use crate::app::ConfigOptions;
     use rmc_fs::local::LocalFs;
     use std::fs;
@@ -382,7 +392,12 @@ mod tests {
         bytes_total: Option<u64>,
     }
 
-    fn copy_state(name: &str, flags: ConfigOptions, p: SampleProgress) -> FileOpProgressState {
+    fn copy_state(
+        name: &str,
+        flags: ConfigOptions,
+        p: SampleProgress,
+        source_panel: PaneSide,
+    ) -> FileOpProgressState {
         FileOpProgressState {
             op: CopyMoveOp::Copy,
             source_name: name.to_string(),
@@ -395,9 +410,25 @@ mod tests {
             files_done: 0,
             files_total: 1,
             verbose: flags.verbose,
-            compute_totals: flags.compute_totals,
+            compute_totals: compute_totals_active(&flags),
             classic_progressbar: flags.classic_progressbar,
+            grow_rtl: gauge_grows_right_to_left(flags.classic_progressbar, source_panel),
         }
+    }
+
+    fn half_progress() -> SampleProgress {
+        SampleProgress {
+            file_done: 50,
+            file_total: 100,
+            bytes_done: 50,
+            bytes_total: Some(100),
+        }
+    }
+
+    fn gauge_fill(bar: &str) -> &str {
+        let start = bar.find('[').expect("gauge [");
+        let end = bar.find(']').expect("gauge ]");
+        &bar[start + 1..end]
     }
 
     #[test]
@@ -408,6 +439,14 @@ mod tests {
         assert!(
             d.classic_progressbar,
             "GNU mc Classic progressbar defaults to true"
+        );
+        assert!(
+            compute_totals_active(&d),
+            "Compute totals is active at GNU defaults (verbose on)"
+        );
+        assert!(
+            !gauge_grows_right_to_left(d.classic_progressbar, PaneSide::Right),
+            "classic on: always LTR even from the right panel"
         );
         assert!(
             !d.preallocate_space,
@@ -430,6 +469,7 @@ mod tests {
                 bytes_done: 0,
                 bytes_total: Some(100),
             },
+            PaneSide::Left,
         );
         let off = copy_state(
             "readme.txt",
@@ -440,57 +480,95 @@ mod tests {
                 bytes_done: 0,
                 bytes_total: Some(100),
             },
+            PaneSide::Left,
         );
         let von = on.view(default_bar_width(), false);
         let voff = off.view(default_bar_width(), false);
         assert_eq!(von.source_name.as_deref(), Some("readme.txt"));
         assert_eq!(voff.source_name, None);
-        // Totals/bar remain when verbose is off.
-        assert!(voff.classic_bar.is_some());
-        assert!(voff.total_bytes.is_some());
+        // GNU: Compute totals has no effect when Verbose is off.
+        assert!(voff.total_bytes.is_none());
+        assert!(voff.total_bar.is_none());
+        assert!(voff.file_bar.is_some());
         assert!(voff.files_processed.contains("Files processed:"));
     }
 
     #[test]
-    fn classic_progressbar_toggles_bar_style() {
-        let classic = copy_state(
+    fn classic_progressbar_always_grows_ltr() {
+        let from_left = copy_state(
             "a.bin",
             opts(true, true, true),
-            SampleProgress {
-                file_done: 50,
-                file_total: 100,
-                bytes_done: 50,
-                bytes_total: Some(100),
-            },
+            half_progress(),
+            PaneSide::Left,
         );
-        let v = classic.view(default_bar_width(), false);
-        let bar = v.classic_bar.expect("classic one-line bar");
+        let from_right = copy_state(
+            "a.bin",
+            opts(true, true, true),
+            half_progress(),
+            PaneSide::Right,
+        );
+        let left = from_left.view(default_bar_width(), false);
+        let right = from_right.view(default_bar_width(), false);
+        let file = left.file_bar.as_deref().expect("File gauge");
+        let total = left.total_bar.as_deref().expect("Total gauge");
         assert!(
-            bar.contains('*'),
-            "classic bar should use GNU mc **** fill: {bar}"
+            file.contains('*') && file.starts_with('[') && file.contains('%'),
+            "{file}"
         );
-        assert!(bar.starts_with('['), "{bar}");
-        assert!(bar.contains('%'), "{bar}");
-        assert!(v.file_bar.is_none(), "classic style is one bar, not File");
-        assert!(v.total_bar.is_none(), "classic style is one bar, not Total");
+        assert!(total.contains('*'), "{total}");
+        let fill = gauge_fill(file);
+        assert!(
+            fill.starts_with('*') && fill.ends_with(' '),
+            "classic LTR fill starts on the left: {file}"
+        );
+        assert_eq!(
+            right.file_bar.as_deref(),
+            left.file_bar.as_deref(),
+            "classic on: right-panel Copy still LTR"
+        );
+        assert!(!from_right.grow_rtl);
+    }
 
-        let two = copy_state(
+    #[test]
+    fn classic_off_follows_copy_direction() {
+        let ltr = copy_state(
             "a.bin",
             opts(true, true, false),
-            SampleProgress {
-                file_done: 50,
-                file_total: 100,
-                bytes_done: 50,
-                bytes_total: Some(100),
-            },
+            half_progress(),
+            PaneSide::Left,
         );
-        let v2 = two.view(default_bar_width(), false);
-        assert!(v2.classic_bar.is_none());
-        let file = v2.file_bar.expect("two-bar File gauge");
-        let total = v2.total_bar.expect("two-bar Total gauge");
-        assert!(file.contains('*'), "{file}");
-        assert!(total.contains('*'), "{total}");
-        assert!(file.starts_with('[') && total.starts_with('['));
+        let rtl = copy_state(
+            "a.bin",
+            opts(true, true, false),
+            half_progress(),
+            PaneSide::Right,
+        );
+        assert!(!ltr.grow_rtl, "left→right stays LTR");
+        assert!(rtl.grow_rtl, "right→left grows RTL");
+        let ltr_v = ltr.view(default_bar_width(), false);
+        let rtl_v = rtl.view(default_bar_width(), false);
+        let ltr_fill = gauge_fill(ltr_v.file_bar.as_deref().unwrap());
+        let rtl_fill = gauge_fill(rtl_v.file_bar.as_deref().unwrap());
+        assert!(
+            ltr_fill.starts_with('*') && ltr_fill.ends_with(' '),
+            "left panel Copy fills from the left: {}",
+            ltr_v.file_bar.as_deref().unwrap()
+        );
+        assert!(
+            rtl_fill.starts_with(' ') && rtl_fill.ends_with('*'),
+            "right panel Copy fills from the right: {}",
+            rtl_v.file_bar.as_deref().unwrap()
+        );
+        assert_eq!(
+            ltr_fill.chars().filter(|&c| c == '*').count(),
+            rtl_fill.chars().filter(|&c| c == '*').count(),
+            "same progress, opposite fill"
+        );
+        let rtl_total = gauge_fill(rtl_v.total_bar.as_deref().unwrap());
+        assert!(
+            rtl_total.starts_with(' ') && rtl_total.ends_with('*'),
+            "Total bar follows the same direction"
+        );
     }
 
     #[test]
@@ -504,6 +582,7 @@ mod tests {
                 bytes_done: 10,
                 bytes_total: None,
             },
+            PaneSide::Left,
         );
         let v = s.view(default_bar_width(), false);
         assert!(v.file_bar.is_some());
@@ -512,26 +591,42 @@ mod tests {
             "no overall bar when Compute totals is off"
         );
         assert!(v.total_bytes.is_none());
-        assert!(v.classic_bar.is_none());
     }
 
     #[test]
     fn classic_gauge_asterisks_and_percentage() {
-        let empty = classic_gauge(0, Some(100), default_bar_width());
+        let empty = classic_gauge(0, Some(100), default_bar_width(), false);
         assert!(empty.starts_with('['), "{empty}");
         assert!(empty.ends_with("  0%"), "{empty}");
         assert!(!empty.contains('*'), "0% should have no fill: {empty}");
 
-        let half = classic_gauge(50, Some(100), default_bar_width());
+        let half = classic_gauge(50, Some(100), default_bar_width(), false);
         let stars = half.chars().filter(|&c| c == '*').count();
         assert!(stars > 0, "{half}");
         assert!(half.ends_with(" 50%"), "{half}");
+        assert!(
+            gauge_fill(&half).starts_with('*'),
+            "LTR 50% fills from the left: {half}"
+        );
 
-        let full = classic_gauge(100, Some(100), default_bar_width());
+        let half_rtl = classic_gauge(50, Some(100), default_bar_width(), true);
+        assert!(half_rtl.ends_with(" 50%"), "{half_rtl}");
+        assert!(
+            gauge_fill(&half_rtl).ends_with('*'),
+            "RTL 50% fills from the right: {half_rtl}"
+        );
+        assert_eq!(
+            half.chars().filter(|&c| c == '*').count(),
+            half_rtl.chars().filter(|&c| c == '*').count()
+        );
+
+        let full = classic_gauge(100, Some(100), default_bar_width(), false);
         assert!(full.ends_with("100%"), "{full}");
         assert!(!full.contains('='), "classic fill is *, not equals");
+        let full_rtl = classic_gauge(100, Some(100), default_bar_width(), true);
+        assert_eq!(full, full_rtl, "100% fill is identical either direction");
 
-        let unknown = classic_gauge(0, None, default_bar_width());
+        let unknown = classic_gauge(0, None, default_bar_width(), true);
         assert!(
             !unknown.contains('%'),
             "indeterminate has no percent: {unknown}"
@@ -574,6 +669,7 @@ mod tests {
             &src,
             &dst,
             &opts(true, true, true),
+            PaneSide::Left,
         )
         .unwrap();
         assert_eq!(with.bytes_total, Some(2500));
@@ -581,6 +677,8 @@ mod tests {
         assert_eq!(with.source_name, "file.dat");
         assert!(with.verbose);
         assert!(with.classic_progressbar);
+        assert!(with.compute_totals);
+        assert!(!with.grow_rtl);
 
         let without = FileOpProgressState::prepare(
             &vfs,
@@ -588,17 +686,71 @@ mod tests {
             &src,
             &dst,
             &opts(false, false, false),
+            PaneSide::Left,
         )
         .unwrap();
         assert_eq!(without.bytes_total, None);
         assert!(!without.verbose);
         assert!(!without.classic_progressbar);
+        assert!(!without.compute_totals);
         let v = without.view(default_bar_width(), false);
         assert_eq!(v.source_name, None);
         assert_eq!(v.title, "Move");
-        assert!(v.classic_bar.is_none());
         assert!(v.file_bar.is_some());
         assert!(v.total_bar.is_none());
+    }
+
+    #[test]
+    fn prepare_skips_prescan_when_verbose_off_even_if_compute_totals_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("file.dat");
+        write_file(&src, 2500);
+        let dst = tmp.path().join("out.dat");
+        let vfs = LocalFs::new();
+        let state = FileOpProgressState::prepare(
+            &vfs,
+            CopyMoveOp::Copy,
+            &src,
+            &dst,
+            &opts(false, true, true),
+            PaneSide::Left,
+        )
+        .unwrap();
+        assert!(
+            state.bytes_total.is_none(),
+            "GNU mc: Compute totals has no effect when Verbose is off"
+        );
+        assert!(!state.compute_totals);
+        let v = state.view(default_bar_width(), false);
+        assert!(v.total_bytes.is_none());
+        assert!(v.total_bar.is_none());
+    }
+
+    #[test]
+    fn prepare_right_panel_classic_off_grows_rtl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("file.dat");
+        write_file(&src, 100);
+        let dst = tmp.path().join("out.dat");
+        let vfs = LocalFs::new();
+        let mut state = FileOpProgressState::prepare(
+            &vfs,
+            CopyMoveOp::Copy,
+            &src,
+            &dst,
+            &opts(true, true, false),
+            PaneSide::Right,
+        )
+        .unwrap();
+        assert!(state.grow_rtl);
+        state.apply_counters(50, 100, 50, 0, "file.dat");
+        let v = state.view(default_bar_width(), false);
+        let fill = gauge_fill(v.file_bar.as_deref().unwrap());
+        assert!(
+            fill.starts_with(' ') && fill.ends_with('*'),
+            "right-panel Copy fills RTL: {}",
+            v.file_bar.as_deref().unwrap()
+        );
     }
 
     #[test]
@@ -628,16 +780,18 @@ mod tests {
                 bytes_done: 0,
                 bytes_total: Some(100),
             },
+            PaneSide::Left,
         );
         let before = s.view(default_bar_width(), false);
         assert!(
-            !before.classic_bar.as_deref().unwrap().contains('*'),
+            !before.file_bar.as_deref().unwrap().contains('*'),
             "0% has no fill"
         );
         s.apply_counters(50, 100, 50, 0, "a.bin");
         let mid = s.view(default_bar_width(), false);
-        assert!(mid.classic_bar.as_deref().unwrap().contains('*'));
-        assert!(mid.classic_bar.as_deref().unwrap().ends_with(" 50%"));
+        assert!(mid.file_bar.as_deref().unwrap().contains('*'));
+        assert!(mid.file_bar.as_deref().unwrap().ends_with(" 50%"));
+        assert!(mid.total_bar.as_deref().unwrap().ends_with(" 50%"));
         assert_eq!(s.bytes_done, 50);
         assert_eq!(s.files_done, 0);
         assert_ne!(s.bytes_done, s.bytes_total.unwrap());
@@ -671,6 +825,7 @@ mod tests {
             &src,
             &dst,
             &opts(true, true, true),
+            PaneSide::Left,
         )
         .unwrap();
         assert_eq!(state.source_name, "hello.txt");

@@ -2067,6 +2067,7 @@ impl TerminalApp {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn file_op_progress_mode(
         vfs: &dyn rmc_fs::Vfs,
         jobs: &rmc_core::jobs::JobQueue,
@@ -2075,8 +2076,16 @@ impl TerminalApp {
         src: std::path::PathBuf,
         dst: std::path::PathBuf,
         flags: rmc_fs::CopyFlags,
+        source_panel: PaneSide,
     ) -> UiMode {
-        match rmc_core::fileop::FileOpProgressState::prepare(vfs, op, &src, &dst, opts) {
+        match rmc_core::fileop::FileOpProgressState::prepare(
+            vfs,
+            op,
+            &src,
+            &dst,
+            opts,
+            source_panel,
+        ) {
             Ok(state) => {
                 let job_id = match op {
                     rmc_core::app::CopyMoveOp::Copy => {
@@ -2201,6 +2210,7 @@ impl TerminalApp {
             src,
             dst,
             flags,
+            app.active,
         );
         for (src, dst) in rest {
             match op {
@@ -6084,6 +6094,7 @@ impl TerminalApp {
                                 src,
                                 dst,
                                 app.copy_op_flags,
+                                app.active,
                             );
                         } else {
                             app.ui_mode = UiMode::Normal;
