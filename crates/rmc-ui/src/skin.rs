@@ -22,7 +22,12 @@ pub fn mc_skin_env_name() -> Option<String> {
 
 /// Load the shipped default palette (`default.ini` via the skin search order).
 /// Unknown / unreadable named skins fall back here — not to `MC_SKIN`.
+/// `$MC_COLOR_TABLE` overlays pairs after the skin file (legacy Colors / mcview(1)).
 pub fn load_default_palette() -> McPalette {
+    apply_mc_color_table_env(load_default_palette_unoverlaid())
+}
+
+fn load_default_palette_unoverlaid() -> McPalette {
     if let Some(path) = find_skin_path_by_name("default") {
         if let Ok(pal) = load_from_file(&path) {
             return pal;
@@ -302,19 +307,127 @@ fn parse_color_name(name: &str) -> Option<Color> {
     }
 }
 
-/// GNU mc(1) directories searched for a named skin (first match wins):
-/// `~/.local/share/mc/skins`, `~/.config/mc/skins`, `/etc/mc/skins`,
-/// `/usr/share/mc/skins`, then the Apache-2.0 skins shipped in `data/skins`.
-pub fn skin_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.trim().is_empty() {
-            let home = PathBuf::from(home);
-            dirs.push(home.join(".local/share/mc/skins"));
-            dirs.push(home.join(".config/mc/skins"));
+/// Extra color names from the public legacy Colors section (mcview(1) `MC_COLOR_TABLE`).
+fn parse_color_table_name(name: &str) -> Option<Color> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+    parse_color_name(n).or_else(|| match n.to_ascii_lowercase().as_str() {
+        "brown" => Some(Color::DarkYellow),
+        "brightred" => Some(Color::Red),
+        "brightcyan" => Some(Color::Cyan),
+        "brightwhite" => Some(Color::White),
+        _ => None,
+    })
+}
+
+fn apply_optional_pair(
+    fg_slot: &mut Color,
+    bg_slot: &mut Color,
+    fg: Option<Color>,
+    bg: Option<Color>,
+) {
+    if let Some(c) = fg {
+        *fg_slot = c;
+    }
+    if let Some(c) = bg {
+        *bg_slot = c;
+    }
+}
+
+/// Overlay a legacy `MC_COLOR_TABLE` string onto `pal`.
+///
+/// Format (public mcview(1) / older Colors docs): `key=fg,bg:key=fg,bg:…`.
+/// Empty fg or bg keeps the previous component. Unknown keys/colors are skipped.
+/// Does not change editor or viewer pairs (those stay with the skin).
+pub fn apply_color_table(pal: &mut McPalette, table: &str) {
+    for part in table.split(':') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
+        let key = k.trim().to_ascii_lowercase();
+        let val = v.trim();
+        let (fg_s, bg_s) = match val.split_once(',') {
+            Some((a, b)) => (a.trim(), b.trim()),
+            None => (val, ""),
+        };
+        let fg = parse_color_table_name(fg_s);
+        let bg = parse_color_table_name(bg_s);
+        match key.as_str() {
+            "normal" => {
+                apply_optional_pair(&mut pal.core_default_fg, &mut pal.core_default_bg, fg, bg)
+            }
+            "selected" => apply_optional_pair(&mut pal.selected_fg, &mut pal.selected_bg, fg, bg),
+            "marked" => apply_optional_pair(&mut pal.marked_fg, &mut pal.marked_bg, fg, bg),
+            "markselect" => {
+                apply_optional_pair(&mut pal.markselect_fg, &mut pal.markselect_bg, fg, bg)
+            }
+            "menu" => apply_optional_pair(&mut pal.menu_fg, &mut pal.menu_bg, fg, bg),
+            "menusel" => apply_optional_pair(&mut pal.menusel_fg, &mut pal.menusel_bg, fg, bg),
+            "menuhot" => apply_optional_pair(&mut pal.menuhot_fg, &mut pal.menuhot_bg, fg, bg),
+            "menuhotsel" => {
+                apply_optional_pair(&mut pal.menuhotsel_fg, &mut pal.menuhotsel_bg, fg, bg)
+            }
+            "dnormal" => apply_optional_pair(
+                &mut pal.dialog_default_fg,
+                &mut pal.dialog_default_bg,
+                fg,
+                bg,
+            ),
+            "dfocus" => apply_optional_pair(&mut pal.dfocus_fg, &mut pal.dfocus_bg, fg, bg),
+            "errors" => {
+                apply_optional_pair(&mut pal.error_default_fg, &mut pal.error_default_bg, fg, bg)
+            }
+            "header" => apply_optional_pair(&mut pal.header_fg, &mut pal.header_bg, fg, bg),
+            "directory" => {
+                if let Some(c) = fg.or(bg) {
+                    pal.dir_color = c;
+                }
+            }
+            "executable" => {
+                if let Some(c) = fg.or(bg) {
+                    pal.exec_color = c;
+                }
+            }
+            "link" => {
+                if let Some(c) = fg.or(bg) {
+                    pal.symlink_color = c;
+                }
+            }
+            _ => {}
         }
     }
+}
+
+fn apply_mc_color_table_env(mut pal: McPalette) -> McPalette {
+    if let Ok(table) = std::env::var("MC_COLOR_TABLE") {
+        if !table.trim().is_empty() {
+            apply_color_table(&mut pal, &table);
+        }
+    }
+    pal
+}
+
+/// GNU mc(1) directories searched for a named skin (first match wins):
+/// `$MC_PROFILE_ROOT`/`$HOME` `~/.local/share/mc/skins` and `~/.config/mc/skins`,
+/// `/etc/mc/skins`, `$MC_DATADIR/skins` (replaces `%pkgdatadir%`), `/usr/share/mc/skins`,
+/// then the Apache-2.0 skins shipped in `data/skins`.
+pub fn skin_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let root = rmc_core::paths::profile_root();
+    if root != PathBuf::from(".") {
+        dirs.push(root.join(".local/share/mc/skins"));
+        dirs.push(root.join(".config/mc/skins"));
+    }
     dirs.push(PathBuf::from("/etc/mc/skins"));
+    if let Some(data) = rmc_core::paths::pkg_data_dir() {
+        dirs.push(data.join("skins"));
+    }
     dirs.push(PathBuf::from("/usr/share/mc/skins"));
     dirs.push(PathBuf::from("data/skins"));
     dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/skins"));
@@ -382,13 +495,14 @@ pub fn list_available_skins() -> Vec<String> {
 
 /// Load the palette for a skin name or path. Missing or unreadable names fall
 /// back to [`load_default_palette`] — the same path Options → Appearance uses.
+/// `$MC_COLOR_TABLE` is applied once after the skin (not twice on fallback).
 pub fn load_palette_by_name(name: &str) -> McPalette {
-    if let Some(path) = find_skin_path_by_name(name) {
-        if let Ok(pal) = load_from_file(&path) {
-            return pal;
-        }
-    }
-    load_default_palette()
+    let pal = if let Some(path) = find_skin_path_by_name(name) {
+        load_from_file(&path).unwrap_or_else(|_| load_default_palette_unoverlaid())
+    } else {
+        load_default_palette_unoverlaid()
+    };
+    apply_mc_color_table_env(pal)
 }
 
 /// Resolve a skin name or path. Command-line / `MC_SKIN` / ini may be an
@@ -560,6 +674,7 @@ mod tests {
 
     #[test]
     fn named_skin_loads_and_unknown_falls_back_to_default_loader() {
+        let _lock = lock_skin_env();
         let dark = load_palette_by_name("dark");
         let default = load_default_palette();
         assert_ne!(
@@ -757,5 +872,85 @@ mod tests {
         assert_eq!(pal.error_default_bg, Color::Red);
         assert_eq!(pal.errdfocus_fg, Color::Black);
         assert_eq!(pal.errdfocus_bg, Color::Grey);
+    }
+
+    #[test]
+    fn color_table_overlays_pairs_and_skips_editor_viewer() {
+        let mut pal = McPalette::default();
+        let viewer_fg = pal.viewer_selected_fg;
+        let viewer_bg = pal.viewer_selected_bg;
+        let edit_fg = pal.edit_normal_fg;
+        let edit_bg = pal.edit_normal_bg;
+        apply_color_table(
+            &mut pal,
+            "normal=lightgray,black:selected=black,green:directory=red,blue:marked=,magenta:bogus=nope,red:viewunderline=yellow,red",
+        );
+        assert_eq!(pal.core_default_fg, Color::Grey);
+        assert_eq!(pal.core_default_bg, Color::Black);
+        assert_eq!(pal.selected_fg, Color::Black);
+        assert_eq!(pal.selected_bg, Color::Green);
+        assert_eq!(pal.dir_color, Color::Red);
+        assert_eq!(pal.marked_bg, Color::Magenta, "empty fg keeps previous");
+        assert_eq!(pal.marked_fg, Color::Yellow);
+        assert_eq!(
+            pal.viewer_selected_fg, viewer_fg,
+            "must not restaff viewer colors"
+        );
+        assert_eq!(pal.viewer_selected_bg, viewer_bg);
+        assert_eq!(
+            pal.edit_normal_fg, edit_fg,
+            "must not restaff editor colors"
+        );
+        assert_eq!(pal.edit_normal_bg, edit_bg);
+    }
+
+    #[test]
+    fn mc_color_table_env_overlays_loaded_palette() {
+        let _lock = lock_skin_env();
+        let _tbl = EnvRestore::set("MC_COLOR_TABLE", "normal=white,red:selected=black,green");
+        let pal = load_default_palette();
+        assert_eq!(pal.core_default_fg, Color::White);
+        assert_eq!(pal.core_default_bg, Color::Red);
+        assert_eq!(pal.selected_bg, Color::Green);
+        let dark = load_palette_by_name("dark");
+        assert_eq!(
+            dark.core_default_bg,
+            Color::Red,
+            "table overlays the named skin once"
+        );
+    }
+
+    #[test]
+    fn mc_datadir_and_profile_root_are_skin_search_dirs() {
+        let _lock = lock_skin_env();
+        let root = std::env::temp_dir().join(format!(
+            "rmc-env-skin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let profile = root.join("profile");
+        let datadir = root.join("datadir");
+        write_core_skin(
+            &profile.join(".local/share/mc/skins/proskin.ini"),
+            "white;red",
+        );
+        write_core_skin(&datadir.join("skins/dataskin.ini"), "black;yellow");
+        let _prof = EnvRestore::set("MC_PROFILE_ROOT", profile.to_str().unwrap());
+        let _data = EnvRestore::set("MC_DATADIR", datadir.to_str().unwrap());
+        let listed = list_available_skins();
+        assert!(
+            listed.iter().any(|s| s == "proskin"),
+            "MC_PROFILE_ROOT skins missing: {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|s| s == "dataskin"),
+            "MC_DATADIR skins missing: {listed:?}"
+        );
+        let pal = load_from_file(&find_skin_path_by_name("dataskin").unwrap()).unwrap();
+        assert_eq!(pal.core_default_bg, Color::Yellow);
+        let _ = fs::remove_dir_all(&root);
     }
 }

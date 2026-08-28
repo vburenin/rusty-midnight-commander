@@ -14,6 +14,7 @@ pub mod learn_keys;
 pub mod matchutil;
 pub mod panel;
 pub mod panelize;
+pub mod paths;
 pub mod quicksearch;
 pub mod selection;
 pub mod sorting;

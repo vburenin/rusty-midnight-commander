@@ -153,11 +153,7 @@ impl Hotlist {
 }
 
 pub fn default_hotlist_path() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return Path::new(&xdg).join("mc").join("hotlist");
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".config").join("mc").join("hotlist")
+    crate::paths::user_mc_config_dir().join("hotlist")
 }
 
 #[cfg(test)]

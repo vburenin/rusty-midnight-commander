@@ -17,18 +17,27 @@ pub struct KeyMap {
 }
 
 impl KeyMap {
-    /// Try to load keymap from data/mc.keymap or MC_KEYMAP; fall back to mc_defaults.
+    /// Try to load keymap from `MC_KEYMAP`, then `%pkgdatadir%`/`data/mc.keymap`.
+    ///
+    /// GNU mc(1) “Redefine hotkey bindings”: `MC_KEYMAP` may be an absolute path
+    /// (with or without `.keymap`) or a name searched in `~/.config/mc`,
+    /// `$MC_DATADIR`, and the shipped `data/` directory.
     pub fn load_default() -> Self {
-        if let Ok(p) = std::env::var("MC_KEYMAP") {
-            if let Ok(km) = Self::load_from_file(Path::new(&p)) {
-                return km;
+        if let Some(spec) = std::env::var("MC_KEYMAP")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(path) =
+                crate::paths::resolve_keymap_spec(&spec, &crate::paths::keymap_search_dirs())
+            {
+                if let Ok(km) = Self::load_from_file(&path) {
+                    return km;
+                }
             }
         }
-        let candidates = [
-            PathBuf::from("data/mc.keymap"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap"),
-        ];
-        for p in candidates {
+        let crate_fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.keymap");
+        for p in crate::paths::data_file_candidates("mc.keymap", crate_fallback) {
             if let Ok(km) = Self::load_from_file(&p) {
                 return km;
             }
@@ -614,15 +623,10 @@ fn format_key(ev: &KeyEvent) -> String {
     out
 }
 
-/// Return the config directory path honoring $MCR_CONFIG_DIR or ~/.config/mcr.
+/// Return the config directory path honoring `$MCR_CONFIG_DIR`, then
+/// `$MC_PROFILE_ROOT/.config/mcr`, else `~/.config/mcr`.
 pub fn default_config_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("MCR_CONFIG_DIR") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config/mcr")
+    crate::paths::default_config_dir()
 }
 
 /// Save App options (layout/confirm/panels) and keymap to default config dir.
@@ -1208,5 +1212,80 @@ mod tests {
             KeyModifiers::NONE,
         ));
         assert_eq!(got.code, KeyCode::F(13), "learned F15 must act as F13");
+    }
+
+    struct EnvRestore {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvRestore {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn load_default_honors_mc_keymap_path() {
+        let _lock = crate::paths::lock_mc_env();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("alt.keymap");
+        std::fs::write(&file, "F5 = Quit\n").unwrap();
+        let _km = EnvRestore::set("MC_KEYMAP", file.to_str().unwrap());
+        let km = KeyMap::load_default();
+        assert!(
+            matches!(
+                km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+                Some(Action::Quit)
+            ),
+            "MC_KEYMAP path must overlay F5"
+        );
+    }
+
+    #[test]
+    fn load_default_mc_keymap_missing_falls_back_to_shipped() {
+        let _lock = crate::paths::lock_mc_env();
+        let _km = EnvRestore::set("MC_KEYMAP", "/no/such/rmc-keymap-file.keymap");
+        let km = KeyMap::load_default();
+        assert!(
+            matches!(
+                km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+                Some(Action::Copy)
+            ),
+            "missing MC_KEYMAP must keep shipped F5=Copy"
+        );
+    }
+
+    #[test]
+    fn load_default_honors_mc_datadir_keymap() {
+        let _lock = crate::paths::lock_mc_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mc.keymap"), "F5 = Quit\n").unwrap();
+        let _data = EnvRestore::set("MC_DATADIR", dir.path().to_str().unwrap());
+        let prev_km = std::env::var("MC_KEYMAP").ok();
+        std::env::remove_var("MC_KEYMAP");
+        let km = KeyMap::load_default();
+        match prev_km {
+            Some(v) => std::env::set_var("MC_KEYMAP", v),
+            None => std::env::remove_var("MC_KEYMAP"),
+        }
+        assert!(
+            matches!(
+                km.resolve(&KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+                Some(Action::Quit)
+            ),
+            "MC_DATADIR/mc.keymap must be used when MC_KEYMAP is unset"
+        );
     }
 }

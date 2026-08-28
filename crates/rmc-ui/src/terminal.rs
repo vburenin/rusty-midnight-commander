@@ -8965,15 +8965,7 @@ fn mkdir_dialog_initial_name(
 pub(crate) const PAUSE_AFTER_RUN_PROMPT: &str = "Press any key to continue...";
 
 fn panel_external_editor() -> String {
-    std::env::var("EDITOR")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::env::var("VISUAL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        })
-        .unwrap_or_else(|| "vi".to_string())
+    rmc_core::paths::external_editor()
 }
 
 /// F4 edits the highlighted file. F14 / S-F4 starts a new empty buffer
@@ -9092,7 +9084,7 @@ fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_
     app.dont_overwrite_with_zero = false;
 }
 
-/// F3 / `[open] = view`: internal viewer when configured, else $PAGER / view / less.
+/// F3 / `[open] = view`: internal viewer when configured, else $VIEWER / $PAGER / view.
 fn view_current_file(app: &mut App) -> Result<()> {
     view_current_file_with(app, None, false)
 }
@@ -9165,7 +9157,7 @@ fn view_current_file_with(app: &mut App, pager_override: Option<&str>, raw: bool
     Ok(())
 }
 
-/// Waited `$PAGER` / `view` / `less`. Does not spawn fire-and-forget desktop open.
+/// Waited `$VIEWER` / `$PAGER` / `view` / `less`. Does not spawn fire-and-forget desktop open.
 fn run_waited_external_viewer(
     path: &std::path::Path,
     cwd: &std::path::Path,
@@ -9173,8 +9165,8 @@ fn run_waited_external_viewer(
 ) {
     let pager = pager_override
         .map(str::to_string)
-        .or_else(|| std::env::var("PAGER").ok().filter(|s| !s.trim().is_empty()));
-    if let Some(pager) = pager {
+        .unwrap_or_else(rmc_core::paths::external_viewer);
+    if pager != "view" {
         let _ = std::process::Command::new(&pager)
             .arg(path)
             .current_dir(cwd)

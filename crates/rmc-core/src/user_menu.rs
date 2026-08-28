@@ -26,28 +26,24 @@ pub fn try_load_local_menu(cwd: &Path) -> Option<UserMenu> {
     load_menu_file(&cwd.join(".mc.menu"), true)
 }
 
-/// User menu file GNU mc(1) “Edit menu file” opens: `~/.config/mc/menu`.
+/// User menu file GNU mc(1) “Edit menu file” opens: `~/.config/mc/menu`
+/// (relocated by `MC_PROFILE_ROOT` / `XDG_CONFIG_HOME`).
 pub fn user_menu_file_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".config").join("mc").join("menu")
+    crate::paths::user_mc_config_dir().join("menu")
 }
 
 /// Load order similar to MC:
 /// 1) ./.mc.menu in the current working directory (safe-only)
 /// 2) ~/.config/mc/menu (safe-only)
-/// 3) data/mc.menu shipped with the binary/repo (Apache-2.0 original)
+/// 3) `$MC_DATADIR/mc.menu` then shipped `data/mc.menu` (Apache-2.0 original)
 pub fn load_menu(cwd: &Path) -> Result<UserMenu> {
     let mut candidates: Vec<(PathBuf, bool)> = Vec::new();
     candidates.push((cwd.join(".mc.menu"), true));
-    if std::env::var_os("HOME").is_some() {
-        candidates.push((user_menu_file_path(), true));
+    candidates.push((user_menu_file_path(), true));
+    let crate_fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.menu");
+    for p in crate::paths::data_file_candidates("mc.menu", crate_fallback) {
+        candidates.push((p, false));
     }
-    // Two repo-relative fallbacks like keymap loader uses
-    candidates.push((PathBuf::from("data/mc.menu"), false));
-    candidates.push((
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.menu"),
-        false,
-    ));
 
     for (p, require_safe) in candidates {
         if let Some(m) = load_menu_file(&p, require_safe) {
@@ -302,5 +298,34 @@ mod tests {
         let fq = shell_quote_path(&f);
         assert!(exp.contains(&fq));
         assert!(exp.contains(&shell_quote_path(&root)));
+    }
+
+    #[test]
+    fn load_menu_uses_mc_datadir_before_shipped() {
+        let _lock = crate::paths::lock_mc_env();
+        let data = tempdir().unwrap();
+        std::fs::write(
+            data.path().join("mc.menu"),
+            "z: From MC_DATADIR\n  echo datadir\n",
+        )
+        .unwrap();
+        let profile = tempdir().unwrap();
+        let prev_data = std::env::var("MC_DATADIR").ok();
+        let prev_prof = std::env::var("MC_PROFILE_ROOT").ok();
+        std::env::set_var("MC_DATADIR", data.path());
+        std::env::set_var("MC_PROFILE_ROOT", profile.path());
+        let cwd = tempdir().unwrap();
+        let menu = load_menu(cwd.path());
+        match prev_data {
+            Some(v) => std::env::set_var("MC_DATADIR", v),
+            None => std::env::remove_var("MC_DATADIR"),
+        }
+        match prev_prof {
+            Some(v) => std::env::set_var("MC_PROFILE_ROOT", v),
+            None => std::env::remove_var("MC_PROFILE_ROOT"),
+        }
+        let menu = menu.expect("MC_DATADIR/mc.menu");
+        assert_eq!(menu.entries[0].title, "From MC_DATADIR");
+        assert!(menu.source_path.starts_with(data.path()));
     }
 }
