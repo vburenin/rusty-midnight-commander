@@ -90,7 +90,31 @@ Zoo archives are not implemented.
 .SH FILES
 .TP
 .I ~/.config/mc/ini
-User configuration (when present).
+User configuration. Loaded after compiled-in defaults and the first
+existing system file. Options \-> Save setup writes this file (and
+creates
+.I ~/.config/mc/
+as needed). Quit does the same when Options \-> Panels \-> Auto save
+setup is on. Unknown keys and sections are preserved.
+.I $MC_PROFILE_ROOT
+(absolute) relocates the profile; otherwise
+.I $XDG_CONFIG_HOME/mc
+or
+.IR ~/.config/mc .
+.I $MCR_CONFIG_DIR
+overrides the setup directory for tests.
+.TP
+.I /etc/mc/mc.ini
+System-wide setup (used if present).
+.TP
+.I /usr/share/mc/mc.ini
+System-wide setup used when
+.I /etc/mc/mc.ini
+is missing. When
+.B MC_DATADIR
+is set, this path is
+.IR $MC_DATADIR/mc.ini
+instead. The user file overlays the system file.
 .TP
 .I data/help/
 Built-in hypertext help shown with F1 (also embedded in the binary).

@@ -215,7 +215,7 @@ From mc(1) “Shell Command Line”, “The subshell support”:
 ## 11) Configuration, skins, keymap, user menu, extension file, hotlist — Status: Later
 
 Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “User menu”, “Edit extension file”, “Hotlist”:
-- [ ] Config files: system defaults vs user `~/.config/mc/ini` and related; auto-save setup
+- [x] Config files: system defaults vs user `~/.config/mc/ini` and related; auto-save setup
  - [x] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
  - [x] `-S arg`/`--skin=arg`/`--skin arg`: specify skin name on the command line (overrides ini for this process; missing names keep the CLI name and fall back like Options → Appearance)
  - [x] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action
