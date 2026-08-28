@@ -186,16 +186,10 @@ impl PanelizeStore {
     }
 }
 
-/// Same config family as the hotlist: `$XDG_CONFIG_HOME/mc` or `~/.config/mc`.
+/// Same config family as the hotlist: `$MC_PROFILE_ROOT` / `$XDG_CONFIG_HOME/mc`
+/// or `~/.config/mc`.
 pub fn default_panelize_path() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return Path::new(&xdg).join("mc").join("panelize.json");
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home)
-        .join(".config")
-        .join("mc")
-        .join("panelize.json")
+    crate::paths::user_mc_config_dir().join("panelize.json")
 }
 
 #[cfg(test)]

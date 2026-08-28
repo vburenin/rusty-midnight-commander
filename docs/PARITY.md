@@ -224,7 +224,7 @@ Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “U
 - [x] Extension rules: `mc.ext.ini` to open helper-defined VFS (minimal)
 - [x] Directory hotlist: C-\\ opens; C-x h adds current; manage labels and jump
 - [x] Environment variable `MC_SKIN` respected (name or path; between `-S`/`--skin` and ini `skin=`)
-- [ ] Environment variables respected (MC_KEYMAP, MC_COLOR_TABLE, MC_DATADIR, MC_PROFILE_ROOT, EDITOR, VIEWER)
+- [x] Environment variables respected (MC_KEYMAP, MC_COLOR_TABLE, MC_DATADIR, MC_PROFILE_ROOT, EDITOR, VIEWER)
 
 ---
 

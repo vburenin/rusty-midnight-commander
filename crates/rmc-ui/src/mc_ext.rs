@@ -67,11 +67,9 @@ impl OpenMap {
         let mut map = Self::parse(SHIPPED_INI);
         // Optional overlay: cwd first, then crate-relative. An empty `[open]`
         // section must not wipe the shipped map.
-        let candidates = [
-            PathBuf::from("data/mc.ext.ini"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.ext.ini"),
-        ];
-        for p in candidates {
+        let crate_fallback =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.ext.ini");
+        for p in rmc_core::paths::data_file_candidates("mc.ext.ini", crate_fallback) {
             if let Ok(s) = std::fs::read_to_string(&p) {
                 map.apply_overlay(&s);
             }
@@ -93,13 +91,10 @@ impl OpenMap {
     }
 }
 
-/// User extension file GNU mc(1) “Edit extension file” opens: `~/.config/mc/mc.ext.ini`.
+/// User extension file GNU mc(1) “Edit extension file” opens: `~/.config/mc/mc.ext.ini`
+/// (relocated by `MC_PROFILE_ROOT` / `XDG_CONFIG_HOME`).
 pub(crate) fn user_extension_file_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home)
-        .join(".config")
-        .join("mc")
-        .join("mc.ext.ini")
+    rmc_core::paths::user_mc_config_dir().join("mc.ext.ini")
 }
 
 /// Look up the shipped (or cwd) `[open]` map for `path`.

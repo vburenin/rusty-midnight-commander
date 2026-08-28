@@ -26,10 +26,15 @@ impl ExtfsRegistry {
         // Accept files in:
         //   data/mc.ext.ini
         //   crates/*/../../data/mc.ext.ini
-        let candidates = [
-            PathBuf::from("data/mc.ext.ini"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.ext.ini"),
-        ];
+        let mut candidates = Vec::new();
+        if let Ok(d) = std::env::var("MC_DATADIR") {
+            let d = d.trim();
+            if !d.is_empty() {
+                candidates.push(PathBuf::from(d).join("mc.ext.ini"));
+            }
+        }
+        candidates.push(PathBuf::from("data/mc.ext.ini"));
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/mc.ext.ini"));
         for p in candidates {
             if let Ok(s) = std::fs::read_to_string(&p) {
                 if let Ok((mut helpers, ext_map)) = parse_simple_ini(&s) {

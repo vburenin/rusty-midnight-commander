@@ -63,10 +63,8 @@ impl HelpIndex {
                 }
             }
         }
-        for cand in [
-            PathBuf::from("data/help"),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/help"),
-        ] {
+        let crate_fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/help");
+        for cand in rmc_core::paths::data_file_candidates("help", crate_fallback) {
             if let Ok(idx) = Self::load_from_dir(&cand) {
                 if !idx.nodes.is_empty() {
                     return Ok(idx);
