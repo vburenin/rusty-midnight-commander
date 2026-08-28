@@ -47,6 +47,30 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
 
+## Manual pages
+
+Original Apache-2.0 manuals covering the shipped CLI (not copies of GNU
+`mc`/`mcedit`/`mcview`/`mcdiff` GPL text):
+
+```bash
+man -l docs/man/mcr.1
+man -l docs/man/mcr-edit.1   # mcedit equivalent: mcr --edit
+man -l docs/man/mcr-view.1   # mcview equivalent: mcr --view
+man -l docs/man/mcr-diff.1   # mcdiff equivalent: mcr --diff
+```
+
+`mcr --help` prints the same access hints. To install into the system
+`man` path:
+
+```bash
+sudo install -D -m 644 docs/man/mcr.1 /usr/local/share/man/man1/mcr.1
+sudo install -D -m 644 docs/man/mcr-edit.1 /usr/local/share/man/man1/mcr-edit.1
+sudo install -D -m 644 docs/man/mcr-view.1 /usr/local/share/man/man1/mcr-view.1
+sudo install -D -m 644 docs/man/mcr-diff.1 /usr/local/share/man/man1/mcr-diff.1
+```
+
+Then `man mcr`, `man mcr-edit`, `man mcr-view`, and `man mcr-diff`.
+
 ## License
 
 Apache-2.0. This is not a derivative of Midnight Commander’s GPL C sources. We rely on public manuals and screenshots to match behavior and visuals.

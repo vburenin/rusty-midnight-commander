@@ -1,0 +1,117 @@
+.TH MCR 1 "August 2026" "rusty-midnight-commander" "User Commands"
+.SH NAME
+mcr \- dual-pane terminal file manager
+.SH SYNOPSIS
+.B mcr
+[\fIOPTION\fR]...
+.SH DESCRIPTION
+.B mcr
+is the binary of rusty-midnight-commander, an Apache-2.0 clean-room
+Rust file manager aiming for GNU Midnight Commander
+.RI ( mc )
+user-visible behavior.
+.PP
+With no options it opens a dual-pane listing of the current directory:
+menu bar (F9), two directory panels, mini-status, hint line, shell
+command line, and an F1\-F10 label bar.
+.PP
+This page describes the
+.B mcr
+command line only. It is original Apache-2.0 text summarizing shipped
+behavior. It is not a copy of the GNU
+.BR mc (1)
+manual.
+.SH OPTIONS
+Unknown flags are ignored so a later
+.BR \-\-edit ,
+.BR \-\-view ,
+or
+.B \-\-diff
+is still honored.
+.TP
+.BR \-d ", " \-\-nomouse
+Do not capture the mouse for this run.
+.TP
+.BR \-u ", " \-\-nosubshell
+Do not attach a PTY subshell. Last of
+.B \-U
+/
+.B \-u
+wins.
+.TP
+.BR \-U ", " \-\-subshell
+Enable the PTY subshell (Ctrl-O). Last of
+.B \-U
+/
+.B \-u
+wins.
+.TP
+.BR \-S " " \fIname\fR ", " \-\-skin \fR[\fB=\fIname\fR]
+Skin name for this process (overrides
+.B MC_SKIN
+and the user ini). A missing name keeps the requested label and falls
+back to the default palette.
+.TP
+.BR \-v " " \fIfile\fR ", " \-\-view \fR[\fB=\fIfile\fR]
+Start the internal viewer on
+.IR file .
+See
+.BR mcr-view (1).
+.TP
+.BR \-e " [" \fIfile\fR "...]", " " \-\-edit \fR[\fB=\fIfile\fR]
+Start the internal editor. With no files, one untitled buffer is
+opened. See
+.BR mcr-edit (1).
+.TP
+.B \-\-diff \fIfile1 file2\fR
+Start the internal side-by-side diff viewer. See
+.BR mcr-diff (1).
+.TP
+.BR \-h ", " \-\-help
+Print a short usage summary and exit.
+.SH ARCHIVES
+Enter on a supported archive browses it as a directory;
+.B ..
+leaves it. Copy from inside an archive to a local panel extracts
+(copy-out). Creating, deleting, or copying
+.I into
+an archive is not supported.
+.PP
+Shipped browse + copy-out backends: tar, tar.gz/tgz, zip, cpio
+(and cpio.gz), ar, rpm, deb, iso, rar, 7z, lha/lzh.
+Zoo archives are not implemented.
+.SH FILES
+.TP
+.I ~/.config/mc/ini
+User configuration (when present).
+.TP
+.I data/help/
+Built-in hypertext help shown with F1 (also embedded in the binary).
+.SH SEE ALSO
+.BR mcr-edit (1),
+.BR mcr-view (1),
+.BR mcr-diff (1)
+.PP
+F1 inside
+.B mcr
+opens the hypertext help. GNU Midnight Commander manuals
+.BR mc (1),
+.BR mcedit (1),
+.BR mcview (1),
+and
+.BR mcdiff (1)
+document the public behavior this project tracks; they are separate
+GPL works and are not shipped here.
+.SH INSTALLING THIS MANUAL
+From a source checkout:
+.PP
+.nf
+man \-l docs/man/mcr.1
+sudo install \-D \-m 644 docs/man/mcr.1 /usr/local/share/man/man1/mcr.1
+sudo install \-D \-m 644 docs/man/mcr\-edit.1 /usr/local/share/man/man1/mcr\-edit.1
+sudo install \-D \-m 644 docs/man/mcr\-view.1 /usr/local/share/man/man1/mcr\-view.1
+sudo install \-D \-m 644 docs/man/mcr\-diff.1 /usr/local/share/man/man1/mcr\-diff.1
+.fi
+.SH COPYRIGHT
+Apache License 2.0. rusty-midnight-commander is not a derivative of
+GNU Midnight Commander C sources.

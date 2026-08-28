@@ -192,6 +192,7 @@ pub mod fish;
 pub mod ftpfs;
 mod hashvfs;
 pub mod isofs;
+pub mod lhafs;
 pub mod pathutil;
 pub mod rarfs;
 pub mod remote;

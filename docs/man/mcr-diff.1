@@ -1,0 +1,51 @@
+.TH MCR-DIFF 1 "August 2026" "rusty-midnight-commander" "User Commands"
+.SH NAME
+mcr-diff \- internal diff viewer started as mcr \-\-diff
+.SH SYNOPSIS
+.B mcr
+.B \-\-diff
+.I FILE1 FILE2
+.SH DESCRIPTION
+Opens rusty-midnight-commander's internal side-by-side diff viewer
+(the
+.B mcdiff
+equivalent) on two files. The same viewer is available from the
+panels.
+.PP
+This page is original Apache-2.0 text covering the shipped diff CLI
+and keys. It is not a copy of GNU
+.BR mcdiff (1).
+.SH KEYS
+.TP
+.B n / N
+Next / previous hunk.
+.TP
+.B F4
+Edit the left file in place.
+.TP
+.B Shift-F4 / F14
+Edit the right file.
+.TP
+.B F5
+Merge the current hunk.
+.TP
+.B Ctrl-u
+Swap sides.
+.TP
+.B Ctrl-r
+Refresh from disk.
+.TP
+.B F7
+Search.
+.TP
+.B F10
+Quit.
+.PP
+Edits return to this viewer; hunks rebuild from the saved files.
+Line numbers and hunk status can be toggled from the viewer.
+.SH SEE ALSO
+.BR mcr (1),
+.BR mcr-edit (1),
+.BR mcr-view (1)
+.SH COPYRIGHT
+Apache License 2.0.

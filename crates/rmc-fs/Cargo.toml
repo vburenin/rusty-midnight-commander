@@ -28,6 +28,7 @@ gpt_disk_io = { version = "0.16", features = ["std"] }
 rars = "0.9"
 gpt_disk_types = "0.16"
 ar = "0.9"
+delharc = "0.8"
 xz2 = "0.1"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
 tokio = { version = "1.39", features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }

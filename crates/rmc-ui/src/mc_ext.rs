@@ -259,6 +259,8 @@ lsarc = extfs/ls-archive
             "a.7z",
             "disk.iso",
             "sample.lsar",
+            "pack.lha",
+            "old.lzh",
         ];
         for name in enter {
             assert_eq!(

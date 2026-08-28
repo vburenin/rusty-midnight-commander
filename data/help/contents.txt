@@ -13,6 +13,11 @@ mcedit(1), and mcdiff(1) manuals. This text is original Apache-2.0.
 Tab selects the next link. Enter follows it. Space and Backspace page
 this node. F1 shows the key list. F10, Esc, or q leaves help.
 
+Outside the TUI, original Apache-2.0 manuals covering the shipped CLI
+are `man mcr` (file manager), `man mcr-edit` (`mcr --edit`),
+`man mcr-view` (`mcr --view`), and `man mcr-diff` (`mcr --diff`).
+From a git checkout: `man -l docs/man/mcr.1` (see README).
+
 * Help viewer keys -> Keys
 * Directory panels -> Panels
 * Find File -> Find File
