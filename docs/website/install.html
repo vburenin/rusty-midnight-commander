@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install and build — mcr</title>
+  <meta name="description" content="Build rusty-midnight-commander (mcr) from source and read the shipped manuals.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="index.html"><span class="mark">mcr</span> rusty-midnight-commander</a>
+      <nav>
+        <a href="index.html">Overview</a>
+        <a href="install.html" aria-current="page">Install</a>
+        <a href="features.html">Features</a>
+        <a href="man.html">Manuals</a>
+      </nav>
+    </header>
+    <main id="main">
+      <h1>Install and build</h1>
+      <p class="lede"><code>mcr</code> is a Cargo workspace binary. There is no separate installer in this repository; build from a git checkout.</p>
+
+      <h2>Requirements</h2>
+      <ul class="plain">
+        <li>A Unix-like terminal (the UI is full-screen; it is not a web app)</li>
+        <li>Rust and Cargo matching <a href="../../rust-toolchain.toml"><code>rust-toolchain.toml</code></a> (currently 1.98.0, with <code>rustfmt</code> and <code>clippy</code>)</li>
+        <li>Git, to clone the tree</li>
+      </ul>
+
+      <h2>Build and run</h2>
+<pre><code>git clone https://github.com/vburenin/rusty-midnight-commander.git
+cd rusty-midnight-commander
+cargo run --release -p mcr</code></pre>
+      <p>That launches <code>mcr</code> in the current working directory. The release binary is <code>target/release/mcr</code> after <code>cargo build --release -p mcr</code>.</p>
+      <p>Help and man-page hints:</p>
+<pre><code>mcr --help
+mcr -h</code></pre>
+
+      <h2>Useful flags</h2>
+      <p>Unknown flags are ignored so a later <code>--edit</code>, <code>--view</code>, or <code>--diff</code> is still honored. Last of <code>-U</code>/<code>-u</code> wins.</p>
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>-d</code>, <code>--nomouse</code></td><td>Do not capture the mouse for this run</td></tr>
+          <tr><td><code>-u</code>, <code>--nosubshell</code></td><td>Do not attach a PTY subshell</td></tr>
+          <tr><td><code>-U</code>, <code>--subshell</code></td><td>Enable the PTY subshell (Ctrl-O)</td></tr>
+          <tr><td><code>-S name</code>, <code>--skin=name</code></td><td>Skin name for this process (overrides <code>MC_SKIN</code> and user ini)</td></tr>
+          <tr><td><code>-v file</code>, <code>--view=file</code></td><td>Start the internal viewer (not <code>$PAGER</code>)</td></tr>
+          <tr><td><code>-e [file…]</code>, <code>--edit</code></td><td>Start the internal editor; no files opens one untitled buffer</td></tr>
+          <tr><td><code>--diff file1 file2</code></td><td>Start the internal side-by-side diff viewer</td></tr>
+        </tbody>
+      </table>
+      <p>Environment variables honored for paths and helpers include <code>SHELL</code>, <code>MC_SKIN</code>, <code>MC_KEYMAP</code>, <code>MC_COLOR_TABLE</code>, <code>MC_DATADIR</code>, <code>MC_PROFILE_ROOT</code>, <code>EDITOR</code>, and <code>VIEWER</code>. Full GNU-style config auto-save is still an open parity item; see <a href="../PARITY.md">PARITY.md</a> section 11.</p>
+
+      <h2>Manual pages</h2>
+      <p>From a source checkout:</p>
+<pre><code>man -l docs/man/mcr.1
+man -l docs/man/mcr-edit.1
+man -l docs/man/mcr-view.1
+man -l docs/man/mcr-diff.1</code></pre>
+      <p>To install into the system <code>man</code> path:</p>
+<pre><code>sudo install -D -m 644 docs/man/mcr.1 /usr/local/share/man/man1/mcr.1
+sudo install -D -m 644 docs/man/mcr-edit.1 /usr/local/share/man/man1/mcr-edit.1
+sudo install -D -m 644 docs/man/mcr-view.1 /usr/local/share/man/man1/mcr-view.1
+sudo install -D -m 644 docs/man/mcr-diff.1 /usr/local/share/man/man1/mcr-diff.1</code></pre>
+      <p>HTML index and groff sources: <a href="man.html">Manuals</a>.</p>
+
+      <h2>Checks used in CI</h2>
+<pre><code>cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features</code></pre>
+
+      <h2>This website locally</h2>
+      <p>These pages are static files. From the repository root:</p>
+<pre><code>python3 -m http.server --directory docs 8000</code></pre>
+      <p>Then open <code>http://127.0.0.1:8000/</code> (redirects to <code>/website/</code>) or <code>http://127.0.0.1:8000/website/</code>.</p>
+      <p class="note">GitHub Pages can publish the <code>/docs</code> folder on <code>main</code>. <code>docs/index.html</code> redirects here; <code>docs/.nojekyll</code> keeps the tree static (no Jekyll).</p>
+    </main>
+    <footer>
+      <p>Original Apache-2.0 project website docs — not a copy of the GNU Midnight Commander website or GPL manuals.</p>
+      <p><a href="index.html">Overview</a> · <a href="../PARITY.md">Parity checklist</a> · <a href="https://github.com/vburenin/rusty-midnight-commander">Source</a></p>
+    </footer>
+  </div>
+</body>
+</html>

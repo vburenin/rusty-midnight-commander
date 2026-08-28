@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcr — rusty-midnight-commander</title>
+  <meta name="description" content="Apache-2.0 clean-room Rust dual-pane terminal file manager tracking GNU Midnight Commander user-visible behavior.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="index.html"><span class="mark">mcr</span> rusty-midnight-commander</a>
+      <nav>
+        <a href="index.html" aria-current="page">Overview</a>
+        <a href="install.html">Install</a>
+        <a href="features.html">Features</a>
+        <a href="man.html">Manuals</a>
+      </nav>
+    </header>
+    <main id="main">
+      <h1>A dual-pane file manager in Rust</h1>
+      <p class="lede"><code>mcr</code> is the binary of rusty-midnight-commander: an Apache-2.0, clean-room rewrite that aims for cell-accurate visual and interaction parity with GNU Midnight Commander for the features it already ships.</p>
+
+      <div class="card">
+        <p>This site is original project documentation. It is <strong>not</strong> a copy of <a href="https://midnight-commander.org/">midnight-commander.org</a> or of the GPL <code>mc</code>/<code>mcedit</code>/<code>mcview</code>/<code>mcdiff</code> manuals. GNU Midnight Commander remains a separate work; we track its <em>public</em> behavior, not its C sources.</p>
+      </div>
+
+      <h2>What you get in this tree</h2>
+      <p>With no options, <code>mcr</code> opens a full-screen terminal UI on the current directory:</p>
+      <ul class="plain">
+        <li>Two directory panels, menu bar (F9), mini-status, hint line, shell command line, and F1–F10 labels</li>
+        <li>Internal viewer (F3 / <code>mcr --view</code>), editor (F4 / <code>mcr --edit</code>), and side-by-side diff (<code>mcr --diff</code>)</li>
+        <li>Find File, directory tree, external panelize, user menu, hotlist, skins, and keymaps</li>
+        <li>VFS browse for local files, common archives, and FTP/SFTP/fish (copy-out; not zoo; no archive or remote write)</li>
+        <li>Optional PTY subshell (Ctrl-O), plus built-in F1 hypertext help</li>
+      </ul>
+      <p>The live checklist of what matches GNU mc(1) — and what does not — is <a href="../PARITY.md"><code>docs/PARITY.md</code></a>. Do not assume an unchecked box is implemented.</p>
+
+      <h2>Quick start</h2>
+<pre><code>cargo run --release -p mcr</code></pre>
+      <p>See <a href="install.html">Install and build</a> for toolchain pins, man-page install, and CLI flags. See <a href="features.html">Feature map</a> for a high-level comparison with GNU <code>mc</code>, and <a href="man.html">Manuals</a> for <code>mcr(1)</code> and friends.</p>
+
+      <h2>License</h2>
+      <p>Apache License 2.0. rusty-midnight-commander is not a derivative of GNU Midnight Commander’s GPL C sources.</p>
+    </main>
+    <footer>
+      <p>Original Apache-2.0 project website docs — not a copy of the GNU Midnight Commander website or GPL manuals.</p>
+      <p><a href="https://github.com/vburenin/rusty-midnight-commander">Source repository</a> · <a href="../PARITY.md">Parity checklist</a> · <a href="../man/mcr.1">mcr(1) source</a></p>
+    </footer>
+  </div>
+</body>
+</html>

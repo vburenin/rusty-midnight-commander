@@ -17,6 +17,8 @@ Outside the TUI, original Apache-2.0 manuals covering the shipped CLI
 are `man mcr` (file manager), `man mcr-edit` (`mcr --edit`),
 `man mcr-view` (`mcr --view`), and `man mcr-diff` (`mcr --diff`).
 From a git checkout: `man -l docs/man/mcr.1` (see README).
+Project website docs (original Apache-2.0 HTML, not the GNU mc site):
+`docs/website/index.html`.
 
 * Help viewer keys -> Keys
 * Directory panels -> Panels

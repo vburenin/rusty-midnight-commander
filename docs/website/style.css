@@ -1,0 +1,153 @@
+/* Original Apache-2.0 project docs. Not derived from the GNU mc website. */
+:root {
+  --bg: #f4efe6;
+  --ink: #1f1912;
+  --muted: #5c5348;
+  --accent: #b33b12;
+  --accent-ink: #fffaf4;
+  --card: #fffdf8;
+  --line: #e0d6c6;
+  --code-bg: #efe6d6;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+a { color: var(--accent); }
+a:hover { text-decoration-thickness: 2px; }
+
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 0;
+}
+.skip:focus {
+  left: 1rem;
+  top: 1rem;
+  background: var(--card);
+  padding: 0.4rem 0.7rem;
+  z-index: 2;
+}
+
+.wrap {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 3rem;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: 3px solid var(--ink);
+  padding-bottom: 0.85rem;
+  margin-bottom: 1.75rem;
+}
+
+.brand {
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.brand .mark {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0.05rem 0.4rem;
+  margin-right: 0.4rem;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.92rem;
+}
+nav a { color: var(--ink); text-decoration: none; }
+nav a:hover, nav a[aria-current="page"] { color: var(--accent); }
+nav a[aria-current="page"] { font-weight: 700; }
+
+h1, h2, h3 { line-height: 1.2; font-weight: 700; }
+h1 { font-size: 2rem; margin: 0 0 0.75rem; }
+h2 {
+  font-size: 1.25rem;
+  margin: 1.8rem 0 0.6rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
+h3 { font-size: 1.05rem; margin: 1.2rem 0 0.4rem; }
+
+.lede { font-size: 1.12rem; color: var(--muted); margin-top: 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  padding: 0.9rem 1rem;
+  margin: 1rem 0;
+}
+
+code, kbd, pre {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+code, kbd {
+  background: var(--code-bg);
+  padding: 0.08em 0.35em;
+}
+pre {
+  background: var(--ink);
+  color: #f4efe6;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  border-radius: 2px;
+}
+pre code { background: none; padding: 0; color: inherit; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.92rem;
+  background: var(--card);
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+}
+th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+
+ul.plain { padding-left: 1.2rem; }
+.note {
+  border-left: 4px solid var(--accent);
+  padding: 0.2rem 0 0.2rem 0.85rem;
+  color: var(--muted);
+}
+
+footer {
+  margin-top: 2.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+@media (max-width: 640px) {
+  h1 { font-size: 1.65rem; }
+  header { flex-direction: column; }
+}
