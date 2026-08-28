@@ -137,7 +137,7 @@ mod tests {
             let mut p = Painter { out: &mut sel };
             p.set_fg_bg(Color::White, Color::Black);
         }
-        assert_eq!(s, "\x1b[97;40m");
+        assert_eq!(String::from_utf8_lossy(&sel), "\x1b[97;40m");
     }
 
     #[test]

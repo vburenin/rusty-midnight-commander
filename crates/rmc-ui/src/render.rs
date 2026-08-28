@@ -8333,10 +8333,19 @@ mod gnu_default_chrome_colors_tests {
     }
 
     fn find_text(grid: &[Vec<Cell>], needle: &str) -> (usize, usize) {
+        let nchars: Vec<char> = needle.chars().collect();
         for (y, row) in grid.iter().enumerate() {
-            let s: String = row.iter().map(|c| c.ch).collect();
-            if let Some(x) = s.find(needle) {
-                return (x, y);
+            if nchars.len() > row.len() {
+                continue;
+            }
+            for x in 0..=row.len() - nchars.len() {
+                if row[x..x + nchars.len()]
+                    .iter()
+                    .zip(nchars.iter())
+                    .all(|(cell, ch)| cell.ch == *ch)
+                {
+                    return (x, y);
+                }
             }
         }
         panic!(
