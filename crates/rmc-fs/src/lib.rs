@@ -120,6 +120,12 @@ pub trait Vfs: Send {
     fn enter_path(&self, _path: &Path) -> Option<PathBuf> {
         None
     }
+    /// Normalize a panel cwd (e.g. `ftp://host` → `/#ftp:host`) so `..` /
+    /// `Path::parent` leave a VFS backend the same way archive `#` paths do.
+    /// Default returns `path` unchanged.
+    fn canonicalize_path(&self, path: &Path) -> PathBuf {
+        path.to_path_buf()
+    }
     /// Whether this backend treats `path` as local disk (`LocalFs`).
     ///
     /// [`composite::CompositeFs`] returns `false` for archive `#` paths,
@@ -182,6 +188,7 @@ pub mod cpiofs;
 pub mod debfs;
 pub mod dir_cache;
 pub mod extfs;
+pub mod ftpfs;
 pub mod isofs;
 pub mod pathutil;
 pub mod rarfs;

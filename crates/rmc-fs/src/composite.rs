@@ -85,7 +85,10 @@ impl CompositeFs {
                 vfs_root,
                 show_hidden,
             ),
-            Route::Remote { url } => crate::remote::list_dir(&url, path, show_hidden),
+            Route::Remote { url } => match url.scheme {
+                crate::remote::RemoteScheme::Ftp => crate::ftpfs::list_dir(&url, path, show_hidden),
+                _ => crate::remote::list_dir(&url, path, show_hidden),
+            },
         }
     }
 
@@ -186,14 +189,18 @@ impl Vfs for CompositeFs {
         self.is_local_fs_path(path)
     }
 
+    fn canonicalize_path(&self, path: &Path) -> PathBuf {
+        crate::ftpfs::canonicalize_panel_path(path)
+    }
+
     fn enter_path(&self, path: &Path) -> Option<PathBuf> {
         // Enter on archive files by extension; disallow when already in an archive
         if parse_archive_path(path).is_some() || self.extfs.parse_extfs_path(path).is_some() {
             return None;
         }
-        // Remote URLs are enterable as-is
+        // Remote URLs are enterable; ftpfs uses GNU `/#ftp:` so `..` leaves.
         if remote::is_remote_url(path) {
-            return Some(path.to_path_buf());
+            return Some(crate::ftpfs::canonicalize_panel_path(path));
         }
         if crate::pathutil::detect_archive_kind(path).is_some() {
             // Ensure the file exists and is a regular file
@@ -274,10 +281,10 @@ impl Vfs for CompositeFs {
             (Route::Extfs { xp, .. }, Route::Local { path: d }) => {
                 crate::extfs::copy_out(&xp.helper_cmd, &xp.archive, &xp.inner, d)
             }
-            (Route::Remote { url, .. }, Route::Local { path: d }) => {
-                // remote -> local
-                crate::remote::copy_out(&url, d)
-            }
+            (Route::Remote { url, .. }, Route::Local { path: d }) => match url.scheme {
+                crate::remote::RemoteScheme::Ftp => crate::ftpfs::copy_out(&url, d),
+                _ => crate::remote::copy_out(&url, d),
+            },
             (Route::Local { path: s }, Route::Remote { url, .. }) => {
                 // local -> remote
                 crate::remote::copy_in(s, &url)
@@ -365,10 +372,13 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "read_file inside extfs is not supported; use copy-out".into(),
             )),
-            Route::Remote { url, .. } => {
-                let f = crate::remote::read_file_to_temp(&url)?;
-                Ok(Box::new(f))
-            }
+            Route::Remote { url, .. } => match url.scheme {
+                crate::remote::RemoteScheme::Ftp => crate::ftpfs::read_file(&url),
+                _ => {
+                    let f = crate::remote::read_file_to_temp(&url)?;
+                    Ok(Box::new(f))
+                }
+            },
         }
     }
 
@@ -414,9 +424,10 @@ impl Vfs for CompositeFs {
             Route::Extfs { .. } => Err(FsError::Message(
                 "stat inside extfs is not supported in this minimal implementation".into(),
             )),
-            Route::Remote { .. } => {
-                Err(FsError::Message("stat on remote is not implemented".into()))
-            }
+            Route::Remote { url } => match url.scheme {
+                crate::remote::RemoteScheme::Ftp => crate::ftpfs::stat(&url),
+                _ => Err(FsError::Message("stat on remote is not implemented".into())),
+            },
         }
     }
     fn chmod(&self, path: &Path, mode: u32, recursive: bool) -> FsResult<()> {
@@ -491,6 +502,20 @@ mod tests {
         assert!(!vfs.is_local_fs_path(Path::new("/tmp/sample.tar#/inner.txt")));
         assert!(!vfs.is_local_fs_path(Path::new("/tmp/a.zip#/dir/f.txt")));
         assert!(!vfs.is_local_fs_path(Path::new("ftp://host/pub")));
+        assert!(!vfs.is_local_fs_path(Path::new("/#ftp:host/pub")));
         assert!(!vfs.is_local_fs_path(Path::new("sftp://user@host/tmp")));
+    }
+
+    #[test]
+    fn enter_path_normalizes_ftp_url_to_hash_ftp() {
+        let vfs = CompositeFs::new();
+        let entered = vfs
+            .enter_path(Path::new("ftp://example.com/pub"))
+            .expect("ftp enterable");
+        assert_eq!(entered, PathBuf::from("/#ftp:example.com/pub"));
+        assert_eq!(
+            vfs.canonicalize_path(Path::new("ftp://127.0.0.1:2121/")),
+            PathBuf::from("/#ftp:127.0.0.1:2121")
+        );
     }
 }

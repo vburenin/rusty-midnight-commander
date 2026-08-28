@@ -2060,7 +2060,7 @@ impl App {
     }
 
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
-        let new_cwd = path.to_path_buf();
+        let new_cwd = self.vfs.canonicalize_path(path);
         let cwd_changed = self.active_panel().cwd != new_cwd;
         let reverse_files_only = self.panel_opts.reverse_files_only;
         let auto_menus = self.config_opts.auto_menus;
