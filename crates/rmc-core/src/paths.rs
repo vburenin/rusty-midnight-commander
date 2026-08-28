@@ -81,27 +81,46 @@ pub fn user_mc_config_dir() -> PathBuf {
     )
 }
 
-/// mcr setup dir (`ini` / `keymap`). `$MCR_CONFIG_DIR` wins (tests / local override);
-/// else `$MC_PROFILE_ROOT/.config/mcr` or `$HOME/.config/mcr`.
+/// User setup dir for `ini` / `keymap` (GNU mc(1) `~/.config/mc`).
+///
+/// `$MCR_CONFIG_DIR` wins (tests / local override). Otherwise the same
+/// directory as [`user_mc_config_dir_from`] (`MC_PROFILE_ROOT` / `XDG_CONFIG_HOME`
+/// / `HOME/.config/mc`).
 pub fn default_config_dir_from(
     mcr_config_dir: Option<&str>,
     mc_profile_root: Option<&str>,
+    xdg_config_home: Option<&str>,
     home: Option<&str>,
 ) -> PathBuf {
     if let Some(dir) = nonempty(mcr_config_dir) {
         return PathBuf::from(dir);
     }
-    profile_root_from(mc_profile_root, home)
-        .join(".config")
-        .join("mcr")
+    user_mc_config_dir_from(mc_profile_root, xdg_config_home, home)
 }
 
 pub fn default_config_dir() -> PathBuf {
     default_config_dir_from(
         env_nonempty("MCR_CONFIG_DIR").as_deref(),
         env_nonempty("MC_PROFILE_ROOT").as_deref(),
+        env_nonempty("XDG_CONFIG_HOME").as_deref(),
         env_nonempty("HOME").as_deref(),
     )
+}
+
+/// GNU mc(1) `FILES`: system-wide setup files used when present.
+/// `/etc/mc/mc.ini` wins over `%pkgdatadir%/mc.ini` (`$MC_DATADIR` or `/usr/share/mc`).
+pub fn system_ini_candidates_from(etc_mc: &Path, share_mc: &Path) -> Vec<PathBuf> {
+    vec![etc_mc.join("mc.ini"), share_mc.join("mc.ini")]
+}
+
+pub fn system_ini_candidates() -> Vec<PathBuf> {
+    let share = pkg_data_dir().unwrap_or_else(|| PathBuf::from("/usr/share/mc"));
+    system_ini_candidates_from(Path::new("/etc/mc"), &share)
+}
+
+/// First existing path in `candidates`, matching GNU “if etc exists, share isn’t used”.
+pub fn first_existing_file(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.is_file()).cloned()
 }
 
 /// Search paths for a file under `%pkgdatadir%` (`mc.keymap`, `mc.menu`, …).
@@ -250,10 +269,52 @@ mod tests {
 
     #[test]
     fn default_config_dir_mcr_override_wins() {
-        let got = default_config_dir_from(Some("/tmp/mcr-cfg"), Some("/abs/profile"), Some("/h"));
+        let got = default_config_dir_from(
+            Some("/tmp/mcr-cfg"),
+            Some("/abs/profile"),
+            Some("/xdg"),
+            Some("/h"),
+        );
         assert_eq!(got, PathBuf::from("/tmp/mcr-cfg"));
-        let profile = default_config_dir_from(None, Some("/abs/profile"), Some("/h"));
-        assert_eq!(profile, PathBuf::from("/abs/profile/.config/mcr"));
+        let profile = default_config_dir_from(None, Some("/abs/profile"), Some("/xdg"), Some("/h"));
+        assert_eq!(
+            profile,
+            PathBuf::from("/abs/profile/.config/mc"),
+            "Save setup uses GNU ~/.config/mc under MC_PROFILE_ROOT"
+        );
+        let xdg = default_config_dir_from(None, None, Some("/xdg"), Some("/h"));
+        assert_eq!(xdg, PathBuf::from("/xdg/mc"));
+        let home = default_config_dir_from(None, None, None, Some("/home/me"));
+        assert_eq!(home, PathBuf::from("/home/me/.config/mc"));
+    }
+
+    #[test]
+    fn system_ini_etc_before_share() {
+        let c = system_ini_candidates_from(Path::new("/etc/mc"), Path::new("/usr/share/mc"));
+        assert_eq!(
+            c,
+            vec![
+                PathBuf::from("/etc/mc/mc.ini"),
+                PathBuf::from("/usr/share/mc/mc.ini"),
+            ]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("etc");
+        let share = dir.path().join("share");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::write(share.join("mc.ini"), "share\n").unwrap();
+        let only_share = system_ini_candidates_from(&etc, &share);
+        assert_eq!(
+            first_existing_file(&only_share).as_deref(),
+            Some(share.join("mc.ini").as_path())
+        );
+        std::fs::write(etc.join("mc.ini"), "etc\n").unwrap();
+        assert_eq!(
+            first_existing_file(&only_share).as_deref(),
+            Some(etc.join("mc.ini").as_path()),
+            "GNU: /etc/mc/mc.ini wins over share"
+        );
     }
 
     #[test]

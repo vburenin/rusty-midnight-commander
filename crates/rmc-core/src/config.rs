@@ -1,4 +1,10 @@
 use crate::actions::{Action, SortBy};
+use crate::dirtree::DirectoryTreeState;
+use crate::panel::{
+    clamp_brief_columns, ListingFormat, PanelMode, PanelState, SortBy as PanelSortBy, TreeEntry,
+    TreeState,
+};
+use crate::sorting::SortDir;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
@@ -624,120 +630,377 @@ fn format_key(ev: &KeyEvent) -> String {
 }
 
 /// Return the config directory path honoring `$MCR_CONFIG_DIR`, then
-/// `$MC_PROFILE_ROOT/.config/mcr`, else `~/.config/mcr`.
+/// GNU `~/.config/mc` (`$MC_PROFILE_ROOT` / `$XDG_CONFIG_HOME` / `$HOME`).
 pub fn default_config_dir() -> PathBuf {
     crate::paths::default_config_dir()
 }
 
-/// Save App options (layout/confirm/panels) and keymap to default config dir.
+/// Save App options (layout/confirm/panels/Left/Right) and keymap to the user
+/// config dir (`~/.config/mc` unless relocated). Creates the directory as needed.
 pub fn save_setup(app: &crate::app::App) -> Result<()> {
     save_setup_to(app, &default_config_dir())
 }
 
 /// Save App options and keymap into `dir` (`ini` + `keymap`).
+///
+/// Known keys are upserted; unknown sections and keys in an existing `ini` are
+/// left in place (mc(1) users may hand-edit Special Settings).
 pub fn save_setup_to(app: &crate::app::App, dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)?;
-    // Save options ini
     let ini_path = dir.join("ini");
-    let mut f = File::create(&ini_path)?;
-    // [layout]
-    writeln!(f, "[layout]")?;
-    writeln!(f, "menubar_visible={}", app.layout.menubar_visible)?;
-    writeln!(f, "command_prompt={}", app.layout.command_prompt)?;
-    writeln!(f, "keybar_visible={}", app.layout.keybar_visible)?;
-    writeln!(f, "hintbar_visible={}", app.layout.hintbar_visible)?;
-    writeln!(f, "xterm_title={}", app.layout.xterm_title)?;
-    writeln!(f, "show_free_space={}", app.layout.show_free_space)?;
-    writeln!(f, "panel_ratio={}", app.layout.panel_ratio)?;
-    writeln!(f, "horizontal_split={}", app.layout.horizontal_split)?;
-    writeln!(f, "equal_split={}", app.layout.equal_split)?;
-    // [confirm]
-    writeln!(f, "\n[confirm]")?;
-    writeln!(f, "delete={}", app.confirm.delete)?;
-    writeln!(f, "overwrite={}", app.confirm.overwrite)?;
-    writeln!(f, "execute={}", app.confirm.execute)?;
-    writeln!(f, "exit={}", app.confirm.exit)?;
-    writeln!(f, "directory_hotlist={}", app.confirm.directory_hotlist)?;
-    writeln!(f, "history_cleanup={}", app.confirm.history_cleanup)?;
-    // [panels]
-    writeln!(f, "\n[panels]")?;
-    writeln!(f, "show_hidden={}", app.panel_opts.show_hidden)?;
-    writeln!(f, "mix_all_files={}", app.panel_opts.mix_all_files)?;
-    writeln!(f, "mark_moves_down={}", app.panel_opts.mark_moves_down)?;
-    writeln!(f, "show_mini_status={}", app.panel_opts.show_mini_status)?;
-    writeln!(f, "kilobyte_si={}", app.panel_opts.kilobyte_si)?;
-    writeln!(f, "fast_reload={}", app.panel_opts.fast_reload)?;
-    writeln!(
-        f,
-        "reverse_files_only={}",
-        app.panel_opts.reverse_files_only
-    )?;
-    writeln!(f, "simple_swap={}", app.panel_opts.simple_swap)?;
-    writeln!(f, "auto_save_setup={}", app.panel_opts.auto_save_setup)?;
-    writeln!(f, "lynx_like={}", app.panel_opts.lynx_like)?;
-    // [appearance]
-    writeln!(f, "\n[appearance]")?;
-    writeln!(f, "skin={}", app.skin_name)?;
-    writeln!(f, "shadows={}", app.shadows)?;
-    // [vfs]
-    writeln!(f, "\n[vfs]")?;
-    writeln!(
-        f,
-        "always_use_ftp_proxy={}",
-        app.vfs_opts.always_use_ftp_proxy
-    )?;
-    writeln!(f, "ftp_proxy_host={}", app.vfs_opts.ftp_proxy_host)?;
-    writeln!(f, "use_netrc={}", app.vfs_opts.use_netrc)?;
-    writeln!(f, "ftp_anon_password={}", app.vfs_opts.ftp_anon_password)?;
-    writeln!(
-        f,
-        "dir_cache_timeout_secs={}",
-        app.vfs_opts.dir_cache_timeout_secs
-    )?;
-    // [configuration]
-    writeln!(f, "\n[configuration]")?;
-    writeln!(f, "verbose={}", app.config_opts.verbose)?;
-    writeln!(f, "compute_totals={}", app.config_opts.compute_totals)?;
-    writeln!(
-        f,
-        "classic_progressbar={}",
-        app.config_opts.classic_progressbar
-    )?;
-    writeln!(f, "use_internal_view={}", app.config_opts.use_internal_view)?;
-    writeln!(f, "use_internal_edit={}", app.config_opts.use_internal_edit)?;
-    writeln!(f, "pause_after_run={}", app.config_opts.pause_after_run)?;
-    writeln!(f, "shell_patterns={}", app.config_opts.shell_patterns)?;
-    writeln!(f, "auto_menus={}", app.config_opts.auto_menus)?;
-    writeln!(f, "drop_menus={}", app.config_opts.drop_menus)?;
-    writeln!(f, "mkdir_autoname={}", app.config_opts.mkdir_autoname)?;
-    writeln!(f, "preallocate_space={}", app.config_opts.preallocate_space)?;
-    writeln!(
-        f,
-        "use_cow_file_cloning={}",
-        app.config_opts.use_cow_file_cloning
-    )?;
-    writeln!(f, "complete_show_all={}", app.config_opts.complete_show_all)?;
-    writeln!(f, "safe_delete={}", app.config_opts.safe_delete)?;
-    write_terminal_sections(&mut f, &app.learned_keys)?;
-    // Save keymap
-    let keymap_path = dir.join("keymap");
-    app.keymap.save_to_file(&keymap_path)?;
-    Ok(())
-}
-
-fn write_terminal_sections(f: &mut File, store: &crate::learn_keys::LearnedKeyStore) -> Result<()> {
-    for (term, pairs) in store.sections_to_write() {
+    let mut contents = if ini_path.exists() {
+        fs::read_to_string(&ini_path)?
+    } else {
+        String::new()
+    };
+    contents = merge_setup_into_ini(&contents, app);
+    for (term, pairs) in app.learned_keys.sections_to_write() {
         if pairs.is_empty() {
             continue;
         }
-        writeln!(f, "\n[terminal:{term}]")?;
-        write!(
-            f,
-            "{}",
-            crate::learn_keys::format_terminal_section_body(&pairs)
-        )?;
+        let body = crate::learn_keys::format_terminal_section_body(&pairs);
+        contents =
+            crate::learn_keys::upsert_ini_section(&contents, &format!("terminal:{term}"), &body);
     }
+    fs::write(&ini_path, contents)?;
+    app.keymap.save_to_file(&dir.join("keymap"))?;
     Ok(())
+}
+
+fn merge_setup_into_ini(contents: &str, app: &crate::app::App) -> String {
+    let mut out = contents.to_string();
+    for (section, keys) in setup_kv_sections(app) {
+        out = upsert_ini_keys(&out, section, &keys);
+    }
+    out
+}
+
+fn setup_kv_sections(app: &crate::app::App) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    vec![
+        (
+            "layout",
+            vec![
+                ("menubar_visible", app.layout.menubar_visible.to_string()),
+                ("command_prompt", app.layout.command_prompt.to_string()),
+                ("keybar_visible", app.layout.keybar_visible.to_string()),
+                ("hintbar_visible", app.layout.hintbar_visible.to_string()),
+                ("xterm_title", app.layout.xterm_title.to_string()),
+                ("show_free_space", app.layout.show_free_space.to_string()),
+                ("panel_ratio", app.layout.panel_ratio.to_string()),
+                ("horizontal_split", app.layout.horizontal_split.to_string()),
+                ("equal_split", app.layout.equal_split.to_string()),
+            ],
+        ),
+        (
+            "confirm",
+            vec![
+                ("delete", app.confirm.delete.to_string()),
+                ("overwrite", app.confirm.overwrite.to_string()),
+                ("execute", app.confirm.execute.to_string()),
+                ("exit", app.confirm.exit.to_string()),
+                (
+                    "directory_hotlist",
+                    app.confirm.directory_hotlist.to_string(),
+                ),
+                ("history_cleanup", app.confirm.history_cleanup.to_string()),
+            ],
+        ),
+        (
+            "panels",
+            vec![
+                ("show_hidden", app.panel_opts.show_hidden.to_string()),
+                ("mix_all_files", app.panel_opts.mix_all_files.to_string()),
+                (
+                    "mark_moves_down",
+                    app.panel_opts.mark_moves_down.to_string(),
+                ),
+                (
+                    "show_mini_status",
+                    app.panel_opts.show_mini_status.to_string(),
+                ),
+                ("kilobyte_si", app.panel_opts.kilobyte_si.to_string()),
+                ("fast_reload", app.panel_opts.fast_reload.to_string()),
+                (
+                    "reverse_files_only",
+                    app.panel_opts.reverse_files_only.to_string(),
+                ),
+                ("simple_swap", app.panel_opts.simple_swap.to_string()),
+                (
+                    "auto_save_setup",
+                    app.panel_opts.auto_save_setup.to_string(),
+                ),
+                ("lynx_like", app.panel_opts.lynx_like.to_string()),
+            ],
+        ),
+        (
+            "appearance",
+            vec![
+                ("skin", app.skin_name.clone()),
+                ("shadows", app.shadows.to_string()),
+            ],
+        ),
+        (
+            "vfs",
+            vec![
+                (
+                    "always_use_ftp_proxy",
+                    app.vfs_opts.always_use_ftp_proxy.to_string(),
+                ),
+                ("ftp_proxy_host", app.vfs_opts.ftp_proxy_host.clone()),
+                ("use_netrc", app.vfs_opts.use_netrc.to_string()),
+                ("ftp_anon_password", app.vfs_opts.ftp_anon_password.clone()),
+                (
+                    "dir_cache_timeout_secs",
+                    app.vfs_opts.dir_cache_timeout_secs.to_string(),
+                ),
+            ],
+        ),
+        (
+            "configuration",
+            vec![
+                ("verbose", app.config_opts.verbose.to_string()),
+                ("compute_totals", app.config_opts.compute_totals.to_string()),
+                (
+                    "classic_progressbar",
+                    app.config_opts.classic_progressbar.to_string(),
+                ),
+                (
+                    "use_internal_view",
+                    app.config_opts.use_internal_view.to_string(),
+                ),
+                (
+                    "use_internal_edit",
+                    app.config_opts.use_internal_edit.to_string(),
+                ),
+                (
+                    "pause_after_run",
+                    app.config_opts.pause_after_run.to_string(),
+                ),
+                ("shell_patterns", app.config_opts.shell_patterns.to_string()),
+                ("auto_menus", app.config_opts.auto_menus.to_string()),
+                ("drop_menus", app.config_opts.drop_menus.to_string()),
+                ("mkdir_autoname", app.config_opts.mkdir_autoname.to_string()),
+                (
+                    "preallocate_space",
+                    app.config_opts.preallocate_space.to_string(),
+                ),
+                (
+                    "use_cow_file_cloning",
+                    app.config_opts.use_cow_file_cloning.to_string(),
+                ),
+                (
+                    "complete_show_all",
+                    app.config_opts.complete_show_all.to_string(),
+                ),
+                ("safe_delete", app.config_opts.safe_delete.to_string()),
+            ],
+        ),
+        ("left", panel_kv(&app.left)),
+        ("right", panel_kv(&app.right)),
+    ]
+}
+
+fn panel_kv(p: &PanelState) -> Vec<(&'static str, String)> {
+    vec![
+        ("listing", listing_to_ini(p.listing).to_string()),
+        ("mode", mode_to_ini(p.mode).to_string()),
+        ("user_format", p.user_format.clone()),
+        ("brief_columns", p.brief_columns.to_string()),
+        ("sort_by", panel_sort_to_ini(p.sort_by).to_string()),
+        ("sort_dir", sort_dir_to_ini(p.sort_dir).to_string()),
+    ]
+}
+
+fn listing_to_ini(l: ListingFormat) -> &'static str {
+    match l {
+        ListingFormat::Full => "full",
+        ListingFormat::Brief => "brief",
+        ListingFormat::Long => "long",
+        ListingFormat::User => "user",
+    }
+}
+
+fn parse_listing(s: &str) -> Option<ListingFormat> {
+    Some(match s.trim().to_ascii_lowercase().as_str() {
+        "full" => ListingFormat::Full,
+        "brief" => ListingFormat::Brief,
+        "long" => ListingFormat::Long,
+        "user" => ListingFormat::User,
+        _ => return None,
+    })
+}
+
+fn mode_to_ini(m: PanelMode) -> &'static str {
+    match m {
+        PanelMode::Listing => "listing",
+        PanelMode::QuickView => "quickview",
+        PanelMode::Info => "info",
+        PanelMode::Tree => "tree",
+    }
+}
+
+fn parse_mode(s: &str) -> Option<PanelMode> {
+    Some(match s.trim().to_ascii_lowercase().as_str() {
+        "listing" => PanelMode::Listing,
+        "quickview" | "quick_view" => PanelMode::QuickView,
+        "info" => PanelMode::Info,
+        "tree" => PanelMode::Tree,
+        _ => return None,
+    })
+}
+
+fn panel_sort_to_ini(s: PanelSortBy) -> &'static str {
+    match s {
+        PanelSortBy::Name => "name",
+        PanelSortBy::Ext => "ext",
+        PanelSortBy::Size => "size",
+        PanelSortBy::Time => "mtime",
+        PanelSortBy::Atime => "atime",
+        PanelSortBy::Ctime => "ctime",
+        PanelSortBy::Inode => "inode",
+        PanelSortBy::Unsorted => "unsorted",
+    }
+}
+
+fn parse_panel_sort(s: &str) -> Option<PanelSortBy> {
+    Some(match s.trim().to_ascii_lowercase().as_str() {
+        "name" => PanelSortBy::Name,
+        "ext" => PanelSortBy::Ext,
+        "size" => PanelSortBy::Size,
+        "mtime" | "time" => PanelSortBy::Time,
+        "atime" => PanelSortBy::Atime,
+        "ctime" => PanelSortBy::Ctime,
+        "inode" => PanelSortBy::Inode,
+        "unsorted" => PanelSortBy::Unsorted,
+        _ => return None,
+    })
+}
+
+fn sort_dir_to_ini(d: SortDir) -> &'static str {
+    match d {
+        SortDir::Asc => "asc",
+        SortDir::Desc => "desc",
+    }
+}
+
+fn parse_sort_dir(s: &str) -> Option<SortDir> {
+    Some(match s.trim().to_ascii_lowercase().as_str() {
+        "asc" | "ascending" => SortDir::Asc,
+        "desc" | "descending" | "reverse" => SortDir::Desc,
+        _ => return None,
+    })
+}
+
+/// Public INI booleans: mcr writes `true`/`false`; GNU mc.ini often uses `1`/`0`.
+fn parse_ini_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn join_ini_lines(lines: Vec<String>) -> String {
+    let mut s = lines.join("\n");
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+/// Upsert `keys` in `[section]` without removing unknown keys or other sections.
+fn upsert_ini_keys(contents: &str, section: &str, keys: &[(&'static str, String)]) -> String {
+    if keys.is_empty() {
+        return if contents.is_empty() || contents.ends_with('\n') {
+            contents.to_string()
+        } else {
+            format!("{contents}\n")
+        };
+    }
+    let header = format!("[{section}]");
+    let header_l = header.to_ascii_lowercase();
+    let lines: Vec<String> = if contents.is_empty() {
+        Vec::new()
+    } else {
+        contents.lines().map(|s| s.to_string()).collect()
+    };
+
+    let mut start = None;
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t.starts_with('[') && t.ends_with(']') && t.to_ascii_lowercase() == header_l {
+            start = Some(i);
+            end = lines.len();
+            for (j, l2) in lines.iter().enumerate().skip(i + 1) {
+                let t2 = l2.trim();
+                if t2.starts_with('[') && t2.ends_with(']') {
+                    end = j;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    match start {
+        None => {
+            let mut out = lines;
+            if !out.is_empty() && out.last().is_some_and(|x| !x.is_empty()) {
+                out.push(String::new());
+            }
+            out.push(header);
+            for (k, v) in keys {
+                out.push(format!("{k}={v}"));
+            }
+            join_ini_lines(out)
+        }
+        Some(s) => {
+            let mut present = vec![false; keys.len()];
+            let mut section_lines: Vec<String> = vec![lines[s].clone()];
+            for line in &lines[s + 1..end] {
+                let t = line.trim();
+                if t.is_empty() || t.starts_with('#') || t.starts_with(';') {
+                    section_lines.push(line.clone());
+                    continue;
+                }
+                if let Some((k, _)) = t.split_once('=') {
+                    let kl = k.trim().to_ascii_lowercase();
+                    if let Some(idx) = keys.iter().position(|(ck, _)| ck.eq_ignore_ascii_case(&kl))
+                    {
+                        section_lines.push(format!("{}={}", keys[idx].0, keys[idx].1));
+                        present[idx] = true;
+                        continue;
+                    }
+                }
+                section_lines.push(line.clone());
+            }
+            let mut insert_at = section_lines.len();
+            while insert_at > 1 && section_lines[insert_at - 1].trim().is_empty() {
+                insert_at -= 1;
+            }
+            let missing: Vec<String> = keys
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !present[*i])
+                .map(|(_, (k, v))| format!("{k}={v}"))
+                .collect();
+            for (i, m) in missing.into_iter().enumerate() {
+                section_lines.insert(insert_at + i, m);
+            }
+
+            let mut out: Vec<String> = Vec::new();
+            out.extend(lines[..s].iter().cloned());
+            out.extend(section_lines);
+            if end < lines.len() {
+                if out.last().is_some_and(|x| !x.is_empty()) {
+                    out.push(String::new());
+                }
+                out.extend(lines[end..].iter().cloned());
+            }
+            join_ini_lines(out)
+        }
+    }
 }
 
 /// Persist Options → Learn keys into `[terminal:TERM]` of the user `ini`.
@@ -768,132 +1031,215 @@ pub fn save_learned_keys_to(app: &crate::app::App, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// If setup files exist, load them over defaults and apply to the App.
+/// Compiled defaults, then the first existing system `mc.ini`
+/// (`/etc/mc/mc.ini` else `$MC_DATADIR/mc.ini` / `/usr/share/mc/mc.ini`),
+/// then the user dir (`~/.config/mc` unless `$MCR_CONFIG_DIR` /
+/// `$MC_PROFILE_ROOT` relocates it).
 pub fn load_user_setup(app: &mut crate::app::App) -> Result<()> {
-    load_user_setup_from(app, &default_config_dir())
+    load_setup_layers(
+        app,
+        crate::paths::first_existing_file(&crate::paths::system_ini_candidates()).as_deref(),
+        &default_config_dir(),
+    )
+}
+
+/// Overlay `system_ini` (if any) then files in `user_dir`.
+pub fn load_setup_layers(
+    app: &mut crate::app::App,
+    system_ini: Option<&Path>,
+    user_dir: &Path,
+) -> Result<()> {
+    if let Some(p) = system_ini {
+        apply_ini_path(app, p)?;
+    }
+    load_user_setup_from(app, user_dir)
 }
 
 /// Load setup files from `dir` if they exist.
 pub fn load_user_setup_from(app: &mut crate::app::App, dir: &Path) -> Result<()> {
-    // Keymap (optional)
     let keymap_path = dir.join("keymap");
     if keymap_path.exists() {
         if let Ok(km) = KeyMap::load_from_file(&keymap_path) {
             app.keymap = km;
         }
     }
-    // Options ini (optional)
-    let ini_path = dir.join("ini");
-    if ini_path.exists() {
-        let f = File::open(&ini_path)?;
-        let mut section = String::new();
-        for line in BufReader::new(f).lines() {
-            let raw = line?;
-            let s = raw.trim();
-            if s.is_empty() || s.starts_with('#') || s.starts_with(';') {
-                continue;
-            }
-            if s.starts_with('[') && s.ends_with(']') {
-                section = s[1..s.len() - 1].to_ascii_lowercase();
-                continue;
-            }
-            let (k, v) = match s.split_once('=') {
-                Some((a, b)) => (a.trim().to_ascii_lowercase(), b.trim().to_string()),
-                None => continue,
-            };
-            let vb = |s: &str| -> bool { s.eq_ignore_ascii_case("true") };
-            match section.as_str() {
-                "layout" => match k.as_str() {
-                    "menubar_visible" => app.layout.menubar_visible = vb(&v),
-                    "command_prompt" => app.layout.command_prompt = vb(&v),
-                    "keybar_visible" => app.layout.keybar_visible = vb(&v),
-                    "hintbar_visible" => app.layout.hintbar_visible = vb(&v),
-                    "xterm_title" => app.layout.xterm_title = vb(&v),
-                    "show_free_space" => app.layout.show_free_space = vb(&v),
-                    "panel_ratio" => {
-                        if let Ok(n) = v.parse::<f32>() {
-                            app.layout.panel_ratio = n.clamp(0.2, 0.8);
-                        }
-                    }
-                    "horizontal_split" => app.layout.horizontal_split = vb(&v),
-                    "equal_split" => app.layout.equal_split = vb(&v),
-                    _ => {}
-                },
-                "confirm" => match k.as_str() {
-                    "delete" => app.confirm.delete = vb(&v),
-                    "overwrite" => app.confirm.overwrite = vb(&v),
-                    "execute" => app.confirm.execute = vb(&v),
-                    "exit" => app.confirm.exit = vb(&v),
-                    "directory_hotlist" => app.confirm.directory_hotlist = vb(&v),
-                    "history_cleanup" => app.confirm.history_cleanup = vb(&v),
-                    _ => {}
-                },
-                "panels" => match k.as_str() {
-                    "show_hidden" => app.panel_opts.show_hidden = vb(&v),
-                    "mix_all_files" => app.panel_opts.mix_all_files = vb(&v),
-                    "mark_moves_down" => app.panel_opts.mark_moves_down = vb(&v),
-                    "show_mini_status" => app.panel_opts.show_mini_status = vb(&v),
-                    "kilobyte_si" => app.panel_opts.kilobyte_si = vb(&v),
-                    "fast_reload" => app.panel_opts.fast_reload = vb(&v),
-                    "reverse_files_only" => app.panel_opts.reverse_files_only = vb(&v),
-                    "simple_swap" => app.panel_opts.simple_swap = vb(&v),
-                    "auto_save_setup" => app.panel_opts.auto_save_setup = vb(&v),
-                    "lynx_like" => app.panel_opts.lynx_like = vb(&v),
-                    _ => {}
-                },
-                "vfs" => match k.as_str() {
-                    "always_use_ftp_proxy" => app.vfs_opts.always_use_ftp_proxy = vb(&v),
-                    "ftp_proxy_host" => {
-                        app.vfs_opts.ftp_proxy_host = v;
-                    }
-                    "use_netrc" => {
-                        app.vfs_opts.use_netrc = vb(&v);
-                    }
-                    "ftp_anon_password" => {
-                        app.vfs_opts.ftp_anon_password = v;
-                    }
-                    "dir_cache_timeout_secs" => {
-                        if let Ok(n) = v.parse::<u32>() {
-                            app.vfs_opts.dir_cache_timeout_secs = n;
-                        }
-                    }
-                    _ => {}
-                },
-                "appearance" => match k.as_str() {
-                    "skin" => app.skin_name = v,
-                    "shadows" => app.shadows = vb(&v),
-                    _ => {}
-                },
-                "configuration" => match k.as_str() {
-                    "verbose" => app.config_opts.verbose = vb(&v),
-                    "compute_totals" => app.config_opts.compute_totals = vb(&v),
-                    "classic_progressbar" => app.config_opts.classic_progressbar = vb(&v),
-                    "use_internal_view" => app.config_opts.use_internal_view = vb(&v),
-                    "use_internal_edit" => app.config_opts.use_internal_edit = vb(&v),
-                    "pause_after_run" => app.config_opts.pause_after_run = vb(&v),
-                    "shell_patterns" => app.config_opts.shell_patterns = vb(&v),
-                    "auto_menus" => app.config_opts.auto_menus = vb(&v),
-                    "drop_menus" => app.config_opts.drop_menus = vb(&v),
-                    "mkdir_autoname" => app.config_opts.mkdir_autoname = vb(&v),
-                    "preallocate_space" => app.config_opts.preallocate_space = vb(&v),
-                    "use_cow_file_cloning" => app.config_opts.use_cow_file_cloning = vb(&v),
-                    "complete_show_all" => app.config_opts.complete_show_all = vb(&v),
-                    "safe_delete" => app.config_opts.safe_delete = vb(&v),
-                    _ => {}
-                },
-                _ if section.starts_with("terminal:") => {
-                    let term = &section["terminal:".len()..];
-                    app.learned_keys.load_ini_pair(term, &k, &v);
+    apply_ini_path(app, &dir.join("ini"))
+}
+
+fn apply_ini_path(app: &mut crate::app::App, ini_path: &Path) -> Result<()> {
+    if !ini_path.exists() {
+        return Ok(());
+    }
+    let f = File::open(ini_path)?;
+    let mut section = String::new();
+    for line in BufReader::new(f).lines() {
+        apply_ini_line(app, &mut section, &line?);
+    }
+    apply_derived_flags(app);
+    Ok(())
+}
+
+fn apply_derived_flags(app: &mut crate::app::App) {
+    app.show_hidden = app.panel_opts.show_hidden;
+    app.left.dirs_first = !app.panel_opts.mix_all_files;
+    app.right.dirs_first = !app.panel_opts.mix_all_files;
+    ensure_tree_stub(&mut app.left);
+    ensure_tree_stub(&mut app.right);
+}
+
+fn ensure_tree_stub(panel: &mut PanelState) {
+    if !matches!(panel.mode, PanelMode::Tree) || panel.tree.is_some() {
+        return;
+    }
+    let cwd = if panel.cwd.as_os_str().is_empty() {
+        PathBuf::from("/")
+    } else {
+        panel.cwd.clone()
+    };
+    panel.tree = Some(TreeState {
+        figure: DirectoryTreeState::new(
+            vec![TreeEntry {
+                path: cwd.clone(),
+                depth: 0,
+            }],
+            &cwd,
+        ),
+        search_active: false,
+    });
+}
+
+fn assign_bool(slot: &mut bool, v: &str) {
+    if let Some(b) = parse_ini_bool(v) {
+        *slot = b;
+    }
+}
+
+fn apply_ini_line(app: &mut crate::app::App, section: &mut String, raw: &str) {
+    let s = raw.trim();
+    if s.is_empty() || s.starts_with('#') || s.starts_with(';') {
+        return;
+    }
+    if s.starts_with('[') && s.ends_with(']') {
+        *section = s[1..s.len() - 1].to_ascii_lowercase();
+        return;
+    }
+    let (k, v) = match s.split_once('=') {
+        Some((a, b)) => (a.trim().to_ascii_lowercase(), b.trim().to_string()),
+        None => return,
+    };
+    match section.as_str() {
+        "layout" => match k.as_str() {
+            "menubar_visible" => assign_bool(&mut app.layout.menubar_visible, &v),
+            "command_prompt" => assign_bool(&mut app.layout.command_prompt, &v),
+            "keybar_visible" => assign_bool(&mut app.layout.keybar_visible, &v),
+            "hintbar_visible" => assign_bool(&mut app.layout.hintbar_visible, &v),
+            "xterm_title" => assign_bool(&mut app.layout.xterm_title, &v),
+            "show_free_space" => assign_bool(&mut app.layout.show_free_space, &v),
+            "panel_ratio" => {
+                if let Ok(n) = v.parse::<f32>() {
+                    app.layout.panel_ratio = n.clamp(0.2, 0.8);
                 }
-                _ => {}
+            }
+            "horizontal_split" => assign_bool(&mut app.layout.horizontal_split, &v),
+            "equal_split" => assign_bool(&mut app.layout.equal_split, &v),
+            _ => {}
+        },
+        "confirm" => match k.as_str() {
+            "delete" => assign_bool(&mut app.confirm.delete, &v),
+            "overwrite" => assign_bool(&mut app.confirm.overwrite, &v),
+            "execute" => assign_bool(&mut app.confirm.execute, &v),
+            "exit" => assign_bool(&mut app.confirm.exit, &v),
+            "directory_hotlist" => assign_bool(&mut app.confirm.directory_hotlist, &v),
+            "history_cleanup" => assign_bool(&mut app.confirm.history_cleanup, &v),
+            _ => {}
+        },
+        "panels" => match k.as_str() {
+            "show_hidden" => assign_bool(&mut app.panel_opts.show_hidden, &v),
+            "mix_all_files" => assign_bool(&mut app.panel_opts.mix_all_files, &v),
+            "mark_moves_down" => assign_bool(&mut app.panel_opts.mark_moves_down, &v),
+            "show_mini_status" => assign_bool(&mut app.panel_opts.show_mini_status, &v),
+            "kilobyte_si" => assign_bool(&mut app.panel_opts.kilobyte_si, &v),
+            "fast_reload" => assign_bool(&mut app.panel_opts.fast_reload, &v),
+            "reverse_files_only" => assign_bool(&mut app.panel_opts.reverse_files_only, &v),
+            "simple_swap" => assign_bool(&mut app.panel_opts.simple_swap, &v),
+            "auto_save_setup" => assign_bool(&mut app.panel_opts.auto_save_setup, &v),
+            "lynx_like" => assign_bool(&mut app.panel_opts.lynx_like, &v),
+            _ => {}
+        },
+        "vfs" => match k.as_str() {
+            "always_use_ftp_proxy" => assign_bool(&mut app.vfs_opts.always_use_ftp_proxy, &v),
+            "ftp_proxy_host" => app.vfs_opts.ftp_proxy_host = v,
+            "use_netrc" => assign_bool(&mut app.vfs_opts.use_netrc, &v),
+            "ftp_anon_password" => app.vfs_opts.ftp_anon_password = v,
+            "dir_cache_timeout_secs" => {
+                if let Ok(n) = v.parse::<u32>() {
+                    app.vfs_opts.dir_cache_timeout_secs = n;
+                }
+            }
+            _ => {}
+        },
+        "appearance" => match k.as_str() {
+            "skin" => app.skin_name = v,
+            "shadows" => assign_bool(&mut app.shadows, &v),
+            _ => {}
+        },
+        "configuration" => match k.as_str() {
+            "verbose" => assign_bool(&mut app.config_opts.verbose, &v),
+            "compute_totals" => assign_bool(&mut app.config_opts.compute_totals, &v),
+            "classic_progressbar" => assign_bool(&mut app.config_opts.classic_progressbar, &v),
+            "use_internal_view" => assign_bool(&mut app.config_opts.use_internal_view, &v),
+            "use_internal_edit" => assign_bool(&mut app.config_opts.use_internal_edit, &v),
+            "pause_after_run" => assign_bool(&mut app.config_opts.pause_after_run, &v),
+            "shell_patterns" => assign_bool(&mut app.config_opts.shell_patterns, &v),
+            "auto_menus" => assign_bool(&mut app.config_opts.auto_menus, &v),
+            "drop_menus" => assign_bool(&mut app.config_opts.drop_menus, &v),
+            "mkdir_autoname" => assign_bool(&mut app.config_opts.mkdir_autoname, &v),
+            "preallocate_space" => assign_bool(&mut app.config_opts.preallocate_space, &v),
+            "use_cow_file_cloning" => assign_bool(&mut app.config_opts.use_cow_file_cloning, &v),
+            "complete_show_all" => assign_bool(&mut app.config_opts.complete_show_all, &v),
+            "safe_delete" => assign_bool(&mut app.config_opts.safe_delete, &v),
+            _ => {}
+        },
+        "left" => apply_panel_kv(&mut app.left, &k, &v),
+        "right" => apply_panel_kv(&mut app.right, &k, &v),
+        _ if section.starts_with("terminal:") => {
+            let term = &section["terminal:".len()..];
+            app.learned_keys.load_ini_pair(term, &k, &v);
+        }
+        _ => {}
+    }
+}
+
+fn apply_panel_kv(panel: &mut PanelState, k: &str, v: &str) {
+    match k {
+        "listing" => {
+            if let Some(l) = parse_listing(v) {
+                panel.listing = l;
             }
         }
-        // Apply top-level derived flags and panel flags
-        app.show_hidden = app.panel_opts.show_hidden;
-        app.left.dirs_first = !app.panel_opts.mix_all_files;
-        app.right.dirs_first = !app.panel_opts.mix_all_files;
+        "mode" => {
+            if let Some(m) = parse_mode(v) {
+                panel.mode = m;
+            }
+        }
+        "user_format" => panel.user_format = v.to_string(),
+        "brief_columns" => {
+            if let Ok(n) = v.parse::<u8>() {
+                panel.brief_columns = clamp_brief_columns(n);
+            }
+        }
+        "sort_by" => {
+            if let Some(s) = parse_panel_sort(v) {
+                panel.sort_by = s;
+            }
+        }
+        "sort_dir" => {
+            if let Some(d) = parse_sort_dir(v) {
+                panel.sort_dir = d;
+            }
+        }
+        _ => {}
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1212,6 +1558,208 @@ mod tests {
             KeyModifiers::NONE,
         ));
         assert_eq!(got.code, KeyCode::F(13), "learned F15 must act as F13");
+    }
+
+    #[test]
+    fn panel_modes_and_skin_ini_roundtrip() {
+        use crate::app::App;
+        use crate::panel::{ListingFormat, PanelMode, SortBy as PSort};
+        use crate::sorting::SortDir;
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.skin_name = "dark".into();
+        app.shadows = false;
+        app.panel_opts.auto_save_setup = true;
+        app.left.listing = ListingFormat::Brief;
+        app.left.brief_columns = 3;
+        app.left.mode = PanelMode::QuickView;
+        app.left.sort_by = PSort::Size;
+        app.left.sort_dir = SortDir::Desc;
+        app.right.listing = ListingFormat::User;
+        app.right.user_format = "name size perm".into();
+        app.right.mode = PanelMode::Info;
+        save_setup_to(&app, tmp.path()).expect("save_setup");
+
+        let ini = std::fs::read_to_string(tmp.path().join("ini")).unwrap();
+        assert!(ini.contains("[left]"), "got {ini}");
+        assert!(ini.contains("listing=brief"), "got {ini}");
+        assert!(ini.contains("mode=quickview"), "got {ini}");
+        assert!(ini.contains("[right]"), "got {ini}");
+        assert!(ini.contains("listing=user"), "got {ini}");
+        assert!(ini.contains("skin=dark"), "got {ini}");
+        assert!(ini.contains("auto_save_setup=true"), "got {ini}");
+
+        let vfs2 = LocalFs::new();
+        let mut app2 = App::new(Box::new(vfs2), KeyMap::mc_defaults()).unwrap();
+        load_user_setup_from(&mut app2, tmp.path()).expect("load");
+        assert_eq!(app2.skin_name, "dark");
+        assert!(!app2.shadows);
+        assert!(app2.panel_opts.auto_save_setup);
+        assert_eq!(app2.left.listing, ListingFormat::Brief);
+        assert_eq!(app2.left.brief_columns, 3);
+        assert_eq!(app2.left.mode, PanelMode::QuickView);
+        assert_eq!(app2.left.sort_by, PSort::Size);
+        assert_eq!(app2.left.sort_dir, SortDir::Desc);
+        assert_eq!(app2.right.listing, ListingFormat::User);
+        assert_eq!(app2.right.user_format, "name size perm");
+        assert_eq!(app2.right.mode, PanelMode::Info);
+    }
+
+    #[test]
+    fn save_setup_preserves_unknown_keys() {
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("ini"),
+            "[misc]\nfoo=bar\n\n[panels]\nshow_hidden=false\ncustom_panel_flag=1\n",
+        )
+        .unwrap();
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.panel_opts.show_hidden = true;
+        app.skin_name = "classic".into();
+        save_setup_to(&app, tmp.path()).expect("save");
+        let ini = std::fs::read_to_string(tmp.path().join("ini")).unwrap();
+        assert!(
+            ini.contains("foo=bar"),
+            "unknown section must remain: {ini}"
+        );
+        assert!(
+            ini.contains("custom_panel_flag=1"),
+            "unknown key in [panels] must remain: {ini}"
+        );
+        assert!(
+            ini.contains("show_hidden=true"),
+            "known key must update: {ini}"
+        );
+        assert!(ini.contains("skin=classic"), "got {ini}");
+    }
+
+    #[test]
+    fn system_ini_then_user_overlay() {
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sys = tmp.path().join("mc.ini");
+        std::fs::write(
+            &sys,
+            "[appearance]\nskin=sysskin\n[panels]\nshow_hidden=1\nauto_save_setup=0\n",
+        )
+        .unwrap();
+        let user = tmp.path().join("user");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(
+            user.join("ini"),
+            "[appearance]\nskin=userskin\n[panels]\nauto_save_setup=true\n",
+        )
+        .unwrap();
+
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        load_setup_layers(&mut app, Some(&sys), &user).expect("layers");
+        assert_eq!(app.skin_name, "userskin", "user ini overlays system skin");
+        assert!(
+            app.panel_opts.show_hidden && app.show_hidden,
+            "system show_hidden=1 kept when user omits the key"
+        );
+        assert!(
+            app.panel_opts.auto_save_setup,
+            "user auto_save_setup overlays system 0"
+        );
+    }
+
+    #[test]
+    fn save_setup_creates_user_config_dir() {
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".config").join("mc");
+        assert!(!dir.exists());
+        let vfs = LocalFs::new();
+        let app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        save_setup_to(&app, &dir).expect("save");
+        assert!(dir.join("ini").is_file());
+        assert!(dir.join("keymap").is_file());
+    }
+
+    #[test]
+    fn load_user_setup_honors_mc_profile_root() {
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let _lock = crate::paths::lock_mc_env();
+        let profile = tempfile::tempdir().unwrap();
+        let user = profile.path().join(".config").join("mc");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(
+            user.join("ini"),
+            "[appearance]\nskin=profile-skin\n[panels]\nauto_save_setup=1\n",
+        )
+        .unwrap();
+        let prev_mcr = std::env::var("MCR_CONFIG_DIR").ok();
+        std::env::remove_var("MCR_CONFIG_DIR");
+        let _prof = EnvRestore::set("MC_PROFILE_ROOT", profile.path().to_str().unwrap());
+        let _xdg = EnvRestore::set("XDG_CONFIG_HOME", "/tmp/rmc-xdg-should-not-win");
+        let vfs = LocalFs::new();
+        let app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        match prev_mcr {
+            Some(v) => std::env::set_var("MCR_CONFIG_DIR", v),
+            None => std::env::remove_var("MCR_CONFIG_DIR"),
+        }
+        assert_eq!(app.skin_name, "profile-skin");
+        assert!(app.panel_opts.auto_save_setup);
+    }
+
+    #[test]
+    fn quit_auto_saves_to_user_ini() {
+        use crate::actions::Action;
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let _lock = crate::paths::lock_mc_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let _dir = EnvRestore::set("MCR_CONFIG_DIR", cfg.to_str().unwrap());
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.confirm.exit = false;
+        app.panel_opts.auto_save_setup = true;
+        app.skin_name = "dark".into();
+        app.left.listing = crate::panel::ListingFormat::Long;
+        app.handle_action(Action::Quit).unwrap();
+        assert!(app.quit);
+        let ini = std::fs::read_to_string(cfg.join("ini")).unwrap();
+        assert!(ini.contains("skin=dark"), "got {ini}");
+        assert!(ini.contains("auto_save_setup=true"), "got {ini}");
+        assert!(ini.contains("listing=long"), "got {ini}");
+    }
+
+    #[test]
+    fn upsert_ini_keys_keeps_comments_and_unknown() {
+        let src = "# preamble\n[layout]\n# keep\nmenubar_visible=false\nextra=1\n\n[other]\nz=9\n";
+        let out = upsert_ini_keys(
+            src,
+            "layout",
+            &[
+                ("menubar_visible", "true".into()),
+                ("keybar_visible", "false".into()),
+            ],
+        );
+        assert!(out.contains("# preamble"));
+        assert!(out.contains("# keep"));
+        assert!(out.contains("menubar_visible=true"));
+        assert!(out.contains("extra=1"));
+        assert!(out.contains("keybar_visible=false"));
+        assert!(out.contains("[other]"));
+        assert!(out.contains("z=9"));
     }
 
     struct EnvRestore {
