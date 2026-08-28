@@ -514,11 +514,9 @@ mod tests {
                 i += 1;
                 continue;
             }
-            if (0x20..=0x7e).contains(&bytes[i]) {
-                if y < rows as usize && x < cols as usize {
-                    grid[y][x] = bytes[i] as char;
-                    x += 1;
-                }
+            if (0x20..=0x7e).contains(&bytes[i]) && y < rows as usize && x < cols as usize {
+                grid[y][x] = bytes[i] as char;
+                x += 1;
             }
             i += 1;
         }
