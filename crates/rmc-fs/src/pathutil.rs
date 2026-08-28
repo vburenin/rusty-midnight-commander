@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 ///   The returned string is a normalized URI (e.g. fish://<rest>).
 pub fn extract_remote_canonical_url(path: &Path) -> Option<String> {
     let s = path.as_os_str().to_string_lossy();
-    for scheme in ["ftp://", "sftp://", "fish://", "smb://"] {
+    for scheme in ["ftp://", "sftp://", "fish://", "sh://", "smb://"] {
         if s.starts_with(scheme) {
             return Some(s.to_string());
         }
@@ -18,6 +18,16 @@ pub fn extract_remote_canonical_url(path: &Path) -> Option<String> {
         let rest = &s[idx + "#ftp:".len()..];
         let rest = rest.strip_prefix('!').unwrap_or(rest);
         return Some(format!("ftp://{rest}"));
+    }
+    // GNU mc(1) sftpfs: /#sftp:[user@]machine:[port]/[remote-dir]
+    if let Some(idx) = s.find("#sftp:") {
+        let rest = &s[idx + "#sftp:".len()..];
+        return Some(format!("sftp://{rest}"));
+    }
+    // GNU mc(1) FISH / shell: /#sh:[user@]machine[:options]/[remote-dir]
+    if let Some(idx) = s.find("#sh:") {
+        let rest = &s[idx + "#sh:".len()..];
+        return Some(format!("sh://{rest}"));
     }
     // Look for an anchor component ending with '#', and check if it is "#fish:" or "#smb:"
     // Accept both absolute and relative paths; scan raw string for the markers for simplicity.
@@ -208,7 +218,10 @@ mod tests {
         assert!(is_virtual_path(Path::new("/#ftp:host/pub")));
         assert!(is_virtual_path(Path::new("/tmp/#ftp:!user@host:21/")));
         assert!(is_virtual_path(Path::new("sftp://user@host/tmp")));
+        assert!(is_virtual_path(Path::new("/#sftp:user@host/tmp")));
         assert!(is_virtual_path(Path::new("fish://host/tmp")));
+        assert!(is_virtual_path(Path::new("sh://host/tmp")));
+        assert!(is_virtual_path(Path::new("/#sh:user@host:C22/tmp")));
         assert!(is_virtual_path(Path::new("smb://host/share")));
     }
 

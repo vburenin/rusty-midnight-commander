@@ -22,8 +22,8 @@ use rmc_core::app::{
     EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog,
     EditorSaveAsFocus, EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog,
     EditorTabSpacingFocus, FilterDialogFocus, HistoryDialogFocus, LayoutFocus, LinkDialogFocus,
-    ScreenListFocus, SelectGroupDialogFocus, UiMode, ViewerDisplayDialog, ViewerDisplayFocus,
-    ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
+    ScreenListFocus, SelectGroupDialogFocus, SftpHostKeyFocus, UiMode, ViewerDisplayDialog,
+    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::complete::{
     classify_token, collect_matches, common_replacement_prefix, filter_items, token_before_cursor,
@@ -4394,13 +4394,44 @@ impl TerminalApp {
                                 app.reload_panels()?;
                             }
                             Err(err) => {
-                                app.ui_mode = UiMode::DialogConfirm {
-                                    title: "Error".into(),
-                                    message: format!("{err}"),
-                                    on_ok: Box::new(|_| Ok(())),
-                                };
+                                show_change_dir_error(app, err);
                             }
                         }
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+            UiMode::SftpHostKeyDialog {
+                pending_path,
+                focus,
+                ..
+            } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Tab | KeyCode::Right => {
+                        *focus = focus.cycle(false);
+                    }
+                    KeyCode::BackTab | KeyCode::Left => {
+                        *focus = focus.cycle(true);
+                    }
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        let path = pending_path.clone();
+                        apply_sftp_host_key_choice(app, SftpHostKeyFocus::Yes, path)?;
+                    }
+                    KeyCode::Char('i') | KeyCode::Char('I') => {
+                        let path = pending_path.clone();
+                        apply_sftp_host_key_choice(app, SftpHostKeyFocus::Ignore, path)?;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        let choice = *focus;
+                        let path = pending_path.clone();
+                        apply_sftp_host_key_choice(app, choice, path)?;
                     }
                     _ => {}
                 }
@@ -6612,9 +6643,9 @@ impl TerminalApp {
                                     "Shell link" | "SMB link" => {
                                         let (scheme, title, prompt) = match item {
                                             "Shell link" => (
-                                                "fish",
+                                                "sh",
                                                 "Shell link to machine".to_string(),
-                                                "Enter fish URL (e.g. fish://user@host/path):"
+                                                "Enter shell URL (e.g. sh://user@host/path):"
                                                     .to_string(),
                                             ),
                                             "SMB link" => (
@@ -6636,6 +6667,7 @@ impl TerminalApp {
                                                     return Ok(());
                                                 }
                                                 let url_str = if trimmed.starts_with("fish://")
+                                                    || trimmed.starts_with("sh://")
                                                     || trimmed.starts_with("smb://")
                                                 {
                                                     trimmed.to_string()
@@ -6646,11 +6678,7 @@ impl TerminalApp {
                                                 match app.change_dir(&path) {
                                                     Ok(()) => Ok(()),
                                                     Err(err) => {
-                                                        app.ui_mode = UiMode::DialogConfirm {
-                                                            title: "Error".into(),
-                                                            message: format!("{err}"),
-                                                            on_ok: Box::new(|_| Ok(())),
-                                                        };
+                                                        show_change_dir_error(app, err);
                                                         Ok(())
                                                     }
                                                 }
@@ -8733,11 +8761,7 @@ fn open_quick_cd(app: &mut App) {
             match app.change_dir(&path) {
                 Ok(()) => Ok(()),
                 Err(err) => {
-                    app.ui_mode = UiMode::DialogConfirm {
-                        title: "Error".into(),
-                        message: format!("{err}"),
-                        on_ok: Box::new(|_| Ok(())),
-                    };
+                    show_change_dir_error(app, err);
                     Ok(())
                 }
             }
@@ -8828,7 +8852,48 @@ fn handle_panel_enter(app: &mut App) -> Result<()> {
     if try_open_by_extension(app)? {
         return Ok(());
     }
-    app.handle_action(Action::Enter)
+    if let Err(err) = app.handle_action(Action::Enter) {
+        show_change_dir_error(app, err);
+    }
+    Ok(())
+}
+
+/// Quick cd / cd / remote link: host-key prompt when stashed, else Error.
+fn show_change_dir_error(app: &mut App, err: impl std::fmt::Display) {
+    app.show_error_dialog(format!("{err}"));
+}
+
+fn apply_sftp_host_key_choice(
+    app: &mut App,
+    choice: SftpHostKeyFocus,
+    pending_path: PathBuf,
+) -> Result<()> {
+    use rmc_fs::sftpfs::HostKeyAction;
+    match choice {
+        SftpHostKeyFocus::No => {
+            app.ui_mode = UiMode::Normal;
+            Ok(())
+        }
+        SftpHostKeyFocus::Yes | SftpHostKeyFocus::Ignore => {
+            let action = if matches!(choice, SftpHostKeyFocus::Yes) {
+                HostKeyAction::Yes
+            } else {
+                HostKeyAction::Ignore
+            };
+            rmc_fs::sftpfs::set_host_key_action(action);
+            app.ui_mode = UiMode::Normal;
+            match app.change_dir(&pending_path) {
+                Ok(()) => {
+                    app.reload_panels()?;
+                    Ok(())
+                }
+                Err(err) => {
+                    show_change_dir_error(app, err);
+                    Ok(())
+                }
+            }
+        }
+    }
 }
 
 /// GNU mc `mkdir_autoname`: F7 prefills Mkdir with the current panel entry name,

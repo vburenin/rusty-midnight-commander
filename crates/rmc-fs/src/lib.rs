@@ -188,13 +188,17 @@ pub mod cpiofs;
 pub mod debfs;
 pub mod dir_cache;
 pub mod extfs;
+pub mod fish;
 pub mod ftpfs;
+mod hashvfs;
 pub mod isofs;
 pub mod pathutil;
 pub mod rarfs;
 pub mod remote;
 pub mod rpmfs;
 pub mod sevenzfs;
+pub mod sftpfs;
+mod sshconn;
 pub mod tarfs;
 pub mod zipfs;
 

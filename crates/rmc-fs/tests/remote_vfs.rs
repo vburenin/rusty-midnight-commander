@@ -72,6 +72,8 @@ fn list_dir_with_mock_client_filters_and_paths() {
         host: "example.com".to_string(),
         port: None,
         path: "/".to_string(),
+        compression: false,
+        use_rsh: false,
     };
     let mut client = MockClient {
         entries: vec![
@@ -114,6 +116,8 @@ fn copy_out_with_mock_client_writes_file() {
         host: "h".to_string(),
         port: Some(22),
         path: "/file.txt".to_string(),
+        compression: false,
+        use_rsh: false,
     };
     let mut client = MockClient {
         entries: vec![],
@@ -134,6 +138,8 @@ fn ftp_url(host: &str, port: Option<u16>, user: Option<&str>) -> RemoteUrl {
         host: host.to_string(),
         port,
         path: "/".to_string(),
+        compression: false,
+        use_rsh: false,
     }
 }
 

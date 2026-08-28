@@ -762,9 +762,96 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 app.shadows,
             );
         }
+        rmc_core::app::UiMode::SftpHostKeyDialog { prompt, focus, .. } => {
+            draw_sftp_host_key_dialog(p, cols, rows, pal, prompt, *focus, app.shadows);
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn wrap_dialog_lines(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        if para.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut cur = String::new();
+        for word in para.split_whitespace() {
+            if cur.is_empty() {
+                cur = word.to_string();
+            } else if cur.len() + 1 + word.len() <= width {
+                cur.push(' ');
+                cur.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut cur));
+                cur = word.to_string();
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn draw_sftp_host_key_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    prompt: &rmc_fs::sftpfs::HostKeyPrompt,
+    focus: rmc_core::app::SftpHostKeyFocus,
+    show_shadow: bool,
+) {
+    let title = rmc_fs::sftpfs::HostKeyPrompt::dialog_title();
+    let w = (cols as usize).clamp(40, 72) as u16;
+    let inner = w.saturating_sub(4) as usize;
+    let lines = wrap_dialog_lines(&prompt.dialog_message(), inner);
+    let h = (lines.len() as u16 + 6).min(rows.saturating_sub(2)).max(8);
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    paint_dialog_frame(p, x, y, w, h, title, pal, false);
+    let (fg, bg) = dialog_chrome_pair(pal, false);
+    p.set_fg_bg(fg, bg);
+    let max_body = h.saturating_sub(5) as usize;
+    for (i, line) in lines.iter().take(max_body).enumerate() {
+        p.goto(x + 2, y + 2 + i as u16);
+        p.text(&truncate(line, inner));
+    }
+    use rmc_core::app::SftpHostKeyFocus as F;
+    let yes = if matches!(focus, F::Yes) {
+        "< Yes >"
+    } else {
+        "[ Yes ]"
+    };
+    let ignore = if matches!(focus, F::Ignore) {
+        "< Ignore >"
+    } else {
+        "[ Ignore ]"
+    };
+    let no = if matches!(focus, F::No) {
+        "< No >"
+    } else {
+        "[ No ]"
+    };
+    let items = [
+        (yes, matches!(focus, F::Yes)),
+        (ignore, matches!(focus, F::Ignore)),
+        (no, matches!(focus, F::No)),
+    ];
+    let btns_w =
+        items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2 * items.len().saturating_sub(1);
+    let bx = x + w.saturating_sub(btns_w as u16) / 2;
+    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, false);
+    if show_shadow {
+        paint_dialog_shadow(p, x, y, w, h, pal);
+    }
 }
 
 fn draw_panel_options_dialog(

@@ -78,6 +78,8 @@ fn list_dir_with_mock_client_builds_fish_paths() {
         host: "host".to_string(),
         port: Some(2222),
         path: "/".to_string(),
+        compression: false,
+        use_rsh: false,
     };
     let mut client = MockClient {
         entries: vec![
@@ -109,6 +111,8 @@ fn copy_out_with_mock_client_smb() {
         host: "filesrv".to_string(),
         port: Some(445),
         path: "/share/readme.txt".to_string(),
+        compression: false,
+        use_rsh: false,
     };
     let mut client = MockClient {
         entries: vec![],

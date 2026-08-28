@@ -30,8 +30,11 @@ gpt_disk_types = "0.16"
 ar = "0.9"
 xz2 = "0.1"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
-tokio = { version = "1.39", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1.39", features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }
 smb2 = "0.19"
+russh = "0.54"
+russh-sftp = "2.0"
+base64 = "0.22"
 
 [dev-dependencies]
 
@@ -42,3 +45,4 @@ sevenz-rust2 = { version = "0.21", features = ["compress"] }
 librarium = { version = "0.6" }
 isobemak = { version = "0.4" }
 hadris-cpio = { version = "1.1", features = ["sync", "write"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
