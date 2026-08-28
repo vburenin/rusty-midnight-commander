@@ -200,6 +200,10 @@ pub struct ConfigOptions {
     /// prefix and beeps; the second Alt-Tab shows the list. When true, the first
     /// Alt-Tab shows all possibilities.
     pub complete_show_all: bool,
+    /// GNU mc Options → Configuration → Safe delete. Default **false**.
+    /// When true, Delete (F8) confirmation starts on No so Enter does not delete.
+    /// Independent of Options → Confirmations → delete (whether the dialog appears).
+    pub safe_delete: bool,
 }
 
 impl Default for ConfigOptions {
@@ -218,11 +222,17 @@ impl Default for ConfigOptions {
             preallocate_space: false,
             use_cow_file_cloning: true,
             complete_show_all: false,
+            safe_delete: false,
         }
     }
 }
 
 impl ConfigOptions {
+    /// Initial Yes focus for Delete confirmation. GNU Safe delete flips this to No.
+    pub fn delete_confirm_focus_ok(&self) -> bool {
+        !self.safe_delete
+    }
+
     /// Local Copy/Move flags from Options → Configuration.
     pub fn copy_flags(&self) -> rmc_fs::CopyFlags {
         rmc_fs::CopyFlags {
@@ -291,6 +301,7 @@ pub enum ConfigOptionsFocus {
     DropMenus,
     MkdirAutoname,
     CompleteShowAll,
+    SafeDelete,
     Ok,
     Cancel,
 }

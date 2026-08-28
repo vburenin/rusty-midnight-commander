@@ -4,5 +4,9 @@
 Delete (F8) confirms before removing files or directories. Tab moves
 between Yes and No. Esc cancels.
 
+Options → Configuration → Safe delete (off by default) starts that
+confirmation on No so Enter does not delete. Confirmations still
+control whether the dialog appears at all.
+
 * File operations -> Dialogs
 * Contents -> Contents

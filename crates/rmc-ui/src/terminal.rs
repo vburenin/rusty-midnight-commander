@@ -5406,6 +5406,7 @@ impl TerminalApp {
                     F::DropMenus,
                     F::MkdirAutoname,
                     F::CompleteShowAll,
+                    F::SafeDelete,
                     F::Ok,
                     F::Cancel,
                 ];
@@ -5461,6 +5462,7 @@ impl TerminalApp {
                         F::DropMenus => draft.drop_menus = !draft.drop_menus,
                         F::MkdirAutoname => draft.mkdir_autoname = !draft.mkdir_autoname,
                         F::CompleteShowAll => draft.complete_show_all = !draft.complete_show_all,
+                        F::SafeDelete => draft.safe_delete = !draft.safe_delete,
                         _ => {}
                     },
                     KeyCode::Enter => match *focus {
@@ -5481,6 +5483,7 @@ impl TerminalApp {
                         F::DropMenus => draft.drop_menus = !draft.drop_menus,
                         F::MkdirAutoname => draft.mkdir_autoname = !draft.mkdir_autoname,
                         F::CompleteShowAll => draft.complete_show_all = !draft.complete_show_all,
+                        F::SafeDelete => draft.safe_delete = !draft.safe_delete,
                         F::Ok => {
                             // Apply and close
                             let new_opts = *draft;
@@ -8076,7 +8079,7 @@ impl TerminalApp {
                             app.ui_mode = UiMode::DeleteDialog {
                                 name: ent.name,
                                 path,
-                                focus_ok: true,
+                                focus_ok: app.config_opts.delete_confirm_focus_ok(),
                             };
                         } else {
                             let _ = app.vfs.remove(&path, true);
@@ -9810,7 +9813,7 @@ fn directory_tree_delete(app: &mut App) {
     app.ui_mode = UiMode::DeleteDialog {
         name,
         path,
-        focus_ok: true,
+        focus_ok: app.config_opts.delete_confirm_focus_ok(),
     };
 }
 
@@ -10806,6 +10809,169 @@ mod mkdir_autoname_tests {
 }
 
 #[cfg(test)]
+mod safe_delete_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rmc_core::app::ConfigOptionsFocus;
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-safe-delete-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.change_dir(cwd).unwrap();
+        app
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn delete_focus_ok(app: &App) -> bool {
+        match &app.ui_mode {
+            UiMode::DeleteDialog { focus_ok, .. } => *focus_ok,
+            _ => panic!("expected DeleteDialog"),
+        }
+    }
+
+    #[test]
+    fn default_is_off_and_f8_focuses_yes() {
+        let root = temp_workspace();
+        std::fs::write(root.join("victim.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        assert!(!app.config_opts.safe_delete);
+        assert!(app.config_opts.delete_confirm_focus_ok());
+        assert!(app.confirm.delete);
+        select_named(&mut app, "victim.txt");
+        press(&mut app, KeyCode::F(8));
+        assert!(
+            delete_focus_ok(&app),
+            "Safe delete off: Delete confirmation defaults to Yes"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            !root.join("victim.txt").exists(),
+            "Enter on Yes must delete"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enabled_f8_focuses_no_and_enter_is_noop() {
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.safe_delete = true;
+        assert!(!app.config_opts.delete_confirm_focus_ok());
+        select_named(&mut app, "keep.txt");
+        press(&mut app, KeyCode::F(8));
+        assert!(
+            !delete_focus_ok(&app),
+            "Safe delete on: Delete confirmation defaults to No"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            root.join("keep.txt").exists(),
+            "Enter on No must not delete"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enabled_tab_then_enter_deletes() {
+        let root = temp_workspace();
+        std::fs::write(root.join("gone.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.safe_delete = true;
+        select_named(&mut app, "gone.txt");
+        press(&mut app, KeyCode::F(8));
+        assert!(!delete_focus_ok(&app));
+        press(&mut app, KeyCode::Tab);
+        assert!(delete_focus_ok(&app));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!root.join("gone.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn configuration_checkbox_applies_on_ok() {
+        let root = temp_workspace();
+        std::fs::write(root.join("victim.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        assert!(!app.config_opts.safe_delete);
+        app.ui_mode = UiMode::ConfigurationDialog {
+            draft: app.config_opts,
+            focus: ConfigOptionsFocus::SafeDelete,
+        };
+        press(&mut app, KeyCode::Char(' '));
+        match &app.ui_mode {
+            UiMode::ConfigurationDialog { draft, focus } => {
+                assert_eq!(*focus, ConfigOptionsFocus::SafeDelete);
+                assert!(draft.safe_delete);
+            }
+            _ => panic!("expected ConfigurationDialog"),
+        }
+        // Tab to Complete: show all wraps... from SafeDelete, Tab is Ok.
+        press(&mut app, KeyCode::Tab);
+        match &app.ui_mode {
+            UiMode::ConfigurationDialog { focus, .. } => {
+                assert_eq!(*focus, ConfigOptionsFocus::Ok);
+            }
+            _ => panic!("expected ConfigurationDialog"),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(app.config_opts.safe_delete);
+        select_named(&mut app, "victim.txt");
+        press(&mut app, KeyCode::F(8));
+        assert!(!delete_focus_ok(&app));
+        press(&mut app, KeyCode::Esc);
+        assert!(root.join("victim.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn confirm_delete_off_skips_dialog_even_with_safe_delete() {
+        let root = temp_workspace();
+        std::fs::write(root.join("gone.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.config_opts.safe_delete = true;
+        app.confirm.delete = false;
+        select_named(&mut app, "gone.txt");
+        press(&mut app, KeyCode::F(8));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!root.join("gone.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
 mod config_copy_flags_dialog_tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -10852,7 +11018,7 @@ mod config_copy_flags_dialog_tests {
     }
 
     fn tab_until(app: &mut App, want: ConfigOptionsFocus) {
-        for _ in 0..20 {
+        for _ in 0..24 {
             if focus(app) == want {
                 return;
             }
@@ -10867,6 +11033,7 @@ mod config_copy_flags_dialog_tests {
         let app = make_app(&root);
         assert!(!app.config_opts.preallocate_space);
         assert!(app.config_opts.use_cow_file_cloning);
+        assert!(!app.config_opts.safe_delete);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -10884,6 +11051,19 @@ mod config_copy_flags_dialog_tests {
         assert_eq!(focus(&app), ConfigOptionsFocus::PreallocateSpace);
         press(&mut app, KeyCode::Tab);
         assert_eq!(focus(&app), ConfigOptionsFocus::UseCowFileCloning);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tab_order_includes_safe_delete_before_ok() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_configuration(&mut app);
+        tab_until(&mut app, ConfigOptionsFocus::CompleteShowAll);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), ConfigOptionsFocus::SafeDelete);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), ConfigOptionsFocus::Ok);
         let _ = std::fs::remove_dir_all(&root);
     }
 

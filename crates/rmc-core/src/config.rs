@@ -713,6 +713,7 @@ pub fn save_setup_to(app: &crate::app::App, dir: &Path) -> Result<()> {
         app.config_opts.use_cow_file_cloning
     )?;
     writeln!(f, "complete_show_all={}", app.config_opts.complete_show_all)?;
+    writeln!(f, "safe_delete={}", app.config_opts.safe_delete)?;
     write_terminal_sections(&mut f, &app.learned_keys)?;
     // Save keymap
     let keymap_path = dir.join("keymap");
@@ -873,6 +874,7 @@ pub fn load_user_setup_from(app: &mut crate::app::App, dir: &Path) -> Result<()>
                     "preallocate_space" => app.config_opts.preallocate_space = vb(&v),
                     "use_cow_file_cloning" => app.config_opts.use_cow_file_cloning = vb(&v),
                     "complete_show_all" => app.config_opts.complete_show_all = vb(&v),
+                    "safe_delete" => app.config_opts.safe_delete = vb(&v),
                     _ => {}
                 },
                 _ if section.starts_with("terminal:") => {
@@ -1144,6 +1146,8 @@ mod tests {
         app.config_opts.compute_totals = false;
         app.config_opts.classic_progressbar = true;
         app.config_opts.mkdir_autoname = true;
+        assert!(!app.config_opts.safe_delete, "GNU default: Safe delete off");
+        app.config_opts.safe_delete = true;
         save_setup_to(&app, tmp.path()).expect("save_setup");
 
         let vfs2 = LocalFs::new();
@@ -1161,6 +1165,10 @@ mod tests {
         assert!(!app2.config_opts.compute_totals);
         assert!(app2.config_opts.classic_progressbar);
         assert!(app2.config_opts.mkdir_autoname);
+        assert!(
+            app2.config_opts.safe_delete,
+            "safe_delete should round-trip"
+        );
     }
 
     #[test]
