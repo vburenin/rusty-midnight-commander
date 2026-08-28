@@ -3826,14 +3826,14 @@ fn draw_viewer(
     goto_prompt: &Option<String>,
     show_shadow: bool,
 ) -> Result<()> {
-    // MC-style viewer: blue background with frame and title
-    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    // mcview `[viewer] _default_` (lightgray;blue), not panel `[core] _default_`
+    p.set_fg_bg(pal.viewer_default_fg, pal.viewer_default_bg);
     for y in 0..rows {
         p.goto(0, y);
         p.text(&" ".repeat(cols as usize));
     }
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
+    p.set_fg_bg(pal.frame_fg, pal.viewer_default_bg);
     p.goto(0, 0);
     p.text("┌");
     p.hline(
@@ -3842,7 +3842,7 @@ fn draw_viewer(
         cols.saturating_sub(2),
         '─',
         pal.frame_fg,
-        pal.core_default_bg,
+        pal.viewer_default_bg,
     );
     p.goto(cols - 1, 0);
     p.text("┐");
@@ -3852,7 +3852,7 @@ fn draw_viewer(
         rows.saturating_sub(2),
         '│',
         pal.frame_fg,
-        pal.core_default_bg,
+        pal.viewer_default_bg,
     );
     p.vline(
         cols - 1,
@@ -3860,7 +3860,7 @@ fn draw_viewer(
         rows.saturating_sub(2),
         '│',
         pal.frame_fg,
-        pal.core_default_bg,
+        pal.viewer_default_bg,
     );
     p.goto(0, rows - 1);
     p.text("└");
@@ -3870,7 +3870,7 @@ fn draw_viewer(
         cols.saturating_sub(2),
         '─',
         pal.frame_fg,
-        pal.core_default_bg,
+        pal.viewer_default_bg,
     );
     p.goto(cols - 1, rows - 1);
     p.text("┘");
@@ -3920,7 +3920,7 @@ fn draw_viewer(
         p.goto(1, row_y);
         if ln_enabled {
             // Draw gray-ish line number gutter
-            p.set_fg_bg(pal.frame_fg, pal.core_default_bg);
+            p.set_fg_bg(pal.frame_fg, pal.viewer_default_bg);
             let label = format!("{:>6} ", start_ln + i as u64);
             p.text(&label);
             p.goto(1 + ln_gutter, row_y);
@@ -5024,13 +5024,14 @@ pub(crate) fn viewer_fbar_labels(
     ]
 }
 
-/// Viewer selection uses `[viewer] selected` (yellow;cyan), not panel `selected`
-/// (black;cyan).
+/// Viewer pairs from public `[viewer]`: unselected `_default_` (lightgray;blue),
+/// selected/`viewselected` (yellow;cyan). Not panel `selected` (black;cyan)
+/// and not `[core] _default_`.
 pub(crate) fn viewer_line_style(selected: bool, pal: McPalette) -> (Color, Color) {
     if selected {
         (pal.viewer_selected_fg, pal.viewer_selected_bg)
     } else {
-        (pal.core_default_fg, pal.core_default_bg)
+        (pal.viewer_default_fg, pal.viewer_default_bg)
     }
 }
 
@@ -7454,6 +7455,8 @@ mod viewer_fbar_and_selection_style_tests {
         let pal = McPalette::default();
         assert_eq!(pal.selected_fg, Color::Black);
         assert_eq!(pal.selected_bg, Color::Cyan);
+        assert_eq!(pal.viewer_default_fg, Color::Grey);
+        assert_eq!(pal.viewer_default_bg, Color::Blue);
         assert_eq!(pal.viewer_selected_fg, Color::Yellow);
         assert_eq!(pal.viewer_selected_bg, Color::Cyan);
         let (fg, bg) = viewer_line_style(true, pal);
@@ -7461,8 +7464,81 @@ mod viewer_fbar_and_selection_style_tests {
         assert_eq!(bg, Color::Cyan);
         assert_ne!(fg, pal.selected_fg);
         let (nfg, nbg) = viewer_line_style(false, pal);
-        assert_eq!(nfg, pal.core_default_fg);
-        assert_eq!(nbg, pal.core_default_bg);
+        assert_eq!((nfg, nbg), (Color::Grey, Color::Blue));
+        assert_eq!(nfg, pal.viewer_default_fg);
+        assert_eq!(nbg, pal.viewer_default_bg);
+    }
+
+    #[test]
+    fn viewer_unselected_uses_viewer_default_not_core_pair() {
+        let mut pal = McPalette::default();
+        pal.core_default_fg = Color::White;
+        pal.core_default_bg = Color::Red;
+        pal.viewer_default_fg = Color::Grey;
+        pal.viewer_default_bg = Color::Blue;
+        let (nfg, nbg) = viewer_line_style(false, pal);
+        assert_eq!((nfg, nbg), (Color::Grey, Color::Blue));
+        assert_ne!((nfg, nbg), (pal.core_default_fg, pal.core_default_bg));
+        let (sfg, sbg) = viewer_line_style(true, pal);
+        assert_eq!((sfg, sbg), (Color::Yellow, Color::Cyan));
+    }
+
+    #[test]
+    fn draw_viewer_paints_lightgray_blue_not_core_white_red() {
+        let path = std::env::temp_dir().join(format!(
+            "rmc-viewer-default-colors-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "hello viewer\n").expect("write sample");
+        let mut pal = McPalette::default();
+        pal.core_default_fg = Color::White;
+        pal.core_default_bg = Color::Red;
+        let goto_prompt: Option<String> = None;
+        let mut buf = Vec::new();
+        {
+            let mut p = crate::widgets::Painter { out: &mut buf };
+            super::draw_viewer(
+                &mut p,
+                40,
+                12,
+                pal,
+                &path,
+                false,
+                false,
+                0,
+                false,
+                false,
+                false,
+                true,
+                None,
+                0,
+                None,
+                None,
+                None,
+                None,
+                &goto_prompt,
+                false,
+            )
+            .expect("draw viewer");
+        }
+        let _ = std::fs::remove_file(&path);
+        let s = String::from_utf8_lossy(&buf);
+        assert!(
+            s.contains("hello viewer"),
+            "viewer must show file text: {s:?}"
+        );
+        assert!(
+            s.contains("\x1b[37;44m"),
+            "viewer _default_ is lightgray;blue 37;44, got {s:?}"
+        );
+        assert!(
+            !s.contains("\x1b[97;101m"),
+            "viewer fill must not use [core] white;red: {s:?}"
+        );
     }
 }
 

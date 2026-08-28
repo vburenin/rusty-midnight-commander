@@ -38,7 +38,7 @@ Visual spec: Default skin colors (summarized from misc/skins/default.ini; names 
 - [x] Menus: default white;cyan, selected white;black, hotkey yellow;cyan, hotkey+selected yellow;black
 - [x] Errors: default white;red (focus black;lightgray)
 - [ ] Editor: default lightgray;blue (e.g., editbold yellow;green, editmarked black;cyan)
-- [ ] Viewer: default lightgray;blue, selected yellow;cyan
+- [x] Viewer: default lightgray;blue, selected yellow;cyan
 Reference only; implement an equivalent Apache-2.0 skin description without copying MC skin files.
 
 ---
