@@ -215,14 +215,15 @@ From mc(1) “Shell Command Line”, “The subshell support”:
 
 Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “User menu”, “Edit extension file”, “Hotlist”:
 - [ ] Config files: system defaults vs user `~/.config/mc/ini` and related; auto-save setup
- - [ ] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
+ - [x] Skins: selectable appearance; support MC_SKIN; ship Apache-2.0-compatible default resembling MC default
  - [x] `-S arg`/`--skin=arg`/`--skin arg`: specify skin name on the command line (overrides ini for this process; missing names keep the CLI name and fall back like Options → Appearance)
  - [x] Keymap: overridable via `mc.keymap` (search order), multiple bindings per action
  - [x] “Learn keys”: Options → Learn keys dialog (test/redefine arrows, F1–F20, keypad, Completion/M-tab, Back Tab); persist `[terminal:TERM]` in the user `ini`
 - [x] User menu (F2): `.mc.menu` (cwd) or `~/.config/mc/menu`, else system menu; minimal safety
 - [x] Extension rules: `mc.ext.ini` to open helper-defined VFS (minimal)
 - [x] Directory hotlist: C-\\ opens; C-x h adds current; manage labels and jump
-- [ ] Environment variables respected (e.g., MC_SKIN, MC_KEYMAP, MC_COLOR_TABLE, MC_DATADIR, MC_PROFILE_ROOT, EDITOR, VIEWER)
+- [x] Environment variable `MC_SKIN` respected (name or path; between `-S`/`--skin` and ini `skin=`)
+- [ ] Environment variables respected (MC_KEYMAP, MC_COLOR_TABLE, MC_DATADIR, MC_PROFILE_ROOT, EDITOR, VIEWER)
 
 ---
 
