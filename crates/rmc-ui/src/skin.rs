@@ -37,8 +37,8 @@ pub fn load_from_file(path: &Path) -> Result<McPalette> {
 }
 
 /// Parse an MC-like skin INI format:
-/// Sections: [core], [dialog], [menu], [buttonbar], [statusbar], [filehighlight]
-/// [viewer], [editor].
+/// Sections: [core], [dialog], [error], [menu], [buttonbar], [statusbar],
+/// [filehighlight], [viewer], [editor].
 /// Keys in UI sections are color pairs "fg;bg" (extra attributes after a third ';' are ignored).
 /// [filehighlight] values are single colors.
 pub fn parse_skin(text: &str) -> Result<McPalette> {
@@ -47,6 +47,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
         None,
         Core,
         Dialog,
+        Error,
         Menu,
         ButtonBar,
         StatusBar,
@@ -67,6 +68,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
             section = match low.as_str() {
                 "core" => Section::Core,
                 "dialog" => Section::Dialog,
+                "error" => Section::Error,
                 "menu" => Section::Menu,
                 "buttonbar" => Section::ButtonBar,
                 "statusbar" => Section::StatusBar,
@@ -86,6 +88,7 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
         match section {
             Section::Core => assign_pair(&mut pal, "core", k, v, lineno + 1)?,
             Section::Dialog => assign_pair(&mut pal, "dialog", k, v, lineno + 1)?,
+            Section::Error => assign_pair(&mut pal, "error", k, v, lineno + 1)?,
             Section::Menu => assign_pair(&mut pal, "menu", k, v, lineno + 1)?,
             Section::ButtonBar => assign_pair(&mut pal, "buttonbar", k, v, lineno + 1)?,
             Section::StatusBar => assign_pair(&mut pal, "statusbar", k, v, lineno + 1)?,
@@ -189,7 +192,21 @@ fn assign_pair(
                 pal.menuhot_fg = fg;
                 pal.menuhot_bg = bg;
             }
-            // "menuhotsel" exists in MC but unused here
+            "menuhotsel" => {
+                pal.menuhotsel_fg = fg;
+                pal.menuhotsel_bg = bg;
+            }
+            _ => {}
+        },
+        "error" => match k.as_str() {
+            "_default_" => {
+                pal.error_default_fg = fg;
+                pal.error_default_bg = bg;
+            }
+            "errdfocus" | "dfocus" => {
+                pal.errdfocus_fg = fg;
+                pal.errdfocus_bg = bg;
+            }
             _ => {}
         },
         "buttonbar" => match k.as_str() {
@@ -354,9 +371,24 @@ mod tests {
         assert_eq!(pal.selected_bg, Color::Cyan);
         assert_eq!(pal.header_fg, Color::Yellow);
         assert_eq!(pal.header_bg, Color::Blue);
+        assert_eq!(pal.dialog_default_fg, Color::Black);
+        assert_eq!(pal.dialog_default_bg, Color::Grey);
+        assert_eq!(pal.dfocus_fg, Color::Black);
         assert_eq!(pal.dfocus_bg, Color::Cyan);
+        assert_eq!(pal.dtitle_fg, Color::Blue);
+        assert_eq!(pal.dtitle_bg, Color::Grey);
+        assert_eq!(pal.menu_fg, Color::White);
         assert_eq!(pal.menu_bg, Color::Cyan);
+        assert_eq!(pal.menusel_fg, Color::White);
         assert_eq!(pal.menusel_bg, Color::Black);
+        assert_eq!(pal.menuhot_fg, Color::Yellow);
+        assert_eq!(pal.menuhot_bg, Color::Cyan);
+        assert_eq!(pal.menuhotsel_fg, Color::Yellow);
+        assert_eq!(pal.menuhotsel_bg, Color::Black);
+        assert_eq!(pal.error_default_fg, Color::White);
+        assert_eq!(pal.error_default_bg, Color::Red);
+        assert_eq!(pal.errdfocus_fg, Color::Black);
+        assert_eq!(pal.errdfocus_bg, Color::Grey);
         assert_eq!(pal.dir_color, Color::White);
         assert_eq!(pal.exec_color, Color::Green);
         assert_eq!(pal.viewer_selected_fg, Color::Yellow);
@@ -440,5 +472,23 @@ mod tests {
         assert_eq!(missing.core_default_fg, default.core_default_fg);
         let named_default = load_palette_by_name("default");
         assert_eq!(named_default.core_default_bg, default.core_default_bg);
+    }
+
+    #[test]
+    fn parse_error_and_menuhotsel_pairs() {
+        let pal = parse_skin(
+            "[menu]\n\
+             menuhotsel = yellow;black\n\
+             [error]\n\
+             _default_ = white;red\n\
+             errdfocus = black;lightgray\n",
+        )
+        .expect("parse error/menu pairs");
+        assert_eq!(pal.menuhotsel_fg, Color::Yellow);
+        assert_eq!(pal.menuhotsel_bg, Color::Black);
+        assert_eq!(pal.error_default_fg, Color::White);
+        assert_eq!(pal.error_default_bg, Color::Red);
+        assert_eq!(pal.errdfocus_fg, Color::Black);
+        assert_eq!(pal.errdfocus_bg, Color::Grey);
     }
 }

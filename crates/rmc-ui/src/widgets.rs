@@ -66,6 +66,11 @@ impl<'a> Painter<'a> {
         let s = " ".repeat(width as usize);
         self.text(&s);
     }
+    pub fn fill_rect(&mut self, x: u16, y: u16, w: u16, h: u16, fg: Color, bg: Color) {
+        for row in 0..h {
+            self.hline(x, y + row, w, ' ', fg, bg);
+        }
+    }
     pub fn hline(&mut self, x: u16, y: u16, w: u16, ch: char, fg: Color, bg: Color) {
         self.set_fg_bg(fg, bg);
         self.goto(x, y);
@@ -133,5 +138,33 @@ mod tests {
             p.set_fg_bg(Color::White, Color::Black);
         }
         assert_eq!(String::from_utf8_lossy(&sel), "\x1b[97;40m");
+    }
+
+    #[test]
+    fn set_fg_bg_dialog_and_error_pairs() {
+        let mut dlg = Vec::new();
+        {
+            let mut p = Painter { out: &mut dlg };
+            p.set_fg_bg(Color::Black, Color::Grey);
+        }
+        assert_eq!(String::from_utf8_lossy(&dlg), "\x1b[30;47m");
+        let mut title = Vec::new();
+        {
+            let mut p = Painter { out: &mut title };
+            p.set_fg_bg(Color::Blue, Color::Grey);
+        }
+        assert_eq!(String::from_utf8_lossy(&title), "\x1b[34;47m");
+        let mut err = Vec::new();
+        {
+            let mut p = Painter { out: &mut err };
+            p.set_fg_bg(Color::White, Color::Red);
+        }
+        assert_eq!(String::from_utf8_lossy(&err), "\x1b[97;101m");
+        let mut hot = Vec::new();
+        {
+            let mut p = Painter { out: &mut hot };
+            p.set_fg_bg(Color::Yellow, Color::Black);
+        }
+        assert_eq!(String::from_utf8_lossy(&hot), "\x1b[93;40m");
     }
 }

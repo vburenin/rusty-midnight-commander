@@ -18,19 +18,34 @@ pub fn draw_find_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -40,7 +55,7 @@ pub fn draw_find_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -285,7 +300,8 @@ fn draw_find_tree_picker(
     let h = find_tree_picker_height(rows);
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
     p.hline(
@@ -293,7 +309,7 @@ fn draw_find_tree_picker(
         y,
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y);
@@ -303,7 +319,7 @@ fn draw_find_tree_picker(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.vline(
@@ -311,7 +327,7 @@ fn draw_find_tree_picker(
         y + 1,
         h.saturating_sub(2),
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h.saturating_sub(1));
@@ -321,7 +337,7 @@ fn draw_find_tree_picker(
         y + h.saturating_sub(1),
         w.saturating_sub(2),
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w.saturating_sub(1), y + h.saturating_sub(1));

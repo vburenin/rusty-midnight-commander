@@ -13,19 +13,34 @@ pub fn draw_external_panelize_dialog(
     let h = (rows as usize).clamp(12, 20) as u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -35,7 +50,7 @@ pub fn draw_external_panelize_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
@@ -130,19 +145,34 @@ fn draw_name_prompt(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, value
     let h = 7u16;
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -152,7 +182,7 @@ fn draw_name_prompt(p: &mut Painter, cols: u16, rows: u16, pal: McPalette, value
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);

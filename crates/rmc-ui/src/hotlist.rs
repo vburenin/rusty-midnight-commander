@@ -14,19 +14,34 @@ pub fn draw_hotlist_dialog(
     let x = (cols - w) / 2;
     let y = (rows - h) / 2;
     // Frame
-    p.set_fg_bg(pal.frame_fg, pal.dialog_default_bg);
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x, y);
     p.text("┌");
-    p.hline(x + 1, y, w - 2, '─', pal.frame_fg, pal.dialog_default_bg);
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.goto(x + w - 1, y);
     p.text("┐");
-    p.vline(x, y + 1, h - 2, '│', pal.frame_fg, pal.dialog_default_bg);
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
     p.vline(
         x + w - 1,
         y + 1,
         h - 2,
         '│',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x, y + h - 1);
@@ -36,7 +51,7 @@ pub fn draw_hotlist_dialog(
         y + h - 1,
         w - 2,
         '─',
-        pal.frame_fg,
+        pal.dialog_default_fg,
         pal.dialog_default_bg,
     );
     p.goto(x + w - 1, y + h - 1);
