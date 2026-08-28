@@ -3636,6 +3636,8 @@ fn draw_viewer(
 const LISTING_COL_BAR: char = '│'; // U+2502
 const LISTING_COL_TEE_TOP: char = '┬'; // U+252C
 const LISTING_COL_TEE_BOT: char = '┴'; // U+2534
+const LISTING_SEP_LEFT: char = '├'; // U+251C
+const LISTING_SEP_RIGHT: char = '┤'; // U+2524
 
 /// Full listing: name grows; modest right-aligned size; fixed mtime on the right.
 /// Bars sit in the 1-cell splits from GNU `half type name | size | mtime`.
@@ -3721,6 +3723,29 @@ fn paint_column_bars(p: &mut Painter, xs: &[u16], y: u16, fg: Color, bg: Color, 
     for &bx in xs {
         paint_span(p, bx, y, fg, bg, &glyph);
     }
+}
+
+/// GNU mini-status split: `├─┴─┴─┤` (full-width ─, ┴ only at column bars).
+fn paint_mini_status_split(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    w: u16,
+    bar_xs: &[u16],
+    fg: Color,
+    bg: Color,
+) {
+    p.hline(x + 1, y, w.saturating_sub(2), '─', fg, bg);
+    paint_span(p, x, y, fg, bg, &LISTING_SEP_LEFT.to_string());
+    paint_span(
+        p,
+        x + w.saturating_sub(1),
+        y,
+        fg,
+        bg,
+        &LISTING_SEP_RIGHT.to_string(),
+    );
+    paint_column_bars(p, bar_xs, y, fg, bg, LISTING_COL_TEE_BOT);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4000,7 +4025,11 @@ fn draw_panel(
         is_active_panel,
         app.quick_search.is_some(),
     );
-    let content_h = rmc_core::panel::panel_listing_content_rows(h, reserve_status);
+    let column_split_sep =
+        rmc_core::panel::listing_has_column_split_sep(listing, panel.brief_columns)
+            && !bar_xs.is_empty();
+    let content_h =
+        rmc_core::panel::panel_listing_content_rows(h, reserve_status, column_split_sep);
     let _panel = if is_left { &app.left } else { &app.right };
     // Viewport uses panel.scroll_top, updated by the event loop per visible capacity
     let panel = if is_left { &app.left } else { &app.right };
@@ -4219,16 +4248,28 @@ fn draw_panel(
             &line,
         );
     }
-    // No dedicated `├─┴─┴─┤` mini-status separator row: ┴ sits on the bottom frame.
-    // Mini-status (when shown) stays a full-width line, not split into cells.
-    paint_column_bars(
-        p,
-        &bar_xs,
-        y + h.saturating_sub(1),
-        frame_fg,
-        frame_bg,
-        LISTING_COL_TEE_BOT,
-    );
+    if reserve_status && column_split_sep {
+        // GNU: `├─┴─┴─┤` immediately above mini-status; status itself is one cell.
+        paint_mini_status_split(
+            p,
+            x,
+            y + h.saturating_sub(3),
+            w,
+            &bar_xs,
+            frame_fg,
+            frame_bg,
+        );
+    } else if column_split_sep {
+        // Mini-status off: ┴ meets the bottom frame.
+        paint_column_bars(
+            p,
+            &bar_xs,
+            y + h.saturating_sub(1),
+            frame_fg,
+            frame_bg,
+            LISTING_COL_TEE_BOT,
+        );
+    }
     Ok(())
 }
 
@@ -7545,11 +7586,16 @@ mod gnu_default_chrome_colors_tests {
                 "top frame ┬ at {bx}: {}",
                 row_str(&grid, 0)
             );
+            // GNU mini-status split `├─┴─┴─┤` at y=h-3 (row 9), not the bottom frame.
             assert_eq!(
-                grid[11][bx].ch,
+                grid[9][bx].ch,
                 '┴',
-                "bottom frame ┴ at {bx}: {}",
-                row_str(&grid, 11)
+                "mini-status split ┴ at {bx}: {}",
+                row_str(&grid, 9)
+            );
+            assert_eq!(
+                grid[11][bx].ch, '─',
+                "bottom frame stays ─ when mini-status is on"
             );
             // Listing rows including the selected file row (cursor=1 → y=3).
             assert_eq!(grid[2][bx].ch, '│', "parent row bar");
@@ -7575,10 +7621,17 @@ mod gnu_default_chrome_colors_tests {
         );
         assert_eq!(grid[0][0].ch, '┌');
         assert_eq!(grid[0][39].ch, '┐');
+        assert_eq!(grid[9][0].ch, '├');
+        assert_eq!(grid[9][39].ch, '┤');
         assert_eq!(grid[11][0].ch, '└');
         assert_eq!(grid[11][39].ch, '┘');
         assert_eq!(grid[1][0].ch, '│');
         assert_eq!(grid[1][39].ch, '│');
+        let split = row_str(&grid, 9);
+        assert!(
+            split.starts_with('├') && split.ends_with('┤'),
+            "GNU mini-status separator: {split:?}"
+        );
     }
 
     #[test]
@@ -7601,7 +7654,13 @@ mod gnu_default_chrome_colors_tests {
         );
         assert_ne!(grid[1][bx].ch, '|');
         assert_eq!(grid[0][bx].ch, '┬');
-        assert_eq!(grid[11][bx].ch, '┴');
+        assert_eq!(
+            grid[9][bx].ch, '┴',
+            "Brief ┴ on mini-status split, not bottom"
+        );
+        assert_eq!(grid[9][0].ch, '├');
+        assert_eq!(grid[9][39].ch, '┤');
+        assert_eq!(grid[11][bx].ch, '─');
         assert_eq!(grid[2][bx].ch, '│');
         let header = row_str(&grid, 1);
         assert!(header.contains("Name"), "{header:?}");
@@ -7628,5 +7687,37 @@ mod gnu_default_chrome_colors_tests {
         );
         assert!(header.contains("Perms"), "{header:?}");
         assert!(!header.contains('|'), "{header:?}");
+        assert_ne!(
+            grid[9][0].ch,
+            '├',
+            "Long does not grow a column-bar split-line: {}",
+            row_str(&grid, 9)
+        );
+    }
+
+    #[test]
+    fn full_listing_mini_status_off_puts_tee_on_bottom_frame() {
+        let mut app = panel_app(ListingFormat::Full);
+        app.panel_opts.show_mini_status = false;
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let bars = inner_bars(&grid, 1, 0, 40);
+        assert_eq!(bars.len(), 2);
+        for &bx in &bars {
+            assert_eq!(grid[0][bx].ch, '┬');
+            assert_eq!(
+                grid[11][bx].ch,
+                '┴',
+                "mini-status off: ┴ on bottom frame: {}",
+                row_str(&grid, 11)
+            );
+            assert_eq!(grid[2][bx].ch, '│');
+        }
+        assert_eq!(grid[11][0].ch, '└');
+        assert_eq!(grid[11][39].ch, '┘');
+        assert_ne!(grid[9][0].ch, '├');
     }
 }
