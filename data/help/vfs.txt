@@ -7,9 +7,10 @@ opens it as a directory. `..` leaves the archive and returns to the
 parent path. Zoo archives are not browsable in this build.
 
 extfs helpers can list and copy out of other archive-like trees. Copy
-from an archive into a local panel extracts. Remote links (FTP/SFTP and
-similar) are configured from the Left/Right menus when those backends
-are available.
+from an archive into a local panel extracts. Copy, mkdir, rename, and
+delete into an archive are refused (read-only container). FTP, SFTP, and
+FISH (`sh://`) panels support those writes when the server allows.
+Remote links are configured from the Left/Right menus.
 
 Command-line manuals (original Apache-2.0 text, not GNU GPL man pages):
 `man mcr`, `man mcr-edit`, `man mcr-view`, `man mcr-diff`. From a source

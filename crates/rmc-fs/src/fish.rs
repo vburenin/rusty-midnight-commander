@@ -8,8 +8,8 @@
 //! numeric port. `fish://` and `#fish:` are accepted aliases and canonicalize
 //! to `/#sh:…`.
 //!
-//! Browse (`list_dir`), `stat`, `read_file`, and copy-out are supported.
-//! Upload / write / mkdir / delete are a follow-up.
+//! Browse (`list_dir`), `stat`, `read_file`, copy-out, and write ops
+//! (copy-in, mkdir, delete, rename) when the remote shell allows.
 
 use crate::hashvfs;
 use crate::remote::{RemoteScheme, RemoteUrl};
@@ -62,6 +62,26 @@ fn stat_command(path: &str) -> String {
 
 fn cat_command(path: &str) -> String {
     format!("exec cat {}", shell_escape(path))
+}
+
+fn cat_write_command(path: &str) -> String {
+    format!("cat > {}", shell_escape(path))
+}
+
+fn mkdir_command(path: &str) -> String {
+    format!("mkdir -p {}", shell_escape(path))
+}
+
+fn rm_command(path: &str, recursive: bool) -> String {
+    if recursive {
+        format!("rm -rf {}", shell_escape(path))
+    } else {
+        format!("rm -f {}", shell_escape(path))
+    }
+}
+
+fn mv_command(src: &str, dst: &str) -> String {
+    format!("mv -f {} {}", shell_escape(src), shell_escape(dst))
 }
 
 /// Parse a Unix `ls -l` line (FISH listing).
@@ -176,6 +196,34 @@ pub fn read_file(url: &RemoteUrl) -> FsResult<Box<dyn Read + Send>> {
         .map_err(|e| FsError::Message(format!("temp reopen: {e}")))?;
     drop(tmp);
     Ok(Box::new(f))
+}
+
+pub fn copy_in(src: &Path, url: &RemoteUrl) -> FsResult<()> {
+    let data = std::fs::read(src)?;
+    sshconn::block_on(sshconn::exec_with_stdin(
+        url,
+        &cat_write_command(&url.path),
+        &data,
+    ))
+}
+
+pub fn mkdir(url: &RemoteUrl) -> FsResult<()> {
+    sshconn::block_on(sshconn::exec_status(url, &mkdir_command(&url.path)))
+}
+
+pub fn remove(url: &RemoteUrl, recursive: bool) -> FsResult<()> {
+    sshconn::block_on(sshconn::exec_status(url, &rm_command(&url.path, recursive)))
+}
+
+pub fn rename(src: &RemoteUrl, dst: &RemoteUrl) -> FsResult<()> {
+    sshconn::block_on(sshconn::exec_status(src, &mv_command(&src.path, &dst.path)))
+}
+
+pub fn write_file(url: &RemoteUrl) -> FsResult<Box<dyn std::io::Write + Send>> {
+    let url = url.clone();
+    Ok(Box::new(crate::staging::StagingWrite::new(move |p| {
+        copy_in(p, &url)
+    })?))
 }
 
 #[cfg(test)]

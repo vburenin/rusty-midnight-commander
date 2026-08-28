@@ -134,6 +134,13 @@ pub trait Vfs: Send {
     fn is_local_path(&self, _path: &Path) -> bool {
         true
     }
+    /// Whether mkdir / remove / copy-in / rename / write are allowed at `path`.
+    ///
+    /// Local disk and ftp/sftp/fish/smb are writable (when credentials allow).
+    /// Archive containers and extfs are read-only browse+extract backends.
+    fn is_writable(&self, _path: &Path) -> bool {
+        true
+    }
     fn mkdir(&self, path: &Path) -> FsResult<()>;
     fn remove(&self, path: &Path, recursive: bool) -> FsResult<()>;
     fn copy(&self, src: &Path, dst: &Path) -> FsResult<()>;
@@ -200,6 +207,7 @@ pub mod rpmfs;
 pub mod sevenzfs;
 pub mod sftpfs;
 mod sshconn;
+pub mod staging;
 pub mod tarfs;
 pub mod zipfs;
 

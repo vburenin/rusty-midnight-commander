@@ -169,12 +169,12 @@ From README and mc(1):
 - [x] Archives (initial): tar, tar.gz/tgz, zip — browse; copy/extract out
 - [x] Archives (others): cpio (incl. .cpio.gz), ar, rpm, lha/lzh, rar, deb, iso, 7z — browse + copy-out (native VFS; not GPL C)
 - [ ] Archives (others): zoo — no Apache-2.0/MIT Rust decoder in-tree; the available crate (`newtua-dos`) is LGPL-3.0, and a full LZW/LZH zoo decompressor is out of reach this PR
-- [x] Remote ftpfs (FTP): `ftp://` and GNU `/#ftp:` enter, list, stat, read/copy-out; `..` leaves. Upload/write is a follow-up.
-- [x] Remote sftpfs (SFTP), fish (SSH-based): `sftp://` / `#sftp:`, `sh://` / `#sh:` enter, list, stat, read/copy-out; `..` leaves. Upload/write is a follow-up.
-- [x] extfs framework: minimal helper-driven VFS (list + copy-out)
+- [x] Remote ftpfs (FTP): `ftp://` and GNU `/#ftp:` enter, list, stat, read/copy-out, copy-in, mkdir, delete/rename when the server allows; `..` leaves
+- [x] Remote sftpfs (SFTP), fish (SSH-based): `sftp://` / `#sftp:`, `sh://` / `#sh:` enter, list, stat, read/copy-out, copy-in, mkdir, delete/rename when credentials allow; `..` leaves
+- [x] extfs framework: minimal helper-driven VFS (list + copy-out; write stays read-only — helpers do not implement copy-in)
 - [x] Transparent enter-to-open for supported archives; “..” leaves the archive
-- [ ] Panel operations on other VFS backends as if local (within VFS limits)
-- [ ] Read-only vs read-write semantics per backend
+- [x] Panel operations on other VFS backends as if local (within VFS limits): F5/F6/F7/F8 go through VFS (copy-out of archives, copy-in/mkdir/rename/delete on ftp/sftp/fish, local full RW)
+- [x] Read-only vs read-write semantics per backend: local full RW; ftp/sftp/fish writable when the server allows; tar/zip/cpio/ar/rpm/lha/rar/deb/iso/7z and extfs are browse+extract (Error dialog: “Cannot create … / Read-only file system”)
 
 ---
 

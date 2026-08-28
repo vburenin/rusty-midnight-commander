@@ -440,7 +440,7 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
         let vfs = CompositeFs::new();
         match kind {
             JobKind::Copy => vfs_copy_tree(&vfs, job_arc, &src, &dst, &mut 0),
-            JobKind::Move => vfs_move(&vfs, &src, &dst, &cancel_flag),
+            JobKind::Move => vfs_move(&vfs, job_arc, &src, &dst, &cancel_flag),
         }
     } else {
         match kind {
@@ -773,6 +773,11 @@ fn vfs_copy_tree(
     if wait_if_paused(job_arc) {
         return Ok(());
     }
+    if !vfs.is_writable(dst) {
+        return Err(fs_to_io(rmc_fs::staging::readonly_fs_error(
+            rmc_fs::staging::CANNOT_CREATE_TARGET_FILE,
+        )));
+    }
     match vfs.stat(src) {
         Ok(meta) if meta.is_dir => {
             let _ = vfs.mkdir(dst);
@@ -802,11 +807,27 @@ fn vfs_copy_tree(
     }
 }
 
-fn vfs_move(vfs: &CompositeFs, src: &Path, dst: &Path, cancel_flag: &AtomicBool) -> io::Result<()> {
+fn vfs_move(
+    vfs: &CompositeFs,
+    job_arc: &Arc<Mutex<JobEntry>>,
+    src: &Path,
+    dst: &Path,
+    cancel_flag: &AtomicBool,
+) -> io::Result<()> {
     if cancel_flag.load(Ordering::Relaxed) {
         return Ok(());
     }
-    vfs.move_path(src, dst).map_err(fs_to_io)
+    if !vfs.is_writable(dst) {
+        return Err(fs_to_io(rmc_fs::staging::readonly_fs_error(
+            rmc_fs::staging::CANNOT_MOVE_FILE,
+        )));
+    }
+    // Same-host ftp/sftp/fish rename when the backend can do it in one shot.
+    if vfs.move_path(src, dst).is_ok() {
+        return Ok(());
+    }
+    vfs_copy_tree(vfs, job_arc, src, dst, &mut 0)?;
+    vfs.remove(src, true).map_err(fs_to_io)
 }
 
 /// Update file/total counters after a VFS file completes. Not live-during-copy.
@@ -1037,6 +1058,40 @@ mod tests {
         let snap = queue.snapshot();
         let j = snap.iter().find(|j| j.id == id).unwrap();
         assert!(j.files_done >= 1, "VFS copy records the completed file");
+    }
+
+    #[test]
+    fn copy_into_zip_archive_fails_readonly() {
+        let dir = tempdir().unwrap();
+        let zip_path = dir.path().join("sample.zip");
+        write_zip(&zip_path, &[("hello.txt", b"from-archive")]);
+        let src = dir.path().join("local.txt");
+        File::create(&src).unwrap().write_all(b"nope").unwrap();
+        let dst = zip_inner(&zip_path, "nope.txt");
+
+        let queue = JobQueue::new();
+        let id = queue.spawn_copy(&src, &dst);
+        let status = wait_for_status(
+            &queue,
+            id,
+            |s| {
+                matches!(
+                    s,
+                    JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+                )
+            },
+            5_000,
+        );
+        assert_eq!(status, JobStatus::Failed);
+        let err = queue.get(id).and_then(|j| j.error).unwrap_or_default();
+        assert!(
+            err.contains("Read-only file system"),
+            "GNU-class RO error, got {err}"
+        );
+        assert!(
+            err.contains("Cannot create target file"),
+            "GNU-class create wording, got {err}"
+        );
     }
 
     #[test]

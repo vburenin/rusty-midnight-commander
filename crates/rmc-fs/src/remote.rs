@@ -234,6 +234,15 @@ impl RemoteUrl {
         s
     }
 
+    /// Same ftp/sftp/fish/smb identity (scheme, host, port, user). GNU F6 on
+    /// one remote is a rename; a different host is copy then delete.
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.scheme == other.scheme
+            && self.host.eq_ignore_ascii_case(&other.host)
+            && self.port == other.port
+            && self.user == other.user
+    }
+
     /// Authority as stored in a GNU `#` panel path (FISH includes `C`/`r`/port).
     pub fn vfs_authority(&self) -> String {
         if self.scheme == RemoteScheme::Fish {

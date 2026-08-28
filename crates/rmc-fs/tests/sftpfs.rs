@@ -8,6 +8,7 @@ use rmc_fs::sftpfs::{
     set_host_key_action, set_known_hosts_path, take_host_key_prompt, HostKeyAction,
 };
 use rmc_fs::Vfs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
@@ -196,4 +197,40 @@ fn sftpfs_ignore_continues_without_writing_known_hosts() {
         stored.trim().is_empty(),
         "Ignore must not write known_hosts, got {stored:?}"
     );
+}
+
+#[test]
+fn sftpfs_copy_in_mkdir_rename_delete() {
+    let _serial = lock_host_keys();
+    let _kh = prepare_known_hosts();
+    let ssh = FakeSsh::spawn(fixture_tree());
+    let vfs = CompositeFs::new();
+    vfs.set_dir_cache_timeout_secs(0);
+    let root = vfs.enter_path(&ssh.sftp_url("")).unwrap();
+
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("upload.txt");
+    std::fs::write(&src, b"from-local-sftp").unwrap();
+    let remote = root.join("upload.txt");
+    vfs.copy(&src, &remote).unwrap();
+    let mut buf = Vec::new();
+    vfs.read_file(&remote)
+        .unwrap()
+        .read_to_end(&mut buf)
+        .unwrap();
+    assert_eq!(buf, b"from-local-sftp");
+
+    let newdir = root.join("inbox");
+    vfs.mkdir(&newdir).unwrap();
+    assert!(names(&vfs.list_dir(&root, true).unwrap()).contains(&"inbox".into()));
+
+    let renamed = root.join("renamed.txt");
+    vfs.move_path(&remote, &renamed).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(listed.contains(&"renamed.txt".into()), "{listed:?}");
+    assert!(!listed.contains(&"upload.txt".into()), "{listed:?}");
+
+    vfs.remove(&renamed, false).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(!listed.contains(&"renamed.txt".into()), "{listed:?}");
 }

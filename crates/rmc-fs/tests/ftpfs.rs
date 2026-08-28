@@ -2,11 +2,11 @@
 use rmc_fs::composite::CompositeFs;
 use rmc_fs::Vfs;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -25,6 +25,10 @@ struct FakeFtp {
 
 impl FakeFtp {
     fn spawn(tree: BTreeMap<String, Node>) -> Self {
+        Self::spawn_shared(Arc::new(Mutex::new(tree)))
+    }
+
+    fn spawn_shared(tree: Arc<Mutex<BTreeMap<String, Node>>>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -34,7 +38,7 @@ impl FakeFtp {
             while !stop_t.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let tree = tree.clone();
+                        let tree = Arc::clone(&tree);
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
                         let _ = handle_session(stream, &tree);
@@ -146,13 +150,17 @@ fn unix_list_line(name: &str, node: &Node) -> String {
     }
 }
 
-fn handle_session(stream: TcpStream, tree: &BTreeMap<String, Node>) -> std::io::Result<()> {
+fn handle_session(
+    stream: TcpStream,
+    tree: &Arc<Mutex<BTreeMap<String, Node>>>,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     write!(writer, "220 fake ftp\r\n")?;
     writer.flush()?;
     let mut cwd = "/".to_string();
     let mut pasv: Option<TcpListener> = None;
+    let mut rnfr: Option<String> = None;
     loop {
         let mut line = String::new();
         let n = reader.read_line(&mut line)?;
@@ -176,12 +184,15 @@ fn handle_session(stream: TcpStream, tree: &BTreeMap<String, Node>) -> std::io::
             "PWD" => write!(writer, "257 \"{cwd}\"\r\n")?,
             "CWD" => {
                 let next = resolve(&cwd, arg);
-                match tree.get(&next) {
-                    Some(Node::Dir) => {
-                        cwd = next;
-                        write!(writer, "250 cwd ok\r\n")?;
-                    }
-                    _ => write!(writer, "550 no such dir\r\n")?,
+                let ok = {
+                    let g = tree.lock().unwrap();
+                    matches!(g.get(&next), Some(Node::Dir))
+                };
+                if ok {
+                    cwd = next;
+                    write!(writer, "250 cwd ok\r\n")?;
+                } else {
+                    write!(writer, "550 no such dir\r\n")?;
                 }
             }
             "CDUP" => {
@@ -202,35 +213,44 @@ fn handle_session(stream: TcpStream, tree: &BTreeMap<String, Node>) -> std::io::
             }
             "LIST" | "NLST" => {
                 let path = resolve(&cwd, arg);
-                let listing = match tree.get(&path) {
-                    Some(Node::Dir) => children_of(tree, &path)
-                        .into_iter()
-                        .map(|(n, node)| unix_list_line(&n, &node))
-                        .collect::<Vec<_>>()
-                        .join("\r\n"),
-                    Some(node) => {
-                        let name = Path::new(&path)
-                            .file_name()
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| path.clone());
-                        unix_list_line(&name, node)
+                let listing = {
+                    let g = tree.lock().unwrap();
+                    match g.get(&path) {
+                        Some(Node::Dir) => Some(
+                            children_of(&g, &path)
+                                .into_iter()
+                                .map(|(n, node)| unix_list_line(&n, &node))
+                                .collect::<Vec<_>>()
+                                .join("\r\n"),
+                        ),
+                        Some(node) => {
+                            let name = Path::new(&path)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.clone());
+                            Some(unix_list_line(&name, node))
+                        }
+                        None => None,
                     }
-                    None => {
-                        write!(writer, "550 not found\r\n")?;
-                        writer.flush()?;
-                        continue;
-                    }
+                };
+                let Some(listing) = listing else {
+                    write!(writer, "550 not found\r\n")?;
+                    writer.flush()?;
+                    continue;
                 };
                 write!(writer, "150 opening data\r\n")?;
                 writer.flush()?;
                 match take_pasv(&mut pasv) {
                     Some(mut data) => {
                         if cmd == "NLST" {
-                            let names = children_of(tree, &path)
-                                .into_iter()
-                                .map(|(n, _)| n)
-                                .collect::<Vec<_>>()
-                                .join("\r\n");
+                            let names = {
+                                let g = tree.lock().unwrap();
+                                children_of(&g, &path)
+                                    .into_iter()
+                                    .map(|(n, _)| n)
+                                    .collect::<Vec<_>>()
+                                    .join("\r\n")
+                            };
                             let _ = write!(data, "{names}\r\n");
                         } else if !listing.is_empty() {
                             let _ = write!(data, "{listing}\r\n");
@@ -245,13 +265,20 @@ fn handle_session(stream: TcpStream, tree: &BTreeMap<String, Node>) -> std::io::
             }
             "RETR" => {
                 let path = resolve(&cwd, arg);
-                match tree.get(&path) {
-                    Some(Node::File(bytes)) => {
+                let bytes = {
+                    let g = tree.lock().unwrap();
+                    match g.get(&path) {
+                        Some(Node::File(b)) => Some(b.clone()),
+                        _ => None,
+                    }
+                };
+                match bytes {
+                    Some(bytes) => {
                         write!(writer, "150 opening data\r\n")?;
                         writer.flush()?;
                         match take_pasv(&mut pasv) {
                             Some(mut data) => {
-                                let _ = data.write_all(bytes);
+                                let _ = data.write_all(&bytes);
                             }
                             None => {
                                 write!(writer, "425 no pasv\r\n")?;
@@ -260,21 +287,100 @@ fn handle_session(stream: TcpStream, tree: &BTreeMap<String, Node>) -> std::io::
                         }
                         write!(writer, "226 transfer complete\r\n")?;
                     }
-                    _ => write!(writer, "550 not a file\r\n")?,
+                    None => write!(writer, "550 not a file\r\n")?,
+                }
+            }
+            "STOR" => {
+                let path = resolve(&cwd, arg);
+                write!(writer, "150 opening data\r\n")?;
+                writer.flush()?;
+                match take_pasv(&mut pasv) {
+                    Some(mut data) => {
+                        let mut buf = Vec::new();
+                        let _ = data.read_to_end(&mut buf);
+                        let mut g = tree.lock().unwrap();
+                        g.insert(path, Node::File(buf));
+                    }
+                    None => {
+                        write!(writer, "425 no pasv\r\n")?;
+                        continue;
+                    }
+                }
+                write!(writer, "226 transfer complete\r\n")?;
+            }
+            "MKD" | "XMKD" => {
+                let path = resolve(&cwd, arg);
+                tree.lock().unwrap().insert(path.clone(), Node::Dir);
+                write!(writer, "257 \"{path}\" created\r\n")?;
+            }
+            "DELE" => {
+                let path = resolve(&cwd, arg);
+                let ok = {
+                    let mut g = tree.lock().unwrap();
+                    matches!(g.remove(&path), Some(Node::File(_)))
+                };
+                if ok {
+                    write!(writer, "250 deleted\r\n")?;
+                } else {
+                    write!(writer, "550 not a file\r\n")?;
+                }
+            }
+            "RMD" | "XRMD" => {
+                let path = resolve(&cwd, arg);
+                let ok = {
+                    let mut g = tree.lock().unwrap();
+                    matches!(g.remove(&path), Some(Node::Dir))
+                };
+                if ok {
+                    write!(writer, "250 rmdir ok\r\n")?;
+                } else {
+                    write!(writer, "550 not a dir\r\n")?;
+                }
+            }
+            "RNFR" => {
+                let path = resolve(&cwd, arg);
+                let exists = tree.lock().unwrap().contains_key(&path);
+                if exists {
+                    rnfr = Some(path);
+                    write!(writer, "350 ready for rnto\r\n")?;
+                } else {
+                    write!(writer, "550 not found\r\n")?;
+                }
+            }
+            "RNTO" => {
+                let dest = resolve(&cwd, arg);
+                match rnfr.take() {
+                    Some(src) => {
+                        rename_tree(&mut tree.lock().unwrap(), &src, &dest);
+                        write!(writer, "250 renamed\r\n")?;
+                    }
+                    None => write!(writer, "503 no rnfr\r\n")?,
                 }
             }
             "SIZE" => {
                 let path = resolve(&cwd, arg);
-                match tree.get(&path) {
-                    Some(Node::File(b)) => write!(writer, "213 {}\r\n", b.len())?,
-                    _ => write!(writer, "550 not a file\r\n")?,
+                let sz = {
+                    let g = tree.lock().unwrap();
+                    match g.get(&path) {
+                        Some(Node::File(b)) => Some(b.len()),
+                        _ => None,
+                    }
+                };
+                match sz {
+                    Some(n) => write!(writer, "213 {n}\r\n")?,
+                    None => write!(writer, "550 not a file\r\n")?,
                 }
             }
             "MDTM" => {
                 let path = resolve(&cwd, arg);
-                match tree.get(&path) {
-                    Some(Node::File(_)) => write!(writer, "213 20200101120000\r\n")?,
-                    _ => write!(writer, "550 not a file\r\n")?,
+                let ok = {
+                    let g = tree.lock().unwrap();
+                    matches!(g.get(&path), Some(Node::File(_)))
+                };
+                if ok {
+                    write!(writer, "213 20200101120000\r\n")?;
+                } else {
+                    write!(writer, "550 not a file\r\n")?;
                 }
             }
             "QUIT" => {
@@ -286,6 +392,20 @@ fn handle_session(stream: TcpStream, tree: &BTreeMap<String, Node>) -> std::io::
         writer.flush()?;
     }
     Ok(())
+}
+
+fn rename_tree(tree: &mut BTreeMap<String, Node>, old: &str, new: &str) {
+    let mut updates = Vec::new();
+    for (k, v) in tree.iter() {
+        if k == old || k.starts_with(&format!("{old}/")) {
+            let suffix = &k[old.len()..];
+            updates.push((k.clone(), format!("{new}{suffix}"), v.clone()));
+        }
+    }
+    for (oldk, newk, v) in updates {
+        tree.remove(&oldk);
+        tree.insert(newk, v);
+    }
 }
 
 fn take_pasv(pasv: &mut Option<TcpListener>) -> Option<TcpStream> {
@@ -429,4 +549,37 @@ fn ftpfs_nested_parent_then_leave() {
     let pub_dir = root.join("pub");
     assert_eq!(find_parent(&vfs, &pub_dir), root);
     assert_eq!(find_parent(&vfs, &root), PathBuf::from("/"));
+}
+
+#[test]
+fn ftpfs_copy_in_mkdir_rename_delete() {
+    let ftp = FakeFtp::spawn(fixture_tree());
+    let vfs = CompositeFs::new();
+    vfs.set_dir_cache_timeout_secs(0);
+    let root = vfs.enter_path(&ftp.url("")).unwrap();
+
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("upload.txt");
+    std::fs::write(&src, b"from-local").unwrap();
+    let remote = root.join("upload.txt");
+    vfs.copy(&src, &remote).unwrap();
+    assert_eq!(
+        std::io::read_to_string(vfs.read_file(&remote).unwrap()).unwrap(),
+        "from-local"
+    );
+
+    let newdir = root.join("inbox");
+    vfs.mkdir(&newdir).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(listed.contains(&"inbox".into()), "{listed:?}");
+
+    let renamed = root.join("renamed.txt");
+    vfs.move_path(&remote, &renamed).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(listed.contains(&"renamed.txt".into()), "{listed:?}");
+    assert!(!listed.contains(&"upload.txt".into()), "{listed:?}");
+
+    vfs.remove(&renamed, false).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(!listed.contains(&"renamed.txt".into()), "{listed:?}");
 }

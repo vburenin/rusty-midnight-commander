@@ -151,3 +151,36 @@ fn fish_url_includes_password_in_sftp_style_but_panel_omits_pass() {
     assert_eq!(u.pass.as_deref(), Some("secret"));
     assert_eq!(u.vfs_authority(), "alice@h:2222");
 }
+
+#[test]
+fn fish_copy_in_mkdir_rename_delete() {
+    let _serial = lock_host_keys();
+    let _kh = prepare_known_hosts();
+    let ssh = FakeSsh::spawn(fixture_tree());
+    let vfs = CompositeFs::new();
+    vfs.set_dir_cache_timeout_secs(0);
+    let root = vfs.enter_path(&ssh.sh_url("")).unwrap();
+
+    let tmp = tempdir().unwrap();
+    let src = tmp.path().join("upload.txt");
+    std::fs::write(&src, b"from-local-fish").unwrap();
+    let remote = root.join("upload.txt");
+    vfs.copy(&src, &remote).unwrap();
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut vfs.read_file(&remote).unwrap(), &mut buf).unwrap();
+    assert_eq!(buf, b"from-local-fish");
+
+    let newdir = root.join("inbox");
+    vfs.mkdir(&newdir).unwrap();
+    assert!(names(&vfs.list_dir(&root, true).unwrap()).contains(&"inbox".into()));
+
+    let renamed = root.join("renamed.txt");
+    vfs.move_path(&remote, &renamed).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(listed.contains(&"renamed.txt".into()), "{listed:?}");
+    assert!(!listed.contains(&"upload.txt".into()), "{listed:?}");
+
+    vfs.remove(&renamed, true).unwrap();
+    let listed = names(&vfs.list_dir(&root, true).unwrap());
+    assert!(!listed.contains(&"renamed.txt".into()), "{listed:?}");
+}

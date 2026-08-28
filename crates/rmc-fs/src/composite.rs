@@ -3,6 +3,10 @@ use crate::extfs::{ExtfsPath, ExtfsRegistry};
 use crate::local::LocalFs;
 use crate::pathutil::{append_anchor, parse_archive_path, ArchiveKind};
 use crate::remote;
+use crate::staging::{
+    readonly_fs_error, CANNOT_CREATE_DIRECTORY, CANNOT_CREATE_TARGET_FILE, CANNOT_DELETE_FILE,
+    CANNOT_MOVE_FILE,
+};
 use crate::{DirEntry, FsError, FsResult, Metadata, Vfs};
 use std::fs;
 use std::io::{Read, Write};
@@ -124,6 +128,127 @@ impl CompositeFs {
         matches!(self.route_kind(path), Route::Local { .. })
     }
 
+    fn is_writable_route(route: &Route<'_>) -> bool {
+        matches!(route, Route::Local { .. } | Route::Remote { .. })
+    }
+
+    fn archive_copy_out(ap: &crate::pathutil::ArchivePath, dst: &Path) -> FsResult<()> {
+        match ap.kind {
+            ArchiveKind::Tar | ArchiveKind::TarGz => {
+                crate::tarfs::copy_out(&ap.archive, ap.kind, &ap.inner, dst)
+            }
+            ArchiveKind::Zip => crate::zipfs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::Cpio | ArchiveKind::CpioGz => {
+                crate::cpiofs::copy_out(&ap.archive, ap.kind, &ap.inner, dst)
+            }
+            ArchiveKind::Ar => crate::arfs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::Deb => crate::debfs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::Rpm => crate::rpmfs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::SevenZ => crate::sevenzfs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::Iso => crate::isofs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::Rar => crate::rarfs::copy_out(&ap.archive, &ap.inner, dst),
+            ArchiveKind::Lha => crate::lhafs::copy_out(&ap.archive, &ap.inner, dst),
+        }
+    }
+
+    fn remote_copy_out(url: &remote::RemoteUrl, dst: &Path) -> FsResult<()> {
+        match url.scheme {
+            crate::remote::RemoteScheme::Ftp => crate::ftpfs::copy_out(url, dst),
+            crate::remote::RemoteScheme::Sftp => crate::sftpfs::copy_out(url, dst),
+            crate::remote::RemoteScheme::Fish => crate::fish::copy_out(url, dst),
+            _ => crate::remote::copy_out(url, dst),
+        }
+    }
+
+    fn remote_copy_in(src: &Path, url: &remote::RemoteUrl) -> FsResult<()> {
+        match url.scheme {
+            crate::remote::RemoteScheme::Ftp => crate::ftpfs::copy_in(src, url),
+            crate::remote::RemoteScheme::Sftp => crate::sftpfs::copy_in(src, url),
+            crate::remote::RemoteScheme::Fish => crate::fish::copy_in(src, url),
+            _ => crate::remote::copy_in(src, url),
+        }
+    }
+
+    fn remote_mkdir(url: &remote::RemoteUrl) -> FsResult<()> {
+        match url.scheme {
+            crate::remote::RemoteScheme::Ftp => crate::ftpfs::mkdir(url),
+            crate::remote::RemoteScheme::Sftp => crate::sftpfs::mkdir(url),
+            crate::remote::RemoteScheme::Fish => crate::fish::mkdir(url),
+            _ => crate::remote::mkdir(url),
+        }
+    }
+
+    fn remote_remove(url: &remote::RemoteUrl, recursive: bool) -> FsResult<()> {
+        match url.scheme {
+            crate::remote::RemoteScheme::Ftp => crate::ftpfs::remove(url, recursive),
+            crate::remote::RemoteScheme::Sftp => crate::sftpfs::remove(url, recursive),
+            crate::remote::RemoteScheme::Fish => crate::fish::remove(url, recursive),
+            _ => crate::remote::remove(url, recursive),
+        }
+    }
+
+    fn remote_rename(src: &remote::RemoteUrl, dst: &remote::RemoteUrl) -> FsResult<()> {
+        match src.scheme {
+            crate::remote::RemoteScheme::Ftp => crate::ftpfs::rename(src, dst),
+            crate::remote::RemoteScheme::Sftp => crate::sftpfs::rename(src, dst),
+            crate::remote::RemoteScheme::Fish => crate::fish::rename(src, dst),
+            _ => Err(FsError::Message(
+                "rename is not supported on this remote backend".into(),
+            )),
+        }
+    }
+
+    fn remote_write_file(url: remote::RemoteUrl) -> FsResult<Box<dyn Write + Send>> {
+        match url.scheme {
+            crate::remote::RemoteScheme::Ftp => crate::ftpfs::write_file(&url),
+            crate::remote::RemoteScheme::Sftp => crate::sftpfs::write_file(&url),
+            crate::remote::RemoteScheme::Fish => crate::fish::write_file(&url),
+            _ => {
+                let w = crate::remote::RemoteWrite::new(url)?;
+                Ok(Box::new(w))
+            }
+        }
+    }
+
+    /// Copy any readable VFS file onto a local path.
+    fn materialize_to_local(&self, src: &Path, dst: &Path) -> FsResult<()> {
+        if let Some(parent) = dst.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match self.route_kind(src) {
+            Route::Local { path } => {
+                fs::copy(path, dst)?;
+                Ok(())
+            }
+            Route::Archive { ap, .. } => Self::archive_copy_out(&ap, dst),
+            Route::Extfs { xp, .. } => {
+                crate::extfs::copy_out(&xp.helper_cmd, &xp.archive, &xp.inner, dst)
+            }
+            Route::Remote { url, .. } => Self::remote_copy_out(&url, dst),
+        }
+    }
+
+    /// Copy a local file into a writable VFS destination (or local).
+    fn copy_local_into(&self, src: &Path, dst: &Path) -> FsResult<()> {
+        match self.route_kind(dst) {
+            Route::Local { path } => {
+                self.local
+                    .copy_with_flags(src, path, crate::CopyFlags::default())
+            }
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_CREATE_TARGET_FILE))
+            }
+            Route::Remote { url, .. } => Self::remote_copy_in(src, &url),
+        }
+    }
+
+    fn copy_via_temp(&self, src: &Path, dst: &Path) -> FsResult<()> {
+        let tmp = tempfile::NamedTempFile::new()
+            .map_err(|e| FsError::Message(format!("tempfile: {e}")))?;
+        self.materialize_to_local(src, tmp.path())?;
+        self.copy_local_into(tmp.path(), dst)
+    }
+
     fn route_kind<'a>(&self, path: &'a Path) -> Route<'a> {
         if let Some(ap) = parse_archive_path(path) {
             let vfs_root = path; // the full composite path with '#'
@@ -196,6 +321,10 @@ impl Vfs for CompositeFs {
         self.is_local_fs_path(path)
     }
 
+    fn is_writable(&self, path: &Path) -> bool {
+        Self::is_writable_route(&self.route_kind(path))
+    }
+
     fn canonicalize_path(&self, path: &Path) -> PathBuf {
         let p = crate::ftpfs::canonicalize_panel_path(path);
         let p = crate::sftpfs::canonicalize_panel_path(&p);
@@ -232,13 +361,10 @@ impl Vfs for CompositeFs {
         let cacheable = self.is_cacheable(path);
         let result = match self.route_kind(path) {
             Route::Local { path } => self.local.mkdir(path),
-            Route::Archive { .. } => Err(FsError::Message(
-                "mkdir inside archive is not supported".into(),
-            )),
-            Route::Extfs { .. } => Err(FsError::Message(
-                "mkdir inside extfs is not supported".into(),
-            )),
-            Route::Remote { url, .. } => crate::remote::mkdir(&url),
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_CREATE_DIRECTORY))
+            }
+            Route::Remote { url, .. } => Self::remote_mkdir(&url),
         };
         if result.is_ok() && cacheable {
             self.invalidate_parent_listing(path);
@@ -250,13 +376,10 @@ impl Vfs for CompositeFs {
         let cacheable = self.is_cacheable(path);
         let result = match self.route_kind(path) {
             Route::Local { path } => self.local.remove(path, recursive),
-            Route::Archive { .. } => Err(FsError::Message(
-                "remove inside archive is not supported".into(),
-            )),
-            Route::Extfs { .. } => Err(FsError::Message(
-                "remove inside extfs is not supported".into(),
-            )),
-            Route::Remote { url, .. } => crate::remote::remove(&url, recursive),
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_DELETE_FILE))
+            }
+            Route::Remote { url, .. } => Self::remote_remove(&url, recursive),
         };
         if result.is_ok() && cacheable {
             self.invalidate_parent_listing(path);
@@ -272,50 +395,18 @@ impl Vfs for CompositeFs {
                 self.local
                     .copy_with_flags(s, d, crate::CopyFlags::default())
             }
-            (Route::Archive { ap, .. }, Route::Local { path: d }) => match ap.kind {
-                ArchiveKind::Tar | ArchiveKind::TarGz => {
-                    crate::tarfs::copy_out(&ap.archive, ap.kind, &ap.inner, d)
-                }
-                ArchiveKind::Zip => crate::zipfs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::Cpio | ArchiveKind::CpioGz => {
-                    crate::cpiofs::copy_out(&ap.archive, ap.kind, &ap.inner, d)
-                }
-                ArchiveKind::Ar => crate::arfs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::Deb => crate::debfs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::Rpm => crate::rpmfs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::SevenZ => crate::sevenzfs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::Iso => crate::isofs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::Rar => crate::rarfs::copy_out(&ap.archive, &ap.inner, d),
-                ArchiveKind::Lha => crate::lhafs::copy_out(&ap.archive, &ap.inner, d),
-            },
+            (Route::Archive { ap, .. }, Route::Local { path: d }) => Self::archive_copy_out(&ap, d),
             (Route::Extfs { xp, .. }, Route::Local { path: d }) => {
                 crate::extfs::copy_out(&xp.helper_cmd, &xp.archive, &xp.inner, d)
             }
-            (Route::Remote { url, .. }, Route::Local { path: d }) => match url.scheme {
-                crate::remote::RemoteScheme::Ftp => crate::ftpfs::copy_out(&url, d),
-                crate::remote::RemoteScheme::Sftp => crate::sftpfs::copy_out(&url, d),
-                crate::remote::RemoteScheme::Fish => crate::fish::copy_out(&url, d),
-                _ => crate::remote::copy_out(&url, d),
-            },
-            (Route::Local { path: s }, Route::Remote { url, .. }) => {
-                // local -> remote
-                crate::remote::copy_in(s, &url)
+            (Route::Remote { url, .. }, Route::Local { path: d }) => Self::remote_copy_out(&url, d),
+            (Route::Local { path: s }, Route::Remote { url, .. }) => Self::remote_copy_in(s, &url),
+            (_, Route::Archive { .. }) | (_, Route::Extfs { .. }) => {
+                Err(readonly_fs_error(CANNOT_CREATE_TARGET_FILE))
             }
-            (Route::Local { .. }, Route::Archive { .. }) => Err(FsError::Message(
-                "copy into an archive is not supported".into(),
-            )),
-            (Route::Archive { .. }, Route::Archive { .. }) => Err(FsError::Message(
-                "copy between archives is not supported".into(),
-            )),
-            (Route::Local { .. }, Route::Extfs { .. }) => {
-                Err(FsError::Message("copy into extfs is not supported".into()))
-            }
-            (Route::Extfs { .. }, Route::Extfs { .. }) => Err(FsError::Message(
-                "copy between extfs is not supported".into(),
-            )),
-            _ => Err(FsError::Message(
-                "copy between different VFS backends is not supported".into(),
-            )),
+            (Route::Archive { .. }, Route::Remote { .. })
+            | (Route::Extfs { .. }, Route::Remote { .. })
+            | (Route::Remote { .. }, Route::Remote { .. }) => self.copy_via_temp(src, dst),
         };
         if result.is_ok() {
             if src_cacheable {
@@ -357,8 +448,27 @@ impl Vfs for CompositeFs {
     fn move_path(&self, src: &Path, dst: &Path) -> FsResult<()> {
         match (self.route_kind(src), self.route_kind(dst)) {
             (Route::Local { path: s }, Route::Local { path: d }) => self.local.move_path(s, d),
+            (_, Route::Archive { .. }) | (_, Route::Extfs { .. }) => {
+                Err(readonly_fs_error(CANNOT_MOVE_FILE))
+            }
+            (Route::Remote { url: su, .. }, Route::Remote { url: du, .. })
+                if su.same_identity(&du) =>
+            {
+                let src_cacheable = self.is_cacheable(src);
+                let dst_cacheable = self.is_cacheable(dst);
+                let result = Self::remote_rename(&su, &du);
+                if result.is_ok() {
+                    if src_cacheable {
+                        self.invalidate_parent_listing(src);
+                    }
+                    if dst_cacheable {
+                        self.invalidate_parent_listing(dst);
+                    }
+                }
+                result
+            }
             _ => Err(FsError::Message(
-                "move is only supported on the local filesystem in this version".into(),
+                "move across VFS backends uses copy then delete".into(),
             )),
         }
     }
@@ -401,16 +511,10 @@ impl Vfs for CompositeFs {
         let cacheable = self.is_cacheable(path);
         let result: FsResult<Box<dyn Write + Send>> = match self.route_kind(path) {
             Route::Local { path } => self.local.write_file(path),
-            Route::Archive { .. } => Err(FsError::Message(
-                "write into an archive is not supported".into(),
-            )),
-            Route::Extfs { .. } => {
-                Err(FsError::Message("write into extfs is not supported".into()))
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_CREATE_TARGET_FILE))
             }
-            Route::Remote { url, .. } => {
-                let w = crate::remote::RemoteWrite::new(url)?;
-                Ok(Box::new(w))
-            }
+            Route::Remote { url, .. } => Self::remote_write_file(url),
         };
         if result.is_ok() && cacheable {
             self.invalidate_parent_listing(path);
@@ -451,12 +555,9 @@ impl Vfs for CompositeFs {
     fn chmod(&self, path: &Path, mode: u32, recursive: bool) -> FsResult<()> {
         match self.route_kind(path) {
             Route::Local { path } => self.local.chmod(path, mode, recursive),
-            Route::Archive { .. } => Err(FsError::Message(
-                "chmod inside archive is not supported".into(),
-            )),
-            Route::Extfs { .. } => Err(FsError::Message(
-                "chmod inside extfs is not supported".into(),
-            )),
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_CREATE_TARGET_FILE))
+            }
             Route::Remote { .. } => {
                 Err(FsError::Message("chmod on remote is not supported".into()))
             }
@@ -471,12 +572,9 @@ impl Vfs for CompositeFs {
     ) -> FsResult<()> {
         match self.route_kind(path) {
             Route::Local { path } => self.local.chown(path, owner, group, recursive),
-            Route::Archive { .. } => Err(FsError::Message(
-                "chown inside archive is not supported".into(),
-            )),
-            Route::Extfs { .. } => Err(FsError::Message(
-                "chown inside extfs is not supported".into(),
-            )),
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_CREATE_TARGET_FILE))
+            }
             Route::Remote { .. } => {
                 Err(FsError::Message("chown on remote is not supported".into()))
             }
@@ -493,12 +591,9 @@ impl Vfs for CompositeFs {
     fn symlink(&self, target: &Path, link_path: &Path) -> FsResult<()> {
         match self.route_kind(link_path) {
             Route::Local { path } => self.local.symlink(target, path),
-            Route::Archive { .. } => Err(FsError::Message(
-                "symlink inside archive is not supported".into(),
-            )),
-            Route::Extfs { .. } => Err(FsError::Message(
-                "symlink inside extfs is not supported".into(),
-            )),
+            Route::Archive { .. } | Route::Extfs { .. } => {
+                Err(readonly_fs_error(CANNOT_CREATE_TARGET_FILE))
+            }
             Route::Remote { .. } => Err(FsError::Message(
                 "symlink on remote is not supported".into(),
             )),
@@ -525,6 +620,13 @@ mod tests {
         assert!(!vfs.is_local_fs_path(Path::new("/#sftp:user@host/tmp")));
         assert!(!vfs.is_local_fs_path(Path::new("sh://host/tmp")));
         assert!(!vfs.is_local_fs_path(Path::new("/#sh:host/tmp")));
+        assert!(vfs.is_writable(Path::new("/tmp/file.txt")));
+        assert!(vfs.is_writable(Path::new("ftp://host/pub")));
+        assert!(vfs.is_writable(Path::new("/#sftp:user@host/tmp")));
+        assert!(vfs.is_writable(Path::new("sh://host/tmp")));
+        assert!(!vfs.is_writable(Path::new("/tmp/sample.tar#")));
+        assert!(!vfs.is_writable(Path::new("/tmp/sample.tar#/inner.txt")));
+        assert!(!vfs.is_writable(Path::new("/tmp/a.zip#/dir/f.txt")));
     }
 
     #[test]

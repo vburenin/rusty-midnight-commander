@@ -380,6 +380,53 @@ pub(crate) async fn connect_handle(url: &RemoteUrl) -> FsResult<Handle<ClientHan
     Ok(session)
 }
 
+/// Run a remote command and require a zero exit status (mkdir / rm / mv).
+pub async fn exec_status(url: &RemoteUrl, command: &str) -> FsResult<()> {
+    let _ = exec_bytes(url, command).await?;
+    Ok(())
+}
+
+/// Run a remote command, feeding `stdin` to the session (FISH copy-in / `cat >`).
+pub async fn exec_with_stdin(url: &RemoteUrl, command: &str, stdin: &[u8]) -> FsResult<()> {
+    if url.use_rsh {
+        return exec_rsh_stdin(url, command, stdin);
+    }
+    let session = connect_handle(url).await?;
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| FsError::Message(format!("SSH channel: {e}")))?;
+    channel
+        .exec(true, command)
+        .await
+        .map_err(|e| FsError::Message(format!("SSH exec: {e}")))?;
+    if !stdin.is_empty() {
+        channel
+            .data(stdin)
+            .await
+            .map_err(|e| FsError::Message(format!("SSH stdin: {e}")))?;
+    }
+    channel
+        .eof()
+        .await
+        .map_err(|e| FsError::Message(format!("SSH eof: {e}")))?;
+    let mut stderr = Vec::new();
+    let mut status: Option<u32> = None;
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::ExtendedData { ref data, .. }) => stderr.extend_from_slice(data),
+            Some(ChannelMsg::ExitStatus { exit_status }) => status = Some(exit_status),
+            Some(ChannelMsg::Eof) | None => break,
+            _ => {}
+        }
+    }
+    if status.unwrap_or(0) != 0 {
+        let err = String::from_utf8_lossy(&stderr);
+        return Err(FsError::Message(format!("SSH exec failed: {err}")));
+    }
+    Ok(())
+}
+
 pub async fn exec_bytes(url: &RemoteUrl, command: &str) -> FsResult<Vec<u8>> {
     if url.use_rsh {
         return exec_rsh(url, command);
@@ -410,6 +457,34 @@ pub async fn exec_bytes(url: &RemoteUrl, command: &str) -> FsResult<Vec<u8>> {
         return Err(FsError::Message(format!("SSH exec failed: {err}")));
     }
     Ok(stdout)
+}
+
+fn exec_rsh_stdin(url: &RemoteUrl, command: &str, stdin: &[u8]) -> FsResult<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("rsh");
+    if let Some(u) = &url.user {
+        cmd.arg("-l").arg(u);
+    }
+    cmd.arg(&url.host).arg(command);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| FsError::Message(format!("rsh: {e}")))?;
+    if let Some(mut s) = child.stdin.take() {
+        s.write_all(stdin)
+            .map_err(|e| FsError::Message(format!("rsh stdin: {e}")))?;
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| FsError::Message(format!("rsh: {e}")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(FsError::Message(format!("rsh failed: {err}")));
+    }
+    Ok(())
 }
 
 fn exec_rsh(url: &RemoteUrl, command: &str) -> FsResult<Vec<u8>> {
