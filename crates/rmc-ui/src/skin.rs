@@ -350,7 +350,10 @@ mod tests {
         let pal = load_from_file(&path).expect("load default skin");
         assert_eq!(pal.core_default_bg, Color::Blue);
         assert_eq!(pal.core_default_fg, Color::Grey);
+        assert_eq!(pal.selected_fg, Color::Black);
         assert_eq!(pal.selected_bg, Color::Cyan);
+        assert_eq!(pal.header_fg, Color::Yellow);
+        assert_eq!(pal.header_bg, Color::Blue);
         assert_eq!(pal.dfocus_bg, Color::Cyan);
         assert_eq!(pal.menu_bg, Color::Cyan);
         assert_eq!(pal.menusel_bg, Color::Black);

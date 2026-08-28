@@ -7,6 +7,7 @@ use crate::panel_preview::{info_lines_for_panel, preview_source_entry, quick_vie
 use crate::panelize::draw_external_panelize_dialog;
 use crate::widgets::Painter;
 use anyhow::Result;
+use crossterm::cursor::Hide;
 use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
@@ -24,6 +25,10 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(palette: McPalette) -> Self {
+        // Crossterm Colored::Display is empty when NO_COLOR is set, which turns
+        // SetColors into `\x1b[m`. Painter::set_fg_bg writes 16-color SGR itself;
+        // still force color so any remaining crossterm style commands stay on.
+        crossterm::style::force_color_output(true);
         Self {
             palette,
             out: stdout(),
@@ -45,8 +50,11 @@ impl Renderer {
             painter.out.flush()?;
             return Ok(());
         }
-        // Clear screen
+        // Clear to core default (lightgray;blue). Crossterm Clear uses the current
+        // background; without this, the previous F-bar cyan floods unpainted cells.
+        painter.set_fg_bg(self.palette.core_default_fg, self.palette.core_default_bg);
         painter.out.queue(Clear(ClearType::All))?;
+        let _ = painter.out.queue(Hide);
         // Full-screen subshell/output view short-circuit
         if app.subshell.show_output_screen {
             draw_subshell_fullscreen(&mut painter, cols, rows, self.palette, app)?;
@@ -239,8 +247,10 @@ fn draw_menu_bar(
     selected: Option<usize>,
     horizontal_split: bool,
 ) {
+    // Entire bar is menu white;cyan. Only F9's open menu uses menusel white;black.
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(0, 0);
+    p.text(&" ".repeat(cols as usize));
     let items = menu_bar_titles(horizontal_split);
     let mut x = 0u16;
     for (i, it) in items.iter().enumerate() {
@@ -253,11 +263,11 @@ fn draw_menu_bar(
         p.text(it);
         x += it.len() as u16;
     }
-    // Fill rest
-    p.set_fg_bg(pal.menu_fg, pal.menu_bg);
-    p.goto(x, 0);
-    let rest = " ".repeat(cols.saturating_sub(x) as usize);
-    p.text(&rest);
+    if x < cols {
+        p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        p.goto(x, 0);
+        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+    }
 }
 
 fn draw_pause_after_run_prompt(p: &mut Painter, cols: u16, rows: u16, pal: McPalette) {
@@ -3634,6 +3644,8 @@ fn draw_panel(
     is_left: bool,
     pal: McPalette,
 ) -> Result<()> {
+    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
+        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
     // Frame single-line, with path caption in the top frame
     let frame_fg = pal.frame_fg;
     let frame_bg = pal.frame_bg;
@@ -3690,9 +3702,12 @@ fn draw_panel(
             format!(" {} ", path.display())
         }
     };
-    let cap_x = x + ((w.saturating_sub(path_str_display.len() as u16)) / 2);
-    p.goto(cap_x.max(x + 1), y);
-    p.text(&path_str_display);
+    let inner = w.saturating_sub(2);
+    let path_str_display = truncate(&path_str_display, inner as usize);
+    let cap_x = x + ((w.saturating_sub(path_str_display.chars().count() as u16)) / 2);
+    // GNU: active panel path is selected (black;cyan); inactive stays on the frame.
+    let (path_fg, path_bg) = panel_path_caption_colors(&pal, is_active_panel);
+    paint_span(p, cap_x.max(x + 1), y, path_fg, path_bg, &path_str_display);
 
     // Non-listing panel modes (QuickView/Info/Tree): override standard listing rendering.
     let panel = if is_left { &app.left } else { &app.right };
@@ -3754,9 +3769,6 @@ fn draw_panel(
             }
             PanelMode::Tree => {
                 if let Some(tree) = &panel.tree {
-                    let is_active_panel = (is_left
-                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
-                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
                     let status = rmc_core::panel::tree_panel_mini_status(
                         tree,
                         app.panel_opts.show_mini_status,
@@ -3812,10 +3824,17 @@ fn draw_panel(
         return Ok(());
     }
 
-    // Headers
-    let header_fg = pal.header_fg;
-    let header_bg = pal.header_bg;
-    p.set_fg_bg(header_fg, header_bg);
+    // Headers: GNU `header` yellow;blue on a filled blue row — never selected/cyan.
+    let (header_fg, header_bg) = panel_header_colors(&pal);
+    let inner = w.saturating_sub(2);
+    paint_span(
+        p,
+        x + 1,
+        y + 1,
+        header_fg,
+        header_bg,
+        &" ".repeat(inner as usize),
+    );
     let panel = if is_left { &app.left } else { &app.right };
     let user_tokens = if matches!(panel.listing, rmc_core::panel::ListingFormat::User) {
         rmc_core::panel::parse_user_listing_format(&panel.user_format)
@@ -3832,22 +3851,23 @@ fn draw_panel(
     };
     match listing {
         rmc_core::panel::ListingFormat::Full => {
-            p.goto(x + 1, y + 1);
-            p.text("Name");
-            p.goto(x + w / 2, y + 1);
-            p.text("Size");
-            p.goto(x + w - 15, y + 1);
-            p.text("Modify time");
+            paint_span(p, x + 1, y + 1, header_fg, header_bg, "Name");
+            paint_span(p, x + w / 2, y + 1, header_fg, header_bg, "Size");
+            paint_span(p, x + w - 15, y + 1, header_fg, header_bg, "Modify time");
         }
         rmc_core::panel::ListingFormat::Brief => {
-            p.goto(x + 1, y + 1);
-            p.text("Name");
+            paint_span(p, x + 1, y + 1, header_fg, header_bg, "Name");
         }
         rmc_core::panel::ListingFormat::User => {
-            p.goto(x + 1, y + 1);
-            let header =
-                rmc_core::panel::format_user_listing_header(&user_tokens, (w - 2) as usize);
-            p.text(&truncate(&header, (w - 2) as usize));
+            let header = rmc_core::panel::format_user_listing_header(&user_tokens, inner as usize);
+            paint_span(
+                p,
+                x + 1,
+                y + 1,
+                header_fg,
+                header_bg,
+                &truncate(&header, inner as usize),
+            );
         }
         rmc_core::panel::ListingFormat::Long => {
             // Column-aligned like ls -l: perm, nlink, owner, group, size, mtime
@@ -3857,18 +3877,12 @@ fn draw_panel(
             let group_col = owner_col + 9; // owner 8 + 1 space
             let size_col = group_col + 9; // group 8 + 1 space
             let time_col = size_col + 9; // size 8 + 1 space
-            p.goto(perms_col, y + 1);
-            p.text("Perms");
-            p.goto(nlink_col, y + 1);
-            p.text("Nl");
-            p.goto(owner_col, y + 1);
-            p.text("Owner");
-            p.goto(group_col, y + 1);
-            p.text("Group");
-            p.goto(size_col, y + 1);
-            p.text("Size");
-            p.goto(time_col, y + 1);
-            p.text("Modify time");
+            paint_span(p, perms_col, y + 1, header_fg, header_bg, "Perms");
+            paint_span(p, nlink_col, y + 1, header_fg, header_bg, "Nl");
+            paint_span(p, owner_col, y + 1, header_fg, header_bg, "Owner");
+            paint_span(p, group_col, y + 1, header_fg, header_bg, "Group");
+            paint_span(p, size_col, y + 1, header_fg, header_bg, "Size");
+            paint_span(p, time_col, y + 1, header_fg, header_bg, "Modify time");
         }
     }
 
@@ -3877,8 +3891,6 @@ fn draw_panel(
     // Mini-status occupies the row above the bottom frame. When it is off, listing
     // uses that row so the frame stays closed (no empty gap). Quick search still
     // borrows the same row on the active panel.
-    let is_active_panel = (is_left && matches!(app.active, rmc_core::actions::PaneSide::Left))
-        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
     let reserve_status = rmc_core::panel::reserve_panel_mini_status(
         app.panel_opts.show_mini_status,
         is_active_panel,
@@ -4064,29 +4076,39 @@ fn draw_panel(
         }
     }
     // Mini status
-    if let Some(text) = rmc_core::panel::panel_mini_status_line(
+    if let Some(mut text) = rmc_core::panel::panel_mini_status_line(
         app.panel_opts.show_mini_status,
         is_active_panel,
         app.quick_search.as_ref().map(|qs| qs.pattern.as_str()),
         panel.current_entry(),
         app.panel_opts.kilobyte_si,
     ) {
-        let status_y = y + h - 2;
-        p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-        p.goto(x + 1, status_y);
-        let s = truncate(&text, (w - 2) as usize);
-        p.text(&s);
-        let inner = (w - 2) as usize;
-        let used = s.chars().count();
-        if used < inner {
-            p.text(&" ".repeat(inner - used));
+        if panel.current_entry().is_some_and(|e| e.is_parent_marker())
+            && !text.starts_with(" Search:")
+        {
+            text = "UP--DIR".to_string();
         }
+        let status_y = y + h - 2;
+        let inner = (w - 2) as usize;
+        let s = truncate(&text, inner);
+        let mut line = s.clone();
+        while line.chars().count() < inner {
+            line.push(' ');
+        }
+        paint_span(
+            p,
+            x + 1,
+            status_y,
+            pal.statusbar_fg,
+            pal.statusbar_bg,
+            &line,
+        );
     }
     Ok(())
 }
 
 fn draw_gauge(p: &mut Painter, y: u16, cols: u16, pal: McPalette, app: &App) {
-    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(0, y);
     let path = &app.active_panel().cwd;
     let text = match (fs2::available_space(path), fs2::total_space(path)) {
@@ -4806,6 +4828,29 @@ fn paint_line_with_name_color(
     }
 }
 
+/// Write `s` at (x,y) with an explicit pair. Always sets colors immediately
+/// before the glyphs so a previous selected/statusbar cyan cannot leak.
+fn paint_span(p: &mut Painter, x: u16, y: u16, fg: Color, bg: Color, s: &str) {
+    p.set_fg_bg(fg, bg);
+    p.goto(x, y);
+    p.text(s);
+}
+
+/// GNU default skin: active panel path caption uses `selected` (black;cyan);
+/// inactive path stays on the frame (lightgray;blue).
+pub(crate) fn panel_path_caption_colors(pal: &McPalette, active: bool) -> (Color, Color) {
+    if active {
+        (pal.selected_fg, pal.selected_bg)
+    } else {
+        (pal.frame_fg, pal.frame_bg)
+    }
+}
+
+/// Column titles (Name / Size / Modify time) use `header` (yellow;blue), never selected/cyan.
+pub(crate) fn panel_header_colors(pal: &McPalette) -> (Color, Color) {
+    (pal.header_fg, pal.header_bg)
+}
+
 fn format_entry_name(ent: &FileEntry) -> String {
     if ent.name == ".." {
         "..".to_string()
@@ -4829,6 +4874,9 @@ fn format_size(ent: &FileEntry, si: bool) -> String {
 }
 
 fn format_time(ent: &FileEntry) -> String {
+    if ent.is_parent_marker() {
+        return String::new();
+    }
     let dt: OffsetDateTime = ent.modified.into();
     dt.format(&time::macros::format_description!(
         "[month repr:short] [day padding:space] [hour]:[minute]"
@@ -6889,5 +6937,371 @@ mod editor_syntax_style_tests {
         assert_eq!(s_bg, pal.edit_linestate_bg);
         assert_ne!((s_fg, s_bg), (c_fg, c_bg));
         assert_ne!((s_fg, s_bg), (pal.edit_bold_fg, pal.edit_bold_bg));
+    }
+}
+
+#[cfg(test)]
+mod gnu_default_chrome_colors_tests {
+    use super::{panel_header_colors, panel_path_caption_colors};
+    use crate::mc_colors::McPalette;
+    use crate::skin::load_from_file;
+    use crate::widgets::Painter;
+    use crossterm::style::Color;
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::App;
+    use rmc_core::config::KeyMap;
+    use rmc_core::panel::{FileEntry, ListingFormat};
+    use rmc_fs::local::LocalFs;
+    use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
+
+    #[test]
+    fn active_path_uses_selected_inactive_uses_frame() {
+        let pal = McPalette::default();
+        let (afg, abg) = panel_path_caption_colors(&pal, true);
+        assert_eq!((afg, abg), (pal.selected_fg, pal.selected_bg));
+        assert_eq!((afg, abg), (Color::Black, Color::Cyan));
+        let (ifg, ibg) = panel_path_caption_colors(&pal, false);
+        assert_eq!((ifg, ibg), (pal.frame_fg, pal.frame_bg));
+        assert_eq!(ibg, Color::Blue);
+        assert_ne!(
+            abg, ibg,
+            "active path caption must differ from inactive (cyan vs blue frame)"
+        );
+        assert_ne!(
+            afg,
+            Color::White,
+            "active path is black on cyan, not light-on-cyan"
+        );
+        assert_ne!(
+            afg,
+            Color::Grey,
+            "active path must not use frame lightgray on cyan"
+        );
+    }
+
+    #[test]
+    fn column_headers_use_header_yellow_blue_not_cyan() {
+        let pal = McPalette::default();
+        let (fg, bg) = panel_header_colors(&pal);
+        assert_eq!((fg, bg), (Color::Yellow, Color::Blue));
+        assert_eq!((fg, bg), (pal.header_fg, pal.header_bg));
+        assert_ne!(bg, pal.selected_bg, "headers must not use selected cyan");
+        assert_ne!(bg, pal.menu_bg, "headers must not use menu cyan");
+        assert_ne!(bg, pal.statusbar_bg, "headers must not use statusbar cyan");
+    }
+
+    #[test]
+    fn default_ini_palette_matches_gnu_header_and_selected() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/skins/default.ini");
+        let pal = load_from_file(&path).expect("load default.ini");
+        assert_eq!(pal.header_fg, Color::Yellow);
+        assert_eq!(pal.header_bg, Color::Blue);
+        assert_eq!(pal.selected_fg, Color::Black);
+        assert_eq!(pal.selected_bg, Color::Cyan);
+        let (hfg, hbg) = panel_header_colors(&pal);
+        assert_eq!((hfg, hbg), (Color::Yellow, Color::Blue));
+        let (afg, abg) = panel_path_caption_colors(&pal, true);
+        assert_eq!((afg, abg), (Color::Black, Color::Cyan));
+        let (ifg, ibg) = panel_path_caption_colors(&pal, false);
+        assert_eq!((ifg, ibg), (pal.frame_fg, pal.frame_bg));
+    }
+
+    fn ansi16(n: u8) -> Color {
+        match n {
+            0 => Color::Black,
+            1 => Color::DarkRed,
+            2 => Color::DarkGreen,
+            3 => Color::DarkYellow,
+            4 => Color::Blue,
+            5 => Color::DarkMagenta,
+            6 => Color::Cyan,
+            7 => Color::Grey,
+            8 => Color::DarkGrey,
+            9 => Color::Red,
+            10 => Color::Green,
+            11 => Color::Yellow,
+            12 => Color::Blue,
+            13 => Color::Magenta,
+            14 => Color::Cyan,
+            15 => Color::White,
+            other => Color::AnsiValue(other),
+        }
+    }
+
+    fn ansi256(n: u8) -> Color {
+        ansi16(n)
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct Cell {
+        ch: char,
+        fg: Color,
+        bg: Color,
+    }
+
+    fn rasterize(bytes: &[u8], cols: u16, rows: u16) -> Vec<Vec<Cell>> {
+        let mut grid = vec![
+            vec![
+                Cell {
+                    ch: ' ',
+                    fg: Color::Reset,
+                    bg: Color::Reset,
+                };
+                cols as usize
+            ];
+            rows as usize
+        ];
+        let mut fg = Color::Reset;
+        let mut bg = Color::Reset;
+        let mut x: usize = 0;
+        let mut y: usize = 0;
+        let mut i = 0;
+        let s = bytes;
+        while i < s.len() {
+            if s[i] == 0x1b && i + 1 < s.len() && s[i + 1] == b'[' {
+                i += 2;
+                let start = i;
+                while i < s.len() && (s[i].is_ascii_digit() || s[i] == b';' || s[i] == b'?') {
+                    i += 1;
+                }
+                if i >= s.len() {
+                    break;
+                }
+                let cmd = s[i];
+                let params = std::str::from_utf8(&s[start..i]).unwrap_or("");
+                i += 1;
+                match cmd {
+                    b'H' | b'f' => {
+                        let mut it = params.split(';');
+                        let row = it.next().unwrap_or("1").parse::<usize>().unwrap_or(1);
+                        let col = it.next().unwrap_or("1").parse::<usize>().unwrap_or(1);
+                        y = row.saturating_sub(1);
+                        x = col.saturating_sub(1);
+                    }
+                    b'm' => {
+                        let nums: Vec<u8> = if params.is_empty() {
+                            vec![0]
+                        } else {
+                            params.split(';').filter_map(|p| p.parse().ok()).collect()
+                        };
+                        let mut k = 0;
+                        while k < nums.len() {
+                            match nums[k] {
+                                0 => {
+                                    fg = Color::Reset;
+                                    bg = Color::Reset;
+                                }
+                                n @ 30..=37 => fg = ansi16(n - 30),
+                                n @ 40..=47 => bg = ansi16(n - 40),
+                                n @ 90..=97 => fg = ansi16(n - 90 + 8),
+                                n @ 100..=107 => bg = ansi16(n - 100 + 8),
+                                39 => fg = Color::Reset,
+                                49 => bg = Color::Reset,
+                                38 if k + 2 < nums.len() && nums[k + 1] == 5 => {
+                                    fg = ansi256(nums[k + 2]);
+                                    k += 2;
+                                }
+                                48 if k + 2 < nums.len() && nums[k + 1] == 5 => {
+                                    bg = ansi256(nums[k + 2]);
+                                    k += 2;
+                                }
+                                _ => {}
+                            }
+                            k += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            let rest = &s[i..];
+            let Ok(ch) = std::str::from_utf8(rest).map(|t| t.chars().next()) else {
+                i += 1;
+                continue;
+            };
+            let Some(ch) = ch else {
+                break;
+            };
+            i += ch.len_utf8();
+            if ch == '\n' {
+                y += 1;
+                x = 0;
+                continue;
+            }
+            if y < rows as usize && x < cols as usize {
+                grid[y][x] = Cell { ch, fg, bg };
+            }
+            x += 1;
+        }
+        grid
+    }
+
+    fn epoch_parent() -> FileEntry {
+        FileEntry {
+            name: "..".into(),
+            path: PathBuf::from(".."),
+            is_dir: true,
+            is_symlink: false,
+            is_exe: false,
+            size: 0,
+            modified: SystemTime::UNIX_EPOCH,
+            accessed: SystemTime::UNIX_EPOCH,
+            changed: SystemTime::UNIX_EPOCH,
+            permissions: 0,
+            owner: None,
+            group: None,
+            nlink: 1,
+            inode: 0,
+        }
+    }
+
+    #[test]
+    fn draw_panel_header_row_is_yellow_on_blue_not_selected_cyan() {
+        let mut app = App::new(Box::new(LocalFs::new()), KeyMap::mc_defaults()).unwrap();
+        app.active = PaneSide::Left;
+        app.left.listing = ListingFormat::Full;
+        app.right.listing = ListingFormat::Full;
+        app.left.entries = vec![epoch_parent()];
+        app.right.entries = vec![epoch_parent()];
+        app.left.cursor = 0;
+        app.right.cursor = 0;
+        app.panel_opts.show_mini_status = true;
+
+        let pal = McPalette::default();
+        assert_eq!((pal.header_fg, pal.header_bg), (Color::Yellow, Color::Blue));
+        assert_eq!(
+            (pal.selected_fg, pal.selected_bg),
+            (Color::Black, Color::Cyan)
+        );
+
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        super::draw_panel(&mut painter, 40, 0, 40, 12, false, &app, false, pal).unwrap();
+
+        let raw = String::from_utf8_lossy(&buf);
+        let idx = raw.find("Name").expect("Name in stream");
+        let around = &raw[idx.saturating_sub(24)..(idx + 8).min(raw.len())];
+        assert!(
+            around.contains("\x1b[93;44m"),
+            "header SGR before Name must be yellow;blue 93;44, not reset/cyan: {around:?}"
+        );
+        assert!(
+            !around.contains("\x1b[30;46m"),
+            "header must not use selected black;cyan: {around:?}"
+        );
+
+        let grid = rasterize(&buf, 80, 12);
+        // "Name" starts at x=1 on the header row (y=1) of the left panel.
+        let name: String = grid[1][1..5].iter().map(|c| c.ch).collect();
+        assert_eq!(name, "Name", "header label, got {:?}", {
+            grid[1].iter().map(|c| c.ch).collect::<String>()
+        });
+        for cell in &grid[1][1..5] {
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (Color::Yellow, Color::Blue),
+                "header 'Name' must be yellow;blue, not selected {:?}/{:?}",
+                pal.selected_fg,
+                pal.selected_bg
+            );
+            assert_ne!(cell.bg, pal.selected_bg, "header row must not be cyan");
+            assert_ne!(
+                cell.bg, pal.statusbar_bg,
+                "header row must not be statusbar"
+            );
+        }
+        // Rest of the left header inner row is filled header blue, not leftover cyan.
+        for cell in &grid[1][1..39] {
+            assert_eq!(
+                cell.bg,
+                Color::Blue,
+                "header row fill must be blue, got {:?} at {:?}",
+                cell.bg,
+                cell.ch
+            );
+        }
+
+        // Active path uses selected; inactive uses frame.
+        let top: String = grid[0].iter().map(|c| c.ch).collect();
+        assert!(top.contains('/'), "path caption on top frame: {top:?}");
+        let mut saw_active_path = false;
+        let mut saw_inactive_path = false;
+        for (x, cell) in grid[0].iter().enumerate() {
+            if cell.ch == '/' || cell.ch.is_ascii_alphanumeric() || cell.ch == '-' {
+                if x < 40 {
+                    if (cell.fg, cell.bg) == (Color::Black, Color::Cyan) {
+                        saw_active_path = true;
+                    }
+                } else if (cell.fg, cell.bg) == (pal.frame_fg, pal.frame_bg) {
+                    saw_inactive_path = true;
+                }
+            }
+        }
+        assert!(
+            saw_active_path,
+            "active path must use selected black;cyan on row 0: {top:?}"
+        );
+        assert!(
+            saw_inactive_path,
+            "inactive path must stay on the blue frame: {top:?}"
+        );
+
+        // Mini-status for `..` is UP--DIR, not epoch-zero perms.
+        let status: String = grid[10].iter().map(|c| c.ch).collect();
+        assert!(status.contains("UP--DIR"), "parent mini-status: {status:?}");
+        assert!(
+            !status.contains("d---------") && !status.contains("Jan"),
+            "parent mini-status must not be Unix-epoch zeros: {status:?}"
+        );
+    }
+
+    #[test]
+    fn menu_bar_is_white_on_cyan_until_f9_selects() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut painter = Painter { out: &mut buf };
+            super::draw_menu_bar(&mut painter, 40, pal, None, false);
+        }
+        let grid = rasterize(&buf, 40, 1);
+        let left: String = grid[0][0..6].iter().map(|c| c.ch).collect();
+        assert_eq!(left, " Left ");
+        for cell in &grid[0][0..6] {
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (Color::White, Color::Cyan),
+                "idle menu is white;cyan, not reverse menusel"
+            );
+            assert_ne!(cell.bg, Color::Black);
+        }
+        for cell in &grid[0] {
+            assert_eq!(
+                cell.bg,
+                Color::Cyan,
+                "menu bar fill is cyan, got {:?}",
+                cell
+            );
+        }
+
+        let mut sel = Vec::new();
+        {
+            let mut painter = Painter { out: &mut sel };
+            super::draw_menu_bar(&mut painter, 40, pal, Some(0), false);
+        }
+        let grid = rasterize(&sel, 40, 1);
+        for cell in &grid[0][0..6] {
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (Color::White, Color::Black),
+                "F9-selected Left is white;black"
+            );
+        }
+        assert_eq!(
+            grid[0][6].bg,
+            Color::Cyan,
+            "unselected rest stays menu cyan"
+        );
     }
 }
