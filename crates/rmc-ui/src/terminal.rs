@@ -1,8 +1,8 @@
-use crate::help::{HelpAction, apply_help_key, global_index};
+use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::mc_ext::user_extension_file_path;
 use crate::render::{
-    COMMAND_MENU_ITEMS, FILE_MENU_ITEMS, LEFT_RIGHT_MENU_ITEMS, Renderer, panel_fbar_labels,
-    viewer_menu_from_x,
+    panel_fbar_labels, viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS, FILE_MENU_ITEMS,
+    LEFT_RIGHT_MENU_ITEMS,
 };
 use anyhow::Result;
 use crossterm::event::{
@@ -11,11 +11,11 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use rmc_core::actions::{
-    Action, PaneSide, esc_digit_to_function_key, file_menu_shift_function_key,
-    keyevent_to_function_key,
+    esc_digit_to_function_key, file_menu_shift_function_key, keyevent_to_function_key, Action,
+    PaneSide,
 };
 use rmc_core::app::{
     App, ChmodDialogFocus, ChownDialogFocus, EditorGotoDialog, EditorGotoFocus, EditorMenu,
@@ -26,13 +26,13 @@ use rmc_core::app::{
     ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
 };
 use rmc_core::complete::{
-    CompletionItem, CompletionSources, classify_token, collect_matches, common_replacement_prefix,
-    filter_items, token_before_cursor,
+    classify_token, collect_matches, common_replacement_prefix, filter_items, token_before_cursor,
+    CompletionItem, CompletionSources,
 };
-use rmc_core::dirtree::{DIRECTORY_TREE_MAX_ENTRIES, DirectoryTreeState};
+use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
-    FindDialogFocus as FF, FindDialogState, FindTreePicker, find_dialog_height,
-    find_dialog_list_rows, find_tree_picker_list_rows,
+    find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, FindDialogFocus as FF,
+    FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::{compute_chrome_geom, dual_panel_rects, menu_bar_titles};
@@ -1500,7 +1500,7 @@ fn handle_learn_keys_dialog(app: &mut App, key: KeyEvent) -> Result<LearnKeysOut
 }
 
 fn learn_keys_move(selected: &mut usize, nkeys: usize, focus_save: &mut bool, dc: i32, dr: i32) {
-    use rmc_core::learn_keys::{COL_LENS, grid_col_row, grid_index};
+    use rmc_core::learn_keys::{grid_col_row, grid_index, COL_LENS};
     if *selected >= nkeys {
         if dr < 0 {
             let col = if *focus_save { 1 } else { 2 };
@@ -5962,8 +5962,8 @@ impl TerminalApp {
                 skip_zero_length,
             } => {
                 use rmc_core::app::{
-                    OverwriteFocus as OF, cycle_overwrite_focus, overwrite_tab_order,
-                    skip_zero_length_overwrite,
+                    cycle_overwrite_focus, overwrite_tab_order, skip_zero_length_overwrite,
+                    OverwriteFocus as OF,
                 };
                 let src_size = app.vfs.stat(src_path).map(|m| m.size).unwrap_or(0);
                 let dst_size = app.vfs.stat(dst_path).map(|m| m.size).unwrap_or(0);
@@ -11490,7 +11490,7 @@ mod file_op_abort_keys_tests {
 mod overwrite_dialog_tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rmc_core::app::{CopyMoveOp, OverwriteFocus, overwrite_tab_order};
+    use rmc_core::app::{overwrite_tab_order, CopyMoveOp, OverwriteFocus};
     use rmc_core::config::KeyMap;
     use rmc_fs::local::LocalFs;
     use std::time::{Duration, Instant};
@@ -18905,16 +18905,12 @@ mod screen_selector_tests {
         press(&mut app, KeyCode::F(4));
         assert_eq!(editor_name(&app), "b.txt");
         let labels = app.screen_list_labels();
-        assert!(
-            labels
-                .iter()
-                .any(|s| s.contains("Viewer") && s.contains("a.txt"))
-        );
-        assert!(
-            labels
-                .iter()
-                .any(|s| s.contains("Editor") && s.contains("b.txt"))
-        );
+        assert!(labels
+            .iter()
+            .any(|s| s.contains("Viewer") && s.contains("a.txt")));
+        assert!(labels
+            .iter()
+            .any(|s| s.contains("Editor") && s.contains("b.txt")));
         press_alt(&mut app, '{');
         assert_eq!(viewer_name(&app), "a.txt");
         press_alt(&mut app, '}');
@@ -20836,7 +20832,7 @@ mod listing_mode_dialog_tests {
         press(&mut app, KeyCode::Down); // RadioUser
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Down); // Input
-        // Clear the prefilled GNU-ish default and type a simple spec.
+                                        // Clear the prefilled GNU-ish default and type a simple spec.
         for _ in 0..original.len() + 4 {
             press(&mut app, KeyCode::Backspace);
         }
@@ -22015,7 +22011,7 @@ mod panel_quickview_info_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rmc_core::app::ListingModeFocus;
     use rmc_core::config::KeyMap;
-    use rmc_core::panel::{ListingFormat, PanelMode, format_byte_size};
+    use rmc_core::panel::{format_byte_size, ListingFormat, PanelMode};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -22405,7 +22401,7 @@ mod panel_tree_mode_tests {
     use rmc_core::app::ListingModeFocus;
     use rmc_core::config::KeyMap;
     use rmc_core::dirtree::{DirectoryTreeMode, DirectoryTreeState};
-    use rmc_core::panel::{ListingFormat, PanelMode, tree_panel_mini_status};
+    use rmc_core::panel::{tree_panel_mini_status, ListingFormat, PanelMode};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -25230,7 +25226,7 @@ mod panel_quick_search_tests {
     use rmc_core::actions::{Action, PaneSide, SortBy as SortByAction};
     use rmc_core::app::{App, UiMode};
     use rmc_core::config::KeyMap;
-    use rmc_core::panel::{SortBy, panel_mini_status_line};
+    use rmc_core::panel::{panel_mini_status_line, SortBy};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -25830,11 +25826,10 @@ mod panel_toggle_mark_tests {
         let mut app = make_app(&root);
         app.panel_opts.mark_moves_down = false;
         goto_name(&mut app, "subdir");
-        assert!(
-            app.active_panel()
-                .current_entry()
-                .is_some_and(|e| e.is_dir && !e.is_parent_marker())
-        );
+        assert!(app
+            .active_panel()
+            .current_entry()
+            .is_some_and(|e| e.is_dir && !e.is_parent_marker()));
         press(&mut app, KeyCode::Insert);
         assert_eq!(selected_names(&app), vec!["subdir".to_string()]);
         press_ctrl(&mut app, 't');
@@ -27220,7 +27215,7 @@ mod listing_format_cycle_tests {
     use rmc_core::actions::{Action, PaneSide};
     use rmc_core::app::{App, UiMode};
     use rmc_core::config::KeyMap;
-    use rmc_core::panel::{DEFAULT_USER_LISTING_FORMAT, ListingFormat};
+    use rmc_core::panel::{ListingFormat, DEFAULT_USER_LISTING_FORMAT};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -27471,7 +27466,7 @@ mod panel_listing_movement_tests {
     use rmc_core::actions::{Action, PaneSide};
     use rmc_core::app::{App, UiMode};
     use rmc_core::config::KeyMap;
-    use rmc_core::panel::{ListingFormat, PanelMode, listing_page_capacity};
+    use rmc_core::panel::{listing_page_capacity, ListingFormat, PanelMode};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -28762,12 +28757,10 @@ mod copy_mask_dialog_tests {
         wait_file_op(&mut app);
         wait_jobs_done(&app);
         let dst = right.join("link");
-        assert!(
-            std::fs::symlink_metadata(&dst)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+        assert!(std::fs::symlink_metadata(&dst)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let stored = std::fs::read_link(&dst).unwrap();
         assert_ne!(
             stored,
@@ -28807,12 +28800,10 @@ mod copy_mask_dialog_tests {
         assert!(matches!(app.ui_mode, UiMode::Normal));
         wait_jobs_done(&app);
         let dst = right.join("thelink");
-        assert!(
-            std::fs::symlink_metadata(&dst)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+        assert!(std::fs::symlink_metadata(&dst)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -29044,8 +29035,8 @@ mod jobs_dialog_stop_restart_kill_tests {
     use rmc_core::app::{App, JobsDialogFocus, UiMode};
     use rmc_core::config::KeyMap;
     use rmc_core::jobs::JobStatus;
-    use rmc_fs::CopyFlags;
     use rmc_fs::local::LocalFs;
+    use rmc_fs::CopyFlags;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
