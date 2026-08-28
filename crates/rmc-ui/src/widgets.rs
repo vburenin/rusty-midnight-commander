@@ -167,4 +167,28 @@ mod tests {
         }
         assert_eq!(String::from_utf8_lossy(&hot), "\x1b[93;40m");
     }
+
+    #[test]
+    fn set_fg_bg_editor_pairs() {
+        let mut normal = Vec::new();
+        {
+            let mut p = Painter { out: &mut normal };
+            p.set_fg_bg(Color::Grey, Color::Blue);
+        }
+        assert_eq!(String::from_utf8_lossy(&normal), "\x1b[37;44m");
+        let mut bold = Vec::new();
+        {
+            let mut p = Painter { out: &mut bold };
+            p.set_fg_bg(Color::Yellow, Color::Green);
+        }
+        assert_eq!(String::from_utf8_lossy(&bold), "\x1b[93;102m");
+        let mut marked = Vec::new();
+        {
+            let mut p = Painter { out: &mut marked };
+            p.set_fg_bg(Color::Black, Color::Cyan);
+        }
+        assert_eq!(String::from_utf8_lossy(&marked), "\x1b[30;46m");
+        assert_ne!(ansi_sgr_bg(Color::Green), ansi_sgr_bg(Color::Blue));
+        assert_ne!(ansi_sgr_bg(Color::Cyan), ansi_sgr_bg(Color::Blue));
+    }
 }

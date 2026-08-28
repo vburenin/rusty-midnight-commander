@@ -57,11 +57,13 @@ pub struct McPalette {
     pub viewer_default_bg: Color,
     pub viewer_selected_fg: Color,
     pub viewer_selected_bg: Color,
-    /// Editor pairs from public default.ini `[editor]`.
+    /// Editor default (public GNU `[editor] _default_=lightgray;blue`).
     pub edit_normal_fg: Color,
     pub edit_normal_bg: Color,
+    /// Keyword/emphasis pair (public GNU `editbold=yellow;green`).
     pub edit_bold_fg: Color,
     pub edit_bold_bg: Color,
+    /// Block selection (public GNU `editmarked=black;cyan`; not panel `marked`).
     pub edit_marked_fg: Color,
     pub edit_marked_bg: Color,
     pub edit_whitespace_fg: Color,
