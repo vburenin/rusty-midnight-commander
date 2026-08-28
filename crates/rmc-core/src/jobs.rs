@@ -439,7 +439,7 @@ fn run_one_job(job_arc: &Arc<Mutex<JobEntry>>) {
         // Preallocate / COW flags are no-ops on non-local VFS.
         let vfs = CompositeFs::new();
         match kind {
-            JobKind::Copy => vfs_copy_tree(&vfs, job_arc, &src, &dst, &cancel_flag, &mut 0),
+            JobKind::Copy => vfs_copy_tree(&vfs, job_arc, &src, &dst, &mut 0),
             JobKind::Move => vfs_move(&vfs, &src, &dst, &cancel_flag),
         }
     } else {
@@ -768,7 +768,6 @@ fn vfs_copy_tree(
     job_arc: &Arc<Mutex<JobEntry>>,
     src: &Path,
     dst: &Path,
-    cancel_flag: &AtomicBool,
     overall: &mut u64,
 ) -> io::Result<()> {
     if wait_if_paused(job_arc) {
@@ -791,14 +790,7 @@ fn vfs_copy_tree(
                 if wait_if_paused(job_arc) {
                     return Ok(());
                 }
-                vfs_copy_tree(
-                    vfs,
-                    job_arc,
-                    &entry.path,
-                    &dst.join(&entry.name),
-                    cancel_flag,
-                    overall,
-                )?;
+                vfs_copy_tree(vfs, job_arc, &entry.path, &dst.join(&entry.name), overall)?;
             }
             Ok(())
         }
@@ -1427,7 +1419,7 @@ mod tests {
         File::create(&tiny).unwrap().write_all(b"x").unwrap();
         // Kill the stopped job so the worker can run a tiny copy.
         assert!(queue.kill(id));
-        let id_done = queue.spawn_copy_with_flags(&tiny, &dir.path().join("t.out"), no_cow());
+        let id_done = queue.spawn_copy_with_flags(&tiny, dir.path().join("t.out"), no_cow());
         let _ = wait_for_status(&queue, id_done, JobStatus::is_finished, 5_000);
         queue.drop_finished_jobs();
         assert!(queue.get(id_done).is_none());
