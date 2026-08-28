@@ -8740,4 +8740,121 @@ mod gnu_default_chrome_colors_tests {
             (Color::White, Color::Cyan)
         );
     }
+
+    fn paint_editor(pal: McPalette, buf: &rmc_edit::EditorBuffer, cols: u16, rows: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut p = Painter { out: &mut out };
+            super::draw_editor(
+                &mut p, cols, rows, pal, buf, None, None, None, None, None, None, None, None, None,
+                None, false,
+            );
+        }
+        out
+    }
+
+    #[test]
+    fn editor_chrome_is_lightgray_on_blue_editbold_yellow_green_editmarked_black_cyan() {
+        let pal = McPalette::default();
+        assert_eq!(
+            (pal.edit_normal_fg, pal.edit_normal_bg),
+            (Color::Grey, Color::Blue)
+        );
+        assert_eq!(
+            (pal.edit_bold_fg, pal.edit_bold_bg),
+            (Color::Yellow, Color::Green)
+        );
+        assert_eq!(
+            (pal.edit_marked_fg, pal.edit_marked_bg),
+            (Color::Black, Color::Cyan)
+        );
+        assert_ne!(
+            pal.edit_marked_bg, pal.marked_bg,
+            "editmarked is not panel marked yellow;blue"
+        );
+
+        let mut buf = rmc_edit::EditorBuffer::from_bytes(b"fn hello", Some(PathBuf::from("a.rs")));
+        // Cursor past the identifier so invert does not cover tokens.
+        buf.col = 8;
+        let out = paint_editor(pal, &buf, 40, 10);
+        let raw = String::from_utf8_lossy(&out);
+        assert!(
+            raw.contains("\x1b[37;44m"),
+            "editor default is lightgray;blue 37;44: {raw:?}"
+        );
+        assert!(
+            raw.contains("\x1b[93;102m"),
+            "editbold is yellow;green 93;102: {raw:?}"
+        );
+
+        let grid = rasterize(&out, 40, 10);
+        let (fx, fy) = find_text(&grid, "fn");
+        assert_eq!(fy, 1, "content starts under the menu bar");
+        assert_span(&grid, fx, fy, "fn", Color::Yellow, Color::Green);
+        let (hx, hy) = find_text(&grid, "hello");
+        assert_eq!(hy, fy);
+        assert_span(&grid, hx, hy, "hello", Color::Grey, Color::Blue);
+        assert_eq!(
+            (grid[fy][20].fg, grid[fy][20].bg),
+            (Color::Grey, Color::Blue),
+            "content padding stays editor default, not leftover panel cyan"
+        );
+        assert_ne!(grid[fy][20].bg, pal.selected_bg);
+
+        buf.col = 0;
+        buf.mark_start();
+        buf.col = 2;
+        buf.mark_end();
+        buf.col = 8;
+        let out = paint_editor(pal, &buf, 40, 10);
+        let raw = String::from_utf8_lossy(&out);
+        assert!(
+            raw.contains("\x1b[30;46m"),
+            "editmarked is black;cyan 30;46: {raw:?}"
+        );
+        let grid = rasterize(&out, 40, 10);
+        let (fx, fy) = find_text(&grid, "fn");
+        assert_span(&grid, fx, fy, "fn", Color::Black, Color::Cyan);
+        let (hx, hy) = find_text(&grid, "hello");
+        assert_span(&grid, hx, hy, "hello", Color::Grey, Color::Blue);
+        assert_ne!(
+            (grid[fy][fx].fg, grid[fy][fx].bg),
+            (pal.edit_bold_fg, pal.edit_bold_bg),
+            "selection wins over editbold"
+        );
+    }
+
+    #[test]
+    fn editor_pairs_come_from_skin_not_core_or_panel_selected() {
+        let mut pal = McPalette::default();
+        pal.edit_normal_fg = Color::White;
+        pal.edit_normal_bg = Color::Red;
+        pal.edit_bold_fg = Color::Black;
+        pal.edit_bold_bg = Color::Yellow;
+        pal.edit_marked_fg = Color::Green;
+        pal.edit_marked_bg = Color::Magenta;
+
+        let mut buf = rmc_edit::EditorBuffer::from_bytes(b"fn hello", Some(PathBuf::from("a.rs")));
+        buf.col = 8;
+        let grid = rasterize(&paint_editor(pal, &buf, 40, 10), 40, 10);
+        let (fx, fy) = find_text(&grid, "fn");
+        assert_span(&grid, fx, fy, "fn", Color::Black, Color::Yellow);
+        let (hx, hy) = find_text(&grid, "hello");
+        assert_span(&grid, hx, hy, "hello", Color::White, Color::Red);
+        assert_ne!(
+            grid[hy][hx].bg, pal.core_default_bg,
+            "plain text must not fall back to core lightgray;blue"
+        );
+        assert_ne!(grid[fy][fx].bg, pal.selected_bg);
+
+        buf.col = 0;
+        buf.mark_start();
+        buf.col = 2;
+        buf.mark_end();
+        buf.col = 8;
+        let grid = rasterize(&paint_editor(pal, &buf, 40, 10), 40, 10);
+        let (fx, fy) = find_text(&grid, "fn");
+        assert_span(&grid, fx, fy, "fn", Color::Green, Color::Magenta);
+        assert_ne!(grid[fy][fx].bg, pal.marked_bg);
+    }
 }

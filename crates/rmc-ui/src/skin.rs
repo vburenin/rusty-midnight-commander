@@ -713,6 +713,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_editor_pairs() {
+        let pal = parse_skin(
+            "[editor]\n\
+             _default_ = lightgray;blue\n\
+             editbold = yellow;green\n\
+             editmarked = black;cyan\n",
+        )
+        .expect("parse editor pairs");
+        assert_eq!(pal.edit_normal_fg, Color::Grey);
+        assert_eq!(pal.edit_normal_bg, Color::Blue);
+        assert_eq!(pal.edit_bold_fg, Color::Yellow);
+        assert_eq!(pal.edit_bold_bg, Color::Green);
+        assert_eq!(pal.edit_marked_fg, Color::Black);
+        assert_eq!(pal.edit_marked_bg, Color::Cyan);
+        assert_ne!(
+            pal.edit_marked_bg, pal.marked_bg,
+            "editmarked is not panel marked yellow;blue"
+        );
+        assert_ne!(
+            (pal.edit_bold_fg, pal.edit_bold_bg),
+            (pal.edit_normal_fg, pal.edit_normal_bg)
+        );
+
+        let alias = parse_skin("[editor]\neditnormal = white;red\n").expect("editnormal alias");
+        assert_eq!(alias.edit_normal_fg, Color::White);
+        assert_eq!(alias.edit_normal_bg, Color::Red);
+    }
+
+    #[test]
     fn parse_error_and_menuhotsel_pairs() {
         let pal = parse_skin(
             "[menu]\n\
