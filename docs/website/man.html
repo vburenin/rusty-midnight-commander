@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Manual pages — mcr</title>
+  <meta name="description" content="Original Apache-2.0 mcr, mcr-edit, mcr-view, and mcr-diff manuals.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="index.html"><span class="mark">mcr</span> rusty-midnight-commander</a>
+      <nav>
+        <a href="index.html">Overview</a>
+        <a href="install.html">Install</a>
+        <a href="features.html">Features</a>
+        <a href="man.html" aria-current="page">Manuals</a>
+      </nav>
+    </header>
+    <main id="main">
+      <h1>Manual pages</h1>
+      <p class="lede">These are original Apache-2.0 short manuals for the <em>shipped</em> CLI. They are not copies of GNU <code>mc(1)</code>, <code>mcedit(1)</code>, <code>mcview(1)</code>, or <code>mcdiff(1)</code>.</p>
+
+      <table>
+        <thead>
+          <tr><th>Page</th><th>Covers</th><th>Start as</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="../man/mcr.1"><code>mcr(1)</code></a></td>
+            <td>Dual-pane file manager, flags, archive browse + copy-out</td>
+            <td><code>mcr</code></td>
+          </tr>
+          <tr>
+            <td><a href="../man/mcr-edit.1"><code>mcr-edit(1)</code></a></td>
+            <td>Internal editor keys (mcedit equivalent)</td>
+            <td><code>mcr --edit</code> / F4</td>
+          </tr>
+          <tr>
+            <td><a href="../man/mcr-view.1"><code>mcr-view(1)</code></a></td>
+            <td>Internal viewer keys (mcview equivalent)</td>
+            <td><code>mcr --view FILE</code> / F3</td>
+          </tr>
+          <tr>
+            <td><a href="../man/mcr-diff.1"><code>mcr-diff(1)</code></a></td>
+            <td>Side-by-side diff keys (mcdiff equivalent)</td>
+            <td><code>mcr --diff FILE1 FILE2</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Read them in a terminal</h2>
+<pre><code>man -l docs/man/mcr.1
+man -l docs/man/mcr-edit.1
+man -l docs/man/mcr-view.1
+man -l docs/man/mcr-diff.1</code></pre>
+      <p>After installing into <code>man1</code> (see <a href="install.html">Install</a>): <code>man mcr</code>, <code>man mcr-edit</code>, <code>man mcr-view</code>, <code>man mcr-diff</code>. <code>mcr --help</code> prints the same access hints. F1 inside the TUI is a separate hypertext help tree under <code>data/help/</code>.</p>
+
+      <h2>Groff sources in the tree</h2>
+      <ul class="plain">
+        <li><a href="../man/mcr.1"><code>docs/man/mcr.1</code></a></li>
+        <li><a href="../man/mcr-edit.1"><code>docs/man/mcr-edit.1</code></a></li>
+        <li><a href="../man/mcr-view.1"><code>docs/man/mcr-view.1</code></a></li>
+        <li><a href="../man/mcr-diff.1"><code>docs/man/mcr-diff.1</code></a></li>
+      </ul>
+      <p class="note">On GitHub those links open the groff source as text. They are the manuals this project ships; the HTML you are reading only indexes them.</p>
+    </main>
+    <footer>
+      <p>Original Apache-2.0 project website docs — not a copy of the GNU Midnight Commander website or GPL manuals.</p>
+      <p><a href="index.html">Overview</a> · <a href="../PARITY.md">Parity checklist</a> · <a href="https://github.com/vburenin/rusty-midnight-commander">Source</a></p>
+    </footer>
+  </div>
+</body>
+</html>

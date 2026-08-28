@@ -27,6 +27,7 @@ Manuals (original Apache-2.0 text, not GNU GPL man pages):
   man mcr-view
   man mcr-diff
 From a source checkout:  man -l docs/man/mcr.1
+Website (HTML, not the GNU mc site):  docs/website/index.html
 ";
 
 fn wants_help(args: &[String]) -> bool {
@@ -68,5 +69,6 @@ mod tests {
         assert!(USAGE.contains("man mcr-view"));
         assert!(USAGE.contains("man mcr-diff"));
         assert!(USAGE.contains("man -l docs/man/mcr.1"));
+        assert!(USAGE.contains("docs/website/index.html"));
     }
 }

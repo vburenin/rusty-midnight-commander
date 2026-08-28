@@ -233,7 +233,7 @@ Per mc(1) “Configuration”, “Skins”, “Redefine hotkey bindings”, “U
 From mc(1):
 - [x] Built-in hypertext help (F1) context-sensitive
 - [x] Online manpages: mc, mcedit, mcview, mcdiff equivalents as `mcr`(1), `mcr-edit`(1), `mcr-view`(1), `mcr-diff`(1) — original Apache-2.0 text covering the shipped CLI (`man mcr` / `man -l docs/man/mcr.1`; see README). Not verbatim GNU GPL man pages.
-- [ ] Project website docs
+- [x] Project website docs — original Apache-2.0 HTML/Markdown under `docs/website/` (what `mcr` is, install/build, high-level feature map vs mc(1), links to `docs/man/`). Not a copy of the GNU mc website or GPL manuals. README and `mcr --help` point here. GitHub Pages can publish `/docs` (`docs/index.html` redirects to `website/`).
 
 ---
 

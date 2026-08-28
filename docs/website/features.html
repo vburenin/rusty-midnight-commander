@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Feature map vs mc(1) — mcr</title>
+  <meta name="description" content="High-level map of rusty-midnight-commander features versus GNU Midnight Commander, limited to what mcr currently ships.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="index.html"><span class="mark">mcr</span> rusty-midnight-commander</a>
+      <nav>
+        <a href="index.html">Overview</a>
+        <a href="install.html">Install</a>
+        <a href="features.html" aria-current="page">Features</a>
+        <a href="man.html">Manuals</a>
+      </nav>
+    </header>
+    <main id="main">
+      <h1>Feature map vs GNU mc(1)</h1>
+      <p class="lede">High-level only. Names below are the public GNU manuals this project tracks; they are separate GPL works and are not shipped here. Tick-level detail lives in <a href="../PARITY.md"><code>docs/PARITY.md</code></a>.</p>
+
+      <h2>Shipped in current <code>mcr</code></h2>
+      <table>
+        <thead>
+          <tr><th>Area</th><th>GNU reference</th><th>What <code>mcr</code> does</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Dual-pane chrome</td>
+            <td>mc(1) overview / panels</td>
+            <td>Menu bar, two panels, mini-status (including symlink targets), hint line, command line, F-key bar, horizontal or vertical split, Ctrl-L repaint</td>
+          </tr>
+          <tr>
+            <td>Listings</td>
+            <td>mc(1) listing format / sort / filter</td>
+            <td>Full, Brief, Long, user-defined fields; sort; filter; hidden files; mouse; <code>-d</code>/<code>--nomouse</code></td>
+          </tr>
+          <tr>
+            <td>File ops</td>
+            <td>mc(1) File menu</td>
+            <td>Copy, rename/move, mkdir, delete (F5/F6/F7/F8 go through VFS), chmod/chown, links, overwrite dialog, background jobs, progress totals</td>
+          </tr>
+          <tr>
+            <td>Viewer</td>
+            <td>mcview(1)</td>
+            <td>F3 or <code>mcr --view</code>: text/hex, wrap, search, filters — not <code>$PAGER</code> for <code>--view</code></td>
+          </tr>
+          <tr>
+            <td>Editor</td>
+            <td>mcedit(1)</td>
+            <td>F4 or <code>mcr --edit</code>: buffers, search/replace, syntax, macros, F9 menu</td>
+          </tr>
+          <tr>
+            <td>Diff</td>
+            <td>mcdiff(1)</td>
+            <td>Panel pair or <code>mcr --diff file1 file2</code>: hunks, merge, swap, in-place edit</td>
+          </tr>
+          <tr>
+            <td>Find / tree / panelize</td>
+            <td>mc(1) Find File, tree, External panelize</td>
+            <td>Find File dialog, directory-tree figure, Ctrl-X ! panelize</td>
+          </tr>
+          <tr>
+            <td>VFS (local + archives)</td>
+            <td>mc(1) Virtual File System</td>
+            <td>Enter to browse; <code>..</code> leaves; copy-out to local. tar, tar.gz/tgz, zip, cpio, ar, rpm, deb, iso, rar, 7z, lha/lzh and extfs stay browse+extract — create/delete/copy-in is refused with a GNU-class “Cannot … / Read-only file system” error</td>
+          </tr>
+          <tr>
+            <td>VFS (remote)</td>
+            <td>mc(1) ftpfs / sftpfs / fish</td>
+            <td><code>ftp://</code> / <code>/#ftp:</code>, SFTP, and fish: browse, stat, copy-out, and copy-in / mkdir / rename / delete when the server allows</td>
+          </tr>
+          <tr>
+            <td>Subshell</td>
+            <td>mc(1) subshell</td>
+            <td>Ctrl-O PTY; <code>-U</code>/<code>-u</code>; <code>SHELL</code> selects the shell</td>
+          </tr>
+          <tr>
+            <td>Config</td>
+            <td>mc(1) Configuration</td>
+            <td>Compiled defaults, then system <code>mc.ini</code> (<code>/etc/mc/mc.ini</code> else <code>$MC_DATADIR</code> or <code>/usr/share/mc</code>), then user <code>~/.config/mc/ini</code> (<code>MC_PROFILE_ROOT</code> / <code>XDG_CONFIG_HOME</code> / <code>MCR_CONFIG_DIR</code>). Save setup and Auto save setup write the user ini without clobbering unknown keys</td>
+          </tr>
+          <tr>
+            <td>Skins / keys / menus</td>
+            <td>mc(1) Skins, keymap, user menu, hotlist</td>
+            <td><code>-S</code> / <code>MC_SKIN</code>, <code>mc.keymap</code>, Learn keys, F2 user menu, extension file, directory hotlist</td>
+          </tr>
+          <tr>
+            <td>Help</td>
+            <td>mc(1) Help</td>
+            <td>F1 hypertext help; original man pages under <a href="man.html"><code>docs/man/</code></a></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Not claimed (unchecked or out of scope)</h2>
+      <p>Do not treat these as done because GNU <code>mc</code> has them:</p>
+      <ul class="plain">
+        <li><strong>Zoo archives</strong> — no Apache-2.0/MIT decoder in this tree; browse is not implemented. The PARITY.md zoo checkbox stays unchecked on purpose.</li>
+      </ul>
+      <p class="note">Anything still unchecked in <a href="../PARITY.md">PARITY.md</a> is unfinished, even if GNU Midnight Commander already does it. Archive write is <em>claimed as refused</em> (read-only), not as missing: tar/zip/cpio/ar/rpm/lha/rar/deb/iso/7z and extfs stay browse+extract.</p>
+    </main>
+    <footer>
+      <p>Original Apache-2.0 project website docs — not a copy of the GNU Midnight Commander website or GPL manuals.</p>
+      <p><a href="index.html">Overview</a> · <a href="../PARITY.md">Parity checklist</a> · <a href="https://github.com/vburenin/rusty-midnight-commander">Source</a></p>
+    </footer>
+  </div>
+</body>
+</html>
