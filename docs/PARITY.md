@@ -52,7 +52,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [x] Full listing `type` prefixes in the name column: `*` `/` `@` `=` `-` `+` `|` `~` `!` (mc(1) type token)
 - [x] Default Full listing `size` is raw bytes (e.g. 72688); directories show inode size (typically 4096); only `..` is `UP--DIR`. Options → Panels → Use SI size units still abbreviates
 - [x] Parent `..` mtime is the real parent directory mtime (not Unix epoch `Jan  1 00:00`)
-- [ ] User-defined fields: name, size/bsize, type marks (* / @ = - + | ~ !), mark, mtime/atime/ctime, perm, mode, nlink, owner/group (name/num), inode, etc.
+- [x] User-defined fields: name, size/bsize, type marks (* / @ = - + | ~ !), mark, mtime/atime/ctime, perm, mode, nlink, owner/group (name/num), inode, etc.
 - [x] Panel modes: Quick view, Info, Tree, Panelize (results)
   - [x] Quick view
   - [x] Info

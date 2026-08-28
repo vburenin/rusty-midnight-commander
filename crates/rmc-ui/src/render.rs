@@ -4219,6 +4219,7 @@ fn draw_panel(
                         &user_tokens,
                         (w - 2) as usize,
                         app.panel_opts.kilobyte_si,
+                        selected,
                     );
                     line = truncate(&line, (w - 2) as usize);
                     p.goto(x + 1, row_y);
@@ -7355,6 +7356,8 @@ mod gnu_default_chrome_colors_tests {
             group: None,
             nlink: 1,
             inode: 0,
+            uid: 0,
+            gid: 0,
             is_stale_symlink: false,
         }
     }
@@ -7487,6 +7490,8 @@ mod gnu_default_chrome_colors_tests {
             group: Some("staff".into()),
             nlink: 1,
             inode: 0,
+            uid: 0,
+            gid: 0,
             is_stale_symlink: false,
         }
     }
@@ -7629,6 +7634,8 @@ mod gnu_default_chrome_colors_tests {
             group: None,
             nlink: 1,
             inode: 0,
+            uid: 0,
+            gid: 0,
             is_stale_symlink: false,
         }
     }

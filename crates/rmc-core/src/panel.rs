@@ -108,17 +108,30 @@ pub fn brief_column_at_x(inner_x: u16, per_col_width: u16, columns: u8) -> usize
     (col as usize).min(n.saturating_sub(1))
 }
 
-/// GNU-ish subset of mc user-defined listing format tokens.
+/// GNU mc(1) user-defined listing format tokens (public manpage names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserFormatToken {
     Name,
     Size,
+    /// Directory placeholder size: `SUB-DIR` / `UP--DIR` (files use [`Size`]).
+    Bsize,
     Perm,
+    /// Octal permission bits (`mode` in mc(1); not the `perm` rwx string).
+    Mode,
     Type,
+    /// `*` when the file is tagged, space otherwise.
+    Mark,
     Mtime,
+    Atime,
+    Ctime,
     Nlink,
     Owner,
     Group,
+    /// Numeric uid (`nuid`).
+    Nuid,
+    /// Numeric gid (`ngid`).
+    Ngid,
+    Inode,
     /// `|` in the format string: a literal column gap.
     Gap,
 }
@@ -147,6 +160,12 @@ pub struct FileEntry {
     pub nlink: u64,
     /// Filesystem inode (`st_ino`). Archives and remote use 0.
     pub inode: u64,
+    /// Unix uid (`st_uid`) for user-format `nuid`. Archives and remote use 0.
+    #[serde(default)]
+    pub uid: u32,
+    /// Unix gid (`st_gid`) for user-format `ngid`. Archives and remote use 0.
+    #[serde(default)]
+    pub gid: u32,
     /// GNU mc(1) `type` `!`: symlink whose target does not exist.
     #[serde(default)]
     pub is_stale_symlink: bool,
@@ -588,11 +607,12 @@ impl PanelState {
     }
 }
 
-/// Parse a GNU-ish user listing format string.
+/// Parse a GNU mc(1) user listing format string.
 ///
 /// Tokens are case-insensitive and space-separated. `|` is a column gap.
-/// Unknown tokens (including `half` / `full` panel-size specifiers) are ignored.
-/// An optional `:width` suffix (e.g. `size:7`) is stripped so the field still matches.
+/// Unknown tokens and layout specifiers (`half` / `full` / `space` / `1`–`9`)
+/// are ignored. An optional `:width` suffix (e.g. `size:7`) is stripped so the
+/// field still matches.
 pub fn parse_user_listing_format(fmt: &str) -> Vec<UserFormatToken> {
     let mut out = Vec::new();
     for raw in fmt.split_whitespace() {
@@ -623,12 +643,20 @@ fn classify_user_token(raw: &str) -> Option<UserFormatToken> {
     match key.to_ascii_lowercase().as_str() {
         "name" => Some(UserFormatToken::Name),
         "size" => Some(UserFormatToken::Size),
-        "perm" | "mode" => Some(UserFormatToken::Perm),
+        "bsize" => Some(UserFormatToken::Bsize),
+        "perm" => Some(UserFormatToken::Perm),
+        "mode" => Some(UserFormatToken::Mode),
         "type" => Some(UserFormatToken::Type),
+        "mark" => Some(UserFormatToken::Mark),
         "mtime" | "time" => Some(UserFormatToken::Mtime),
+        "atime" => Some(UserFormatToken::Atime),
+        "ctime" => Some(UserFormatToken::Ctime),
         "nlink" => Some(UserFormatToken::Nlink),
         "owner" => Some(UserFormatToken::Owner),
         "group" => Some(UserFormatToken::Group),
+        "nuid" => Some(UserFormatToken::Nuid),
+        "ngid" => Some(UserFormatToken::Ngid),
+        "inode" => Some(UserFormatToken::Inode),
         "|" => Some(UserFormatToken::Gap),
         _ => None,
     }
@@ -637,13 +665,14 @@ fn classify_user_token(raw: &str) -> Option<UserFormatToken> {
 fn user_token_width(tok: UserFormatToken) -> usize {
     match tok {
         UserFormatToken::Name => 0,
-        UserFormatToken::Size => 8,
+        UserFormatToken::Size | UserFormatToken::Bsize => 8,
         UserFormatToken::Perm => 10,
-        UserFormatToken::Type => 1,
-        UserFormatToken::Mtime => 12,
+        UserFormatToken::Mode => 4,
+        UserFormatToken::Type | UserFormatToken::Mark => 1,
+        UserFormatToken::Mtime | UserFormatToken::Atime | UserFormatToken::Ctime => 12,
         UserFormatToken::Nlink => 4,
-        UserFormatToken::Owner => 8,
-        UserFormatToken::Group => 8,
+        UserFormatToken::Owner | UserFormatToken::Group => 8,
+        UserFormatToken::Nuid | UserFormatToken::Ngid | UserFormatToken::Inode => 7,
         UserFormatToken::Gap => 1,
     }
 }
@@ -927,21 +956,37 @@ pub fn tree_panel_mini_status(
 }
 
 fn user_size_string(ent: &FileEntry, si: bool) -> String {
-    if ent.name == ".." {
+    if ent.is_parent_marker() {
         "UP--DIR".to_string()
-    } else if ent.is_dir {
-        String::new()
     } else {
         format_byte_size(ent.size, si)
     }
 }
 
-fn user_mtime_string(ent: &FileEntry) -> String {
-    let dt: time::OffsetDateTime = ent.modified.into();
+fn user_bsize_string(ent: &FileEntry, si: bool) -> String {
+    if ent.is_parent_marker() {
+        "UP--DIR".to_string()
+    } else if ent.is_dir {
+        "SUB-DIR".to_string()
+    } else {
+        format_byte_size(ent.size, si)
+    }
+}
+
+fn user_mode_string(permissions: u32) -> String {
+    format!("{:04o}", permissions & 0o7777)
+}
+
+fn format_listing_time(ts: SystemTime) -> String {
+    let dt: time::OffsetDateTime = ts.into();
     dt.format(&time::macros::format_description!(
         "[month repr:short] [day padding:space] [hour]:[minute]"
     ))
     .unwrap_or_default()
+}
+
+fn user_mtime_string(ent: &FileEntry) -> String {
+    format_listing_time(ent.modified)
 }
 
 fn name_column_width(tokens: &[UserFormatToken], width: usize) -> usize {
@@ -962,6 +1007,7 @@ fn render_user_token(
     ent: Option<&FileEntry>,
     name_width: usize,
     si: bool,
+    marked: bool,
 ) -> String {
     match tok {
         UserFormatToken::Name => {
@@ -979,17 +1025,47 @@ fn render_user_token(
                 fit_right(&s, 8)
             }
         }
+        UserFormatToken::Bsize => {
+            let s = match ent {
+                Some(e) => user_bsize_string(e, si),
+                None => "Size".to_string(),
+            };
+            if ent.is_none() {
+                fit_left(&s, 8)
+            } else {
+                fit_right(&s, 8)
+            }
+        }
         UserFormatToken::Perm => match ent {
             Some(e) => user_perm_string(e.permissions, e.is_dir),
             None => fit_left("Perm", 10),
+        },
+        UserFormatToken::Mode => match ent {
+            Some(e) => user_mode_string(e.permissions),
+            None => fit_left("Mode", 4),
         },
         UserFormatToken::Type => match ent {
             Some(e) => listing_type_char(e).to_string(),
             None => " ".to_string(),
         },
+        UserFormatToken::Mark => {
+            if ent.is_some() && marked {
+                "*".to_string()
+            } else {
+                " ".to_string()
+            }
+        }
         UserFormatToken::Mtime => match ent {
-            Some(e) => fit_left(&user_mtime_string(e), 12),
+            Some(e) => fit_left(&format_listing_time(e.modified), 12),
             None => fit_left("Modify time", 12),
+        },
+        UserFormatToken::Atime => match ent {
+            Some(e) => fit_left(&format_listing_time(e.accessed), 12),
+            None => fit_left("Access time", 12),
+        },
+        UserFormatToken::Ctime => match ent {
+            Some(e) => fit_left(&format_listing_time(e.changed), 12),
+            None => fit_left("Change time", 12),
         },
         UserFormatToken::Nlink => match ent {
             Some(e) => fit_right(&e.nlink.to_string(), 4),
@@ -1017,6 +1093,18 @@ fn render_user_token(
                 fit_right(s, 8)
             }
         }
+        UserFormatToken::Nuid => match ent {
+            Some(e) => fit_right(&e.uid.to_string(), 7),
+            None => fit_left("UID", 7),
+        },
+        UserFormatToken::Ngid => match ent {
+            Some(e) => fit_right(&e.gid.to_string(), 7),
+            None => fit_left("GID", 7),
+        },
+        UserFormatToken::Inode => match ent {
+            Some(e) => fit_right(&e.inode.to_string(), 7),
+            None => fit_left("Inode", 7),
+        },
         UserFormatToken::Gap => "|".to_string(),
     }
 }
@@ -1026,6 +1114,7 @@ fn join_user_parts(
     width: usize,
     ent: Option<&FileEntry>,
     si: bool,
+    marked: bool,
 ) -> String {
     if tokens.is_empty() {
         return String::new();
@@ -1033,7 +1122,7 @@ fn join_user_parts(
     let name_width = name_column_width(tokens, width);
     let parts: Vec<String> = tokens
         .iter()
-        .map(|t| render_user_token(*t, ent, name_width, si))
+        .map(|t| render_user_token(*t, ent, name_width, si, marked))
         .collect();
     let line = parts.join(" ");
     let n = line.chars().count();
@@ -1049,18 +1138,20 @@ fn join_user_parts(
 
 /// Render one user-format listing row, truncated to `width`.
 /// `si` selects SI (1000: B/kB/MB/…) size units vs 1024-based (K/M/G).
+/// `marked` is the GNU `mark` token (`*` if tagged).
 pub fn format_user_listing_line(
     ent: &FileEntry,
     tokens: &[UserFormatToken],
     width: usize,
     si: bool,
+    marked: bool,
 ) -> String {
-    join_user_parts(tokens, width, Some(ent), si)
+    join_user_parts(tokens, width, Some(ent), si, marked)
 }
 
 /// Column header for a parsed user listing format, truncated to `width`.
 pub fn format_user_listing_header(tokens: &[UserFormatToken], width: usize) -> String {
-    join_user_parts(tokens, width, None, false)
+    join_user_parts(tokens, width, None, false, false)
 }
 
 /// `ls -l`–like Long listing prefix: perm, nlink, owner, group, size, mtime, trailing spaces.
@@ -1105,6 +1196,8 @@ mod tests {
             group: Some("group".into()),
             nlink: 1,
             inode: 0,
+            uid: 0,
+            gid: 0,
             is_stale_symlink: false,
         }
     }
@@ -1406,6 +1499,8 @@ mod tests {
             group: None,
             nlink: 1,
             inode,
+            uid: 0,
+            gid: 0,
             is_stale_symlink: false,
         }
     }
@@ -1513,7 +1608,7 @@ mod tests {
         assert_eq!(
             t,
             vec![
-                UserFormatToken::Perm,
+                UserFormatToken::Mode,
                 UserFormatToken::Mtime,
                 UserFormatToken::Nlink,
                 UserFormatToken::Owner,
@@ -1539,7 +1634,7 @@ mod tests {
         let now = SystemTime::now();
         let ent = make_entry("readme.txt", 42, now, false);
         let tokens = parse_user_listing_format("half type name | size | perm");
-        let line = format_user_listing_line(&ent, &tokens, 80, false);
+        let line = format_user_listing_line(&ent, &tokens, 80, false, false);
         assert!(line.contains("readme.txt"), "line={line:?}");
         assert!(line.contains("42"), "line={line:?}");
         assert!(line.contains("rwx"), "line={line:?}");
@@ -1556,34 +1651,64 @@ mod tests {
         let tokens = parse_user_listing_format("type name");
         let dir = make_entry("src", 0, now, true);
         assert!(
-            format_user_listing_line(&dir, &tokens, 40, false).starts_with('/'),
+            format_user_listing_line(&dir, &tokens, 40, false, false).starts_with('/'),
             "dir type"
         );
         let mut exe = make_entry("a.out", 10, now, false);
         exe.is_exe = true;
         assert!(
-            format_user_listing_line(&exe, &tokens, 40, false).starts_with('*'),
+            format_user_listing_line(&exe, &tokens, 40, false, false).starts_with('*'),
             "exe type"
         );
         let mut link = make_entry("link", 1, now, false);
         link.is_symlink = true;
         assert!(
-            format_user_listing_line(&link, &tokens, 40, false).starts_with('@'),
+            format_user_listing_line(&link, &tokens, 40, false, false).starts_with('@'),
             "symlink type"
         );
         let mut sock = make_entry("sock", 0, now, false);
         sock.permissions = 0o140_000 | 0o666;
         assert_eq!(listing_type_char(&sock), '=');
+        assert!(
+            format_user_listing_line(&sock, &tokens, 40, false, false).starts_with('='),
+            "socket type"
+        );
         let mut fifo = make_entry("pipe", 0, now, false);
         fifo.permissions = 0o010_000 | 0o666;
         assert_eq!(listing_type_char(&fifo), '|');
+        assert!(
+            format_user_listing_line(&fifo, &tokens, 40, false, false).starts_with('|'),
+            "fifo type"
+        );
+        let mut chr = make_entry("tty", 0, now, false);
+        chr.permissions = 0o020_000 | 0o666;
+        assert_eq!(listing_type_char(&chr), '-');
+        assert!(
+            format_user_listing_line(&chr, &tokens, 40, false, false).starts_with('-'),
+            "char device type"
+        );
+        let mut blk = make_entry("sda", 0, now, false);
+        blk.permissions = 0o060_000 | 0o666;
+        assert_eq!(listing_type_char(&blk), '+');
+        assert!(
+            format_user_listing_line(&blk, &tokens, 40, false, false).starts_with('+'),
+            "block device type"
+        );
         let mut stale = make_entry("gone", 1, now, false);
         stale.is_symlink = true;
         stale.is_stale_symlink = true;
         assert_eq!(listing_type_char(&stale), '!');
+        assert!(
+            format_user_listing_line(&stale, &tokens, 40, false, false).starts_with('!'),
+            "stale symlink type"
+        );
         let mut linkdir = make_entry("linked-dir", 1, now, true);
         linkdir.is_symlink = true;
         assert_eq!(listing_type_char(&linkdir), '~');
+        assert!(
+            format_user_listing_line(&linkdir, &tokens, 40, false, false).starts_with('~'),
+            "symlink-to-dir type"
+        );
         assert_eq!(listing_type_char(&make_entry("..", 0, now, true)), ' ');
         assert_eq!(
             full_listing_sort_indicator(SortBy::Name, SortDir::Asc),
@@ -1603,7 +1728,7 @@ mod tests {
         );
         assert_eq!(format_full_listing_size(&file, true), "72kB");
         let long = make_entry("very-long-filename-that-should-clip", 1, now, false);
-        let clipped = format_user_listing_line(&long, &tokens, 12, false);
+        let clipped = format_user_listing_line(&long, &tokens, 12, false, false);
         assert!(clipped.chars().count() <= 12);
     }
 
@@ -1831,9 +1956,9 @@ mod tests {
         let now = SystemTime::now();
         let ent = make_entry("big.bin", 1_000_000, now, false);
         let tokens = parse_user_listing_format("size");
-        let iec = format_user_listing_line(&ent, &tokens, 16, false);
+        let iec = format_user_listing_line(&ent, &tokens, 16, false, false);
         assert!(iec.contains("976K"), "1024-based={iec:?}");
-        let si = format_user_listing_line(&ent, &tokens, 16, true);
+        let si = format_user_listing_line(&ent, &tokens, 16, true, false);
         assert!(si.contains("1MB"), "SI={si:?}");
     }
 
@@ -1842,13 +1967,262 @@ mod tests {
         let now = SystemTime::now();
         let mut ent = make_entry("file", 1, now, false);
         let tokens = parse_user_listing_format("nlink name");
-        let line = format_user_listing_line(&ent, &tokens, 40, false);
+        let line = format_user_listing_line(&ent, &tokens, 40, false, false);
         assert!(line.contains("   1"), "nlink 1 line={line:?}");
         ent.nlink = 2;
-        let line = format_user_listing_line(&ent, &tokens, 40, false);
+        let line = format_user_listing_line(&ent, &tokens, 40, false, false);
         assert!(line.contains("   2"), "nlink 2 line={line:?}");
         let header = format_user_listing_header(&tokens, 40);
         assert!(header.contains("Nl"), "header={header:?}");
+    }
+
+    #[test]
+    fn user_format_parses_mc1_field_tokens() {
+        let t = parse_user_listing_format(
+            "half type name mark | size bsize perm mode nlink owner group nuid ngid inode mtime atime ctime space foo",
+        );
+        assert_eq!(
+            t,
+            vec![
+                UserFormatToken::Type,
+                UserFormatToken::Name,
+                UserFormatToken::Mark,
+                UserFormatToken::Gap,
+                UserFormatToken::Size,
+                UserFormatToken::Bsize,
+                UserFormatToken::Perm,
+                UserFormatToken::Mode,
+                UserFormatToken::Nlink,
+                UserFormatToken::Owner,
+                UserFormatToken::Group,
+                UserFormatToken::Nuid,
+                UserFormatToken::Ngid,
+                UserFormatToken::Inode,
+                UserFormatToken::Mtime,
+                UserFormatToken::Atime,
+                UserFormatToken::Ctime,
+            ]
+        );
+        assert_eq!(
+            parse_user_listing_format("perm space nlink"),
+            vec![UserFormatToken::Perm, UserFormatToken::Nlink]
+        );
+        assert_eq!(
+            parse_user_listing_format("ATIME CTIME BSIZE MARK INODE NUID NGID"),
+            vec![
+                UserFormatToken::Atime,
+                UserFormatToken::Ctime,
+                UserFormatToken::Bsize,
+                UserFormatToken::Mark,
+                UserFormatToken::Inode,
+                UserFormatToken::Nuid,
+                UserFormatToken::Ngid,
+            ]
+        );
+    }
+
+    #[test]
+    fn user_format_mc1_tokens_render() {
+        let t_m = SystemTime::UNIX_EPOCH;
+        let t_a = t_m + Duration::from_secs(40 * 24 * 3600);
+        let t_c = t_m + Duration::from_secs(80 * 24 * 3600);
+        let mut file = make_entry("readme.txt", 42, t_m, false);
+        file.accessed = t_a;
+        file.changed = t_c;
+        file.permissions = 0o644;
+        file.owner = Some("alice".into());
+        file.group = Some("staff".into());
+        file.nlink = 3;
+        file.inode = 123456;
+        file.uid = 1001;
+        file.gid = 1002;
+
+        let size =
+            format_user_listing_line(&file, &parse_user_listing_format("size"), 16, false, false);
+        let bsize =
+            format_user_listing_line(&file, &parse_user_listing_format("bsize"), 16, false, false);
+        assert!(size.contains("42"), "size file={size:?}");
+        assert!(bsize.contains("42"), "bsize file={bsize:?}");
+        assert_eq!(size, bsize, "file size and bsize match");
+
+        let mut dir = make_entry("src", 4096, t_m, true);
+        dir.permissions = 0o755;
+        let dir_size =
+            format_user_listing_line(&dir, &parse_user_listing_format("size"), 16, false, false);
+        let dir_bsize =
+            format_user_listing_line(&dir, &parse_user_listing_format("bsize"), 16, false, false);
+        assert!(
+            dir_size.contains("4K"),
+            "size shows directory inode size: {dir_size:?}"
+        );
+        assert!(
+            dir_bsize.contains("SUB-DIR"),
+            "bsize directories are SUB-DIR: {dir_bsize:?}"
+        );
+        assert!(
+            !dir_size.contains("SUB-DIR") && !dir_size.contains("UP--DIR"),
+            "size is not bsize for a real dir: {dir_size:?}"
+        );
+
+        let mut parent = make_entry("..", 4096, t_m, true);
+        parent.nlink = 12;
+        parent.inode = 99;
+        parent.uid = 0;
+        parent.gid = 0;
+        parent.permissions = 0o755;
+        let parent_size = format_user_listing_line(
+            &parent,
+            &parse_user_listing_format("size"),
+            16,
+            false,
+            false,
+        );
+        let parent_bsize = format_user_listing_line(
+            &parent,
+            &parse_user_listing_format("bsize"),
+            16,
+            false,
+            false,
+        );
+        assert!(parent_size.contains("UP--DIR"), "size ..={parent_size:?}");
+        assert!(
+            parent_bsize.contains("UP--DIR"),
+            "bsize ..={parent_bsize:?}"
+        );
+        let parent_nlink = format_user_listing_line(
+            &parent,
+            &parse_user_listing_format("nlink"),
+            16,
+            false,
+            false,
+        );
+        let parent_inode = format_user_listing_line(
+            &parent,
+            &parse_user_listing_format("inode"),
+            16,
+            false,
+            false,
+        );
+        let parent_perm = format_user_listing_line(
+            &parent,
+            &parse_user_listing_format("perm"),
+            16,
+            false,
+            false,
+        );
+        assert!(
+            !parent_nlink.contains("UP--DIR") && parent_nlink.contains("12"),
+            "UP--DIR is size-only: nlink={parent_nlink:?}"
+        );
+        assert!(
+            !parent_inode.contains("UP--DIR") && parent_inode.contains("99"),
+            "UP--DIR is size-only: inode={parent_inode:?}"
+        );
+        assert!(
+            !parent_perm.contains("UP--DIR") && parent_perm.contains("rwx"),
+            "UP--DIR is size-only: perm={parent_perm:?}"
+        );
+
+        let perm =
+            format_user_listing_line(&file, &parse_user_listing_format("perm"), 16, false, false);
+        let mode =
+            format_user_listing_line(&file, &parse_user_listing_format("mode"), 16, false, false);
+        assert!(perm.contains("rw-r--r--"), "perm={perm:?}");
+        assert!(mode.contains("0644"), "mode={mode:?}");
+        assert!(!mode.contains("rw-"), "mode is octal, not rwx: {mode:?}");
+
+        let nlink =
+            format_user_listing_line(&file, &parse_user_listing_format("nlink"), 16, false, false);
+        assert!(nlink.contains("3"), "nlink={nlink:?}");
+
+        let owner =
+            format_user_listing_line(&file, &parse_user_listing_format("owner"), 16, false, false);
+        let group =
+            format_user_listing_line(&file, &parse_user_listing_format("group"), 16, false, false);
+        let nuid =
+            format_user_listing_line(&file, &parse_user_listing_format("nuid"), 16, false, false);
+        let ngid =
+            format_user_listing_line(&file, &parse_user_listing_format("ngid"), 16, false, false);
+        assert!(owner.contains("alice"), "owner={owner:?}");
+        assert!(group.contains("staff"), "group={group:?}");
+        assert!(
+            nuid.contains("1001") && !nuid.contains("alice"),
+            "nuid={nuid:?}"
+        );
+        assert!(
+            ngid.contains("1002") && !ngid.contains("staff"),
+            "ngid={ngid:?}"
+        );
+
+        let inode =
+            format_user_listing_line(&file, &parse_user_listing_format("inode"), 16, false, false);
+        assert!(inode.contains("123456"), "inode={inode:?}");
+
+        let unmarked = format_user_listing_line(
+            &file,
+            &parse_user_listing_format("mark name"),
+            24,
+            false,
+            false,
+        );
+        let marked = format_user_listing_line(
+            &file,
+            &parse_user_listing_format("mark name"),
+            24,
+            false,
+            true,
+        );
+        assert!(
+            unmarked.starts_with(' '),
+            "unmarked mark field is a space: {unmarked:?}"
+        );
+        assert!(
+            marked.starts_with('*'),
+            "tagged mark field is *: {marked:?}"
+        );
+        assert!(
+            marked.contains("readme.txt"),
+            "mark keeps the name: {marked:?}"
+        );
+
+        let mtime =
+            format_user_listing_line(&file, &parse_user_listing_format("mtime"), 16, false, false);
+        let atime =
+            format_user_listing_line(&file, &parse_user_listing_format("atime"), 16, false, false);
+        let ctime =
+            format_user_listing_line(&file, &parse_user_listing_format("ctime"), 16, false, false);
+        let mut same = file.clone();
+        same.modified = t_a;
+        let mtime_of_ta =
+            format_user_listing_line(&same, &parse_user_listing_format("mtime"), 16, false, false);
+        same.modified = t_c;
+        let mtime_of_tc =
+            format_user_listing_line(&same, &parse_user_listing_format("mtime"), 16, false, false);
+        assert_eq!(
+            atime.trim(),
+            mtime_of_ta.trim(),
+            "atime uses accessed, atime={atime:?} mtime(t_a)={mtime_of_ta:?}"
+        );
+        assert_eq!(
+            ctime.trim(),
+            mtime_of_tc.trim(),
+            "ctime uses changed, ctime={ctime:?} mtime(t_c)={mtime_of_tc:?}"
+        );
+        assert_ne!(mtime.trim(), atime.trim());
+        assert_ne!(atime.trim(), ctime.trim());
+
+        let header = format_user_listing_header(
+            &parse_user_listing_format("size bsize perm mode mark nuid ngid inode atime ctime"),
+            120,
+        );
+        assert!(header.contains("Size"), "{header:?}");
+        assert!(header.contains("Perm"), "{header:?}");
+        assert!(header.contains("Mode"), "{header:?}");
+        assert!(header.contains("UID"), "{header:?}");
+        assert!(header.contains("GID"), "{header:?}");
+        assert!(header.contains("Inode"), "{header:?}");
+        assert!(header.contains("Access time"), "{header:?}");
+        assert!(header.contains("Change time"), "{header:?}");
     }
 
     #[test]

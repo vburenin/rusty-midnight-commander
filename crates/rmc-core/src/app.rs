@@ -1729,11 +1729,26 @@ impl App {
         path.symlink_metadata().is_ok() && std::fs::metadata(path).is_err()
     }
 
+    /// Local `lstat` uid/gid for user-format `nuid`/`ngid`. Missing/non-Unix is 0.
+    fn listing_unix_ids(path: &Path) -> (u32, u32) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(md) = std::fs::symlink_metadata(path) {
+                return (md.uid(), md.gid());
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+        (0, 0)
+    }
+
     fn map_dir_entries(&self, entries: Vec<DirEntry>) -> Vec<FileEntry> {
         entries
             .into_iter()
             .map(|e| {
                 let is_stale_symlink = e.meta.is_symlink && Self::local_symlink_is_stale(&e.path);
+                let (uid, gid) = Self::listing_unix_ids(&e.path);
                 FileEntry {
                     name: e.name,
                     path: e.path,
@@ -1750,6 +1765,8 @@ impl App {
                     group: e.meta.group,
                     nlink: e.meta.nlink,
                     inode: e.meta.inode,
+                    uid,
+                    gid,
                     is_stale_symlink,
                 }
             })
@@ -2665,6 +2682,8 @@ impl App {
             group: None,
             nlink: 1,
             inode: 0,
+            uid: 0,
+            gid: 0,
             is_stale_symlink: false,
         });
         for p in paths {
@@ -2678,6 +2697,7 @@ impl App {
             } else {
                 p.display().to_string()
             };
+            let (uid, gid) = Self::listing_unix_ids(p);
             entries.push(FileEntry {
                 name: display_name,
                 path: p.clone(),
@@ -2694,6 +2714,8 @@ impl App {
                 group: meta.group,
                 nlink: meta.nlink,
                 inode: meta.inode,
+                uid,
+                gid,
                 is_stale_symlink: meta.is_symlink && Self::local_symlink_is_stale(p),
             });
         }
