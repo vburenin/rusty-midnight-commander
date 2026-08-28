@@ -1723,25 +1723,35 @@ impl App {
         Ok(())
     }
 
+    /// GNU `!` type mark: local `lstat` succeeds, follow (`stat`) fails.
+    /// Archive/remote paths fail `lstat` and are not treated as stale.
+    fn local_symlink_is_stale(path: &Path) -> bool {
+        path.symlink_metadata().is_ok() && std::fs::metadata(path).is_err()
+    }
+
     fn map_dir_entries(&self, entries: Vec<DirEntry>) -> Vec<FileEntry> {
         entries
             .into_iter()
-            .map(|e| FileEntry {
-                name: e.name,
-                path: e.path,
-                is_dir: e.meta.is_dir,
-                is_symlink: e.meta.is_symlink,
-                symlink_target: e.meta.symlink_target,
-                is_exe: e.meta.is_executable,
-                size: e.meta.size,
-                modified: e.meta.modified,
-                accessed: e.meta.accessed,
-                changed: e.meta.changed,
-                permissions: e.meta.permissions,
-                owner: e.meta.owner,
-                group: e.meta.group,
-                nlink: e.meta.nlink,
-                inode: e.meta.inode,
+            .map(|e| {
+                let is_stale_symlink = e.meta.is_symlink && Self::local_symlink_is_stale(&e.path);
+                FileEntry {
+                    name: e.name,
+                    path: e.path,
+                    is_dir: e.meta.is_dir,
+                    is_symlink: e.meta.is_symlink,
+                    symlink_target: e.meta.symlink_target,
+                    is_exe: e.meta.is_executable,
+                    size: e.meta.size,
+                    modified: e.meta.modified,
+                    accessed: e.meta.accessed,
+                    changed: e.meta.changed,
+                    permissions: e.meta.permissions,
+                    owner: e.meta.owner,
+                    group: e.meta.group,
+                    nlink: e.meta.nlink,
+                    inode: e.meta.inode,
+                    is_stale_symlink,
+                }
             })
             .collect()
     }
@@ -2655,6 +2665,7 @@ impl App {
             group: None,
             nlink: 1,
             inode: 0,
+            is_stale_symlink: false,
         });
         for p in paths {
             let meta = self.vfs.stat(p)?;
@@ -2683,6 +2694,7 @@ impl App {
                 group: meta.group,
                 nlink: meta.nlink,
                 inode: meta.inode,
+                is_stale_symlink: meta.is_symlink && Self::local_symlink_is_stale(p),
             });
         }
         let caption = self.active_panel().cwd.clone();

@@ -148,9 +148,16 @@ fn panelize_uses_relative_names_for_disambiguation() -> Result<()> {
 #[test]
 fn listing_and_panelize_copy_nlink() -> Result<()> {
     let dir = tempdir()?;
-    let root = dir.path().to_path_buf();
+    // Nested fixture so listing `..` stats `dir`, not shared `/tmp` (GHA #730 TOCTOU).
+    let root = dir.path().join("listed");
+    std::fs::create_dir(&root)?;
     let f1 = root.join("plain.txt");
     std::fs::write(&f1, "hello")?;
+    #[cfg(unix)]
+    let fixture_parent_nlink = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir.path())?.nlink()
+    };
     let vfs = FixedCwdFs::new(root.clone());
     let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults())?;
     let listed = app
@@ -161,7 +168,17 @@ fn listing_and_panelize_copy_nlink() -> Result<()> {
         .expect("plain.txt listed");
     assert_eq!(listed.nlink, 1);
     if let Some(parent) = app.active_panel().entries.iter().find(|e| e.name == "..") {
-        assert_eq!(parent.nlink, 1);
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                parent.nlink, fixture_parent_nlink,
+                "listing `..` nlink matches fixture parent dir"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(parent.nlink >= 1);
+        }
     }
 
     app.panelize_paths(std::slice::from_ref(&f1), Some(&root))?;

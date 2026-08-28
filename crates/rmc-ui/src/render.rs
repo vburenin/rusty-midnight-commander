@@ -220,10 +220,7 @@ impl Renderer {
             false,
             self.palette,
         )?;
-        // Gauge/status line between panels
-        if let Some(y) = geom.gauge_row {
-            draw_gauge(&mut painter, y, cols, self.palette, app);
-        }
+        // Free space is in each panel's bottom frame (not a below-panels chrome row).
         if let Some(y) = geom.hint_row {
             draw_hint(&mut painter, y, cols, self.palette);
         }
@@ -3791,12 +3788,38 @@ fn draw_panel(
             format!(" {} ", path.display())
         }
     };
-    let inner = w.saturating_sub(2);
+    // Leave cells for `<` on the left and `.[^]>` on the right (GNU panel widgets).
+    const TOP_WIDGET_LEFT: &str = "<";
+    const TOP_WIDGET_RIGHT: &str = ".[^]>";
+    let widget_left_w = TOP_WIDGET_LEFT.chars().count() as u16;
+    let widget_right_w = TOP_WIDGET_RIGHT.chars().count() as u16;
+    let inner = w.saturating_sub(2 + widget_left_w + widget_right_w);
     let path_str_display = truncate(&path_str_display, inner as usize);
-    let cap_x = x + ((w.saturating_sub(path_str_display.chars().count() as u16)) / 2);
+    let cap_x = x
+        + 1
+        + widget_left_w
+        + ((inner.saturating_sub(path_str_display.chars().count() as u16)) / 2);
     // GNU: active panel path is selected (black;cyan); inactive stays on the frame.
     let (path_fg, path_bg) = panel_path_caption_colors(&pal, is_active_panel);
-    paint_span(p, cap_x.max(x + 1), y, path_fg, path_bg, &path_str_display);
+    paint_span(
+        p,
+        cap_x.max(x + 1 + widget_left_w),
+        y,
+        path_fg,
+        path_bg,
+        &path_str_display,
+    );
+    paint_span(p, x + 1, y, frame_fg, frame_bg, TOP_WIDGET_LEFT);
+    if w > 2 + widget_left_w + widget_right_w {
+        paint_span(
+            p,
+            x + w - 1 - widget_right_w,
+            y,
+            frame_fg,
+            frame_bg,
+            TOP_WIDGET_RIGHT,
+        );
+    }
 
     // Non-listing panel modes (QuickView/Info/Tree): override standard listing rendering.
     let panel = if is_left { &app.left } else { &app.right };
@@ -3910,6 +3933,13 @@ fn draw_panel(
             }
             PanelMode::Listing => {}
         }
+        paint_panel_frame_free_space(
+            p,
+            (x, y, w, h),
+            path,
+            app.layout.show_free_space,
+            (frame_fg, frame_bg),
+        );
         return Ok(());
     }
 
@@ -3944,7 +3974,11 @@ fn draw_panel(
     paint_column_bars(p, &bar_xs, y, frame_fg, frame_bg, LISTING_COL_TEE_TOP);
     match listing {
         rmc_core::panel::ListingFormat::Full => {
-            paint_span(p, x + 1, y + 1, header_fg, header_bg, "Name");
+            let ind = rmc_core::panel::full_listing_sort_indicator(panel.sort_by, panel.sort_dir);
+            let ind_s: String = ind.iter().collect();
+            paint_span(p, x + 1, y + 1, header_fg, header_bg, &ind_s);
+            // `.n` occupies the type-field cells; "Name" follows after a space.
+            paint_span(p, x + 4, y + 1, header_fg, header_bg, "Name");
             paint_span(p, full_cols.size_x, y + 1, header_fg, header_bg, "Size");
             paint_span(
                 p,
@@ -4043,10 +4077,13 @@ fn draw_panel(
                     let name_fg =
                         listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
                     paint_span(p, x + 1, row_y, name_fg, bg, &name_trunc);
-                    let size = truncate(
-                        &format_size(ent, app.panel_opts.kilobyte_si),
-                        size_width as usize,
-                    );
+                    let size_text =
+                        rmc_core::panel::format_full_listing_size(ent, app.panel_opts.kilobyte_si);
+                    let size = if ent.is_parent_marker() {
+                        truncate(&size_text, size_width as usize)
+                    } else {
+                        fit_right_cell(&size_text, size_width as usize)
+                    };
                     paint_span(p, full_cols.size_x, row_y, fg, bg, &size);
                     let time = truncate(&format_time(ent), time_width as usize);
                     paint_span(p, full_cols.time_x, row_y, fg, bg, &time);
@@ -4243,14 +4280,19 @@ fn draw_panel(
             LISTING_COL_TEE_BOT,
         );
     }
+    paint_panel_frame_free_space(
+        p,
+        (x, y, w, h),
+        path,
+        app.layout.show_free_space,
+        (frame_fg, frame_bg),
+    );
     Ok(())
 }
 
-fn draw_gauge(p: &mut Painter, y: u16, cols: u16, pal: McPalette, app: &App) {
-    p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-    p.goto(0, y);
-    let path = &app.active_panel().cwd;
-    let text = match (fs2::available_space(path), fs2::total_space(path)) {
+/// GNU mc(1): free/total on the bottom frame of each panel, right-aligned.
+fn panel_free_space_label(cwd: &std::path::Path) -> String {
+    match (fs2::available_space(cwd), fs2::total_space(cwd)) {
         (Ok(avail), Ok(total)) => {
             let used = total.saturating_sub(avail);
             let pct = if total > 0 {
@@ -4259,19 +4301,38 @@ fn draw_gauge(p: &mut Painter, y: u16, cols: u16, pal: McPalette, app: &App) {
                 0.0
             };
             format!(
-                "{} / {} ({:.0}%)",
+                " {} / {} ({:.0}%)",
                 human_bytes(used),
                 human_bytes(total),
                 pct
             )
         }
-        _ => "".to_string(),
-    };
-    let t = truncate(&text, cols as usize);
-    p.text(&t);
-    if t.len() < cols as usize {
-        p.text(&" ".repeat(cols as usize - t.len()));
+        _ => String::new(),
     }
+}
+
+fn paint_panel_frame_free_space(
+    p: &mut Painter,
+    (x, y, w, h): (u16, u16, u16, u16),
+    cwd: &std::path::Path,
+    show: bool,
+    (frame_fg, frame_bg): (Color, Color),
+) {
+    if !show || w < 4 {
+        return;
+    }
+    let label = panel_free_space_label(cwd);
+    if label.is_empty() {
+        return;
+    }
+    let max_w = w.saturating_sub(2) as usize;
+    let text = truncate(&label, max_w);
+    let n = text.chars().count() as u16;
+    if n == 0 || n + 1 >= w {
+        return;
+    }
+    let start = x + w - 1 - n;
+    paint_span(p, start, y + h - 1, frame_fg, frame_bg, &text);
 }
 fn draw_hint(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
     p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
@@ -4991,31 +5052,32 @@ pub(crate) fn panel_header_colors(pal: &McPalette) -> (Color, Color) {
 }
 
 fn format_entry_name(ent: &FileEntry) -> String {
-    if ent.name == ".." {
-        "..".to_string()
-    } else if ent.is_dir {
+    if ent.is_parent_marker() {
+        return "..".to_string();
+    }
+    let mark = rmc_core::panel::listing_type_char(ent);
+    if mark == ' ' {
         ent.name.clone()
-    } else if ent.is_exe {
-        format!("*{}", ent.name)
     } else {
-        ent.name.clone()
+        format!("{mark}{}", ent.name)
     }
 }
 
-fn format_size(ent: &FileEntry, si: bool) -> String {
-    if ent.name == ".." {
-        "UP--DIR".to_string()
-    } else if ent.is_dir {
-        "        ".to_string()
+fn fit_right_cell(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let n = s.chars().count();
+    if n >= width {
+        s.chars().skip(n - width).collect()
     } else {
-        format!("{:>8}", rmc_core::panel::format_byte_size(ent.size, si))
+        let mut out = " ".repeat(width - n);
+        out.push_str(s);
+        out
     }
 }
 
 fn format_time(ent: &FileEntry) -> String {
-    if ent.is_parent_marker() {
-        return String::new();
-    }
     let dt: OffsetDateTime = ent.modified.into();
     dt.format(&time::macros::format_description!(
         "[month repr:short] [day padding:space] [hour]:[minute]"
@@ -7092,7 +7154,7 @@ mod gnu_default_chrome_colors_tests {
     use rmc_core::panel::{FileEntry, ListingFormat};
     use rmc_fs::local::LocalFs;
     use std::path::{Path, PathBuf};
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     #[test]
     fn active_path_uses_selected_inactive_uses_frame() {
@@ -7293,6 +7355,7 @@ mod gnu_default_chrome_colors_tests {
             group: None,
             nlink: 1,
             inode: 0,
+            is_stale_symlink: false,
         }
     }
 
@@ -7333,16 +7396,20 @@ mod gnu_default_chrome_colors_tests {
         );
 
         let grid = rasterize(&buf, 80, 12);
-        // "Name" starts at x=1 on the header row (y=1) of the left panel.
-        let name: String = grid[1][1..5].iter().map(|c| c.ch).collect();
+        // Sort indicator `.n` at the left; "Name" follows after a space (not a cyan bar).
+        let sort_ind: String = grid[1][1..3].iter().map(|c| c.ch).collect();
+        assert_eq!(sort_ind, ".n", "sort-indicator column, got {:?}", {
+            grid[1].iter().map(|c| c.ch).collect::<String>()
+        });
+        let name: String = grid[1][4..8].iter().map(|c| c.ch).collect();
         assert_eq!(name, "Name", "header label, got {:?}", {
             grid[1].iter().map(|c| c.ch).collect::<String>()
         });
-        for cell in &grid[1][1..5] {
+        for cell in grid[1][1..8].iter() {
             assert_eq!(
                 (cell.fg, cell.bg),
                 (Color::Yellow, Color::Blue),
-                "header 'Name' must be yellow;blue, not selected {:?}/{:?}",
+                "header `.n Name` must be yellow;blue, not selected {:?}/{:?}",
                 pal.selected_fg,
                 pal.selected_bg
             );
@@ -7366,6 +7433,12 @@ mod gnu_default_chrome_colors_tests {
         // Active path uses selected; inactive uses frame.
         let top: String = grid[0].iter().map(|c| c.ch).collect();
         assert!(top.contains('/'), "path caption on top frame: {top:?}");
+        assert_eq!(grid[0][1].ch, '<', "left widget `<-`: {top:?}");
+        let left_right_w: String = grid[0][34..39].iter().map(|c| c.ch).collect();
+        assert_eq!(left_right_w, ".[^]>", "right widgets: {top:?}");
+        assert_eq!(grid[0][41].ch, '<');
+        let right_right_w: String = grid[0][74..79].iter().map(|c| c.ch).collect();
+        assert_eq!(right_right_w, ".[^]>", "inactive panel widgets: {top:?}");
         let mut saw_active_path = false;
         let mut saw_inactive_path = false;
         for (x, cell) in grid[0].iter().enumerate() {
@@ -7414,6 +7487,7 @@ mod gnu_default_chrome_colors_tests {
             group: Some("staff".into()),
             nlink: 1,
             inode: 0,
+            is_stale_symlink: false,
         }
     }
 
@@ -7555,6 +7629,7 @@ mod gnu_default_chrome_colors_tests {
             group: None,
             nlink: 1,
             inode: 0,
+            is_stale_symlink: false,
         }
     }
 
@@ -7568,6 +7643,7 @@ mod gnu_default_chrome_colors_tests {
         app.left.cursor = 1;
         app.right.cursor = 0;
         app.panel_opts.show_mini_status = true;
+        app.layout.show_free_space = false;
         app
     }
 
@@ -7777,5 +7853,116 @@ mod gnu_default_chrome_colors_tests {
         assert_eq!(grid[11][0].ch, '└');
         assert_eq!(grid[11][39].ch, '┘');
         assert_ne!(grid[9][0].ch, '├');
+    }
+
+    #[test]
+    fn full_listing_gnu_type_size_mtime_widgets_and_free_space() {
+        let mut app = panel_app(ListingFormat::Full);
+        app.layout.show_free_space = true;
+        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_698_220_980); // not epoch
+        let mut parent = epoch_parent();
+        parent.modified = mtime;
+        parent.size = 4096;
+        let mut dir = epoch_file("docs", 4096);
+        dir.is_dir = true;
+        dir.permissions = 0o755;
+        let mut exe = epoch_file("run.sh", 128);
+        exe.is_exe = true;
+        exe.permissions = 0o755;
+        let mut link = epoch_file("alias", 7);
+        link.is_symlink = true;
+        let file = epoch_file("Cargo.lock", 72688);
+        app.left.entries = vec![parent.clone(), dir, exe, link, file];
+        app.left.cursor = 0;
+        app.right.entries = vec![parent];
+        app.right.cursor = 0;
+
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let header = row_str(&grid, 1);
+        let top = row_str(&grid, 0);
+        let parent_row = row_str(&grid, 2);
+        let dir_row = row_str(&grid, 3);
+        let exe_row = row_str(&grid, 4);
+        let link_row = row_str(&grid, 5);
+        let file_row = row_str(&grid, 6);
+        let bottom = row_str(&grid, 11);
+
+        assert!(header.contains(".n"), "sort indicator: {header:?}");
+        assert!(
+            header.contains("Name") && header.contains("Size") && header.contains("Modify time")
+        );
+        assert!(
+            header.find(".n").unwrap() < header.find("Name").unwrap(),
+            ".n is left of Name: {header:?}"
+        );
+        for cell in &grid[1][1..39] {
+            assert_ne!(
+                cell.bg,
+                Color::Cyan,
+                "header is not a solid cyan bar: {header:?}"
+            );
+            assert_eq!(cell.bg, Color::Blue);
+        }
+
+        assert_eq!(grid[0][1].ch, '<', "left widget: {top:?}");
+        assert!(top.contains(".[^]>"), "right widgets: {top:?}");
+
+        assert!(parent_row.contains(".."), "{parent_row:?}");
+        assert!(
+            parent_row.contains("UP--DIR"),
+            "only `..` is UP--DIR: {parent_row:?}"
+        );
+        assert!(
+            !parent_row.contains("Jan  1 00:00") && !parent_row.contains("Jan  1"),
+            "parent mtime must not be Unix epoch: {parent_row:?}"
+        );
+        let parent_time = super::format_time(&app.left.entries[0]);
+        assert!(!parent_time.is_empty());
+        assert!(
+            parent_row.contains(&parent_time),
+            "{parent_row:?} vs {parent_time:?}"
+        );
+
+        assert!(dir_row.contains("/docs"), "dir type prefix: {dir_row:?}");
+        assert!(dir_row.contains("4096"), "dir inode size: {dir_row:?}");
+        assert!(
+            !dir_row.contains("UP--DIR"),
+            "dirs are not UP--DIR: {dir_row:?}"
+        );
+
+        assert!(exe_row.contains("*run.sh"), "exe type prefix: {exe_row:?}");
+        assert!(
+            link_row.contains("@alias"),
+            "symlink type prefix: {link_row:?}"
+        );
+        assert!(file_row.contains("Cargo.lock"), "{file_row:?}");
+        assert!(
+            file_row.contains("72688"),
+            "raw byte size, not human 70K: {file_row:?}"
+        );
+        assert!(!file_row.contains("70K") && !file_row.contains("71K"));
+
+        let cwd = &app.left.cwd;
+        let expect_free = matches!(
+            (fs2::available_space(cwd), fs2::total_space(cwd)),
+            (Ok(_), Ok(_))
+        );
+        if expect_free {
+            assert!(
+                bottom.contains(" / ") && bottom.contains('%'),
+                "free-space in bottom frame: {bottom:?}"
+            );
+        }
+        assert_eq!(bottom.chars().next(), Some('└'));
+        assert_eq!(bottom.chars().last(), Some('┘'));
+        assert_eq!(
+            inner_bars(&grid, 1, 0, 40).len(),
+            2,
+            "still two Full `|` bars"
+        );
     }
 }
