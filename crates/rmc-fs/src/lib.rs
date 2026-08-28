@@ -9,6 +9,10 @@ use walkdir::WalkDir;
 pub struct Metadata {
     pub is_dir: bool,
     pub is_symlink: bool,
+    /// Stored `readlink` text (not canonicalized). `None` if this is not a symlink
+    /// or if reading the target failed. Listing and `stat` populate this for local files.
+    #[serde(default)]
+    pub symlink_target: Option<String>,
     pub is_executable: bool,
     pub size: u64,
     pub modified: SystemTime,
@@ -23,6 +27,13 @@ pub struct Metadata {
     pub nlink: u64,
     /// Filesystem inode (`st_ino`). Archives, remote, extfs, and `..` use 0.
     pub inode: u64,
+}
+
+/// Stored `readlink` path as text, or `None` if `path` is not a readable symlink.
+pub fn read_symlink_target(path: &Path) -> Option<String> {
+    fs::read_link(path)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Unix `st_nlink`, or 1 when the OS does not expose a link count.
@@ -202,9 +213,10 @@ pub mod local {
         }
     }
 
-    fn meta_from(md: fs::Metadata) -> Metadata {
+    fn meta_from(path: &Path, md: fs::Metadata) -> Metadata {
         let mode = md.permissions().mode();
         let is_exe = !md.is_dir() && (mode & 0o111 != 0);
+        let is_symlink = md.file_type().is_symlink();
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         #[cfg(unix)]
@@ -223,7 +235,12 @@ pub mod local {
         let (accessed, changed, inode) = super::extra_stat_from_std(&md, modified);
         Metadata {
             is_dir: md.is_dir(),
-            is_symlink: md.file_type().is_symlink(),
+            is_symlink,
+            symlink_target: if is_symlink {
+                super::read_symlink_target(path)
+            } else {
+                None
+            },
             is_executable: is_exe,
             size: md.len(),
             modified,
@@ -252,6 +269,7 @@ pub mod local {
                     meta: Metadata {
                         is_dir: true,
                         is_symlink: false,
+                        symlink_target: None,
                         is_executable: false,
                         size: 0,
                         modified: SystemTime::UNIX_EPOCH,
@@ -272,12 +290,10 @@ pub mod local {
                 if !show_hidden && name.starts_with('.') {
                     continue;
                 }
+                let path = entry.path();
                 let md = entry.metadata()?;
-                out.push(DirEntry {
-                    name,
-                    path: entry.path(),
-                    meta: meta_from(md),
-                });
+                let meta = meta_from(&path, md);
+                out.push(DirEntry { name, path, meta });
             }
             // Directories first, then files by name
             out.sort_by(|a, b| match (a.meta.is_dir, b.meta.is_dir) {
@@ -344,7 +360,7 @@ pub mod local {
 
         fn stat(&self, path: &Path) -> FsResult<Metadata> {
             let md = fs::symlink_metadata(path)?;
-            Ok(meta_from(md))
+            Ok(meta_from(path, md))
         }
         fn chmod(&self, path: &Path, mode: u32, recursive: bool) -> FsResult<()> {
             #[cfg(unix)]
@@ -613,5 +629,63 @@ mod tests {
             let ent = list.iter().find(|e| e.name == name).unwrap();
             assert_eq!(ent.meta.nlink, 2, "{name}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_and_stat_populate_symlink_target() {
+        let fs = local::LocalFs::new();
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let target_file = root.join("target.txt");
+        {
+            let mut w = fs.write_file(&target_file).unwrap();
+            use std::io::Write;
+            writeln!(w, "data").unwrap();
+        }
+        let file_link = root.join("filelink");
+        std::os::unix::fs::symlink("target.txt", &file_link).unwrap();
+        fs.mkdir(&root.join("subdir")).unwrap();
+        let dir_link = root.join("dirlink");
+        std::os::unix::fs::symlink("subdir", &dir_link).unwrap();
+        let abs_link = root.join("abslink");
+        std::os::unix::fs::symlink(&target_file, &abs_link).unwrap();
+        let dangling = root.join("dangling");
+        std::os::unix::fs::symlink("missing-target", &dangling).unwrap();
+
+        let list = fs.list_dir(root, true).unwrap();
+        let parent = list.iter().find(|e| e.name == "..").unwrap();
+        assert!(!parent.meta.is_symlink);
+        assert_eq!(parent.meta.symlink_target, None);
+
+        let regular = list.iter().find(|e| e.name == "target.txt").unwrap();
+        assert!(!regular.meta.is_symlink);
+        assert_eq!(regular.meta.symlink_target, None);
+
+        let fl = list.iter().find(|e| e.name == "filelink").unwrap();
+        assert!(fl.meta.is_symlink, "file symlink");
+        assert_eq!(fl.meta.symlink_target.as_deref(), Some("target.txt"));
+        assert_eq!(
+            fs.stat(&file_link).unwrap().symlink_target.as_deref(),
+            Some("target.txt")
+        );
+
+        let dl = list.iter().find(|e| e.name == "dirlink").unwrap();
+        assert!(dl.meta.is_symlink, "directory symlink");
+        assert_eq!(dl.meta.symlink_target.as_deref(), Some("subdir"));
+        assert_eq!(
+            fs.stat(&dir_link).unwrap().symlink_target.as_deref(),
+            Some("subdir")
+        );
+
+        let al = list.iter().find(|e| e.name == "abslink").unwrap();
+        assert_eq!(
+            al.meta.symlink_target.as_deref(),
+            Some(target_file.to_str().unwrap())
+        );
+
+        let dang = list.iter().find(|e| e.name == "dangling").unwrap();
+        assert!(dang.meta.is_symlink);
+        assert_eq!(dang.meta.symlink_target.as_deref(), Some("missing-target"));
     }
 }

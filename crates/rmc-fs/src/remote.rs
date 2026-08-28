@@ -104,6 +104,7 @@ fn parent_marker(vfs_root: PathBuf) -> DirEntry {
         meta: Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: SystemTime::UNIX_EPOCH,
@@ -935,6 +936,7 @@ pub fn list_dir(url: &RemoteUrl, _vfs_root: &Path, show_hidden: bool) -> FsResul
             meta: Metadata {
                 is_dir: e.is_dir,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: e.size,
                 modified: SystemTime::UNIX_EPOCH,
@@ -1081,6 +1083,7 @@ pub fn list_dir_with_client(
             meta: Metadata {
                 is_dir: e.is_dir,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: e.size,
                 modified: SystemTime::UNIX_EPOCH,

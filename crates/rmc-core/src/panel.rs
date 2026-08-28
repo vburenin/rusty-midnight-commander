@@ -129,6 +129,9 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub is_dir: bool,
     pub is_symlink: bool,
+    /// Stored `readlink` text (not canonicalized). `None` if this is not a symlink
+    /// or if reading the target failed.
+    pub symlink_target: Option<String>,
     pub is_exe: bool,
     pub size: u64,
     pub modified: SystemTime,
@@ -796,10 +799,19 @@ pub fn listing_has_column_split_sep(listing: ListingFormat, brief_columns: u8) -
 }
 
 /// Current-entry mini-status: perms, owner, group, size ([`format_byte_size`]), mtime.
+///
+/// GNU mc(1): a symlink's mini-status is the stored target (`-> path`), not the
+/// regular-file stat line. Parent `..` is `UP--DIR`.
 pub fn format_mini_status(ent: &FileEntry, si: bool) -> String {
     // GNU mc(1): parent `..` mini-status is UP--DIR, not a fake Unix-epoch stat line.
     if ent.is_parent_marker() {
         return "UP--DIR".to_string();
+    }
+    if ent.is_symlink {
+        return match ent.symlink_target.as_deref().filter(|s| !s.is_empty()) {
+            Some(target) => format!("-> {target}"),
+            None => "<readlink failed>".to_string(),
+        };
     }
     let perms = user_perm_string(ent.permissions, ent.is_dir);
     let owner = ent.owner.as_deref().unwrap_or("-");
@@ -1027,6 +1039,7 @@ mod tests {
             path: PathBuf::from(name),
             is_dir,
             is_symlink: false,
+            symlink_target: None,
             is_exe: false,
             size,
             modified,
@@ -1326,6 +1339,7 @@ mod tests {
             path: PathBuf::from(name),
             is_dir,
             is_symlink: false,
+            symlink_target: None,
             is_exe: false,
             size,
             modified,
@@ -1589,6 +1603,71 @@ mod tests {
         assert!(
             si_line.contains(&si_size),
             "SI size {si_size:?} in mini-status: {si_line:?}"
+        );
+    }
+
+    #[test]
+    fn mini_status_symlink_shows_stored_target() {
+        let mut file_link = make_entry("link", 11, SystemTime::UNIX_EPOCH, false);
+        file_link.permissions = 0o777;
+        file_link.owner = Some("alice".into());
+        file_link.group = Some("staff".into());
+        file_link.is_symlink = true;
+        file_link.symlink_target = Some("readme.txt".into());
+        let line = panel_mini_status_line(true, true, None, Some(&file_link), false)
+            .expect("symlink mini-status");
+        assert_eq!(line, "-> readme.txt");
+        assert_eq!(format_mini_status(&file_link, false), "-> readme.txt");
+        assert!(
+            !line.contains("alice") && !line.contains("rwx"),
+            "symlink mini-status is the target, not the regular stat line: {line:?}"
+        );
+
+        let mut dir_link = make_entry("todir", 4, SystemTime::UNIX_EPOCH, true);
+        dir_link.is_symlink = true;
+        dir_link.symlink_target = Some("../other".into());
+        assert_eq!(format_mini_status(&dir_link, false), "-> ../other");
+
+        let mut abs = make_entry("abslink", 9, SystemTime::UNIX_EPOCH, false);
+        abs.is_symlink = true;
+        abs.symlink_target = Some("/etc/passwd".into());
+        assert_eq!(format_mini_status(&abs, false), "-> /etc/passwd");
+
+        let mut failed = make_entry("broken", 1, SystemTime::UNIX_EPOCH, false);
+        failed.is_symlink = true;
+        failed.symlink_target = None;
+        assert_eq!(format_mini_status(&failed, false), "<readlink failed>");
+
+        // Parent marker wins even if a symlink flag were set.
+        let mut parent = make_entry("..", 0, SystemTime::UNIX_EPOCH, true);
+        parent.is_symlink = true;
+        parent.symlink_target = Some("/nowhere".into());
+        assert_eq!(format_mini_status(&parent, false), "UP--DIR");
+        assert_eq!(
+            panel_mini_status_line(true, true, None, Some(&parent), false).as_deref(),
+            Some("UP--DIR")
+        );
+
+        let regular = make_entry("readme.txt", 1024, SystemTime::UNIX_EPOCH, false);
+        let regular_line = format_mini_status(&regular, false);
+        assert!(
+            regular_line.starts_with("-"),
+            "regular file mini-status: {regular_line:?}"
+        );
+        assert!(
+            !regular_line.contains("->"),
+            "regular file must not show a link arrow: {regular_line:?}"
+        );
+
+        assert_eq!(
+            panel_mini_status_line(false, true, None, Some(&file_link), false),
+            None,
+            "Show mini-status off still omits the row for a symlink"
+        );
+        assert_eq!(
+            panel_mini_status_line(false, false, None, Some(&dir_link), false),
+            None,
+            "inactive panel omits symlink mini-status when option is off"
         );
     }
 

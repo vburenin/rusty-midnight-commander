@@ -186,6 +186,7 @@ mod tests {
                 path: PathBuf::from(name),
                 is_dir: false,
                 is_symlink: false,
+                symlink_target: None,
                 is_exe: false,
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH,

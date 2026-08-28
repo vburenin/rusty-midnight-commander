@@ -177,6 +177,7 @@ pub fn list_dir(
             meta: Metadata {
                 is_dir: true,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH,
@@ -207,10 +208,11 @@ pub fn list_dir(
         }
         let real_path = PathBuf::from(real);
         let meta = match std::fs::symlink_metadata(&real_path) {
-            Ok(md) => to_meta(md),
+            Ok(md) => to_meta(&real_path, md),
             Err(_) => Metadata {
                 is_dir: false,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH,
@@ -262,6 +264,7 @@ fn parent_marker(parent: PathBuf) -> DirEntry {
         meta: Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: SystemTime::UNIX_EPOCH,
@@ -276,16 +279,22 @@ fn parent_marker(parent: PathBuf) -> DirEntry {
     }
 }
 
-fn to_meta(md: std::fs::Metadata) -> Metadata {
+fn to_meta(path: &Path, md: std::fs::Metadata) -> Metadata {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     #[cfg(unix)]
     let mode = md.permissions().mode();
     #[cfg(not(unix))]
     let mode = 0u32;
+    let is_symlink = md.file_type().is_symlink();
     Metadata {
         is_dir: md.is_dir(),
-        is_symlink: md.file_type().is_symlink(),
+        is_symlink,
+        symlink_target: if is_symlink {
+            crate::read_symlink_target(path)
+        } else {
+            None
+        },
         is_executable: !md.is_dir() && (mode & 0o111 != 0),
         size: md.len(),
         modified: md.modified().unwrap_or(SystemTime::UNIX_EPOCH),

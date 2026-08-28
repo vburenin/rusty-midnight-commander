@@ -114,7 +114,8 @@ pub struct PanelOptions {
     pub mark_moves_down: bool, // default true — GNU mc Insert-mark then cursor down
     /// GNU mc Options → Panels → Show mini-status. When true (default), draw the
     /// mini-status line at the bottom of each listing panel (perms/owner/group/
-    /// size/mtime). When false, omit that row so the listing uses the extra line.
+    /// size/mtime, or `->` plus the stored target when the current entry is a
+    /// symlink). When false, omit that row so the listing uses the extra line.
     /// Quick search still uses the row on the active panel.
     pub show_mini_status: bool,
     pub kilobyte_si: bool, // default false; panel/mini-status SI (1000) vs 1024 units
@@ -1683,6 +1684,7 @@ impl App {
                 path: e.path,
                 is_dir: e.meta.is_dir,
                 is_symlink: e.meta.is_symlink,
+                symlink_target: e.meta.symlink_target,
                 is_exe: e.meta.is_executable,
                 size: e.meta.size,
                 modified: e.meta.modified,
@@ -2595,6 +2597,7 @@ impl App {
             path: self.active_panel().cwd.clone(),
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_exe: false,
             size: 0,
             modified: std::time::SystemTime::UNIX_EPOCH,
@@ -2622,6 +2625,7 @@ impl App {
                 path: p.clone(),
                 is_dir: meta.is_dir,
                 is_symlink: meta.is_symlink,
+                symlink_target: meta.symlink_target,
                 is_exe: meta.is_executable,
                 size: meta.size,
                 modified: meta.modified,
