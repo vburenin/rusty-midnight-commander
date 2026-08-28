@@ -5456,15 +5456,10 @@ pub(crate) fn panel_header_colors(pal: &McPalette) -> (Color, Color) {
 }
 
 fn format_entry_name(ent: &FileEntry) -> String {
-    if ent.is_parent_marker() {
-        return "..".to_string();
-    }
+    // GNU `type` is always one cell, including a leading space for regular
+    // files and parent `..` so names line up with `/docs` and `*run.sh`.
     let mark = rmc_core::panel::listing_type_char(ent);
-    if mark == ' ' {
-        ent.name.clone()
-    } else {
-        format!("{mark}{}", ent.name)
-    }
+    format!("{mark}{}", ent.name)
 }
 
 fn fit_right_cell(s: &str, width: usize) -> String {
@@ -8136,6 +8131,57 @@ mod gnu_default_chrome_colors_tests {
     }
 
     #[test]
+    fn format_entry_name_keeps_gnu_type_cell_including_space() {
+        let parent = epoch_parent();
+        assert_eq!(super::format_entry_name(&parent), " ..");
+        let mut dir = epoch_file("docs", 4096);
+        dir.is_dir = true;
+        assert_eq!(super::format_entry_name(&dir), "/docs");
+        let mut exe = epoch_file("run.sh", 128);
+        exe.is_exe = true;
+        assert_eq!(super::format_entry_name(&exe), "*run.sh");
+        let mut link = epoch_file("alias", 7);
+        link.is_symlink = true;
+        assert_eq!(super::format_entry_name(&link), "@alias");
+        let file = epoch_file("Cargo.lock", 72688);
+        assert_eq!(super::format_entry_name(&file), " Cargo.lock");
+        assert_eq!(
+            super::format_entry_name(&epoch_file("Cargo.toml", 871)),
+            " Cargo.toml"
+        );
+        assert_eq!(
+            super::format_entry_name(&epoch_file(".gitignore", 684)),
+            " .gitignore"
+        );
+        let mut crates = epoch_file("crates", 4096);
+        crates.is_dir = true;
+        assert_eq!(super::format_entry_name(&crates), "/crates");
+        let mut color_sh = epoch_file("run-mcr-color.sh", 128);
+        color_sh.is_exe = true;
+        assert_eq!(super::format_entry_name(&color_sh), "*run-mcr-color.sh");
+        let mut sock = epoch_file("sock", 0);
+        sock.permissions = 0o140_000 | 0o666;
+        assert_eq!(super::format_entry_name(&sock), "=sock");
+        let mut fifo = epoch_file("pipe", 0);
+        fifo.permissions = 0o010_000 | 0o666;
+        assert_eq!(super::format_entry_name(&fifo), "|pipe");
+        let mut chr = epoch_file("tty", 0);
+        chr.permissions = 0o020_000 | 0o666;
+        assert_eq!(super::format_entry_name(&chr), "-tty");
+        let mut blk = epoch_file("sda", 0);
+        blk.permissions = 0o060_000 | 0o666;
+        assert_eq!(super::format_entry_name(&blk), "+sda");
+        let mut stale = epoch_file("gone", 1);
+        stale.is_symlink = true;
+        stale.is_stale_symlink = true;
+        assert_eq!(super::format_entry_name(&stale), "!gone");
+        let mut linkdir = epoch_file("linked-dir", 1);
+        linkdir.is_dir = true;
+        linkdir.is_symlink = true;
+        assert_eq!(super::format_entry_name(&linkdir), "~linked-dir");
+    }
+
+    #[test]
     fn user_listing_paints_format_tokens_and_mark() {
         let mut app = panel_app(ListingFormat::User);
         app.left.user_format = "type name mark | size | bsize perm mode".into();
@@ -8438,6 +8484,11 @@ mod gnu_default_chrome_colors_tests {
         assert!(top.contains(".[^]>"), "right widgets: {top:?}");
 
         assert!(parent_row.contains(".."), "{parent_row:?}");
+        let parent_type_name: String = grid[2][1..4].iter().map(|c| c.ch).collect();
+        assert_eq!(
+            parent_type_name, " ..",
+            "GNU parent Full listing is type-cell space then `..`: {parent_row:?}"
+        );
         assert!(
             parent_row.contains("UP--DIR"),
             "only `..` is UP--DIR: {parent_row:?}"
@@ -8454,6 +8505,7 @@ mod gnu_default_chrome_colors_tests {
         );
 
         assert!(dir_row.contains("/docs"), "dir type prefix: {dir_row:?}");
+        assert_eq!(grid[3][1].ch, '/', "dir type cell: {dir_row:?}");
         assert!(dir_row.contains("4096"), "dir inode size: {dir_row:?}");
         assert!(
             !dir_row.contains("UP--DIR"),
@@ -8461,11 +8513,31 @@ mod gnu_default_chrome_colors_tests {
         );
 
         assert!(exe_row.contains("*run.sh"), "exe type prefix: {exe_row:?}");
+        assert_eq!(grid[4][1].ch, '*', "exe type cell: {exe_row:?}");
         assert!(
             link_row.contains("@alias"),
             "symlink type prefix: {link_row:?}"
         );
+        assert_eq!(grid[5][1].ch, '@', "symlink type cell: {link_row:?}");
         assert!(file_row.contains("Cargo.lock"), "{file_row:?}");
+        assert_eq!(
+            grid[6][1].ch, ' ',
+            "regular file type cell is a space, not omitted: {file_row:?}"
+        );
+        assert_eq!(
+            grid[6][2].ch, 'C',
+            "Cargo.lock starts after the type cell: {file_row:?}"
+        );
+        assert_eq!(grid[3][2].ch, 'd', "docs starts after `/`: {dir_row:?}");
+        let docs_x = dir_row.find("/docs").expect("/docs in listing row");
+        let lock_x = file_row
+            .find("Cargo.lock")
+            .expect("Cargo.lock in listing row");
+        assert_eq!(
+            lock_x,
+            docs_x + 1,
+            "Cargo.lock lines up one cell right of /docs (type cell): docs={docs_x} lock={lock_x} dir={dir_row:?} file={file_row:?}"
+        );
         assert!(
             file_row.contains("72688"),
             "raw byte size, not human 70K: {file_row:?}"
@@ -8489,6 +8561,70 @@ mod gnu_default_chrome_colors_tests {
             inner_bars(&grid, 1, 0, 40).len(),
             2,
             "still two Full `|` bars"
+        );
+    }
+
+    #[test]
+    fn full_listing_regular_file_type_cell_is_space_aligned_with_dir() {
+        // GNU mc 4.8.33 Full listing at /workspace/rmc: `/crates` vs `Cargo.toml`.
+        // Name-field cell 0 is the `type` mark; the filename starts in cell 1,
+        // so `C` of Cargo.toml lines up with `c` of /crates (mc(1) `half type name`).
+        let mut app = panel_app(ListingFormat::Full);
+        let mut crates = epoch_file("crates", 4096);
+        crates.is_dir = true;
+        crates.permissions = 0o755;
+        let toml = epoch_file("Cargo.toml", 871);
+        let mut exe = epoch_file("run-mcr-color.sh", 128);
+        exe.is_exe = true;
+        exe.permissions = 0o755;
+        let gitignore = epoch_file(".gitignore", 684);
+        app.left.entries = vec![crates, toml, exe, gitignore];
+        app.left.cursor = 0;
+        app.left.scroll_top = 0;
+
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let name0 = 1usize; // first inner cell after the frame (GNU type cell)
+        let crates_y = 2usize;
+        let toml_y = 3usize;
+        let exe_y = 4usize;
+        let git_y = 5usize;
+        let crates_row = row_str(&grid, crates_y);
+        let toml_row = row_str(&grid, toml_y);
+        let exe_row = row_str(&grid, exe_y);
+        let git_row = row_str(&grid, git_y);
+
+        assert_eq!(
+            grid[crates_y][name0].ch, '/',
+            "/crates type: {crates_row:?}"
+        );
+        assert_eq!(
+            grid[crates_y][name0 + 1].ch,
+            'c',
+            "letter after `/`: {crates_row:?}"
+        );
+        assert_eq!(
+            grid[toml_y][name0].ch, ' ',
+            "regular file first name-field cell is space: {toml_row:?}"
+        );
+        assert_eq!(
+            grid[toml_y][name0 + 1].ch,
+            'C',
+            "Cargo.toml starts in the next cell: {toml_row:?}"
+        );
+        assert_eq!(grid[exe_y][name0].ch, '*', "exe type cell: {exe_row:?}");
+        assert_eq!(grid[exe_y][name0 + 1].ch, 'r', "{exe_row:?}");
+        assert_eq!(
+            grid[git_y][name0].ch, ' ',
+            ".gitignore keeps the type-cell space: {git_row:?}"
+        );
+        assert_eq!(grid[git_y][name0 + 1].ch, '.', "{git_row:?}");
+        assert!(
+            row_str(&grid, 1).contains(".n"),
+            "do not drop `.n` sort indicator from Full listing chrome"
         );
     }
 
