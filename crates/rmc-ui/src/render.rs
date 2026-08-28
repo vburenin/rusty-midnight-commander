@@ -3414,6 +3414,7 @@ fn dialog_focus_pair(pal: McPalette, focused: bool, error: bool) -> (Color, Colo
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_dialog_frame(
     p: &mut Painter,
     x: u16,
