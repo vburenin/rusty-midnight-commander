@@ -637,19 +637,22 @@ mod tests {
     fn nlink_regular_file_is_one() {
         let fs = local::LocalFs::new();
         let dir = tempdir().unwrap();
-        let file = dir.path().join("plain.txt");
+        // List a nested dir we own. `..` stats that fixture, not shared `/tmp`,
+        // so sibling cargo tests cannot move `st_nlink` under us (GHA #730).
+        let listed = dir.path().join("listed");
+        fs.mkdir(&listed).unwrap();
+        let file = listed.join("plain.txt");
         {
             let mut w = fs.write_file(&file).unwrap();
             use std::io::Write;
             writeln!(w, "data").unwrap();
         }
         assert_eq!(fs.stat(&file).unwrap().nlink, 1);
-        let list = fs.list_dir(dir.path(), true).unwrap();
+        let disk = std::fs::metadata(dir.path()).unwrap();
+        let list = fs.list_dir(&listed, true).unwrap();
         let ent = list.iter().find(|e| e.name == "plain.txt").unwrap();
         assert_eq!(ent.meta.nlink, 1);
         let parent = list.iter().find(|e| e.name == "..").unwrap();
-        let parent_path = dir.path().parent().expect("tempdir parent");
-        let disk = std::fs::metadata(parent_path).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -663,8 +666,8 @@ mod tests {
         {
             assert!(parent.meta.nlink >= 1);
         }
-        // Match disk even when the parent timestamp is Unix epoch (common on
-        // cloud/GHA checkouts). Do not require non-epoch unless the fixture sets mtime.
+        // Match the fixture even when its timestamp is Unix epoch. Do not require
+        // non-epoch unless the fixture sets mtime.
         assert_eq!(parent.meta.modified, disk.modified().unwrap());
     }
 
