@@ -70,6 +70,7 @@ pub fn list_dir(
                             meta: Metadata {
                                 is_dir: true,
                                 is_symlink: false,
+                                symlink_target: None,
                                 is_executable: false,
                                 size: 0,
                                 modified: UNIX_EPOCH,
@@ -97,6 +98,7 @@ pub fn list_dir(
                         meta: Metadata {
                             is_dir: false,
                             is_symlink: false,
+                            symlink_target: None,
                             is_executable: (header_mode(entry.header(), false) & 0o111) != 0,
                             size,
                             modified,
@@ -124,6 +126,7 @@ pub fn list_dir(
             meta: Metadata {
                 is_dir: true,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: 0,
                 modified: UNIX_EPOCH,
@@ -177,6 +180,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
         return Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
@@ -205,6 +209,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
             return Ok(Metadata {
                 is_dir,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: (!is_dir) && (mode & 0o111 != 0),
                 size,
                 modified,
@@ -226,6 +231,7 @@ pub fn stat(archive_path: &Path, kind: ArchiveKind, inner_full: &Path) -> FsResu
         Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,

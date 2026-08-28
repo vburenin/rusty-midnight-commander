@@ -127,6 +127,7 @@ mod tests {
             meta: Metadata {
                 is_dir: false,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH,

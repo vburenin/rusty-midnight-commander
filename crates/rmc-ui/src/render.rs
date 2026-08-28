@@ -7309,6 +7309,7 @@ mod gnu_default_chrome_colors_tests {
             path: PathBuf::from(".."),
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_exe: false,
             size: 0,
             modified: SystemTime::UNIX_EPOCH,
@@ -7423,6 +7424,89 @@ mod gnu_default_chrome_colors_tests {
         );
     }
 
+    fn symlink_entry(name: &str, target: &str, is_dir: bool) -> FileEntry {
+        FileEntry {
+            name: name.into(),
+            path: PathBuf::from(name),
+            is_dir,
+            is_symlink: true,
+            symlink_target: Some(target.into()),
+            is_exe: false,
+            size: 11,
+            modified: SystemTime::UNIX_EPOCH,
+            accessed: SystemTime::UNIX_EPOCH,
+            changed: SystemTime::UNIX_EPOCH,
+            permissions: 0o777,
+            owner: Some("alice".into()),
+            group: Some("staff".into()),
+            nlink: 1,
+            inode: 0,
+        }
+    }
+
+    #[test]
+    fn draw_panel_mini_status_shows_symlink_target() {
+        let mut app = App::new(Box::new(LocalFs::new()), KeyMap::mc_defaults()).unwrap();
+        app.active = PaneSide::Left;
+        app.left.listing = ListingFormat::Full;
+        app.right.listing = ListingFormat::Full;
+        app.left.entries = vec![
+            epoch_parent(),
+            symlink_entry("thelink", "readme.txt", false),
+            symlink_entry("dirlink", "../other", true),
+        ];
+        app.right.entries = vec![epoch_parent()];
+        app.left.cursor = 1;
+        app.right.cursor = 0;
+        app.panel_opts.show_mini_status = true;
+
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let status: String = grid[10].iter().map(|c| c.ch).collect();
+        assert!(
+            status.contains("-> readme.txt"),
+            "file symlink mini-status: {status:?}"
+        );
+        assert!(
+            !status.contains("alice") && !status.contains("rwx"),
+            "symlink mini-status is the target, not perms: {status:?}"
+        );
+
+        app.left.cursor = 2;
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let status: String = grid[10].iter().map(|c| c.ch).collect();
+        assert!(
+            status.contains("-> ../other"),
+            "directory symlink mini-status: {status:?}"
+        );
+
+        app.left.cursor = 0;
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let status: String = grid[10].iter().map(|c| c.ch).collect();
+        assert!(status.contains("UP--DIR"), "parent mini-status: {status:?}");
+
+        app.left.cursor = 1;
+        app.panel_opts.show_mini_status = false;
+        let mut buf = Vec::new();
+        let mut painter = Painter { out: &mut buf };
+        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 40, 12);
+        let status: String = grid[10].iter().map(|c| c.ch).collect();
+        assert!(
+            !status.contains("-> readme.txt"),
+            "Show mini-status off omits the symlink target row: {status:?}"
+        );
+    }
+
     #[test]
     fn menu_bar_is_white_on_cyan_until_f9_selects() {
         let pal = McPalette::default();
@@ -7487,6 +7571,7 @@ mod gnu_default_chrome_colors_tests {
             path: PathBuf::from(name),
             is_dir: false,
             is_symlink: false,
+            symlink_target: None,
             is_exe: false,
             size,
             modified: SystemTime::UNIX_EPOCH,

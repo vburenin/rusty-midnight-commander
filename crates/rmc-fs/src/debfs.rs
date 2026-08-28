@@ -68,6 +68,7 @@ fn list_tar_from_reader<R: Read>(
                             meta: Metadata {
                                 is_dir: true,
                                 is_symlink: false,
+                                symlink_target: None,
                                 is_executable: false,
                                 size: 0,
                                 modified: UNIX_EPOCH,
@@ -94,6 +95,7 @@ fn list_tar_from_reader<R: Read>(
                         meta: Metadata {
                             is_dir: false,
                             is_symlink: false,
+                            symlink_target: None,
                             is_executable: (header_mode(entry.header(), false) & 0o111) != 0,
                             size,
                             modified,
@@ -118,6 +120,7 @@ fn list_tar_from_reader<R: Read>(
             meta: Metadata {
                 is_dir: true,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: 0,
                 modified: UNIX_EPOCH,
@@ -167,6 +170,7 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
         return Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
@@ -194,6 +198,7 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
             return Ok(Metadata {
                 is_dir,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: (!is_dir) && (mode & 0o111 != 0),
                 size,
                 modified,
@@ -214,6 +219,7 @@ fn stat_tar_from_reader<R: Read>(reader: R, inner_full: &Path) -> FsResult<Metad
         Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
@@ -381,6 +387,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
         return Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
@@ -414,6 +421,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
                 return Ok(Metadata {
                     is_dir: false,
                     is_symlink: false,
+                    symlink_target: None,
                     is_executable: (entry.header().mode() & 0o111) != 0,
                     size,
                     modified,

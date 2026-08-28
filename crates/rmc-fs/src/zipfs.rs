@@ -47,6 +47,7 @@ pub fn list_dir(
                             meta: Metadata {
                                 is_dir: true,
                                 is_symlink: false,
+                                symlink_target: None,
                                 is_executable: false,
                                 size: 0,
                                 modified: UNIX_EPOCH,
@@ -71,6 +72,7 @@ pub fn list_dir(
                         meta: Metadata {
                             is_dir: false,
                             is_symlink: false,
+                            symlink_target: None,
                             is_executable: false,
                             size: file.size(),
                             modified: UNIX_EPOCH,
@@ -95,6 +97,7 @@ pub fn list_dir(
             meta: Metadata {
                 is_dir: true,
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: 0,
                 modified: UNIX_EPOCH,
@@ -144,6 +147,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
         return Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
@@ -169,6 +173,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
             return Ok(Metadata {
                 is_dir: file.is_dir(),
                 is_symlink: false,
+                symlink_target: None,
                 is_executable: false,
                 size: file.size(),
                 modified: UNIX_EPOCH,
@@ -189,6 +194,7 @@ pub fn stat(archive_path: &Path, inner_full: &Path) -> FsResult<Metadata> {
         Ok(Metadata {
             is_dir: true,
             is_symlink: false,
+            symlink_target: None,
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,

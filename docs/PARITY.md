@@ -22,7 +22,7 @@ Note: Keys are shown using MC conventions: C- for Ctrl, Alt- for Meta/Alt, S- fo
 Overall structure and visible elements from mc(1) “Overview”, “Menu Bar”, “Directory Panels”, and function key labels:
 - [x] Menu bar top row, toggled with F9; menus: Left, File, Command, Options, Right
 - [x] Dual directory panels (current/other), selection bar indicates active panel
-- [ ] Mini-status line (per-panel) showing selected file info and symlink targets
+- [x] Mini-status line (per-panel) showing selected file info and symlink targets
 - [x] Hint line (context/help hints when enabled)
 - [x] Shell command line (second line from bottom)
 - [x] Bottom F-key label bar (F1…F10)
