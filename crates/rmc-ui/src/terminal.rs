@@ -7960,6 +7960,8 @@ impl TerminalApp {
                                 None => true,
                             };
                             if need_spawn {
+                                // PtySession::spawn execs resolve_user_shell()
+                                // (`$SHELL`, else passwd, else /bin/sh).
                                 if let Ok(sess) =
                                     rmc_core::subshell::PtySession::spawn(&active_cwd, r, c)
                                 {
