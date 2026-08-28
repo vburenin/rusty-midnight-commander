@@ -12,6 +12,13 @@ pub fn extract_remote_canonical_url(path: &Path) -> Option<String> {
             return Some(s.to_string());
         }
     }
+    // GNU mc(1) ftpfs: /#ftp:[!][user[:pass]@]machine[:port]/[remote-dir]
+    // Optional '!' after #ftp: is accepted (ftp crate always uses PASV).
+    if let Some(idx) = s.find("#ftp:") {
+        let rest = &s[idx + "#ftp:".len()..];
+        let rest = rest.strip_prefix('!').unwrap_or(rest);
+        return Some(format!("ftp://{rest}"));
+    }
     // Look for an anchor component ending with '#', and check if it is "#fish:" or "#smb:"
     // Accept both absolute and relative paths; scan raw string for the markers for simplicity.
     if let Some(idx) = s.find("#fish:") {
@@ -198,8 +205,22 @@ mod tests {
         assert!(is_virtual_path(Path::new("/tmp/sample.zip#/dir/a.txt")));
         assert!(is_virtual_path(Path::new("/tmp/helper.lsar#/a.txt")));
         assert!(is_virtual_path(Path::new("ftp://host/pub/file")));
+        assert!(is_virtual_path(Path::new("/#ftp:host/pub")));
+        assert!(is_virtual_path(Path::new("/tmp/#ftp:!user@host:21/")));
         assert!(is_virtual_path(Path::new("sftp://user@host/tmp")));
         assert!(is_virtual_path(Path::new("fish://host/tmp")));
         assert!(is_virtual_path(Path::new("smb://host/share")));
+    }
+
+    #[test]
+    fn extract_ftp_anchor_matches_gnu_mc_form() {
+        assert_eq!(
+            extract_remote_canonical_url(Path::new("/#ftp:example.com/pub")),
+            Some("ftp://example.com/pub".into())
+        );
+        assert_eq!(
+            extract_remote_canonical_url(Path::new("/tmp/#ftp:!alice@h:2121/docs")),
+            Some("ftp://alice@h:2121/docs".into())
+        );
     }
 }

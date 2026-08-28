@@ -8750,7 +8750,7 @@ fn open_quick_cd(app: &mut App) {
                 return Ok(());
             }
             let typed = std::path::PathBuf::from(trimmed);
-            let path = if typed.is_absolute() {
+            let path = if typed.is_absolute() || rmc_fs::pathutil::is_virtual_path(&typed) {
                 typed
             } else {
                 app.active_panel().cwd.join(trimmed)
