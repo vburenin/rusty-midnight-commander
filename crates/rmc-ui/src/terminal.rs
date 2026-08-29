@@ -6876,7 +6876,39 @@ impl TerminalApp {
                             "Help" => {
                                 app.handle_action(Action::ShowHelp)?;
                             }
-                            "Listing mode..." => {
+                            "File listing" => {
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => rmc_core::actions::PaneSide::Left,
+                                };
+                                set_side_panel_mode(
+                                    app,
+                                    side,
+                                    rmc_core::panel::PanelMode::Listing,
+                                );
+                            }
+                            "Quick view" => {
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => rmc_core::actions::PaneSide::Left,
+                                };
+                                set_side_panel_mode(
+                                    app,
+                                    side,
+                                    rmc_core::panel::PanelMode::QuickView,
+                                );
+                            }
+                            "Info" => {
+                                let side = match *top_index {
+                                    0 => rmc_core::actions::PaneSide::Left,
+                                    4 => rmc_core::actions::PaneSide::Right,
+                                    _ => rmc_core::actions::PaneSide::Left,
+                                };
+                                set_side_panel_mode(app, side, rmc_core::panel::PanelMode::Info);
+                            }
+                            "Listing format..." | "Listing mode..." => {
                                 let side = match *top_index {
                                     0 => rmc_core::actions::PaneSide::Left,
                                     4 => rmc_core::actions::PaneSide::Right,
@@ -6912,14 +6944,14 @@ impl TerminalApp {
                                     focus,
                                 };
                             }
-                            "Configuration" => {
+                            "Configuration..." | "Configuration" => {
                                 let draft = app.config_opts;
                                 app.ui_mode = UiMode::ConfigurationDialog {
                                     draft,
                                     focus: rmc_core::app::ConfigOptionsFocus::Verbose,
                                 };
                             }
-                            "Layout" => {
+                            "Layout..." | "Layout" => {
                                 // Prefill dialog from current options
                                 let draft = app.layout;
                                 app.ui_mode = UiMode::LayoutDialog {
@@ -6927,7 +6959,7 @@ impl TerminalApp {
                                     focus: LayoutFocus::SplitVertical,
                                 };
                             }
-                            "Appearance" => {
+                            "Appearance..." | "Appearance" => {
                                 // Build list of available skins; always include default
                                 // and the current name/path so a custom MC_SKIN path is shown.
                                 let mut skins = crate::skin::list_available_skins();
@@ -6963,7 +6995,7 @@ impl TerminalApp {
                                     focus: rmc_core::app::VfsOptionsFocus::AlwaysUseFtpProxy,
                                 };
                             }
-                            "Learn keys" => {
+                            "Learn keys..." | "Learn keys" => {
                                 open_learn_keys_dialog(app);
                             }
                             "Save setup" => {
@@ -6982,21 +7014,21 @@ impl TerminalApp {
                                     };
                                 }
                             }
-                            "Panels" => {
+                            "Panel options..." | "Panels" => {
                                 let draft = app.panel_opts;
                                 app.ui_mode = UiMode::PanelOptionsDialog {
                                     draft,
                                     focus: rmc_core::app::PanelOptionsFocus::ShowHidden,
                                 };
                             }
-                            "Confirmations" => {
+                            "Confirmation..." | "Confirmations" => {
                                 let draft = app.confirm;
                                 app.ui_mode = UiMode::ConfirmationsDialog {
                                     draft,
                                     focus: rmc_core::app::ConfirmationsFocus::Delete,
                                 };
                             }
-                            "Filter" => {
+                            "Filter..." | "Filter" => {
                                 let side = match *top_index {
                                     0 => rmc_core::actions::PaneSide::Left,
                                     4 => rmc_core::actions::PaneSide::Right,
@@ -7024,7 +7056,7 @@ impl TerminalApp {
                                     focus: FilterDialogFocus::Pattern,
                                 };
                             }
-                            "Reread" => {
+                            "Rescan" | "Reread" => {
                                 // GNU mc(1) Left/Right → Reread: same force-reload as C-r
                                 // on the panel this menu belongs to.
                                 let side = match *top_index {
@@ -7046,12 +7078,16 @@ impl TerminalApp {
                                 app.handle_action(Action::EqualizePanels)?;
                                 app.ui_mode = UiMode::Normal;
                             }
-                            "FTP link" | "SFTP link" | "Shell link" | "SMB link" => {
+                            "FTP link..." | "SFTP link..." | "Shell link..." | "FTP link"
+                            | "SFTP link" | "Shell link" | "SMB link" => {
                                 match item {
                                     // New multi-field form for FTP/SFTP
-                                    "FTP link" | "SFTP link" => {
-                                        let scheme =
-                                            if item == "FTP link" { "ftp" } else { "sftp" };
+                                    "FTP link..." | "SFTP link..." | "FTP link" | "SFTP link" => {
+                                        let scheme = if item.starts_with("FTP") {
+                                            "ftp"
+                                        } else {
+                                            "sftp"
+                                        };
                                         app.ui_mode = UiMode::FtpConnectDialog {
                                             scheme: scheme.to_string(),
                                             host: String::new(),
@@ -7065,9 +7101,9 @@ impl TerminalApp {
                                         };
                                     }
                                     // Keep existing URL input for Shell/SMB
-                                    "Shell link" | "SMB link" => {
+                                    "Shell link..." | "Shell link" | "SMB link" => {
                                         let (scheme, title, prompt) = match item {
-                                            "Shell link" => (
+                                            "Shell link..." | "Shell link" => (
                                                 "sh",
                                                 "Shell link to machine".to_string(),
                                                 "Enter shell URL (e.g. sh://user@host/path):"
@@ -7266,8 +7302,11 @@ impl TerminalApp {
                             "Switch panels on/off" => {
                                 app.handle_action(Action::ToggleSubshell)?;
                             }
-                            "Compare dirs" => {
+                            "Compare dirs" | "Compare directories" => {
                                 open_compare_dirs_dialog(app);
+                            }
+                            "Compare files" => {
+                                open_compare_files(app);
                             }
                             "External panelize" => {
                                 open_external_panelize_dialog(app);
@@ -7283,6 +7322,18 @@ impl TerminalApp {
                                     app,
                                     rmc_core::user_menu::user_menu_file_path(),
                                 );
+                            }
+                            "Edit highlighting group file" => {
+                                open_user_config_in_editor(
+                                    app,
+                                    rmc_core::paths::user_mc_config_dir().join("filehighlight.ini"),
+                                );
+                            }
+                            "Background jobs" => {
+                                app.ui_mode = UiMode::JobsDialog {
+                                    selected_index: 0,
+                                    focus: rmc_core::app::JobsDialogFocus::List,
+                                };
                             }
                             "Screen list" => {
                                 open_screen_list(app);
@@ -10367,6 +10418,45 @@ fn rescan_panel_tree_side(app: &mut App, side: PaneSide, list_rows: usize) {
         tree.figure.apply_rescan(kids, depth);
         tree.figure.ensure_visible(list_rows);
     }
+}
+
+/// Left/Right menu File listing / Quick view / Info: set **that** panel.
+fn set_side_panel_mode(
+    app: &mut App,
+    side: rmc_core::actions::PaneSide,
+    mode: rmc_core::panel::PanelMode,
+) {
+    let p = match side {
+        rmc_core::actions::PaneSide::Left => &mut app.left,
+        rmc_core::actions::PaneSide::Right => &mut app.right,
+    };
+    p.mode = mode;
+    p.preview_offset = 0;
+    p.preview_path = None;
+    if !matches!(mode, rmc_core::panel::PanelMode::Tree) {
+        p.tree = None;
+    }
+    app.active = side;
+    app.ui_mode = UiMode::Normal;
+}
+
+/// GNU mc(1) Command → Compare files (`C-x C-d`): internal diff of the
+/// two panels' current entries.
+fn open_compare_files(app: &mut App) {
+    let left = panel_current_path(&app.left);
+    let right = panel_current_path(&app.right);
+    app.ui_mode = UiMode::Normal;
+    if let (Some(l), Some(r)) = (left, right) {
+        open_cli_diff(app, l, r);
+    }
+}
+
+fn panel_current_path(panel: &rmc_core::panel::PanelState) -> Option<std::path::PathBuf> {
+    let ent = panel.current_entry()?;
+    if ent.name == ".." || ent.name.is_empty() {
+        return None;
+    }
+    Some(panel.cwd.join(&ent.name))
 }
 
 /// GNU mc(1) C-x q / C-x i: set the **other** panel to Quick view / Info.
@@ -21620,14 +21710,23 @@ mod command_menu_remaining_items_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn editor_path(app: &App) -> std::path::PathBuf {
@@ -21657,13 +21756,18 @@ mod command_menu_remaining_items_tests {
                 "Find file",
                 "Swap panels",
                 "Switch panels on/off",
-                "Compare dirs",
+                "Compare directories",
+                "Compare files",
                 "External panelize",
+                "",
                 "Command history",
                 "Directory hotlist",
+                "Background jobs",
+                "Screen list",
+                "",
                 "Edit extension file",
                 "Edit menu file",
-                "Screen list",
+                "Edit highlighting group file",
             ]
         );
     }
@@ -21960,16 +22064,29 @@ mod listing_mode_dialog_tests {
         panic!("did not reach Listing mode OK");
     }
 
-    /// Left menu: Copy..SMB link (8 items) then Listing mode...
+    /// Left menu: File listing / Quick view / Info / Tree / sep then Listing format...
     fn open_left_listing_mode(app: &mut App) {
         app.config_opts.drop_menus = true;
         press(app, KeyCode::F(9));
-        for _ in 0..8 {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&"Listing format..."),
+            "missing Listing format..."
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&"Listing format...") {
+                    press(app, KeyCode::Enter);
+                    let (side, _, _, _) = listing_dialog(app);
+                    assert_eq!(side, PaneSide::Left, "Left menu Listing format is left panel");
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
-        let (side, _, _, _) = listing_dialog(app);
-        assert_eq!(side, PaneSide::Left, "Left menu Listing mode is left panel");
+        panic!("did not reach Listing format...");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -21977,14 +22094,23 @@ mod listing_mode_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     #[test]
@@ -22233,16 +22359,29 @@ mod filter_dialog_tests {
         panic!("did not reach Filter focus {want:?}");
     }
 
-    /// Left menu: Copy..Tree (11 items) then Filter.
+    /// Left menu Filter... (GNU 4.8.30 `create_panel_menu`).
     fn open_left_filter(app: &mut App) {
         app.config_opts.drop_menus = true;
         press(app, KeyCode::F(9));
-        for _ in 0..11 {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&"Filter..."),
+            "missing Filter..."
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&"Filter...") {
+                    press(app, KeyCode::Enter);
+                    let (side, _, _, _, _, _) = filter_dialog(app);
+                    assert_eq!(side, PaneSide::Left, "Left menu Filter is left panel");
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
-        let (side, _, _, _, _, _) = filter_dialog(app);
-        assert_eq!(side, PaneSide::Left, "Left menu Filter is left panel");
+        panic!("did not reach Filter...");
     }
 
     fn type_pattern(app: &mut App, text: &str) {
@@ -22261,14 +22400,23 @@ mod filter_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     #[test]
@@ -22551,14 +22699,23 @@ mod equalize_panels_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -22566,14 +22723,23 @@ mod equalize_panels_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn assert_equal_split(app: &App) {
@@ -22585,24 +22751,103 @@ mod equalize_panels_tests {
     }
 
     #[test]
-    fn left_right_menu_has_reread_then_equal_panel_size_after_filter() {
-        let filter = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == "Filter")
-            .expect("Filter");
-        let reread = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == "Reread")
-            .expect("Reread");
-        let eq = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == "Equal panel size")
-            .expect("Equal panel size");
-        assert_eq!(reread, filter + 1);
-        assert_eq!(eq, reread + 1);
+    fn left_right_menu_has_gnu_4_8_30_order_without_file_ops() {
+        assert_eq!(
+            LEFT_RIGHT_MENU_ITEMS,
+            &[
+                "File listing",
+                "Quick view",
+                "Info",
+                "Tree",
+                "",
+                "Listing format...",
+                "Sort order...",
+                "Filter...",
+                "",
+                "FTP link...",
+                "Shell link...",
+                "SFTP link...",
+                "",
+                "Rescan",
+            ]
+        );
+        assert!(!LEFT_RIGHT_MENU_ITEMS.contains(&"Copy"));
+        assert!(!LEFT_RIGHT_MENU_ITEMS.contains(&"Equal panel size"));
         assert!(!COMMAND_MENU_ITEMS.contains(&"Equal panel size"));
         assert!(!COMMAND_MENU_ITEMS.contains(&"Equalize"));
         assert!(!COMMAND_MENU_ITEMS.contains(&"Reread"));
+        assert!(!COMMAND_MENU_ITEMS.contains(&"Rescan"));
+    }
+
+    #[test]
+    fn left_menu_quick_view_and_info_and_file_listing() {
+        let root = temp_workspace();
+        let (mut app, _, _) = seed_app(&root);
+        open_left_right_item(&mut app, false, "Quick view");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, rmc_core::panel::PanelMode::QuickView);
+        assert_eq!(app.active, PaneSide::Left);
+        open_left_right_item(&mut app, false, "Info");
+        assert_eq!(app.left.mode, rmc_core::panel::PanelMode::Info);
+        open_left_right_item(&mut app, false, "File listing");
+        assert_eq!(app.left.mode, rmc_core::panel::PanelMode::Listing);
+        open_left_right_item(&mut app, true, "Quick view");
+        assert_eq!(app.right.mode, rmc_core::panel::PanelMode::QuickView);
+        assert_eq!(app.active, PaneSide::Right);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_compare_files_opens_diff() {
+        let root = temp_workspace();
+        let (mut app, left_dir, right_dir) = seed_app(&root);
+        let left_file = left_dir.join("l.txt");
+        let right_file = right_dir.join("r.txt");
+        if let Some(i) = app.left.entries.iter().position(|e| e.name == "l.txt") {
+            app.left.cursor = i;
+        }
+        if let Some(i) = app.right.entries.iter().position(|e| e.name == "r.txt") {
+            app.right.cursor = i;
+        }
+        open_command_item(&mut app, "Compare files");
+        match &app.ui_mode {
+            UiMode::Diff(st) => {
+                assert_eq!(st.left_path, left_file);
+                assert_eq!(st.right_path, right_file);
+            }
+            _ => panic!("Compare files must open Diff"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_background_jobs_opens_dialog() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_command_item(&mut app, "Background jobs");
+        assert!(
+            matches!(app.ui_mode, UiMode::JobsDialog { .. }),
+            "Command → Background jobs must open JobsDialog"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn command_menu_edit_highlighting_group_file_opens_editor() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        open_command_item(&mut app, "Edit highlighting group file");
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => {
+                let path = buf.path.as_ref().expect("path");
+                assert!(
+                    path.ends_with("filehighlight.ini"),
+                    "expected filehighlight.ini, got {path:?}"
+                );
+            }
+            _ => panic!("Edit highlighting group file must open Editor"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -22635,7 +22880,7 @@ mod equalize_panels_tests {
         app.active = PaneSide::Right;
         std::fs::write(left_dir.join("left-new.txt"), b"n").unwrap();
         std::fs::write(right_dir.join("right-new.txt"), b"n").unwrap();
-        open_left_right_item(&mut app, false, "Reread");
+        open_left_right_item(&mut app, false, "Rescan");
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert_eq!(app.active, PaneSide::Right, "Reread must not steal focus");
         assert_eq!(file_names(&app.left), ["l.txt", "left-new.txt"]);
@@ -22649,7 +22894,7 @@ mod equalize_panels_tests {
         let (mut app, left_dir, right_dir) = seed_app(&root);
         std::fs::write(left_dir.join("left-new.txt"), b"n").unwrap();
         std::fs::write(right_dir.join("right-new.txt"), b"n").unwrap();
-        open_left_right_item(&mut app, true, "Reread");
+        open_left_right_item(&mut app, true, "Rescan");
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert_eq!(app.active, PaneSide::Left);
         assert_eq!(file_names(&app.left), ["l.txt"]);
@@ -22688,7 +22933,7 @@ mod equalize_panels_tests {
         let left_listing = names(&app.left);
         let right_listing = names(&app.right);
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert_equal_split(&app);
         assert_eq!(app.left.cwd, left_dir);
@@ -22706,7 +22951,7 @@ mod equalize_panels_tests {
         let left_listing = names(&app.left);
         let right_listing = names(&app.right);
         app.layout.panel_ratio = 0.2;
-        open_left_right_item(&mut app, true, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert_equal_split(&app);
         assert_eq!(app.left.cwd, left_dir);
@@ -22777,7 +23022,7 @@ mod equalize_panels_tests {
         assert_eq!(app.left.cwd, left_dir);
         assert_eq!(app.right.cwd, right_dir);
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -22791,7 +23036,7 @@ mod equalize_panels_tests {
         press_alt(&mut app, 't');
         assert_eq!(app.left.listing, ListingFormat::Full);
 
-        open_left_right_item(&mut app, false, "Listing mode...");
+        open_left_right_item(&mut app, false, "Listing format...");
         assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -22904,14 +23149,23 @@ mod sort_dialog_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -22919,14 +23173,23 @@ mod sort_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn sort_dialog(app: &App) -> (PaneSide, usize, SortBy, bool, bool) {
@@ -23202,7 +23465,7 @@ mod sort_dialog_tests {
         assert_eq!(app.left.cwd, left_dir);
         assert_eq!(app.right.cwd, right_dir);
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -23216,12 +23479,12 @@ mod sort_dialog_tests {
         press_alt(&mut app, 't');
         assert_eq!(app.left.listing, ListingFormat::Full);
 
-        open_left_right_item(&mut app, false, "Listing mode...");
+        open_left_right_item(&mut app, false, "Listing format...");
         assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
 
         app.config_opts.drop_menus = true;
@@ -23339,14 +23602,23 @@ mod panel_quickview_info_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -23354,14 +23626,23 @@ mod panel_quickview_info_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn tab_listing_ok(app: &mut App) {
@@ -23514,7 +23795,7 @@ mod panel_quickview_info_tests {
         let (mut app, _, _) = seed_app(&root);
         ctrl_x_then(&mut app, 'q');
         assert_eq!(app.right.mode, PanelMode::QuickView);
-        open_left_right_item(&mut app, true, "Listing mode...");
+        open_left_right_item(&mut app, true, "Listing format...");
         assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
         tab_listing_ok(&mut app);
         press(&mut app, KeyCode::Enter);
@@ -23585,7 +23866,7 @@ mod panel_quickview_info_tests {
         assert_eq!(app.left.cwd, left_dir);
         assert_eq!(app.right.cwd, right_dir);
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -23603,12 +23884,12 @@ mod panel_quickview_info_tests {
         press_alt(&mut app, 't');
         assert_eq!(app.left.listing, ListingFormat::Full);
 
-        open_left_right_item(&mut app, false, "Listing mode...");
+        open_left_right_item(&mut app, false, "Listing format...");
         assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
 
         app.config_opts.drop_menus = true;
@@ -23702,14 +23983,23 @@ mod panel_tree_mode_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -23717,14 +24007,23 @@ mod panel_tree_mode_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn ctrl_x_then(app: &mut App, c: char) {
@@ -23999,7 +24298,7 @@ mod panel_tree_mode_tests {
         let (mut app, _, _) = seed_app(&root);
         open_left_right_item(&mut app, false, "Tree");
         assert_eq!(app.left.mode, PanelMode::Tree);
-        open_left_right_item(&mut app, false, "Listing mode...");
+        open_left_right_item(&mut app, false, "Listing format...");
         assert!(matches!(app.ui_mode, UiMode::ListingModeDialog { .. }));
         tab_listing_ok(&mut app);
         press(&mut app, KeyCode::Enter);
@@ -24058,7 +24357,7 @@ mod panel_tree_mode_tests {
         assert_eq!(app.left.cwd, left_dir);
         assert_eq!(app.right.cwd, right_dir);
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -24067,7 +24366,7 @@ mod panel_tree_mode_tests {
         press(&mut app, KeyCode::Esc);
 
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
 
         app.config_opts.drop_menus = true;
@@ -24420,14 +24719,23 @@ mod alt_tab_completion_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -24435,14 +24743,23 @@ mod alt_tab_completion_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -24672,7 +24989,7 @@ mod alt_tab_completion_tests {
         app.change_dir(&right_dir).unwrap();
         app.active = PaneSide::Left;
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         match &app.ui_mode {
             UiMode::FilterDialog { focus, .. } => {
                 assert_eq!(*focus, FilterDialogFocus::Pattern);
@@ -24686,7 +25003,7 @@ mod alt_tab_completion_tests {
         press(&mut app, KeyCode::Esc);
 
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
 
         open_command_item(&mut app, "Swap panels");
@@ -24803,14 +25120,23 @@ mod panel_split_layout_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -24818,14 +25144,23 @@ mod panel_split_layout_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn open_layout(app: &mut App) {
@@ -24963,7 +25298,7 @@ mod panel_split_layout_tests {
         assert_eq!(menu_bar_titles(true)[0], " Above ");
         assert_eq!(menu_bar_titles(true)[4], " Below ");
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -24977,7 +25312,7 @@ mod panel_split_layout_tests {
         assert_eq!(app.right.mode, PanelMode::Listing);
 
         app.layout.panel_ratio = 0.65;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!(matches!(app.ui_mode, UiMode::Normal));
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
         assert!(app.layout.horizontal_split);
@@ -25159,14 +25494,23 @@ mod select_group_dialog_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn open_command_item(app: &mut App, label: &str) {
@@ -25174,14 +25518,23 @@ mod select_group_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        let idx = COMMAND_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Command menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            COMMAND_MENU_ITEMS.contains(&label),
+            "missing Command menu item {label}"
+        );
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Command menu item {label}");
     }
 
     fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -25426,7 +25779,7 @@ mod select_group_dialog_tests {
         press(&mut app, KeyCode::Char('*'));
         assert!(!selected_names(&app).iter().any(|n| n == ".."));
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -25435,7 +25788,7 @@ mod select_group_dialog_tests {
         press(&mut app, KeyCode::Esc);
 
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
 
         open_command_item(&mut app, "Swap panels");
@@ -25655,14 +26008,23 @@ mod chmod_chown_link_dialog_tests {
                 press(app, KeyCode::Right);
             }
         }
-        let idx = LEFT_RIGHT_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing Left/Right menu item {label}"));
-        for _ in 0..idx {
+        assert!(
+            LEFT_RIGHT_MENU_ITEMS.contains(&label),
+            "missing Left/Right menu item {label}"
+        );
+        for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Left/Right menu item {label}");
     }
 
     fn two_panel_dirs(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -26093,7 +26455,7 @@ mod chmod_chown_link_dialog_tests {
         press_alt(&mut app, ',');
         assert!(app.layout.horizontal_split);
 
-        open_left_right_item(&mut app, false, "Filter");
+        open_left_right_item(&mut app, false, "Filter...");
         assert!(matches!(app.ui_mode, UiMode::FilterDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
@@ -26102,7 +26464,7 @@ mod chmod_chown_link_dialog_tests {
         press(&mut app, KeyCode::Esc);
 
         app.layout.panel_ratio = 0.8;
-        open_left_right_item(&mut app, false, "Equal panel size");
+        app.handle_action(Action::EqualizePanels).unwrap();
         assert!((app.layout.panel_ratio - 0.5).abs() <= f32::EPSILON);
 
         press(&mut app, KeyCode::Char('+'));
@@ -28294,16 +28656,17 @@ mod panel_function_keys_tests {
     }
 
     #[test]
-    fn left_menu_copy_opens_copy_dialog() {
+    fn left_menu_file_listing_sets_listing_mode() {
         let root = temp_workspace();
         seed_listing(&root);
         let mut app = make_app(&root);
-        goto_name(&mut app, "notes.txt");
+        app.left.mode = rmc_core::panel::PanelMode::QuickView;
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
-        // Left menu item 0 is Copy (same F5 dispatch as File → Copy).
+        // Left menu item 0 is File listing.
         press(&mut app, KeyCode::Enter);
-        assert_eq!(copy_title(&app), "Copy", "Left → Copy must open Copy");
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.left.mode, rmc_core::panel::PanelMode::Listing);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -31196,10 +31559,21 @@ mod learn_keys_tests {
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        for _ in 0..6 {
+        for _ in 0..crate::render::OPTIONS_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if crate::render::OPTIONS_MENU_ITEMS.get(*selected_index)
+                    == Some(&"Learn keys...")
+                {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach Learn keys...");
     }
 
     fn dialog_selected(app: &App) -> usize {
