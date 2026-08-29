@@ -22,6 +22,8 @@ cargo run --release -p mcr
 
 That launches `mcr` in the current working directory. The release binary
 is `target/release/mcr` after `cargo build --release -p mcr`.
+`mcr DIR1 [DIR2]` opens `DIR1` in the current (active) panel and
+`DIR2` in the other panel (default left-current: left then right).
 
 ```bash
 mcr --help
@@ -42,6 +44,7 @@ still honored. Last of `-U`/`-u` wins.
 | `-v file`, `--view=file` | Start the internal viewer (not `$PAGER`) |
 | `-e [file…]`, `--edit` | Start the internal editor; no files opens one untitled buffer |
 | `--diff file1 file2` | Start the internal side-by-side diff viewer |
+| `DIR1 [DIR2]` | Current panel directory; optional other panel directory |
 
 Environment variables honored for paths and helpers include `SHELL`,
 `MC_SKIN`, `MC_KEYMAP`, `MC_COLOR_TABLE`, `MC_DATADIR`,

@@ -4,6 +4,8 @@ mcr \- dual-pane terminal file manager
 .SH SYNOPSIS
 .B mcr
 [\fIOPTION\fR]...
+[\fIDIR1\fR
+[\fIDIR2\fR]]
 .SH DESCRIPTION
 .B mcr
 is the binary of rusty-midnight-commander, an Apache-2.0 clean-room
@@ -14,6 +16,18 @@ user-visible behavior.
 With no options it opens a dual-pane listing of the current directory:
 menu bar (F9), two directory panels, mini-status, hint line, shell
 command line, and an F1\-F10 label bar.
+.PP
+A single directory operand opens that path in the current (active)
+panel. Two directory operands open the first in the current panel and
+the second in the other panel. The default current panel is the left
+one, so
+.B mcr /tmp /var
+lists
+.I /tmp
+on the left and
+.I /var
+on the right. A path that cannot be listed leaves that panel unchanged.
+Operands after the first two are ignored.
 .PP
 This page describes the
 .B mcr
