@@ -28170,12 +28170,15 @@ mod panel_function_keys_tests {
 
         std::fs::write(root.join("notes.txt"), b"hello\n").unwrap();
         app.reload_panels().unwrap();
+        app.active_panel_mut().selection.clear();
         tag_name(&mut app, "other.txt");
         goto_name(&mut app, "notes.txt");
         press_rows(&mut app, KeyCode::F(8), KeyModifiers::SHIFT, 10);
         assert_eq!(delete_name(&app), "notes.txt", "S-F8 == F18");
         press(&mut app, KeyCode::Esc);
 
+        app.active_panel_mut().selection.clear();
+        tag_name(&mut app, "other.txt");
         tag_name(&mut app, "notes.txt");
         press(&mut app, KeyCode::F(8));
         assert_eq!(
