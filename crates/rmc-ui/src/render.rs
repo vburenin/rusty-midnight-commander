@@ -3843,6 +3843,7 @@ fn draw_error_dialog(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_dialog_box(
     p: &mut Painter,
     cols: u16,
@@ -5060,10 +5061,10 @@ pub(crate) fn fbar_slot_bounds(cols: u16) -> [(u16, u16); 10] {
     let lead = u16::from(cols >= 80);
     let mut out = [(0u16, 0u16); 10];
     let mut x = lead;
-    for i in 0..10 {
+    for (i, slot_bounds) in out.iter_mut().enumerate() {
         let width = if i == 8 && cols >= 80 { 7 } else { slot };
         let end = x.saturating_add(width).min(cols);
-        out[i] = (x, end);
+        *slot_bounds = (x, end);
         x = end;
     }
     out
@@ -5875,6 +5876,7 @@ fn draw_delete_dialog(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_input_dialog(
     p: &mut Painter,
     cols: u16,
