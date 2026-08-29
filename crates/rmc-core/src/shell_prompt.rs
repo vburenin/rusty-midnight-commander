@@ -129,7 +129,14 @@ mod tests {
     fn long_path_is_left_truncated_not_mid_tilde() {
         let home = "/tmp/mcr-home";
         let d60 = format!("{}/{}", home, "d".repeat(60));
-        let p = gnu_shell_prompt("ubuntu", "cursor", &d60, home, 1000, gnu_prompt_text_max(80));
+        let p = gnu_shell_prompt(
+            "ubuntu",
+            "cursor",
+            &d60,
+            home,
+            1000,
+            gnu_prompt_text_max(80),
+        );
         assert_eq!(p.chars().count(), 72);
         assert!(
             !p.contains('~') || p.starts_with("ubuntu@cursor:~/"),

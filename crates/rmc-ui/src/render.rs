@@ -13,10 +13,10 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::{App, EditorMenu, LayoutFocus, LayoutOptions};
 use rmc_core::layout::{compute_chrome_geom, dual_panel_rects};
+use rmc_core::panel::{FileEntry, PanelMode};
 use rmc_core::shell_prompt::{
     gnu_prompt_history_col, gnu_prompt_text_max, gnu_shell_prompt, GNU_PROMPT_HISTORY,
 };
-use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
 
@@ -8937,7 +8937,9 @@ mod gnu_default_chrome_colors_tests {
     }
 
     fn expected_prompt_row(cwd: &str, cmdline: &str, cols: u16) -> String {
-        use rmc_core::shell_prompt::{gnu_prompt_history_col, gnu_prompt_text_max, gnu_shell_prompt};
+        use rmc_core::shell_prompt::{
+            gnu_prompt_history_col, gnu_prompt_text_max, gnu_shell_prompt,
+        };
         let user = whoami::username();
         let host = hostname::get()
             .ok()
