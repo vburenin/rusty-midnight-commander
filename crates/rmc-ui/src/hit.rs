@@ -89,13 +89,10 @@ pub(crate) fn confirm_button_at(cols: u16, rows: u16, mx: u16, my: u16) -> Optio
 }
 
 /// Mkdir OK/Cancel. `true` is OK.
-pub(crate) fn mkdir_button_at(
-    cols: u16,
-    rows: u16,
-    mx: u16,
-    my: u16,
-    focus_ok: bool,
-) -> Option<bool> {
+///
+/// Live GNU 4.8.30 keeps `[< OK >] [ Cancel ]` regardless of which widget
+/// is focused (default-button geometry; focus is color only).
+pub(crate) fn mkdir_button_at(cols: u16, rows: u16, mx: u16, my: u16) -> Option<bool> {
     let w = (cols as usize).min(38) as u16;
     let h = 6u16;
     if cols < w || rows < h {
@@ -103,13 +100,7 @@ pub(crate) fn mkdir_button_at(
     }
     let x = crate::render::gnu_dialog_left(cols, w);
     let y = crate::render::gnu_dialog_top(rows, h);
-    let ok = if focus_ok { "[< OK >]" } else { "[ OK ]" };
-    let cancel = if focus_ok {
-        "[ Cancel ]"
-    } else {
-        "[< Cancel >]"
-    };
-    let items = [ok, cancel];
+    let items = ["[< OK >]", "[ Cancel ]"];
     let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + 1;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
     button_cluster_at_gap(bx, y + h - 2, &items, mx, my, 1).map(|i| i == 0)

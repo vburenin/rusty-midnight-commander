@@ -22,8 +22,9 @@ use rmc_core::app::{
     EditorPipeDialog, EditorPipeFocus, EditorReplaceDialog, EditorReplaceFocus, EditorSaveAsDialog,
     EditorSaveAsFocus, EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog,
     EditorTabSpacingFocus, FilterDialogFocus, HistoryDialogFocus, LayoutFocus, LinkDialogFocus,
-    ScreenListFocus, SelectGroupDialogFocus, SftpHostKeyFocus, UiMode, ViewerDisplayDialog,
-    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus, ViewerSearchType,
+    MkdirDialogFocus, ScreenListFocus, SelectGroupDialogFocus, SftpHostKeyFocus, UiMode,
+    ViewerDisplayDialog, ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
+    ViewerSearchType,
 };
 use rmc_core::complete::{
     classify_token, collect_matches, common_replacement_prefix, filter_items, token_before_cursor,
@@ -2514,12 +2515,16 @@ impl TerminalApp {
                 let code = if ok { KeyCode::Enter } else { KeyCode::Esc };
                 return Self::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), page);
             }
-            UiMode::MkdirDialog { focus_ok, .. } => {
-                let Some(ok) = crate::hit::mkdir_button_at(cols, rows, mx, my, *focus_ok) else {
+            UiMode::MkdirDialog { .. } => {
+                let Some(ok) = crate::hit::mkdir_button_at(cols, rows, mx, my) else {
                     return Ok(());
                 };
-                if let UiMode::MkdirDialog { focus_ok, .. } = &mut app.ui_mode {
-                    *focus_ok = ok;
+                if let UiMode::MkdirDialog { focus, .. } = &mut app.ui_mode {
+                    *focus = if ok {
+                        MkdirDialogFocus::Ok
+                    } else {
+                        MkdirDialogFocus::Cancel
+                    };
                 }
                 return Self::handle_key(
                     app,
@@ -6006,34 +6011,60 @@ impl TerminalApp {
                 }
                 return Ok(());
             }
-            UiMode::MkdirDialog { value, focus_ok } => {
+            UiMode::MkdirDialog { value, focus } => {
+                use MkdirDialogFocus as F;
                 match key.code {
                     KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
-                    KeyCode::Tab => *focus_ok = !*focus_ok,
-                    KeyCode::Enter | KeyCode::Char(' ')
-                        if key.modifiers.is_empty()
-                            && (*focus_ok || matches!(key.code, KeyCode::Enter)) =>
+                    KeyCode::Tab => {
+                        *focus = match *focus {
+                            F::Input => F::Ok,
+                            F::Ok => F::Cancel,
+                            F::Cancel => F::Input,
+                        };
+                    }
+                    KeyCode::BackTab => {
+                        *focus = match *focus {
+                            F::Input => F::Cancel,
+                            F::Ok => F::Input,
+                            F::Cancel => F::Ok,
+                        };
+                    }
+                    // Live GNU: Enter on the field or OK activates the default OK
+                    // action; Enter/Space on Cancel dismisses. Space in the field
+                    // inserts a space (it does not press a button).
+                    KeyCode::Enter
+                        if key.modifiers.is_empty() && matches!(*focus, F::Input | F::Ok) =>
                     {
-                        // Enter always activates the focused widget (field = Cancel
-                        // path when !focus_ok). Space activates only the buttons.
-                        if *focus_ok {
-                            if !value.is_empty() {
-                                let dir = active_cwd.join(value.clone());
-                                if let Err(e) = app.vfs.mkdir(&dir) {
-                                    app.show_error_dialog(format!("{e}"));
-                                    return Ok(());
-                                }
+                        if !value.is_empty() {
+                            let dir = active_cwd.join(value.clone());
+                            if let Err(e) = app.vfs.mkdir(&dir) {
+                                app.show_error_dialog(format!("{e}"));
+                                return Ok(());
                             }
-                            app.reload_panels()?;
                         }
+                        app.reload_panels()?;
                         app.ui_mode = UiMode::Normal;
                     }
-                    KeyCode::Backspace => {
-                        if !*focus_ok {
-                            value.pop();
-                        }
+                    KeyCode::Enter | KeyCode::Char(' ')
+                        if key.modifiers.is_empty() && matches!(*focus, F::Cancel) =>
+                    {
+                        app.ui_mode = UiMode::Normal;
                     }
-                    KeyCode::Char(c) if !*focus_ok && key.modifiers.is_empty() => {
+                    KeyCode::Char(' ') if key.modifiers.is_empty() && matches!(*focus, F::Ok) => {
+                        if !value.is_empty() {
+                            let dir = active_cwd.join(value.clone());
+                            if let Err(e) = app.vfs.mkdir(&dir) {
+                                app.show_error_dialog(format!("{e}"));
+                                return Ok(());
+                            }
+                        }
+                        app.reload_panels()?;
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Backspace if matches!(*focus, F::Input) => {
+                        value.pop();
+                    }
+                    KeyCode::Char(c) if matches!(*focus, F::Input) && key.modifiers.is_empty() => {
                         value.push(c);
                     }
                     KeyCode::Char(_) => {}
@@ -8540,7 +8571,7 @@ impl TerminalApp {
                     );
                     app.ui_mode = UiMode::MkdirDialog {
                         value,
-                        focus_ok: false,
+                        focus: MkdirDialogFocus::Input,
                     };
                 }
                 Action::Delete => {
@@ -8622,7 +8653,8 @@ fn completable_allow_command(mode: &UiMode) -> Option<bool> {
         UiMode::Normal | UiMode::ShellInput => Some(true),
         UiMode::InputDialog { .. } | UiMode::PromptInput { .. } => Some(false),
         UiMode::MkdirDialog {
-            focus_ok: false, ..
+            focus: MkdirDialogFocus::Input,
+            ..
         } => Some(false),
         UiMode::FilterDialog {
             focus: FilterDialogFocus::Pattern,
@@ -27397,6 +27429,45 @@ mod button_activation_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    fn mkdir_focus(app: &App) -> rmc_core::app::MkdirDialogFocus {
+        match &app.ui_mode {
+            UiMode::MkdirDialog { focus, .. } => *focus,
+            _ => panic!("expected MkdirDialog"),
+        }
+    }
+
+    #[test]
+    fn mkdir_opens_input_focused_with_gnu_ok_default() {
+        use rmc_core::app::MkdirDialogFocus as F;
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_focus(&app), F::Input);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            root.join("d").is_dir(),
+            "Enter on the field activates default OK"
+        );
+        press(&mut app, KeyCode::F(7));
+        assert_eq!(mkdir_focus(&app), F::Input);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(mkdir_focus(&app), F::Ok);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(mkdir_focus(&app), F::Cancel);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!root.join("no").exists(), "Enter on Cancel must not create");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn mkdir_space_on_ok_creates_and_mouse_cancel_dismisses() {
         let root = temp_workspace();
@@ -27413,13 +27484,19 @@ mod button_activation_tests {
         assert!(root.join("new").is_dir(), "Space on Mkdir OK must create");
 
         press(&mut app, KeyCode::F(7));
-        let focus_ok = match &app.ui_mode {
-            UiMode::MkdirDialog { focus_ok, .. } => *focus_ok,
-            _ => panic!("MkdirDialog"),
-        };
+        assert!(
+            matches!(
+                app.ui_mode,
+                UiMode::MkdirDialog {
+                    focus: rmc_core::app::MkdirDialogFocus::Input,
+                    ..
+                }
+            ),
+            "F7 opens with the input focused, GNU default OK geometry"
+        );
         let by = crate::render::gnu_dialog_top(ROWS, 6) + 4;
         let mx = (0..COLS)
-            .find(|&x| crate::hit::mkdir_button_at(COLS, ROWS, x, by, focus_ok) == Some(false))
+            .find(|&x| crate::hit::mkdir_button_at(COLS, ROWS, x, by) == Some(false))
             .expect("Cancel x");
         click(&mut app, mx, by);
         assert!(

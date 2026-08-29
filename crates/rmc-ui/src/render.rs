@@ -556,8 +556,8 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 app.shadows,
             );
         }
-        rmc_core::app::UiMode::MkdirDialog { value, focus_ok } => {
-            draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok, app.shadows);
+        rmc_core::app::UiMode::MkdirDialog { value, focus } => {
+            draw_mkdir_dialog(p, cols, rows, pal, value, *focus, app.shadows);
         }
         rmc_core::app::UiMode::DeleteDialog {
             name,
@@ -5821,10 +5821,13 @@ fn draw_mkdir_dialog(
     rows: u16,
     pal: McPalette,
     value: &str,
-    focus_ok: bool,
+    focus: rmc_core::app::MkdirDialogFocus,
     show_shadow: bool,
 ) {
+    use rmc_core::app::MkdirDialogFocus as F;
     // Live GNU 4.8.30 F7: 38×6, prompt, field, section bar, `[< OK >] [ Cancel ]`.
+    // OK is the default button (angle brackets) even when Cancel or the field
+    // has focus; focus itself is dfocus color, not a bracket swap.
     let w = (cols as usize).min(38) as u16;
     let h = 6u16;
     let x = gnu_dialog_left(cols, w);
@@ -5833,6 +5836,7 @@ fn draw_mkdir_dialog(
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 1);
     p.text("Enter directory name:");
+    // Live GNU keeps the field in dfocus (black;cyan) after Tab to a button.
     p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     p.goto(x + 2, y + 2);
     p.text(&pad_field(value, w.saturating_sub(4) as usize));
@@ -5849,14 +5853,10 @@ fn draw_mkdir_dialog(
     );
     p.goto(x + w - 1, y + 3);
     p.text("┤");
-    let ok = if focus_ok { "[< OK >]" } else { "[ OK ]" };
-    let cancel = if focus_ok {
-        "[ Cancel ]"
-    } else {
-        "[< Cancel >]"
-    };
+    let ok_focused = matches!(focus, F::Ok);
+    let cancel_focused = matches!(focus, F::Cancel);
     // Live GNU uses one space between `[< OK >]` and `[ Cancel ]`.
-    let items = [(ok, focus_ok), (cancel, !focus_ok)];
+    let items = [("[< OK >]", ok_focused), ("[ Cancel ]", cancel_focused)];
     let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 1;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
     let (gap_fg, gap_bg) = (pal.dialog_default_fg, pal.dialog_default_bg);
@@ -9420,7 +9420,15 @@ mod gnu_default_chrome_colors_tests {
         let mut buf = Vec::new();
         {
             let mut p = Painter { out: &mut buf };
-            super::draw_mkdir_dialog(&mut p, 80, 24, pal, "", true, false);
+            super::draw_mkdir_dialog(
+                &mut p,
+                80,
+                24,
+                pal,
+                "",
+                rmc_core::app::MkdirDialogFocus::Input,
+                false,
+            );
         }
         let grid = rasterize(&buf, 80, 24);
         let w = 38usize;
@@ -9439,10 +9447,69 @@ mod gnu_default_chrome_colors_tests {
             btns.contains("[< OK >] [ Cancel ]"),
             "one-space GNU buttons: {btns:?}"
         );
+        assert!(
+            !btns.contains("[< Cancel >]"),
+            "Cancel is unmarked on open: {btns:?}"
+        );
+        let field: String = grid[y + 2][x..x + w].iter().map(|c| c.ch).collect();
+        assert_eq!(
+            (grid[y + 2][x + 2].fg, grid[y + 2][x + 2].bg),
+            (pal.dfocus_fg, pal.dfocus_bg),
+            "input stays dfocus on open: {field:?}"
+        );
+        let (ok_x, btn_y) = find_text(&grid, "[< OK >]");
+        assert_eq!(btn_y, y + h - 2);
+        assert_eq!(
+            (grid[btn_y][ok_x].fg, grid[btn_y][ok_x].bg),
+            (pal.dialog_default_fg, pal.dialog_default_bg),
+            "OK is default geometry but not dfocus-marked on open"
+        );
+        let (ca_x, _) = find_text(&grid, "[ Cancel ]");
+        assert_eq!(
+            (grid[btn_y][ca_x].fg, grid[btn_y][ca_x].bg),
+            (pal.dialog_default_fg, pal.dialog_default_bg),
+            "Cancel is not marked/focused on open"
+        );
         let bar: String = grid[y + 3].iter().map(|c| c.ch).collect();
         assert!(
             bar.contains('├') && bar.contains('┤'),
             "section bar: {bar:?}"
+        );
+    }
+
+    #[test]
+    fn gnu_mkdir_cancel_focus_keeps_ok_default_brackets() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_mkdir_dialog(
+                &mut p,
+                80,
+                24,
+                pal,
+                "",
+                rmc_core::app::MkdirDialogFocus::Cancel,
+                false,
+            );
+        }
+        let grid = rasterize(&buf, 80, 24);
+        let body: String = grid.iter().flatten().map(|c| c.ch).collect();
+        assert!(
+            body.contains("[< OK >] [ Cancel ]"),
+            "Cancel focus does not steal default brackets: {body:?}"
+        );
+        assert!(!body.contains("[< Cancel >]"), "{body:?}");
+        let (ok_x, btn_y) = find_text(&grid, "[< OK >]");
+        assert_eq!(
+            (grid[btn_y][ok_x].fg, grid[btn_y][ok_x].bg),
+            (pal.dialog_default_fg, pal.dialog_default_bg)
+        );
+        let (ca_x, _) = find_text(&grid, "[ Cancel ]");
+        assert_eq!(
+            (grid[btn_y][ca_x].fg, grid[btn_y][ca_x].bg),
+            (pal.dfocus_fg, pal.dfocus_bg),
+            "Cancel focus is dfocus color"
         );
     }
 
