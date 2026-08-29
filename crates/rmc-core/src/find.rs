@@ -15,12 +15,16 @@ pub const FIND_DIALOG_MIN_H: u16 = 23;
 pub const FIND_DIALOG_MAX_H: u16 = 29;
 /// Rows from the top of the dialog to the results list (fields, checkboxes, ignore field, status).
 pub const FIND_DIALOG_LIST_TOP: u16 = 17;
-/// Results-only list origin (title + status), used after OK leaves the setup form.
-pub const FIND_RESULTS_LIST_TOP: u16 = 3;
+/// Results list starts on the row under the title (live GNU 4.8.30).
+pub const FIND_RESULTS_LIST_TOP: u16 = 1;
 /// `list_h = dialog_h - FIND_DIALOG_LIST_CHROME` (list top + button/border chrome).
 pub const FIND_DIALOG_LIST_CHROME: u16 = 19;
-/// `list_h` for the results phase (list top + button/border chrome).
-pub const FIND_RESULTS_LIST_CHROME: u16 = 5;
+/// Results chrome below the title: hline + Found + state + hline + 2 button rows + bottom.
+pub const FIND_RESULTS_LIST_CHROME: u16 = 8;
+/// Live GNU 4.8.30 results: 9-cell left/right margins (`COLS − 18`).
+pub const FIND_RESULTS_H_MARGIN: u16 = 18;
+/// Live GNU 4.8.30 results: 3-cell top/bottom margins (`LINES − 6`).
+pub const FIND_RESULTS_V_MARGIN: u16 = 6;
 
 /// Live GNU mc 4.8.30 Find File **setup** dialog (Alt-?): 66×17, two columns.
 pub const FIND_SETUP_W: u16 = 66;
@@ -39,8 +43,17 @@ pub const FIND_SETUP_CANCEL_X: u16 = 32;
 pub const FIND_SETUP_FIELD_W: u16 = 32;
 
 pub fn find_dialog_height(rows: u16) -> u16 {
-    rows.saturating_sub(4)
-        .clamp(FIND_DIALOG_MIN_H, FIND_DIALOG_MAX_H)
+    find_results_height(rows)
+}
+
+/// Live GNU 4.8.30 Find File results width: `COLS − 18`.
+pub fn find_results_width(cols: u16) -> u16 {
+    cols.saturating_sub(FIND_RESULTS_H_MARGIN).min(cols)
+}
+
+/// Live GNU 4.8.30 Find File results height: `LINES − 6`.
+pub fn find_results_height(rows: u16) -> u16 {
+    rows.saturating_sub(FIND_RESULTS_V_MARGIN).min(rows)
 }
 
 pub fn find_dialog_list_rows(dialog_h: u16) -> usize {
@@ -49,6 +62,15 @@ pub fn find_dialog_list_rows(dialog_h: u16) -> usize {
 
 pub fn find_results_list_rows(dialog_h: u16) -> usize {
     dialog_h.saturating_sub(FIND_RESULTS_LIST_CHROME) as usize
+}
+
+/// Live GNU 4.8.30 results: centered `COLS−18` × `LINES−6` (origin (9,3) on 80×24).
+pub fn find_results_origin(cols: u16, rows: u16) -> (u16, u16) {
+    let w = find_results_width(cols);
+    let h = find_results_height(rows);
+    let x = cols.saturating_add(1).saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    (x, y)
 }
 
 /// Live GNU 4.8.30: ceil((cols − 66) / 2) left, full-screen vertical center.
@@ -189,16 +211,22 @@ pub enum FindDialogFocus {
     ContentCaseSensitive,
     ContentAllCharsets,
     FirstHit,
-    /// GNU mc(1) **OK**: start a new search (not the in-search Start resume).
+    /// GNU mc(1) **OK**: start a new search (setup only).
     ButtonOk,
     /// Setup-phase **Cancel** (closes without searching).
     ButtonCancel,
-    /// GNU mc(1) **Stop** / **Start** pair: pause a running search, resume a stopped one.
-    ButtonStop,
+    /// Results listbox (live GNU default widget; Enter still fires Chdir).
+    ResultsList,
+    /// GNU 4.8.30 **Suspend** / **Continue**: pause a running or finished find, resume a stopped one.
+    ButtonSuspend,
     ButtonAgain,
     ButtonChdir,
     ButtonPanelize,
     ButtonQuit,
+    /// Results **View - F3**.
+    ButtonView,
+    /// Results **Edit - F4**.
+    ButtonEdit,
 }
 
 impl FindDialogFocus {
@@ -225,11 +253,14 @@ impl FindDialogFocus {
             Self::ButtonOk => Self::ButtonCancel,
             Self::ButtonCancel => Self::StartDir,
             // Results-only widgets wrap into the setup cycle from OK.
-            Self::ButtonStop
+            Self::ResultsList
+            | Self::ButtonSuspend
             | Self::ButtonAgain
             | Self::ButtonChdir
             | Self::ButtonPanelize
-            | Self::ButtonQuit => Self::ButtonOk,
+            | Self::ButtonQuit
+            | Self::ButtonView
+            | Self::ButtonEdit => Self::ButtonOk,
         }
     }
 
@@ -254,36 +285,43 @@ impl FindDialogFocus {
             Self::FirstHit => Self::ContentAllCharsets,
             Self::ButtonOk => Self::FirstHit,
             Self::ButtonCancel => Self::ButtonOk,
-            Self::ButtonStop
+            Self::ResultsList
+            | Self::ButtonSuspend
             | Self::ButtonAgain
             | Self::ButtonChdir
             | Self::ButtonPanelize
-            | Self::ButtonQuit => Self::ButtonCancel,
+            | Self::ButtonQuit
+            | Self::ButtonView
+            | Self::ButtonEdit => Self::ButtonCancel,
         }
     }
 
-    /// Results-phase action row (OK / Stop / Again / Chdir / Panelize / Quit).
+    /// Results-phase widgets (list → Chdir → Again → Suspend → Quit → Panelize → View → Edit).
     pub fn next_results(self) -> Self {
         match self {
-            Self::ButtonOk => Self::ButtonStop,
-            Self::ButtonStop => Self::ButtonAgain,
-            Self::ButtonAgain => Self::ButtonChdir,
-            Self::ButtonChdir => Self::ButtonPanelize,
-            Self::ButtonPanelize => Self::ButtonQuit,
-            Self::ButtonQuit => Self::ButtonOk,
-            _ => Self::ButtonOk,
+            Self::ResultsList => Self::ButtonChdir,
+            Self::ButtonChdir => Self::ButtonAgain,
+            Self::ButtonAgain => Self::ButtonSuspend,
+            Self::ButtonSuspend => Self::ButtonQuit,
+            Self::ButtonQuit => Self::ButtonPanelize,
+            Self::ButtonPanelize => Self::ButtonView,
+            Self::ButtonView => Self::ButtonEdit,
+            Self::ButtonEdit => Self::ResultsList,
+            _ => Self::ResultsList,
         }
     }
 
     pub fn prev_results(self) -> Self {
         match self {
-            Self::ButtonOk => Self::ButtonQuit,
-            Self::ButtonStop => Self::ButtonOk,
-            Self::ButtonAgain => Self::ButtonStop,
-            Self::ButtonChdir => Self::ButtonAgain,
-            Self::ButtonPanelize => Self::ButtonChdir,
-            Self::ButtonQuit => Self::ButtonPanelize,
-            _ => Self::ButtonQuit,
+            Self::ResultsList => Self::ButtonEdit,
+            Self::ButtonChdir => Self::ResultsList,
+            Self::ButtonAgain => Self::ButtonChdir,
+            Self::ButtonSuspend => Self::ButtonAgain,
+            Self::ButtonQuit => Self::ButtonSuspend,
+            Self::ButtonPanelize => Self::ButtonQuit,
+            Self::ButtonView => Self::ButtonPanelize,
+            Self::ButtonEdit => Self::ButtonView,
+            _ => Self::ResultsList,
         }
     }
 
@@ -339,11 +377,13 @@ impl FindDialogFocus {
             self,
             Self::ButtonOk
                 | Self::ButtonCancel
-                | Self::ButtonStop
+                | Self::ButtonSuspend
                 | Self::ButtonAgain
                 | Self::ButtonChdir
                 | Self::ButtonPanelize
                 | Self::ButtonQuit
+                | Self::ButtonView
+                | Self::ButtonEdit
         )
     }
 
@@ -462,6 +502,70 @@ pub struct FindResults {
     pub paths: Vec<PathBuf>,
 }
 
+/// Worker → UI events for the results dialog (hits plus the directory GNU shows).
+#[derive(Debug, Clone)]
+pub enum FindEvent {
+    Hit(PathBuf),
+    Progress(PathBuf),
+}
+
+/// One painted row in the GNU results listbox (directory header or a hit name).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FindDisplayRow {
+    Header(PathBuf),
+    File {
+        name: String,
+        path: PathBuf,
+        hit_index: usize,
+    },
+}
+
+impl FindDisplayRow {
+    pub fn display_text(&self) -> String {
+        match self {
+            Self::Header(dir) => format!(" {}", dir.display()),
+            Self::File { name, .. } => format!("    {name}"),
+        }
+    }
+
+    pub fn hit_index(&self) -> Option<usize> {
+        match self {
+            Self::File { hit_index, .. } => Some(*hit_index),
+            Self::Header(_) => None,
+        }
+    }
+}
+
+/// Group hits the way live GNU 4.8.30 does: a directory line, then 4-space names.
+pub fn find_display_rows(paths: &[PathBuf]) -> Vec<FindDisplayRow> {
+    let mut out = Vec::new();
+    let mut last_parent: Option<PathBuf> = None;
+    for (i, p) in paths.iter().enumerate() {
+        let parent = p.parent().unwrap_or(p).to_path_buf();
+        if last_parent.as_ref() != Some(&parent) {
+            out.push(FindDisplayRow::Header(parent.clone()));
+            last_parent = Some(parent);
+        }
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string());
+        out.push(FindDisplayRow::File {
+            name,
+            path: p.clone(),
+            hit_index: i,
+        });
+    }
+    out
+}
+
+/// Display-row index of `hit_index`, or 0 if that hit is missing.
+pub fn find_display_index_for_hit(rows: &[FindDisplayRow], hit_index: usize) -> usize {
+    rows.iter()
+        .position(|r| r.hit_index() == Some(hit_index))
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone)]
 pub struct CancelHandle {
     cancel: Arc<AtomicBool>,
@@ -517,11 +621,17 @@ pub struct FindDialogState {
     pub running: bool,
     pub results: FindResults,
     pub cancel: Option<CancelHandle>,
-    pub results_rx: Option<Receiver<PathBuf>>,
+    pub results_rx: Option<Receiver<FindEvent>>,
     pub selected_index: usize,
     pub scroll_top: usize,
     /// Directory-tree figure overlay (mc(1) Tree). `None` while closed.
     pub tree_picker: Option<FindTreePicker>,
+    /// Directory GNU paints on the results status line while the walk is live.
+    pub progress_dir: Option<PathBuf>,
+    /// GNU **Suspend** on a running *or* finished find (status `Stopped`).
+    pub stopped: bool,
+    /// Found-line spinner (`\\|/−`) while a search is in progress.
+    pub spin: u8,
 }
 
 impl FindDialogState {
@@ -541,7 +651,51 @@ impl FindDialogState {
             selected_index: 0,
             scroll_top: 0,
             tree_picker: None,
+            progress_dir: None,
+            stopped: false,
+            spin: 0,
         }
+    }
+
+    pub fn selected_path(&self) -> Option<&Path> {
+        self.results
+            .paths
+            .get(self.selected_index)
+            .map(|p| p.as_path())
+    }
+
+    /// Pull queued hits / progress without blocking. Returns true if the UI should redraw.
+    pub fn drain_search(&mut self) -> bool {
+        let mut evs = Vec::new();
+        let mut disconnect = false;
+        if let Some(rx) = &self.results_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => evs.push(ev),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnect = true;
+                        break;
+                    }
+                }
+            }
+        }
+        let dirty = !evs.is_empty() || disconnect;
+        for ev in evs {
+            match ev {
+                FindEvent::Hit(p) => self.results.paths.push(p),
+                FindEvent::Progress(dir) => {
+                    self.progress_dir = Some(dir);
+                    self.spin = self.spin.wrapping_add(1);
+                }
+            }
+        }
+        if disconnect {
+            self.running = false;
+            self.cancel = None;
+            self.results_rx = None;
+        }
+        dirty
     }
 
     /// Toggle the focused GNU checkbox. Returns true if a checkbox was focused.
@@ -599,9 +753,14 @@ impl FindDialogState {
         }
     }
 
-    /// GNU mc(1) **Stop** is in effect: the worker is alive but waiting.
+    /// GNU mc(1) **Suspend** is in effect: the worker is alive but waiting.
     pub fn is_paused(&self) -> bool {
         self.running && self.cancel.as_ref().is_some_and(|c| c.is_paused())
+    }
+
+    /// Live GNU: Suspend on a running *or* finished find shows `Stopped` / Continue.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped || self.is_paused()
     }
 
     /// Drop the worker channel and request cancel so a paused walk cannot hang.
@@ -611,6 +770,7 @@ impl FindDialogState {
             ch.resume();
         }
         self.running = false;
+        self.stopped = false;
         self.cancel = None;
         self.results_rx = None;
     }
@@ -627,6 +787,9 @@ impl FindDialogState {
         self.results.paths.clear();
         self.selected_index = 0;
         self.scroll_top = 0;
+        self.progress_dir = Some(self.params.start_dir.clone());
+        self.stopped = false;
+        self.spin = 0;
         let params = self.params.clone();
         let cancel = CancelHandle::new();
         let flag = cancel.flag();
@@ -636,24 +799,27 @@ impl FindDialogState {
         self.results_rx = Some(rx);
         self.running = true;
         self.phase = FindDialogPhase::Results;
+        self.focus = FindDialogFocus::ResultsList;
         std::thread::spawn(move || {
-            search_files_streaming(&params, &flag, &pause, |p| {
-                let _ = tx.send(p);
+            search_files_streaming_events(&params, &flag, &pause, |ev| {
+                let _ = tx.send(ev);
             });
         });
     }
 
-    /// GNU **Stop**: pause a running search. No-op if idle or already stopped.
-    pub fn pause_search(&mut self) {
+    /// GNU **Suspend**: pause a running walk and mark the find Stopped (also when finished).
+    pub fn suspend_search(&mut self) {
         if self.running {
             if let Some(ch) = &self.cancel {
                 ch.pause();
             }
         }
+        self.stopped = true;
     }
 
-    /// GNU **Start**: continue a stopped search. Does not start a new one.
-    pub fn resume_search(&mut self) {
+    /// GNU **Continue**: resume a suspended walk; if the walk already finished, just un-stop.
+    pub fn continue_search(&mut self) {
+        self.stopped = false;
         if self.is_paused() {
             if let Some(ch) = &self.cancel {
                 ch.resume();
@@ -661,11 +827,40 @@ impl FindDialogState {
         }
     }
 
+    /// GNU **Stop**: pause a running search. No-op if idle or already stopped.
+    pub fn pause_search(&mut self) {
+        self.suspend_search();
+    }
+
+    /// GNU **Start**: continue a stopped search. Does not start a new one.
+    pub fn resume_search(&mut self) {
+        self.continue_search();
+    }
+
     /// GNU **Again**: ask for new parameters (focus the filename field; do not search).
     pub fn again_parameters(&mut self) {
         self.abort_search();
         self.phase = FindDialogPhase::Setup;
         self.focus = FindDialogFocus::NamePattern;
+    }
+
+    /// Keep the selected hit inside the visible GNU listbox (display rows include headers).
+    pub fn ensure_hit_visible(&mut self, list_rows: usize) {
+        let rows = find_display_rows(&self.results.paths);
+        let idx = find_display_index_for_hit(&rows, self.selected_index);
+        if list_rows == 0 {
+            self.scroll_top = 0;
+            return;
+        }
+        if idx < self.scroll_top {
+            self.scroll_top = idx;
+        } else if idx >= self.scroll_top + list_rows {
+            self.scroll_top = idx.saturating_sub(list_rows.saturating_sub(1));
+        }
+        let max_top = rows.len().saturating_sub(list_rows);
+        if self.scroll_top > max_top {
+            self.scroll_top = max_top;
+        }
     }
 }
 
@@ -676,22 +871,24 @@ pub fn search_files(params: &FindParams, cancel: &Arc<AtomicBool>) -> Vec<PathBu
     out
 }
 
-/// Returns true if the caller should stop the walk (cancel).
-fn wait_while_paused(cancel: &AtomicBool, pause: &AtomicBool) -> bool {
-    while pause.load(Ordering::Relaxed) {
-        if cancel.load(Ordering::Relaxed) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    cancel.load(Ordering::Relaxed)
-}
-
 pub fn search_files_streaming<F: FnMut(PathBuf)>(
     params: &FindParams,
     cancel: &Arc<AtomicBool>,
     pause: &Arc<AtomicBool>,
     mut on_hit: F,
+) {
+    search_files_streaming_events(params, cancel, pause, |ev| {
+        if let FindEvent::Hit(p) = ev {
+            on_hit(p);
+        }
+    });
+}
+
+pub fn search_files_streaming_events<F: FnMut(FindEvent)>(
+    params: &FindParams,
+    cancel: &Arc<AtomicBool>,
+    pause: &Arc<AtomicBool>,
+    mut on_event: F,
 ) {
     let name_pat = match &params.name_pattern {
         NamePattern::Glob(s) => s.as_str(),
@@ -725,6 +922,8 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
     if !params.find_recursively {
         walker = walker.max_depth(1);
     }
+    let mut last_progress: Option<PathBuf> = None;
+    on_event(FindEvent::Progress(root.clone()));
     for entry in walker
         .into_iter()
         .filter_entry(|e| keep_walk_entry(e, skip_hidden, ignore.as_ref()))
@@ -734,6 +933,15 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
             break;
         }
         let p = entry.path();
+        let progress = if entry.file_type().is_dir() {
+            p.to_path_buf()
+        } else {
+            p.parent().unwrap_or(p).to_path_buf()
+        };
+        if last_progress.as_ref() != Some(&progress) {
+            last_progress = Some(progress.clone());
+            on_event(FindEvent::Progress(progress));
+        }
         // Do not include the search root directory itself as a hit
         if p == root {
             continue;
@@ -750,22 +958,33 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
             continue;
         }
         match &content_filter {
-            ContentFilter::None => on_hit(p.to_path_buf()),
+            ContentFilter::None => on_event(FindEvent::Hit(p.to_path_buf())),
             ContentFilter::InvalidRegex => {}
             ContentFilter::Substring(q) => {
                 if entry.file_type().is_file()
                     && file_contains(p, q, params.content_case_sensitive, whole_words)
                 {
-                    on_hit(p.to_path_buf());
+                    on_event(FindEvent::Hit(p.to_path_buf()));
                 }
             }
             ContentFilter::Regex(re) => {
                 if entry.file_type().is_file() && file_contains_regex(p, re, whole_words) {
-                    on_hit(p.to_path_buf());
+                    on_event(FindEvent::Hit(p.to_path_buf()));
                 }
             }
         }
     }
+}
+
+/// Returns true if the caller should stop the walk (cancel).
+fn wait_while_paused(cancel: &AtomicBool, pause: &AtomicBool) -> bool {
+    while pause.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    cancel.load(Ordering::Relaxed)
 }
 
 fn keep_walk_entry(
@@ -1417,19 +1636,52 @@ mod tests {
         assert_eq!(F::ButtonOk.next_setup(), F::ButtonCancel);
         assert_eq!(F::ButtonCancel.next_setup(), F::StartDir);
         assert_eq!(F::ButtonOk.prev_setup(), F::FirstHit);
-        assert_eq!(F::ButtonOk.next_in(P::Results), F::ButtonStop);
-        assert_eq!(F::ButtonStop.next_in(P::Results), F::ButtonAgain);
-        assert_eq!(F::ButtonAgain.next_in(P::Results), F::ButtonChdir);
-        assert_eq!(F::ButtonChdir.next_in(P::Results), F::ButtonPanelize);
-        assert_eq!(F::ButtonPanelize.next_in(P::Results), F::ButtonQuit);
-        assert_eq!(F::ButtonQuit.next_in(P::Results), F::ButtonOk);
+        assert_eq!(F::ResultsList.next_in(P::Results), F::ButtonChdir);
+        assert_eq!(F::ButtonChdir.next_in(P::Results), F::ButtonAgain);
+        assert_eq!(F::ButtonAgain.next_in(P::Results), F::ButtonSuspend);
+        assert_eq!(F::ButtonSuspend.next_in(P::Results), F::ButtonQuit);
+        assert_eq!(F::ButtonQuit.next_in(P::Results), F::ButtonPanelize);
+        assert_eq!(F::ButtonPanelize.next_in(P::Results), F::ButtonView);
+        assert_eq!(F::ButtonView.next_in(P::Results), F::ButtonEdit);
+        assert_eq!(F::ButtonEdit.next_in(P::Results), F::ResultsList);
         assert_eq!(F::FindRecursively.setup_across(), F::WholeWords);
         assert_eq!(F::NamePattern.setup_down(), F::FindRecursively);
         assert_eq!(F::Content.setup_down(), F::WholeWords);
         assert!(F::ButtonOk.is_action_button());
         assert!(F::ButtonCancel.is_action_button());
-        assert!(F::ButtonStop.is_action_button());
+        assert!(F::ButtonSuspend.is_action_button());
+        assert!(F::ButtonView.is_action_button());
+        assert!(F::ButtonEdit.is_action_button());
+        assert!(!F::ResultsList.is_action_button());
         assert!(!F::Tree.is_action_button());
+    }
+
+    #[test]
+    fn results_size_matches_live_gnu_80x24_and_grows() {
+        assert_eq!(find_results_size_tuple(80, 24), ((9, 3), (62, 18)));
+        assert_eq!(find_results_size_tuple(100, 30), ((9, 3), (82, 24)));
+    }
+
+    fn find_results_size_tuple(cols: u16, rows: u16) -> ((u16, u16), (u16, u16)) {
+        (
+            find_results_origin(cols, rows),
+            (find_results_width(cols), find_results_height(rows)),
+        )
+    }
+
+    #[test]
+    fn display_rows_group_by_parent() {
+        let rows = find_display_rows(&[
+            PathBuf::from("/tmp/a/one.txt"),
+            PathBuf::from("/tmp/a/two.txt"),
+            PathBuf::from("/tmp/b/three.txt"),
+        ]);
+        assert_eq!(rows[0], FindDisplayRow::Header(PathBuf::from("/tmp/a")));
+        assert_eq!(rows[1].display_text(), "    one.txt");
+        assert_eq!(rows[2].display_text(), "    two.txt");
+        assert_eq!(rows[3], FindDisplayRow::Header(PathBuf::from("/tmp/b")));
+        assert_eq!(rows[4].display_text(), "    three.txt");
+        assert_eq!(find_display_index_for_hit(&rows, 2), 4);
     }
 
     #[test]

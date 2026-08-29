@@ -652,6 +652,8 @@ pub enum UiMode {
         search_type: ViewerSearchType,
         search_all_charsets: bool,
         status_msg: Option<String>,
+        /// When the viewer was opened from Find File, restore this mode on quit.
+        return_to: Option<Box<UiMode>>,
     },
     Diff(DiffState),
     // Sort order dialog for Left/Right panel
@@ -2692,6 +2694,7 @@ impl UiMode {
             search_type: ViewerSearchType::Normal,
             search_all_charsets: false,
             status_msg: None,
+            return_to: None,
         }
     }
 }
