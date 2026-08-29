@@ -13,6 +13,9 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::{App, EditorMenu, LayoutFocus, LayoutOptions};
 use rmc_core::layout::{compute_chrome_geom, dual_panel_rects};
+use rmc_core::shell_prompt::{
+    gnu_prompt_history_col, gnu_prompt_text_max, gnu_shell_prompt, GNU_PROMPT_HISTORY,
+};
 use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
@@ -5015,21 +5018,65 @@ fn draw_hint(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
         p.text(&" ".repeat(cols as usize - t.len()));
     }
 }
-fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, _pal: McPalette, app: &App) {
-    p.set_fg_bg(Color::White, Color::Black);
-    p.goto(0, y);
-    let user = whoami::username();
-    let host = hostname::get()
+/// Short hostname (`\h`): up to the first `.`. Live GNU 4.8.30 shows `cursor`.
+fn gnu_prompt_host() -> String {
+    hostname::get()
         .ok()
         .and_then(|s| s.into_string().ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn gnu_prompt_home() -> String {
+    std::env::var("HOME").unwrap_or_default()
+}
+
+/// Live GNU 4.8.30 command line: `shellprompt`/`commandline` are `default;default`
+/// (SGR 39;49). A black;white bar here flashes on every Clear+repaint.
+fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, pal: McPalette, app: &App) {
+    if cols == 0 {
+        return;
+    }
+    let user = whoami::username();
+    let host = gnu_prompt_host();
     let cwd = app.active_panel().cwd.display().to_string();
-    let mut s = format!("{user}@{host}:{cwd}$ ");
-    s.push_str(&app.subshell.cmdline);
-    let t = truncate(&s, cols as usize);
-    p.text(&t);
-    if t.len() < cols as usize {
-        p.text(&" ".repeat(cols as usize - t.len()));
+    let home = gnu_prompt_home();
+    let euid = users::get_current_uid();
+    let prompt = gnu_shell_prompt(&user, &host, &cwd, &home, euid, gnu_prompt_text_max(cols));
+    let hist_x = gnu_prompt_history_col(cols);
+    let text_w = hist_x as usize;
+
+    // Prompt + input use terminal default colors (public default.ini
+    // `shellprompt` / `commandline` = default;default). Do not paint a
+    // White;Black bar — that is the idle flicker the listing does not do.
+    p.set_fg_bg(Color::Reset, Color::Reset);
+    p.goto(0, y);
+    if text_w > 0 {
+        p.text(&" ".repeat(text_w));
+    }
+    p.goto(0, y);
+    let prompt_n = prompt.chars().count().min(text_w);
+    if prompt_n > 0 {
+        let shown: String = prompt.chars().take(prompt_n).collect();
+        p.text(&shown);
+    }
+    let rest = text_w.saturating_sub(prompt_n);
+    if rest > 0 {
+        let cmd: String = app.subshell.cmdline.chars().take(rest).collect();
+        p.text(&cmd);
+    }
+    if cols >= 3 {
+        paint_span(
+            p,
+            hist_x,
+            y,
+            pal.core_default_fg,
+            pal.core_default_bg,
+            GNU_PROMPT_HISTORY,
+        );
     }
 }
 /// GNU mc(1) default panel F-bar labels (F1…F10). F2 is **Menu**, not “User menu”.
@@ -8887,6 +8934,173 @@ mod gnu_default_chrome_colors_tests {
         assert_eq!(super::fbar_slot_bounds(80)[0], (1, 9));
         assert_eq!(super::fbar_slot_bounds(80)[8], (65, 72));
         assert_eq!(super::fbar_slot_bounds(80)[9], (72, 80));
+    }
+
+    fn expected_prompt_row(cwd: &str, cmdline: &str, cols: u16) -> String {
+        use rmc_core::shell_prompt::{gnu_prompt_history_col, gnu_prompt_text_max, gnu_shell_prompt};
+        let user = whoami::username();
+        let host = hostname::get()
+            .ok()
+            .and_then(|s| s.into_string().ok())
+            .unwrap_or_default();
+        let host = host.split('.').next().unwrap_or("").to_string();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let euid = users::get_current_uid();
+        let prompt = gnu_shell_prompt(&user, &host, cwd, &home, euid, gnu_prompt_text_max(cols));
+        let hist_x = gnu_prompt_history_col(cols) as usize;
+        let mut row = vec![' '; cols as usize];
+        let mut x = 0usize;
+        for ch in prompt.chars() {
+            if x >= hist_x {
+                break;
+            }
+            row[x] = ch;
+            x += 1;
+        }
+        for ch in cmdline.chars() {
+            if x >= hist_x {
+                break;
+            }
+            row[x] = ch;
+            x += 1;
+        }
+        if cols >= 3 {
+            for (i, ch) in ['[', '^', ']'].into_iter().enumerate() {
+                row[hist_x + i] = ch;
+            }
+        }
+        row.into_iter().collect()
+    }
+
+    fn paint_prompt_row(cwd: &str, cmdline: &str, cols: u16) -> Vec<Vec<Cell>> {
+        let mut app = App::new(Box::new(LocalFs::new()), KeyMap::mc_defaults()).unwrap();
+        app.left.cwd = PathBuf::from(cwd);
+        app.right.cwd = PathBuf::from(cwd);
+        if cmdline.is_empty() {
+            app.subshell.clear_cmdline();
+        } else {
+            app.subshell.replace_cmdline(cmdline.to_string());
+        }
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_cmdline(&mut p, 22, cols, pal, &app);
+        }
+        rasterize(&buf, cols, 24)
+    }
+
+    #[test]
+    fn prompt_row_80x24_fixture_matches_live_gnu_cells_and_colors() {
+        // Live GNU 4.8.30 on 80×24 at /tmp/mcr-fixture with debian `\u@\h:\w\$ `.
+        let _ = std::fs::create_dir_all("/tmp/mcr-fixture");
+        let cwd = "/tmp/mcr-fixture";
+        let grid = paint_prompt_row(cwd, "", 80);
+        let row = row_str(&grid, 22);
+        let expected = expected_prompt_row(cwd, "", 80);
+        assert_eq!(row, expected, "prompt row cells");
+        assert_eq!(row.len(), 80);
+        assert!(
+            row.ends_with("[^]"),
+            "live GNU history widget at cols 77–79: {row:?}"
+        );
+        assert_eq!(&row[77..80], "[^]");
+
+        let pal = McPalette::default();
+        for (x, cell) in row.chars().enumerate() {
+            let painted = &grid[22][x];
+            assert_eq!(painted.ch, cell);
+            if x >= 77 {
+                assert_eq!(
+                    (painted.fg, painted.bg),
+                    (pal.core_default_fg, pal.core_default_bg),
+                    "history widget is lightgray;blue at col {x}"
+                );
+                assert_eq!((painted.fg, painted.bg), (Color::Grey, Color::Blue));
+            } else {
+                assert_eq!(
+                    (painted.fg, painted.bg),
+                    (Color::Reset, Color::Reset),
+                    "prompt/input are default;default (SGR 39;49), not white;black, at col {x} {cell:?}"
+                );
+                assert_ne!(
+                    painted.bg,
+                    Color::Black,
+                    "prompt must not paint a black bar (idle flicker) at col {x}"
+                );
+                assert_ne!(painted.fg, Color::White);
+            }
+        }
+
+        // Known fixture on this box / when user@host is ubuntu@cursor.
+        if expected.starts_with("ubuntu@cursor:/tmp/mcr-fixture$") {
+            assert_eq!(
+                &row[..32],
+                "ubuntu@cursor:/tmp/mcr-fixture$ ",
+                "live GNU prompt text + input start"
+            );
+            assert_eq!(
+                row,
+                "ubuntu@cursor:/tmp/mcr-fixture$                                              [^]"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_row_input_starts_after_dollar_space() {
+        let _ = std::fs::create_dir_all("/tmp/mcr-fixture");
+        let cwd = "/tmp/mcr-fixture";
+        let grid = paint_prompt_row(cwd, "echo hi", 80);
+        let row = row_str(&grid, 22);
+        assert_eq!(row, expected_prompt_row(cwd, "echo hi", 80));
+        let prompt = expected_prompt_row(cwd, "", 80);
+        let input_col = prompt
+            .find('$')
+            .or_else(|| prompt.find('#'))
+            .map(|i| i + 2)
+            .unwrap_or(0);
+        assert_eq!(&row[input_col..input_col + 7], "echo hi");
+        for cell in &grid[22][input_col..input_col + 7] {
+            assert_eq!(
+                (cell.fg, cell.bg),
+                (Color::Reset, Color::Reset),
+                "typed input uses commandline default;default"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_row_home_uses_tilde_not_absolute_home() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+        let grid = paint_prompt_row(&home, "", 80);
+        let row = row_str(&grid, 22);
+        assert_eq!(row, expected_prompt_row(&home, "", 80));
+        assert!(
+            row.contains("~$ ") || row.contains("~# "),
+            "live GNU \\w home is `~`, got {row:?}"
+        );
+        assert!(
+            !row.contains(&home),
+            "must not paint the absolute home path: {row:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_row_does_not_use_mid_tilde_truncation() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp/mcr-home".into());
+        let long = format!("{}/{}", home.trim_end_matches('/'), "d".repeat(70));
+        let _ = std::fs::create_dir_all(&long);
+        let grid = paint_prompt_row(&long, "", 80);
+        let row = row_str(&grid, 22);
+        assert_eq!(row, expected_prompt_row(&long, "", 80));
+        let text = row[..77].trim_end();
+        assert!(
+            !text.contains("/d~") && !text.contains("d~d"),
+            "live GNU left-truncates the prompt; no mid-tilde: {row:?}"
+        );
     }
 
     #[test]

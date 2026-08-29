@@ -2626,6 +2626,7 @@ dependencies = [
  "rmc-view",
  "time 0.3.55",
  "unicode-width",
+ "users",
  "whoami",
 ]
 

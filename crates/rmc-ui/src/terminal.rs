@@ -27373,6 +27373,8 @@ mod idle_paint_tests {
 
     #[test]
     fn idle_timeout_does_not_full_paint() {
+        // Prompt-row chrome is paint-only (no timer). An idle poll must not
+        // Clear+repaint just because the command line exists.
         assert!(
             !should_full_paint(PaintNeed::default()),
             "idle poll timeout with nothing dirty must skip Clear+repaint"

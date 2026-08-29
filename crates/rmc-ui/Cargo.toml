@@ -19,6 +19,7 @@ rmc-diff = { path = "../rmc-diff" }
 fs2.workspace = true
 whoami.workspace = true
 hostname.workspace = true
+users.workspace = true
 rmc-view = { path = "../rmc-view" }
 once_cell = "1.19"
 

@@ -15,6 +15,7 @@ pub mod matchutil;
 pub mod panel;
 pub mod panelize;
 pub mod paths;
+pub mod shell_prompt;
 pub mod quicksearch;
 pub mod selection;
 pub mod sorting;
