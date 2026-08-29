@@ -10118,12 +10118,26 @@ mod gnu_default_chrome_colors_tests {
         grid[y].iter().map(|c| c.ch).collect()
     }
 
-    #[test]
-    fn viewer_text_default_fbar_is_gnu_unwrap() {
-        let dir = std::path::Path::new("/tmp/mcr-fixture");
-        let _ = std::fs::create_dir_all(dir);
+    /// Same bytes as live GNU `/tmp/mcr-fixture/notes.txt`, unique path so
+    /// parallel tests cannot empty the shared fixture mid-paint.
+    fn unique_gnu_notes_fixture() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mcr-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("notes.txt");
         std::fs::write(&path, "hello from notes\n").expect("write notes");
+        path
+    }
+
+    #[test]
+    fn viewer_text_default_fbar_is_gnu_unwrap() {
+        let path = unique_gnu_notes_fixture();
         let grid = rasterize(&paint_viewer(&path, 80, 24, false), 80, 24);
         assert_eq!(
             row_chars(&grid, 23),
@@ -10138,10 +10152,7 @@ mod gnu_default_chrome_colors_tests {
 
     #[test]
     fn viewer_hex_fbar_matches_live_gnu_edit_save_hxsrch() {
-        let dir = std::path::Path::new("/tmp/mcr-fixture");
-        let _ = std::fs::create_dir_all(dir);
-        let path = dir.join("notes.txt");
-        std::fs::write(&path, "hello from notes\n").expect("write notes");
+        let path = unique_gnu_notes_fixture();
         let grid = rasterize(&paint_viewer(&path, 80, 24, true), 80, 24);
         assert_eq!(
             row_chars(&grid, 23),
@@ -10154,10 +10165,7 @@ mod gnu_default_chrome_colors_tests {
 
     #[test]
     fn viewer_hex_dump_body_matches_live_gnu_notes_fixture() {
-        let dir = std::path::Path::new("/tmp/mcr-fixture");
-        let _ = std::fs::create_dir_all(dir);
-        let path = dir.join("notes.txt");
-        std::fs::write(&path, "hello from notes\n").expect("write notes");
+        let path = unique_gnu_notes_fixture();
         let grid = rasterize(&paint_viewer(&path, 80, 24, true), 80, 24);
         assert_eq!(
             row_chars(&grid, 1),
