@@ -126,6 +126,28 @@ pub fn keyevent_to_function_key(ev: &KeyEvent) -> Option<u8> {
     }
 }
 
+/// Crossterm maps raw TTY bytes `0x1C..=0x1F` to Ctrl-4..Ctrl-7, not the
+/// characters those bytes actually are (`C-\`, `C-]`, `C-^`, `C-_`).
+/// GNU mc 4.8.33 `HotList = ctrl-backslash` is the FS byte `0x1C`.
+pub fn normalize_crossterm_ctrl_key(key: KeyEvent) -> KeyEvent {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return key;
+    }
+    let code = match key.code {
+        KeyCode::Char('4') => KeyCode::Char('\\'),
+        KeyCode::Char('5') => KeyCode::Char(']'),
+        KeyCode::Char('6') => KeyCode::Char('^'),
+        KeyCode::Char('7') => KeyCode::Char('_'),
+        _ => return key,
+    };
+    KeyEvent {
+        code,
+        modifiers: key.modifiers,
+        kind: key.kind,
+        state: key.state,
+    }
+}
+
 /// GNU mc(1) File menu Shift-F / F13–F20. Terminals send `F(13)`…`F(20)` **or**
 /// Shift+F3…Shift+F10. Esc-number stays F1–F10 (`esc_digit_to_function_key`).
 pub fn file_menu_shift_function_key(ev: &KeyEvent) -> Option<u8> {
@@ -218,6 +240,22 @@ mod tests {
                 KeyModifiers::SHIFT | KeyModifiers::CONTROL
             )),
             None
+        );
+    }
+
+    #[test]
+    fn crossterm_fs_byte_is_ctrl_backslash() {
+        let raw = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL);
+        let got = normalize_crossterm_ctrl_key(raw);
+        assert_eq!(got.code, KeyCode::Char('\\'));
+        assert!(got.modifiers.contains(KeyModifiers::CONTROL));
+        let plain = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE);
+        assert_eq!(normalize_crossterm_ctrl_key(plain).code, KeyCode::Char('4'));
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(
+            normalize_crossterm_ctrl_key(ctrl_s).code,
+            KeyCode::Char('s'),
+            "letter Ctrl chords must stay"
         );
     }
 }
