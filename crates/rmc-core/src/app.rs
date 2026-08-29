@@ -621,6 +621,8 @@ pub enum UiMode {
     Viewer {
         path: PathBuf,
         hex: bool,
+        /// GNU hex F2 Edit / View (in-place nibble editing is a leftover).
+        hex_edit: bool,
         wrap: bool,
         offset: u64,
         search: Option<String>,
@@ -2289,8 +2291,11 @@ impl App {
             ShowUserMenu => self.try_open_user_menu(),
             ViewerQuit => self.close_current_screen(),
             ViewerToggleHex => {
-                if let UiMode::Viewer { hex, .. } = &mut self.ui_mode {
+                if let UiMode::Viewer { hex, hex_edit, .. } = &mut self.ui_mode {
                     *hex = !*hex;
+                    if !*hex {
+                        *hex_edit = false;
+                    }
                 }
             }
             _ => {}
@@ -2654,18 +2659,20 @@ impl UiMode {
         }
     }
 
-    /// Internal viewer with GNU mcview defaults (parsed on, format off, no selection).
+    /// Internal viewer with GNU mcview defaults (wrap on, parsed on, format off).
     pub fn new_viewer(path: PathBuf) -> Self {
         Self::new_viewer_with_parsed(path, true)
     }
 
     /// Internal viewer. `parsed = false` is GNU F13 View raw (no mc.ext
     /// `[view]` filter / formatting). F3 uses `parsed = true`.
+    /// Wrap starts ON so the F-bar shows `2UnWrap` (live GNU 4.8.30).
     pub fn new_viewer_with_parsed(path: PathBuf, parsed: bool) -> Self {
         UiMode::Viewer {
             path,
             hex: false,
-            wrap: false,
+            hex_edit: false,
+            wrap: true,
             offset: 0,
             search: None,
             search_prompt: None,
