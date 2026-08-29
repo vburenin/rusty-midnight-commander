@@ -6882,11 +6882,7 @@ impl TerminalApp {
                                     4 => rmc_core::actions::PaneSide::Right,
                                     _ => rmc_core::actions::PaneSide::Left,
                                 };
-                                set_side_panel_mode(
-                                    app,
-                                    side,
-                                    rmc_core::panel::PanelMode::Listing,
-                                );
+                                set_side_panel_mode(app, side, rmc_core::panel::PanelMode::Listing);
                             }
                             "Quick view" => {
                                 let side = match *top_index {
@@ -12258,10 +12254,7 @@ mod drop_menus_tests {
             .position(|s| *s == "External panelize")
             .expect("External panelize");
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if *selected_index == ext {
                     break;
                 }
@@ -19257,10 +19250,7 @@ mod external_panelize_dialog_tests {
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&"External panelize") {
                     press(app, KeyCode::Enter);
                     return;
@@ -21731,10 +21721,7 @@ mod command_menu_remaining_items_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -22089,14 +22076,15 @@ mod listing_mode_dialog_tests {
             "missing Listing format..."
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&"Listing format...") {
                     press(app, KeyCode::Enter);
                     let (side, _, _, _) = listing_dialog(app);
-                    assert_eq!(side, PaneSide::Left, "Left menu Listing format is left panel");
+                    assert_eq!(
+                        side,
+                        PaneSide::Left,
+                        "Left menu Listing format is left panel"
+                    );
                     return;
                 }
             }
@@ -22115,10 +22103,7 @@ mod listing_mode_dialog_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -22384,10 +22369,7 @@ mod filter_dialog_tests {
             "missing Filter..."
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&"Filter...") {
                     press(app, KeyCode::Enter);
                     let (side, _, _, _, _, _) = filter_dialog(app);
@@ -22421,10 +22403,7 @@ mod filter_dialog_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -22720,10 +22699,7 @@ mod equalize_panels_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -22744,10 +22720,7 @@ mod equalize_panels_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -23170,10 +23143,7 @@ mod sort_dialog_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -23194,10 +23164,7 @@ mod sort_dialog_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -23623,10 +23590,7 @@ mod panel_quickview_info_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -23647,10 +23611,7 @@ mod panel_quickview_info_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -24004,10 +23965,7 @@ mod panel_tree_mode_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -24028,10 +23986,7 @@ mod panel_tree_mode_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -24740,10 +24695,7 @@ mod alt_tab_completion_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -24764,10 +24716,7 @@ mod alt_tab_completion_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -25141,10 +25090,7 @@ mod panel_split_layout_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -25165,10 +25111,7 @@ mod panel_split_layout_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -25515,10 +25458,7 @@ mod select_group_dialog_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -25539,10 +25479,7 @@ mod select_group_dialog_tests {
             "missing Command menu item {label}"
         );
         for _ in 0..COMMAND_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -26029,10 +25966,7 @@ mod chmod_chown_link_dialog_tests {
             "missing Left/Right menu item {label}"
         );
         for _ in 0..LEFT_RIGHT_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
                 if LEFT_RIGHT_MENU_ITEMS.get(*selected_index) == Some(&label) {
                     press(app, KeyCode::Enter);
                     return;
@@ -31576,12 +31510,8 @@ mod learn_keys_tests {
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
         for _ in 0..crate::render::OPTIONS_MENU_ITEMS.len() {
-            if let UiMode::Menu {
-                selected_index, ..
-            } = &app.ui_mode
-            {
-                if crate::render::OPTIONS_MENU_ITEMS.get(*selected_index)
-                    == Some(&"Learn keys...")
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
+                if crate::render::OPTIONS_MENU_ITEMS.get(*selected_index) == Some(&"Learn keys...")
                 {
                     press(app, KeyCode::Enter);
                     return;
