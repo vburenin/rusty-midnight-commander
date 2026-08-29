@@ -1438,7 +1438,7 @@ impl EditorSaveAsDialog {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyDialogFocus {
     Mask,
     To,
@@ -2134,8 +2134,16 @@ impl App {
     /// menu is a no-op.
     fn try_open_user_menu(&mut self) {
         let cwd = self.active_panel().cwd.clone();
-        if let Ok(menu) = crate::user_menu::load_menu(&cwd) {
-            self.open_user_menu(menu);
+        match crate::user_menu::load_menu(&cwd) {
+            Ok(menu) => self.open_user_menu(menu),
+            Err(_) => {
+                // GNU F2 always opens the User menu, even when no menu file exists.
+                self.ui_mode = UiMode::UserMenu {
+                    title: "User menu".into(),
+                    entries: Vec::new(),
+                    selected_index: 0,
+                };
+            }
         }
     }
 

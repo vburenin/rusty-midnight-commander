@@ -994,10 +994,7 @@ fn draw_overwrite_dialog(
     show_shadow: bool,
 ) {
     use rmc_core::app::{overwrite_button_rows, OverwriteFocus, DONT_OVERWRITE_ZERO_LENGTH_LABEL};
-    let w = (cols as usize).min(70) as u16;
-    let h = 13u16.min(rows.saturating_sub(2)).max(11);
-    let x = (cols.saturating_sub(w)) / 2;
-    let y = (rows.saturating_sub(h)) / 2;
+    let (x, y, w, h) = crate::dialog_hit::overwrite_dialog_geom(cols, rows);
     // Frame
     p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -3598,10 +3595,7 @@ fn draw_dialog_ync(
     focus: rmc_core::app::YncFocus,
     show_shadow: bool,
 ) {
-    let w = (cols as usize).min(60) as u16;
-    let h = 7u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let (x, y, w, h) = crate::dialog_hit::delete_dialog_geom(cols, rows);
     let error = dialog_is_error_title(title);
     paint_dialog_frame(p, x, y, w, h, title, pal, error);
     let (fg, bg) = dialog_chrome_pair(pal, error);
@@ -3646,10 +3640,7 @@ fn draw_dialog_box(
     buttons: &[&str],
     show_shadow: bool,
 ) {
-    let w = (cols as usize).min(60) as u16;
-    let h = 7u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let (x, y, w, h) = crate::dialog_hit::delete_dialog_geom(cols, rows);
     let error = dialog_is_error_title(title);
     paint_dialog_frame(p, x, y, w, h, title, pal, error);
     let (fg, bg) = dialog_chrome_pair(pal, error);
@@ -5516,10 +5507,7 @@ fn draw_mkdir_dialog(
     focus_ok: bool,
     show_shadow: bool,
 ) {
-    let w = (cols as usize).min(60) as u16;
-    let h = 7u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let (x, y, w, h) = crate::dialog_hit::mkdir_dialog_geom(cols, rows);
     paint_dialog_frame(p, x, y, w, h, "Create a new Directory", pal, false);
     p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     p.goto(x + 2, y + 2);
@@ -6302,10 +6290,7 @@ fn draw_copy_move_dialog(
     show_shadow: bool,
 ) {
     use rmc_core::app::CopyDialogFocus as F;
-    let w = (cols as usize).min(74) as u16;
-    let h = 15u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let (x, y, w, h) = crate::dialog_hit::copy_dialog_geom(cols, rows);
     // Frame
     p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -6378,7 +6363,10 @@ fn draw_copy_move_dialog(
     );
     p.goto(x + 2, y + 3);
     let m = truncate(mask, (w - 4) as usize);
-    p.text(&format!("{m}{}", " ".repeat((w - 4) as usize - m.len())));
+    p.text(&format!(
+        "{m}{}",
+        " ".repeat((w as usize).saturating_sub(4).saturating_sub(m.len()))
+    ));
     // to:
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 5);
@@ -6398,7 +6386,10 @@ fn draw_copy_move_dialog(
     );
     p.goto(x + 6, y + 5);
     let t = truncate(to, (w - 8) as usize);
-    p.text(&format!("{t}{}", " ".repeat((w - 8) as usize - t.len())));
+    p.text(&format!(
+        "{t}{}",
+        " ".repeat((w as usize).saturating_sub(8).saturating_sub(t.len()))
+    ));
     // Checkboxes
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     let checks = [

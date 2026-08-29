@@ -162,6 +162,20 @@ fn resolves_mc_defaults() {
     );
     assert!(
         matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(17), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(17))
+        ),
+        "F17 Find file"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(7), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(17))
+        ),
+        "S-F7 == F17"
+    );
+    assert!(
+        matches!(
             km.resolve(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),
             Some(Action::Quit)
         ),

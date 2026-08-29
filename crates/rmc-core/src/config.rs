@@ -225,6 +225,11 @@ impl KeyMap {
             KeyEvent::new(KeyCode::F(6), KeyModifiers::SHIFT),
             Action::FunctionKey(16),
         );
+        m.bind(new_event(KeyCode::F(17)), Action::FunctionKey(17));
+        m.bind(
+            KeyEvent::new(KeyCode::F(7), KeyModifiers::SHIFT),
+            Action::FunctionKey(17),
+        );
         m.bind(new_event(KeyCode::F(20)), Quit);
         m.bind(KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT), Quit);
         // Selection group keys
@@ -1451,6 +1456,10 @@ mod tests {
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT)),
             Some(Action::FunctionKey(13))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(17), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(17))
         ));
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),

@@ -61,6 +61,8 @@ F15   = FunctionKey15
 S-F5  = FunctionKey15
 F16   = FunctionKey16
 S-F6  = FunctionKey16
+F17   = FunctionKey17
+S-F7  = FunctionKey17
 F20   = Quit
 S-F10 = Quit
 

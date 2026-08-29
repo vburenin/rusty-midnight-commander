@@ -16,6 +16,21 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+/// GNU mc(1): refuse Copy/Move when dest is the source or lives inside it.
+/// Prevents a same-directory F5 OK from recursing a directory into itself
+/// (that used to abort the process).
+pub fn copy_onto_self(src: &Path, dst: &Path) -> bool {
+    if src == dst {
+        return true;
+    }
+    let src_c = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    let dst_c = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
+    if src_c == dst_c {
+        return true;
+    }
+    dst_c.starts_with(&src_c)
+}
+
 /// GNU mc(1): Compute totals has no effect when Verbose operation is off.
 pub fn compute_totals_active(opts: &ConfigOptions) -> bool {
     opts.compute_totals && opts.verbose
@@ -848,6 +863,17 @@ mod tests {
         let vfs = LocalFs::new();
         reget_copy(&vfs, &src, &dst).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), full);
+    }
+
+    #[test]
+    fn copy_onto_self_rejects_same_path_and_nested_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), b"x").unwrap();
+        assert!(copy_onto_self(&src, &src));
+        assert!(copy_onto_self(&src, &src.join("a.txt")));
+        assert!(!copy_onto_self(&src, &tmp.path().join("other")));
     }
 
     #[test]

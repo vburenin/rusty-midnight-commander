@@ -1,3 +1,4 @@
+mod dialog_hit;
 mod dirtree;
 mod filehighlight;
 pub mod find;
