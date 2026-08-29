@@ -87,6 +87,25 @@ fn compose_paint_need(
     }
 }
 
+/// Idle hint rotation must not Clear+repaint. Only the hint row is rewritten.
+fn should_partial_hint_paint(need: PaintNeed, hint_changed: bool) -> bool {
+    hint_changed && !should_full_paint(need)
+}
+
+fn hint_chrome_is_visible(app: &App) -> bool {
+    if !app.layout.hintbar_visible || app.subshell.show_output_screen {
+        return false;
+    }
+    !matches!(
+        app.ui_mode,
+        UiMode::Editor { .. }
+            | UiMode::Viewer { .. }
+            | UiMode::Diff(_)
+            | UiMode::Help { .. }
+            | UiMode::PauseAfterRun
+    )
+}
+
 /// Mouse kinds that GNU mc treats as input. Motion / release / drag do not
 /// change a cell by themselves and must not force Clear+repaint.
 fn mouse_kind_requests_paint(kind: MouseEventKind) -> bool {
@@ -2133,14 +2152,18 @@ impl TerminalApp {
             let force_repaint = app.take_needs_full_clear();
             let timed_cells_changed =
                 subshell_dirty || find_dirty || skin_dirty || file_op_cells_changed || esc_expired;
-            if tick_emits_full_redraw(compose_paint_need(
-                need_paint,
-                force_repaint,
-                size_changed,
-                timed_cells_changed,
-            )) {
+            // GNU hint rotation is an idle timer: do not fold it into
+            // timed_cells_changed (that path Clear+repaints the whole UI).
+            let hint_changed = app.hint.maybe_rotate(Instant::now());
+            let paint_need =
+                compose_paint_need(need_paint, force_repaint, size_changed, timed_cells_changed);
+            if tick_emits_full_redraw(paint_need) {
                 renderer.draw(app)?;
                 need_paint = false;
+            } else if should_partial_hint_paint(paint_need, hint_changed)
+                && hint_chrome_is_visible(app)
+            {
+                renderer.draw_hint_row(app)?;
             }
 
             if event::poll(Duration::from_millis(50))? {
@@ -27366,8 +27389,8 @@ mod panel_toggle_mark_tests {
 #[cfg(test)]
 mod idle_paint_tests {
     use super::{
-        compose_paint_need, mouse_kind_requests_paint, should_full_paint, tick_emits_full_redraw,
-        PaintNeed,
+        compose_paint_need, mouse_kind_requests_paint, should_full_paint,
+        should_partial_hint_paint, tick_emits_full_redraw, PaintNeed,
     };
     use crossterm::event::{MouseButton, MouseEventKind};
 
@@ -27450,6 +27473,24 @@ mod idle_paint_tests {
         assert!(
             !tick_emits_full_redraw(need),
             "progress dialog with identical cells must not Clear+repaint"
+        );
+    }
+
+    #[test]
+    fn hint_rotation_does_not_full_paint() {
+        let idle = PaintNeed::default();
+        assert!(
+            !tick_emits_full_redraw(idle),
+            "hint tick must not queue Renderer::draw Clear+repaint"
+        );
+        assert!(
+            should_partial_hint_paint(idle, true),
+            "idle hint tick rewrites only the hint row"
+        );
+        assert!(!should_partial_hint_paint(idle, false));
+        assert!(
+            !should_partial_hint_paint(compose_paint_need(true, false, false, false), true),
+            "a full paint already includes the new hint"
         );
     }
 }

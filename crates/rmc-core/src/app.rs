@@ -2,6 +2,7 @@ use crate::actions::{Action, PaneSide, SortBy as SortByAction};
 use crate::config::KeyMap;
 use crate::dirtree::DirectoryTreeState;
 use crate::find::FindDialogState;
+use crate::hint::HintBarState;
 use crate::hotlist::{Hotlist, HotlistDialogState};
 use crate::learn_keys::{LearnKeyRow, LearnedKeyStore};
 use crate::panel::{
@@ -1770,6 +1771,9 @@ pub struct App {
     pub sftp_host_key: Option<(rmc_fs::sftpfs::HostKeyPrompt, PathBuf)>,
     /// GNU MenuLastSelected (F19 / S-F9): last dropped pull-down `(top, item)`.
     pub last_menu_path: Option<(usize, usize)>,
+    /// Hint-line text and idle rotation (GNU hintbar). Hidden when
+    /// [`LayoutOptions::hintbar_visible`] is false.
+    pub hint: HintBarState,
 }
 
 impl App {
@@ -1808,6 +1812,7 @@ impl App {
             learned_keys: LearnedKeyStore::default(),
             sftp_host_key: None,
             last_menu_path: None,
+            hint: HintBarState::new(),
             completion_retry: false,
             completion_beep: false,
             completion_path_override: None,

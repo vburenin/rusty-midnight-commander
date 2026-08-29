@@ -319,4 +319,23 @@ mod tests {
         assert_eq!(b.gauge_row, None);
         assert!(a.hint_row.is_some(), "hint bar stays below the panels");
     }
+
+    #[test]
+    fn hintbar_off_hides_the_row_and_grows_panels() {
+        // Live GNU 4.8.30 `message_visible=false` on 80×24: panels fill through
+        // row 21, prompt on 22, F-bar on 23 — no hint line.
+        let opt = LayoutOptions {
+            hintbar_visible: false,
+            ..LayoutOptions::default()
+        };
+        let chrome = compute_chrome_geom(80, 24, &opt);
+        let (left, right) = dual_panel_rects(80, &chrome, &opt);
+        assert_eq!(chrome.hint_row, None);
+        assert_eq!(chrome.cmd_row, Some(22));
+        assert_eq!(chrome.fbar_row, Some(23));
+        assert_eq!(chrome.content_bottom, 21);
+        assert_eq!(left.h, 21);
+        assert_eq!(right.h, 21);
+        assert_eq!(left.y + left.h, chrome.cmd_row.unwrap());
+    }
 }

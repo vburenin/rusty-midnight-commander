@@ -166,6 +166,16 @@ mod tests {
             p.set_fg_bg(Color::Yellow, Color::Black);
         }
         assert_eq!(String::from_utf8_lossy(&hot), "\x1b[93;40m");
+        let mut hint = Vec::new();
+        {
+            let mut p = Painter { out: &mut hint };
+            p.set_fg_bg(Color::Reset, Color::Reset);
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&hint),
+            "\x1b[39;49m",
+            "GNU default-skin hintbar is default;default"
+        );
     }
 
     #[test]

@@ -198,6 +198,10 @@ fn assign_pair(
                 pal.shadow_fg = fg;
                 pal.shadow_bg = bg;
             }
+            "hintbar" => {
+                pal.hintbar_fg = fg;
+                pal.hintbar_bg = bg;
+            }
             _ => {}
         },
         "dialog" => match k.as_str() {
@@ -311,6 +315,7 @@ fn parse_color_name(name: &str) -> Option<Color> {
         "magenta" => Some(Color::Magenta),
         "cyan" => Some(Color::Cyan),
         "white" => Some(Color::White),
+        "default" => Some(Color::Reset),
         "lightgray" | "lightgrey" | "gray" | "grey" => Some(Color::Grey),
         "darkgray" | "darkgrey" => Some(Color::DarkGrey),
         "brightgreen" => Some(Color::Green),
@@ -609,6 +614,15 @@ mod tests {
         assert_eq!(pal.edit_linestate_fg, Color::White);
         assert_eq!(pal.edit_linestate_bg, Color::Cyan);
         assert_ne!(pal.edit_marked_fg, pal.edit_bold_fg);
+        assert_eq!(
+            (pal.hintbar_fg, pal.hintbar_bg),
+            (Color::Reset, Color::Reset),
+            "GNU default.ini hintbar=default;default"
+        );
+        assert_ne!(
+            pal.hintbar_bg, pal.core_default_bg,
+            "hintbar default is not core lightgray;blue"
+        );
         assert_ne!(pal.edit_marked_bg, pal.marked_bg);
     }
 
