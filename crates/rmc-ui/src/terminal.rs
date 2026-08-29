@@ -19689,13 +19689,15 @@ mod cli_startup_flags_tests {
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "rmc-cli-{}-{}",
+            "rmc-cli-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -20280,28 +20282,25 @@ mod cli_startup_flags_tests {
 
     #[test]
     fn relative_positional_dir_is_resolved_against_process_cwd() {
-        let root = temp_workspace();
-        let name = format!(
-            "rmc-cli-rel-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+        let rel = std::path::Path::new("rel-panel");
+        let got = super::resolve_cli_panel_dir(rel);
+        assert_eq!(
+            got,
+            std::env::current_dir().unwrap().join(rel),
+            "relative local operands join the process cwd"
         );
-        let abs = std::env::current_dir().unwrap().join(&name);
-        std::fs::create_dir_all(&abs).unwrap();
-        let start = root.join("start");
-        std::fs::create_dir_all(&start).unwrap();
-        let mut app = make_app(&start);
-        apply_cli_args(&mut app, std::slice::from_ref(&name)).unwrap();
-        assert!(
-            same_dir(&app.left.cwd, &abs),
-            "relative DIR1 must join process cwd, got {:?}",
-            app.left.cwd
+        assert_eq!(
+            super::resolve_cli_panel_dir(std::path::Path::new("/abs/panel")),
+            std::path::PathBuf::from("/abs/panel")
         );
-        let _ = std::fs::remove_dir_all(&abs);
-        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            super::resolve_cli_panel_dir(std::path::Path::new("ftp://host/pub")),
+            std::path::PathBuf::from("ftp://host/pub")
+        );
+        assert_eq!(
+            super::resolve_cli_panel_dir(std::path::Path::new("/#ftp:host/pub")),
+            std::path::PathBuf::from("/#ftp:host/pub")
+        );
     }
 
     #[test]
