@@ -8953,7 +8953,8 @@ mod gnu_default_chrome_colors_tests {
                 );
             }
         }
-        let raw = String::from_utf8_lossy(&paint_hint_line(text));
+        let hint_bytes = paint_hint_line(text);
+        let raw = String::from_utf8_lossy(&hint_bytes);
         assert!(
             raw.contains("\x1b[39;49m"),
             "hintbar SGR must be 39;49, got {raw:?}"
