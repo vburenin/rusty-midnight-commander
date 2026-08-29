@@ -597,6 +597,18 @@ pub enum LinkDialogFocus {
     Cancel,
 }
 
+/// Focus within GNU F7 Mkdir (`Create a new Directory`).
+///
+/// Live GNU 4.8.30: the input is focused on open; OK stays the default button
+/// (`[< OK >]`) while Cancel is the unmarked `[ Cancel ]`. Tab cycles
+/// Input → Ok → Cancel → Input. Button focus is color (dfocus), not brackets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MkdirDialogFocus {
+    Input,
+    Ok,
+    Cancel,
+}
+
 #[allow(clippy::large_enum_variant)] // Editor owns EditorBuffer; overlays are boxed where needed
 pub enum UiMode {
     Normal,
@@ -781,7 +793,7 @@ pub enum UiMode {
     },
     MkdirDialog {
         value: String,
-        focus_ok: bool, // true focuses OK button; false focuses input
+        focus: MkdirDialogFocus,
     },
     DeleteDialog {
         name: String,
