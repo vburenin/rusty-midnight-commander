@@ -6053,6 +6053,18 @@ impl TerminalApp {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
                     KeyCode::Tab | KeyCode::Left | KeyCode::Right => *focus_ok = !*focus_ok,
+                    KeyCode::Char('y') | KeyCode::Char('Y') if key.modifiers.is_empty() => {
+                        *focus_ok = true;
+                        if let Err(e) = app.vfs.remove(path, true) {
+                            app.show_error_dialog(format!("{e}"));
+                            return Ok(());
+                        }
+                        app.reload_panels()?;
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') if key.modifiers.is_empty() => {
+                        app.ui_mode = UiMode::Normal;
+                    }
                     KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
                         if *focus_ok {
                             if let Err(e) = app.vfs.remove(path, true) {
@@ -26597,12 +26609,7 @@ mod button_activation_tests {
         }
     }
 
-    #[test]
-    fn fbar_f5_click_opens_copy_dialog() {
-        let root = temp_workspace();
-        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
-        let mut app = make_app(&root);
-        select_named(&mut app, "aaa.txt");
+    fn click_fbar(app: &mut App, fn_index: usize) {
         let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
         let fbar_y = geom.fbar_row.expect("F-bar");
         let labels = panel_fbar_labels();
@@ -26610,15 +26617,53 @@ mod button_activation_tests {
         for (i, lab) in labels.iter().enumerate() {
             let num = if i == 9 { "10" } else { &(i + 1).to_string() };
             let w = num.len() as u16 + lab.len() as u16 + 1;
-            if i == 4 {
-                click(&mut app, x, fbar_y);
-                break;
+            if i == fn_index {
+                click(app, x, fbar_y);
+                return;
             }
             x = x.saturating_add(w);
         }
+        panic!("F-bar index {fn_index} out of range");
+    }
+
+    #[test]
+    fn fbar_f5_click_opens_copy_dialog() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 4);
         assert!(
             matches!(app.ui_mode, UiMode::CopyDialog { .. }),
             "F-bar Copy (F5) must open the Copy dialog"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f7_click_opens_mkdir_dialog() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 6);
+        assert!(
+            matches!(app.ui_mode, UiMode::MkdirDialog { .. }),
+            "F-bar Mkdir (F7) must open Create a new Directory"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f8_click_opens_delete_yes_no() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 7);
+        assert!(
+            matches!(app.ui_mode, UiMode::DeleteDialog { .. }),
+            "F-bar Delete (F8) must open Yes/No"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -26663,6 +26708,25 @@ mod button_activation_tests {
             matches!(app.ui_mode, UiMode::Normal),
             "mouse on Cancel must dismiss Copy"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_y_confirms_and_n_cancels() {
+        let root = temp_workspace();
+        std::fs::write(root.join("victim.txt"), b"x").unwrap();
+        std::fs::write(root.join("keep.txt"), b"y").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "keep.txt");
+        press(&mut app, KeyCode::F(8));
+        press(&mut app, KeyCode::Char('n'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(root.join("keep.txt").exists(), "n must keep the file");
+        select_named(&mut app, "victim.txt");
+        press(&mut app, KeyCode::F(8));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!root.join("victim.txt").exists(), "y must delete");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -26743,6 +26807,38 @@ mod button_activation_tests {
         assert!(
             matches!(app.ui_mode, UiMode::Normal),
             "Space on Confirm OK must dismiss"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mkdir_space_on_ok_creates_and_mouse_cancel_dismisses() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(7));
+        assert!(matches!(app.ui_mode, UiMode::MkdirDialog { .. }));
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('w'));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(root.join("new").is_dir(), "Space on Mkdir OK must create");
+
+        press(&mut app, KeyCode::F(7));
+        let focus_ok = match &app.ui_mode {
+            UiMode::MkdirDialog { focus_ok, .. } => *focus_ok,
+            _ => panic!("MkdirDialog"),
+        };
+        let by = (ROWS - 7) / 2 + 5;
+        let mx = (0..COLS)
+            .find(|&x| crate::hit::mkdir_button_at(COLS, ROWS, x, by, focus_ok) == Some(false))
+            .expect("Cancel x");
+        click(&mut app, mx, by);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "mouse on Mkdir Cancel must dismiss"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
