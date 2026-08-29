@@ -67,6 +67,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 - [x] Fast directory reload; manual rescan C-r
 - [x] Mouse: select (left), mark (right), double-click execute/open; Shift for terminal selection
 - [x] `-d`/`--nomouse`: disable mouse capture and mouse event handling for this run
+- [x] Positional panel directories: `mcr [options] [dir1 [dir2]]` — `dir1` is the current (active) panel, `dir2` the other panel (default left-current: left then right). One operand changes only the current panel.
 
 ---
 

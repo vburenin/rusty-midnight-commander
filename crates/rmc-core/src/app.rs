@@ -2291,6 +2291,16 @@ impl App {
         std::mem::take(&mut self.needs_full_clear)
     }
 
+    /// Change directory on a specific panel, then restore the previous
+    /// [`Self::active`] side. Used for GNU `mc dir1 [dir2]` startup.
+    pub fn change_dir_on(&mut self, side: PaneSide, path: &Path) -> Result<()> {
+        let prev = self.active;
+        self.active = side;
+        let result = self.change_dir(path);
+        self.active = prev;
+        result
+    }
+
     pub fn change_dir(&mut self, path: &Path) -> Result<()> {
         let new_cwd = self.vfs.canonicalize_path(path);
         let cwd_changed = self.active_panel().cwd != new_cwd;

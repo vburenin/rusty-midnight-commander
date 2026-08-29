@@ -10,7 +10,7 @@ HTML twin: [features.html](features.html).
 
 | Area | GNU reference | What `mcr` does |
 | --- | --- | --- |
-| Dual-pane chrome | mc(1) overview / panels | Menu bar, two panels, mini-status (including symlink targets), hint line, command line, F-key bar, horizontal or vertical split, Ctrl-L repaint |
+| Dual-pane chrome | mc(1) overview / panels | Menu bar, two panels, mini-status (including symlink targets), hint line, command line, F-key bar, horizontal or vertical split, Ctrl-L repaint. `mcr DIR1 [DIR2]` sets the current then other panel directories |
 | Listings | mc(1) listing format / sort / filter | Full, Brief, Long, user-defined fields; sort; filter; hidden files; mouse; `-d`/`--nomouse` |
 | File ops | mc(1) File menu | Copy, rename/move, mkdir, delete (F5/F6/F7/F8 go through VFS), chmod/chown, links, overwrite dialog, background jobs, progress totals |
 | Viewer | mcview(1) | F3 or `mcr --view`: text/hex, wrap, search, filters — not `$PAGER` for `--view` |

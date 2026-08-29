@@ -9,7 +9,10 @@ const USAGE: &str = "\
 mcr - dual-pane terminal file manager (Apache-2.0)
 
 Usage:
-  mcr [OPTION]...
+  mcr [OPTION]... [DIR1 [DIR2]]
+
+  DIR1 [DIR2]              Current panel directory; optional other panel directory
+                           (default left-current panel: DIR1 is left, DIR2 is right)
 
 Options:
   -d, --nomouse            Disable mouse capture for this run
@@ -70,5 +73,9 @@ mod tests {
         assert!(USAGE.contains("man mcr-diff"));
         assert!(USAGE.contains("man -l docs/man/mcr.1"));
         assert!(USAGE.contains("docs/website/index.html"));
+        assert!(
+            USAGE.contains("[DIR1 [DIR2]]"),
+            "help must document GNU positional panel directories"
+        );
     }
 }

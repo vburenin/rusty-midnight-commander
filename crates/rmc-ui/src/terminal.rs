@@ -704,11 +704,19 @@ fn open_user_config_in_editor(app: &mut App, path: PathBuf) {
 /// wins. `--skin` overrides `MC_SKIN` and the ini/default name for this process;
 /// a missing named skin keeps that name and falls back visually the same way
 /// Options → Appearance does (default palette).
+///
+/// Non-option operands are GNU panel directories: `mc [options] [dir1 [dir2]]`.
+/// `dir1` opens on the current (active) panel; `dir2` opens on the other panel.
+/// With the default left-current panel that is left then right. A lone `dir1`
+/// changes only the current panel. Extra operands after the first two are
+/// ignored. A directory that cannot be listed leaves that panel unchanged.
 pub fn apply_cli_args(app: &mut App, args: &[String]) -> Result<()> {
     let mut i = 0;
+    let mut positionals = Vec::new();
     while i < args.len() {
         let a = args[i].as_str();
         if a == "--" {
+            positionals.extend_from_slice(&args[i + 1..]);
             break;
         }
         if let Some(long) = a.strip_prefix("--") {
@@ -719,9 +727,45 @@ pub fn apply_cli_args(app: &mut App, args: &[String]) -> Result<()> {
             i = apply_short_cluster(app, a, args, i);
             continue;
         }
+        positionals.push(a.to_string());
         i += 1;
     }
+    apply_positional_panel_dirs(app, &positionals);
     Ok(())
+}
+
+/// GNU mc(1) 4.8.33: first operand → current panel; second → the other panel.
+fn apply_positional_panel_dirs(app: &mut App, positionals: &[String]) {
+    if positionals.is_empty() {
+        return;
+    }
+    let first = resolve_cli_panel_dir(Path::new(&positionals[0]));
+    let current = app.active;
+    let _ = app.change_dir_on(current, &first);
+    if let Some(second) = positionals.get(1) {
+        let second = resolve_cli_panel_dir(Path::new(second));
+        let other = match current {
+            PaneSide::Left => PaneSide::Right,
+            PaneSide::Right => PaneSide::Left,
+        };
+        let _ = app.change_dir_on(other, &second);
+    }
+}
+
+/// Local relative operands are resolved against the process cwd. Remote/VFS
+/// strings (`ftp://…`, `/#ftp:…`) are left as given so `change_dir` can enter.
+fn resolve_cli_panel_dir(raw: &Path) -> PathBuf {
+    if raw.is_absolute() {
+        return raw.to_path_buf();
+    }
+    let s = raw.to_string_lossy();
+    if s.contains("://") || s.contains('#') {
+        return raw.to_path_buf();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(raw),
+        Err(_) => raw.to_path_buf(),
+    }
 }
 
 /// GNU mc(1): `MC_SKIN` selects the skin after user ini and before `-S`/`--skin`.
@@ -19645,13 +19689,15 @@ mod cli_startup_flags_tests {
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "rmc-cli-{}-{}",
+            "rmc-cli-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -20058,6 +20104,264 @@ mod cli_startup_flags_tests {
         )
         .unwrap();
         assert!(matches!(app.ui_mode, UiMode::Editor { .. }));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => a == b,
+        }
+    }
+
+    #[test]
+    fn two_positional_dirs_set_left_then_right_when_left_is_current() {
+        let root = temp_workspace();
+        let left = root.join("left-panel");
+        let right = root.join("right-panel");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let start = root.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+        let mut app = make_app(&start);
+        assert_eq!(app.active, PaneSide::Left);
+        apply_cli_args(
+            &mut app,
+            &[
+                left.to_string_lossy().into_owned(),
+                right.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            same_dir(&app.left.cwd, &left),
+            "first operand is left when left is current, got {:?}",
+            app.left.cwd
+        );
+        assert!(
+            same_dir(&app.right.cwd, &right),
+            "second operand is right when left is current, got {:?}",
+            app.right.cwd
+        );
+        assert_eq!(app.active, PaneSide::Left);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn two_positional_dirs_set_active_then_other() {
+        let root = temp_workspace();
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let start = root.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+        let mut app = make_app(&start);
+        app.active = PaneSide::Right;
+        apply_cli_args(
+            &mut app,
+            &[
+                first.to_string_lossy().into_owned(),
+                second.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            same_dir(&app.right.cwd, &first),
+            "GNU: first operand is the current panel"
+        );
+        assert!(
+            same_dir(&app.left.cwd, &second),
+            "GNU: second operand is the other panel"
+        );
+        assert_eq!(app.active, PaneSide::Right);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_positional_dir_sets_only_the_current_panel() {
+        let root = temp_workspace();
+        let only = root.join("only");
+        std::fs::create_dir_all(&only).unwrap();
+        let start = root.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+        let mut app = make_app(&start);
+        let other_before = app.right.cwd.clone();
+        apply_cli_args(&mut app, &[only.to_string_lossy().into_owned()]).unwrap();
+        assert!(same_dir(&app.left.cwd, &only));
+        assert_eq!(app.right.cwd, other_before);
+
+        let mut app = make_app(&start);
+        app.active = PaneSide::Right;
+        let other_before = app.left.cwd.clone();
+        apply_cli_args(&mut app, &[only.to_string_lossy().into_owned()]).unwrap();
+        assert!(same_dir(&app.right.cwd, &only));
+        assert_eq!(app.left.cwd, other_before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn positional_dirs_mix_with_flags_and_double_dash() {
+        let root = temp_workspace();
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let start = root.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+
+        let mut app = make_app(&start);
+        apply_cli_args(
+            &mut app,
+            &[
+                "-d".into(),
+                "-S".into(),
+                "dark".into(),
+                "-u".into(),
+                left.to_string_lossy().into_owned(),
+                right.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(!app.mouse_enabled);
+        assert_eq!(app.skin_name, "dark");
+        assert!(!app.use_subshell);
+        assert!(same_dir(&app.left.cwd, &left));
+        assert!(same_dir(&app.right.cwd, &right));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        let mut app = make_app(&start);
+        apply_cli_args(
+            &mut app,
+            &[
+                "--".into(),
+                left.to_string_lossy().into_owned(),
+                right.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(same_dir(&app.left.cwd, &left));
+        assert!(same_dir(&app.right.cwd, &right));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extra_positional_is_ignored_and_missing_dir_leaves_panel() {
+        let root = temp_workspace();
+        let left = root.join("ok-left");
+        let extra = root.join("extra");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&extra).unwrap();
+        let start = root.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+        let missing = root.join("no-such-panel-dir");
+
+        let mut app = make_app(&start);
+        let right_before = app.right.cwd.clone();
+        apply_cli_args(
+            &mut app,
+            &[
+                left.to_string_lossy().into_owned(),
+                missing.to_string_lossy().into_owned(),
+                extra.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(same_dir(&app.left.cwd, &left));
+        assert_eq!(
+            app.right.cwd, right_before,
+            "missing second dir must not change the other panel; extra operands are ignored"
+        );
+
+        let mut app = make_app(&start);
+        let left_before = app.left.cwd.clone();
+        apply_cli_args(&mut app, &[missing.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(app.left.cwd, left_before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn relative_positional_dir_is_resolved_against_process_cwd() {
+        let rel = std::path::Path::new("rel-panel");
+        let got = super::resolve_cli_panel_dir(rel);
+        assert_eq!(
+            got,
+            std::env::current_dir().unwrap().join(rel),
+            "relative local operands join the process cwd"
+        );
+        assert_eq!(
+            super::resolve_cli_panel_dir(std::path::Path::new("/abs/panel")),
+            std::path::PathBuf::from("/abs/panel")
+        );
+        assert_eq!(
+            super::resolve_cli_panel_dir(std::path::Path::new("ftp://host/pub")),
+            std::path::PathBuf::from("ftp://host/pub")
+        );
+        assert_eq!(
+            super::resolve_cli_panel_dir(std::path::Path::new("/#ftp:host/pub")),
+            std::path::PathBuf::from("/#ftp:host/pub")
+        );
+    }
+
+    #[test]
+    fn view_edit_diff_still_consume_their_files_not_as_panel_dirs() {
+        let root = temp_workspace();
+        let file = root.join("v.txt");
+        std::fs::write(&file, "v").unwrap();
+        let left = root.join("panel-l");
+        let right = root.join("panel-r");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let start = root.join("start");
+        std::fs::create_dir_all(&start).unwrap();
+
+        let mut app = make_app(&start);
+        let left_before = app.left.cwd.clone();
+        let right_before = app.right.cwd.clone();
+        apply_cli_args(
+            &mut app,
+            &["--view".into(), file.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Viewer { .. }));
+        assert_eq!(app.left.cwd, left_before);
+        assert_eq!(app.right.cwd, right_before);
+
+        let mut app = make_app(&start);
+        apply_cli_args(
+            &mut app,
+            &[
+                left.to_string_lossy().into_owned(),
+                right.to_string_lossy().into_owned(),
+                "--view".into(),
+                file.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(same_dir(&app.left.cwd, &left));
+        assert!(same_dir(&app.right.cwd, &right));
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &file),
+            _ => panic!("--view after panel dirs must still open Viewer"),
+        }
+
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        std::fs::write(&a, "A\n").unwrap();
+        std::fs::write(&b, "B\n").unwrap();
+        let mut app = make_app(&start);
+        let left_before = app.left.cwd.clone();
+        apply_cli_args(
+            &mut app,
+            &[
+                "--diff".into(),
+                a.to_string_lossy().into_owned(),
+                b.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(app.ui_mode, UiMode::Diff(_)));
+        assert_eq!(app.left.cwd, left_before);
         let _ = std::fs::remove_dir_all(&root);
     }
 

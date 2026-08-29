@@ -34,7 +34,7 @@
 <pre><code>git clone https://github.com/vburenin/rusty-midnight-commander.git
 cd rusty-midnight-commander
 cargo run --release -p mcr</code></pre>
-      <p>That launches <code>mcr</code> in the current working directory. The release binary is <code>target/release/mcr</code> after <code>cargo build --release -p mcr</code>.</p>
+      <p>That launches <code>mcr</code> in the current working directory. The release binary is <code>target/release/mcr</code> after <code>cargo build --release -p mcr</code>. <code>mcr DIR1 [DIR2]</code> opens <code>DIR1</code> in the current (active) panel and <code>DIR2</code> in the other panel (default left-current: left then right).</p>
       <p>Help and man-page hints:</p>
 <pre><code>mcr --help
 mcr -h</code></pre>
@@ -53,6 +53,7 @@ mcr -h</code></pre>
           <tr><td><code>-v file</code>, <code>--view=file</code></td><td>Start the internal viewer (not <code>$PAGER</code>)</td></tr>
           <tr><td><code>-e [file…]</code>, <code>--edit</code></td><td>Start the internal editor; no files opens one untitled buffer</td></tr>
           <tr><td><code>--diff file1 file2</code></td><td>Start the internal side-by-side diff viewer</td></tr>
+          <tr><td><code>DIR1 [DIR2]</code></td><td>Current panel directory; optional other panel directory</td></tr>
         </tbody>
       </table>
       <p>Environment variables honored for paths and helpers include <code>SHELL</code>, <code>MC_SKIN</code>, <code>MC_KEYMAP</code>, <code>MC_COLOR_TABLE</code>, <code>MC_DATADIR</code>, <code>MC_PROFILE_ROOT</code>, <code>EDITOR</code>, and <code>VIEWER</code>.</p>
