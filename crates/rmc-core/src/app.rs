@@ -784,7 +784,8 @@ pub enum UiMode {
     },
     DeleteDialog {
         name: String,
-        path: PathBuf,
+        /// One path (F18 DeleteSingle / unmarked F8) or every tagged path (F8).
+        paths: Vec<PathBuf>,
         focus_ok: bool,
     },
     DialogConfirm {
@@ -1623,6 +1624,8 @@ pub struct App {
     pub learned_keys: LearnedKeyStore,
     /// Stashed SFTP/SSH host-key prompt from a failed `change_dir`.
     pub sftp_host_key: Option<(rmc_fs::sftpfs::HostKeyPrompt, PathBuf)>,
+    /// GNU MenuLastSelected (F19 / S-F9): last dropped pull-down `(top, item)`.
+    pub last_menu_path: Option<(usize, usize)>,
 }
 
 impl App {
@@ -1660,6 +1663,7 @@ impl App {
             use_subshell: true,
             learned_keys: LearnedKeyStore::default(),
             sftp_host_key: None,
+            last_menu_path: None,
             completion_retry: false,
             completion_beep: false,
             completion_path_override: None,
@@ -1674,6 +1678,36 @@ impl App {
         let _ = crate::config::load_user_setup(&mut app);
         app.reload_panels()?;
         Ok(app)
+    }
+
+    /// Record the current dropped pull-down as GNU MenuLastSelected (F19).
+    pub fn remember_menu_path(&mut self) {
+        if let UiMode::Menu {
+            top_index,
+            selected_index,
+            dropped: true,
+        } = self.ui_mode
+        {
+            self.last_menu_path = Some((top_index, selected_index));
+        }
+    }
+
+    /// GNU mc(1) MenuLastSelected (F19 / S-F9): reopen the last dropped item
+    /// path. With no prior pull-down, same as F9 (`drop_menus` honored).
+    pub fn open_last_selected_menu(&mut self) {
+        if let Some((top_index, selected_index)) = self.last_menu_path {
+            self.ui_mode = UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped: true,
+            };
+        } else {
+            self.ui_mode = UiMode::Menu {
+                top_index: 0,
+                selected_index: 0,
+                dropped: self.config_opts.drop_menus,
+            };
+        }
     }
 
     /// GNU mc Esc-number: drop a pending Esc prefix after the idle timeout.
@@ -2097,9 +2131,10 @@ impl App {
                     }
                 }
             }
-            Copy | Move | Mkdir | Delete => {
+            Copy | Move | Mkdir | Delete | FunctionKey(18) => {
                 // UI layer opens dialogs; core provides helpers
             }
+            FunctionKey(19) => self.open_last_selected_menu(),
             FindFile => {
                 let start = self.active_panel().cwd.clone();
                 self.ui_mode = UiMode::FindDialog(FindDialogState::new(start));

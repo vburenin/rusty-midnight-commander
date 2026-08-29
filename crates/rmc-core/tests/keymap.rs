@@ -162,6 +162,34 @@ fn resolves_mc_defaults() {
     );
     assert!(
         matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(18), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(18))
+        ),
+        "F18 DeleteSingle"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(8), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(18))
+        ),
+        "S-F8 == F18 DeleteSingle"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(19), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(19))
+        ),
+        "F19 MenuLastSelected"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(9), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(19))
+        ),
+        "S-F9 == F19 MenuLastSelected"
+    );
+    assert!(
+        matches!(
             km.resolve(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),
             Some(Action::Quit)
         ),
@@ -251,4 +279,32 @@ fn data_mc_keymap_loads_with_zero_warnings_and_gnu_chords() {
         km.resolve_ctrl_x(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
         Some(Action::SymlinkRel)
     ));
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(18), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(18))
+        ),
+        "data/mc.keymap DeleteSingle=f18"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(8), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(18))
+        ),
+        "data/mc.keymap S-F8 DeleteSingle"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(19), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(19))
+        ),
+        "data/mc.keymap MenuLastSelected=f19"
+    );
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(9), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(19))
+        ),
+        "data/mc.keymap S-F9 MenuLastSelected"
+    );
 }
