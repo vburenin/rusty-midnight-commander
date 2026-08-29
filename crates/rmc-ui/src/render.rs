@@ -296,7 +296,10 @@ pub(crate) fn paint_overlays_for_test(app: &App, cols: u16, rows: u16) -> Result
 fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalette) -> Result<()> {
     match &app.ui_mode {
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
-            if dialog_is_error_title(title) {
+            // Live GNU F5 on `..`: compact white;red, no buttons. Multi-line
+            // same-file Error bodies stay on `draw_dialog_box` so a sibling
+            // can wrap `"path"\nand\n"path"\nare the same file`.
+            if dialog_is_error_title(title) && !message.contains('\n') {
                 draw_error_dialog(p, cols, rows, pal, message, app.shadows);
             } else {
                 draw_dialog_box(
@@ -9302,6 +9305,66 @@ mod gnu_default_chrome_colors_tests {
     }
 
     #[test]
+    fn gnu_delete_dialog_cells_match_live_480() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_delete_dialog(&mut p, 80, 24, pal, "notes.txt", true, false);
+        }
+        let grid = rasterize(&buf, 80, 24);
+        let w = 21usize;
+        let h = 6usize;
+        let x = (80 - w) / 2;
+        let y = (24 - h) / 2;
+        assert_eq!(grid[y][x].ch, '┌');
+        assert_eq!(grid[y][x + w - 1].ch, '┐');
+        assert_eq!(grid[y + h - 1][x].ch, '└');
+        let title_row: String = grid[y].iter().map(|c| c.ch).collect();
+        assert!(
+            title_row.contains(" Delete "),
+            "GNU Delete title: {title_row:?}"
+        );
+        let body: String = grid.iter().flatten().map(|c| c.ch).collect();
+        assert!(body.contains("Delete file"), "{body:?}");
+        assert!(body.contains("\"notes.txt\"?"), "{body:?}");
+        assert!(body.contains("[ Yes ]"), "{body:?}");
+        assert!(body.contains("[ No ]"), "{body:?}");
+        let bar: String = grid[y + 3].iter().map(|c| c.ch).collect();
+        assert!(
+            bar.contains('├') && bar.contains('┤'),
+            "section bar: {bar:?}"
+        );
+    }
+
+    #[test]
+    fn gnu_mkdir_dialog_cells_match_live_480() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_mkdir_dialog(&mut p, 80, 24, pal, "", true, false);
+        }
+        let grid = rasterize(&buf, 80, 24);
+        let w = 44usize;
+        let h = 6usize;
+        let x = (80 - w) / 2;
+        let y = (24 - h) / 2;
+        assert_eq!(grid[y][x].ch, '┌');
+        assert_eq!(grid[y][x + w - 1].ch, '┐');
+        let body: String = grid.iter().flatten().map(|c| c.ch).collect();
+        assert!(body.contains("Create a new Directory"), "{body:?}");
+        assert!(body.contains("Enter directory name:"), "{body:?}");
+        assert!(body.contains("[< OK >]"), "{body:?}");
+        assert!(body.contains("[ Cancel ]"), "{body:?}");
+        let bar: String = grid[y + 3].iter().map(|c| c.ch).collect();
+        assert!(
+            bar.contains('├') && bar.contains('┤'),
+            "section bar: {bar:?}"
+        );
+    }
+
+    #[test]
     fn menu_dropdown_hotkeys_are_yellow_selected_hotkey_yellow_on_black() {
         let pal = McPalette::default();
         assert_eq!((pal.menu_fg, pal.menu_bg), (Color::White, Color::Cyan));
@@ -9644,6 +9707,34 @@ mod copy_dialog_paint_tests {
         assert!(
             s.contains("Cannot") || s.contains(".."),
             "GNU parent-dir message must paint (possibly truncated): {s:?}"
+        );
+    }
+
+    #[test]
+    fn multiline_same_file_error_stays_on_dialog_box_not_compact() {
+        // Sibling #166 wraps this body in `draw_dialog_box`. The compact
+        // no-button `..` Error must not swallow newline messages.
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.ui_mode = UiMode::DialogConfirm {
+            title: "Error".into(),
+            message: rmc_core::filemask::same_path_error_message(
+                std::path::Path::new("/tmp/mcr-live/fixture/alpha/notes.txt"),
+                std::path::Path::new("/tmp/mcr-live/fixture/alpha/notes.txt"),
+                false,
+            ),
+            on_ok: Box::new(|_| Ok(())),
+        };
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            draw_overlays(&mut p, &app, 80, 24, McPalette::default()).unwrap();
+        }
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Error"), "{s:?}");
+        assert!(
+            s.contains("< OK >") && s.contains("Cancel"),
+            "multi-line Error keeps draw_dialog_box buttons, got {s:?}"
         );
     }
 

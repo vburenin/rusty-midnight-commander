@@ -734,10 +734,11 @@ fn user_perm_string(mode: u32, is_dir: bool) -> String {
 
 /// GNU mc(1) `type` token (Full listing `half type name | size | mtime`).
 ///
-/// Always one cell: `*` executable, `/` directory, `@` symlink, `=` socket, `-`
-/// char device, `+` block device, `|` FIFO, `~` symlink to a directory, `!`
-/// stale symlink, and a space for a regular file or parent `..`. The space is
-/// not optional — names must stay aligned with `/docs` and `*run.sh`.
+/// Always one cell: `*` executable, `/` directory (including parent `..`), `@`
+/// symlink, `=` socket, `-` char device, `+` block device, `|` FIFO, `~`
+/// symlink to a directory, `!` stale symlink, and a space for a regular file.
+/// The space is not optional — names must stay aligned with `/docs` and
+/// `*run.sh`. Live GNU Full listing paints `/..`, not a leading space.
 pub fn listing_type_char(ent: &FileEntry) -> char {
     if ent.is_stale_symlink {
         return '!';
