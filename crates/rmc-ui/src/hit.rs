@@ -5,7 +5,6 @@
 
 use rmc_core::app::CopyDialogFocus;
 use rmc_core::fileop::FileOpProgressView;
-use rmc_core::layout::menu_bar_titles;
 
 use crate::render::top_menu_items;
 
@@ -69,11 +68,19 @@ pub(crate) fn delete_button_at(
     rows: u16,
     mx: u16,
     my: u16,
-    focus_ok: bool,
+    _focus_ok: bool,
 ) -> Option<bool> {
-    let yes = if focus_ok { "< Yes >" } else { "  Yes  " };
-    let no = if focus_ok { "  No  " } else { "< No >" };
-    dialog_box_button_at(cols, rows, mx, my, &[yes, no]).map(|i| i == 0)
+    let w = 21u16.min(cols.saturating_sub(2)).max(17);
+    let h = 6u16;
+    if cols < w || rows < h {
+        return None;
+    }
+    let x = crate::render::gnu_dialog_left(cols, w);
+    let y = crate::render::gnu_dialog_top(rows, h);
+    let items = ["[ Yes ]", "[ No ]"];
+    let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + BUTTON_GAP as usize;
+    let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
+    button_cluster_at(bx, y + h - 2, &items, mx, my).map(|i| i == 0)
 }
 
 /// DialogConfirm / PromptInput: `true` is OK, `false` is Cancel.
@@ -89,19 +96,23 @@ pub(crate) fn mkdir_button_at(
     my: u16,
     focus_ok: bool,
 ) -> Option<bool> {
-    let w = (cols as usize).min(60) as u16;
-    let h = 7u16;
+    let w = (cols as usize).min(38) as u16;
+    let h = 6u16;
     if cols < w || rows < h {
         return None;
     }
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
-    let ok = if focus_ok { "< OK >" } else { "  OK  " };
-    let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
+    let x = crate::render::gnu_dialog_left(cols, w);
+    let y = crate::render::gnu_dialog_top(rows, h);
+    let ok = if focus_ok { "[< OK >]" } else { "[ OK ]" };
+    let cancel = if focus_ok {
+        "[ Cancel ]"
+    } else {
+        "[< Cancel >]"
+    };
     let items = [ok, cancel];
-    let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + BUTTON_GAP as usize;
+    let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + 1;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
-    button_cluster_at(bx, y + h - 2, &items, mx, my).map(|i| i == 0)
+    button_cluster_at_gap(bx, y + h - 2, &items, mx, my, 1).map(|i| i == 0)
 }
 
 /// Input / Quick cd OK/Cancel. `true` is OK.
@@ -128,8 +139,14 @@ pub(crate) fn input_dialog_button_at(
 }
 
 fn copy_button_label(focus: CopyDialogFocus, which: CopyDialogFocus, txt: &str) -> String {
-    if focus == which {
-        format!("< {txt} >")
+    let marked = match which {
+        CopyDialogFocus::Ok => {
+            !matches!(focus, CopyDialogFocus::Background | CopyDialogFocus::Cancel)
+        }
+        _ => focus == which,
+    };
+    if marked {
+        format!("[< {txt} >]")
     } else {
         format!("[ {txt} ]")
     }
@@ -143,36 +160,50 @@ pub(crate) fn copy_move_hit_at(
     my: u16,
     focus: CopyDialogFocus,
 ) -> Option<CopyDialogFocus> {
-    let w = (cols as usize).min(74) as u16;
-    let h = 15u16;
+    let w = (cols as usize).min(66) as u16;
+    let h = 12u16.min(rows.saturating_sub(1)).max(7);
     if cols < w || rows < h {
         return None;
     }
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
-    if my == y + 3 && mx >= x + 2 && mx < x + w.saturating_sub(2) {
+    let x = crate::render::gnu_dialog_left(cols, w);
+    let y = crate::render::gnu_dialog_top(rows, h);
+    if my == y + 2 && mx >= x + 2 && mx < x + w.saturating_sub(2) {
         return Some(CopyDialogFocus::Mask);
     }
-    if my == y + 5 && mx >= x + 6 && mx < x + w.saturating_sub(2) {
+    if my == y + 5 && mx >= x + 2 && mx < x + w.saturating_sub(2) {
         return Some(CopyDialogFocus::To);
     }
-    const CHECKS: [(CopyDialogFocus, &str); 5] = [
-        (CopyDialogFocus::Checkbox1, "Using shell patterns"),
-        (CopyDialogFocus::Checkbox2, "Follow links"),
-        (CopyDialogFocus::Checkbox3, "Preserve attributes"),
-        (CopyDialogFocus::Checkbox4, "Dive into subdir if exists"),
-        (CopyDialogFocus::Checkbox5, "Stable symlinks"),
+    let shell = "[x] Using shell patterns";
+    let shell_x = x + 33;
+    if my == y + 3 && mx >= shell_x && mx < shell_x.saturating_add(shell.len() as u16) {
+        return Some(CopyDialogFocus::Checkbox1);
+    }
+    const LEFT: [(CopyDialogFocus, &str, u16); 2] = [
+        (CopyDialogFocus::Checkbox2, "[ ] Follow links", 7),
+        (CopyDialogFocus::Checkbox3, "[ ] Preserve attributes", 8),
     ];
-    for (i, (f, label)) in CHECKS.iter().enumerate() {
-        let row_y = y + 7 + i as u16;
-        if my != row_y {
-            continue;
+    const RIGHT: [(CopyDialogFocus, &str, u16); 2] = [
+        (
+            CopyDialogFocus::Checkbox4,
+            "[ ] Dive into subdir if exists",
+            7,
+        ),
+        (CopyDialogFocus::Checkbox5, "[ ] Stable symlinks", 8),
+    ];
+    for (f, text, row) in LEFT {
+        if my == y + row {
+            let start = x + 2;
+            if mx >= start && mx < start.saturating_add(text.len() as u16) {
+                return Some(f);
+            }
         }
-        let text = format!("[ ] {label}");
-        let start = x + 4;
-        let end = start.saturating_add(text.len() as u16);
-        if mx >= start && mx < end {
-            return Some(*f);
+    }
+    for (f, text, row) in RIGHT {
+        if my == y + row {
+            let start = x + 33;
+            if mx >= start && mx < start.saturating_add(text.len() as u16) {
+                return Some(f);
+            }
         }
     }
     if my == y + h - 2 {
@@ -180,15 +211,39 @@ pub(crate) fn copy_move_hit_at(
         let bg = copy_button_label(focus, CopyDialogFocus::Background, "Background");
         let cancel = copy_button_label(focus, CopyDialogFocus::Cancel, "Cancel");
         let labels = [ok.as_str(), bg.as_str(), cancel.as_str()];
-        let btns_w = labels.iter().map(|s| s.len()).sum::<usize>()
-            + (BUTTON_GAP as usize) * labels.len().saturating_sub(1);
+        let btns_w = labels.iter().map(|s| s.len()).sum::<usize>() + labels.len().saturating_sub(1);
         let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
-        return match button_cluster_at(bx, my, &labels, mx, my) {
+        return match button_cluster_at_gap(bx, my, &labels, mx, my, 1) {
             Some(0) => Some(CopyDialogFocus::Ok),
             Some(1) => Some(CopyDialogFocus::Background),
             Some(2) => Some(CopyDialogFocus::Cancel),
             _ => None,
         };
+    }
+    None
+}
+
+fn button_cluster_at_gap(
+    bx: u16,
+    by: u16,
+    labels: &[&str],
+    mx: u16,
+    my: u16,
+    gap: u16,
+) -> Option<usize> {
+    if my != by {
+        return None;
+    }
+    let mut cx = bx;
+    for (i, lab) in labels.iter().enumerate() {
+        let end = cx.saturating_add(lab.len() as u16);
+        if mx >= cx && mx < end {
+            return Some(i);
+        }
+        cx = end;
+        if i + 1 < labels.len() {
+            cx = cx.saturating_add(gap);
+        }
     }
     None
 }
@@ -235,11 +290,7 @@ pub(crate) fn menu_dropdown_item_at(
     horizontal_split: bool,
 ) -> Option<usize> {
     let items = top_menu_items(top_index);
-    let titles = menu_bar_titles(horizontal_split);
-    let mut x = 0u16;
-    for title in titles.iter().take(top_index) {
-        x = x.saturating_add(title.len() as u16);
-    }
+    let x = rmc_core::layout::menu_bar_item_start(top_index, horizontal_split);
     let y = 1u16;
     let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
     let h = items.len() as u16 + 2;
@@ -261,10 +312,16 @@ mod tests {
     #[test]
     fn delete_yes_and_no_are_distinct_hits() {
         let yes = (0..80u16)
-            .find(|&x| delete_button_at(80, 24, x, (24 - 7) / 2 + 5, true) == Some(true))
+            .find(|&x| {
+                delete_button_at(80, 24, x, crate::render::gnu_dialog_top(24, 6) + 4, true)
+                    == Some(true)
+            })
             .expect("Yes");
         let no = (0..80u16)
-            .find(|&x| delete_button_at(80, 24, x, (24 - 7) / 2 + 5, true) == Some(false))
+            .find(|&x| {
+                delete_button_at(80, 24, x, crate::render::gnu_dialog_top(24, 6) + 4, true)
+                    == Some(false)
+            })
             .expect("No");
         assert_ne!(yes, no);
         assert!(delete_button_at(80, 24, yes, 0, true).is_none());
@@ -272,7 +329,7 @@ mod tests {
 
     #[test]
     fn copy_ok_background_cancel_are_distinct() {
-        let by = (24u16 - 15) / 2 + 13;
+        let by = crate::render::gnu_dialog_top(24, 12) + 10;
         let ok = (0..80u16)
             .find(|&x| copy_move_hit_at(80, 24, x, by, F::To) == Some(F::Ok))
             .expect("OK");
@@ -290,10 +347,10 @@ mod tests {
         // File menu is top_index 1; Copy is the fourth item (index 3), row y=1+1+3=5.
         assert_eq!(crate::render::FILE_MENU_ITEMS[3], "Copy");
         assert_eq!(
-            menu_dropdown_item_at(8, 5, 1, false),
+            menu_dropdown_item_at(12, 5, 1, false),
             Some(3),
             "click on File→Copy row"
         );
-        assert!(menu_dropdown_item_at(8, 0, 1, false).is_none());
+        assert!(menu_dropdown_item_at(12, 0, 1, false).is_none());
     }
 }

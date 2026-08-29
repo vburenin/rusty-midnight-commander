@@ -33,6 +33,32 @@ pub fn menu_bar_titles(horizontal_split: bool) -> [&'static str; 5] {
     }
 }
 
+/// Live GNU 4.8 menu words (no padding). Painted with [`MENU_BAR_LEAD`] and [`MENU_BAR_GAP`].
+pub fn menu_bar_labels(horizontal_split: bool) -> [&'static str; 5] {
+    if horizontal_split {
+        ["Above", "File", "Command", "Options", "Below"]
+    } else {
+        ["Left", "File", "Command", "Options", "Right"]
+    }
+}
+
+/// Columns before `Left` / `Above` on the GNU menu bar (`  Left     File…`).
+pub const MENU_BAR_LEAD: u16 = 2;
+/// Columns between GNU menu titles.
+pub const MENU_BAR_GAP: u16 = 5;
+
+/// Leftmost column of menu title `index` (0 = Left/Above).
+pub fn menu_bar_item_start(index: usize, horizontal_split: bool) -> u16 {
+    let labels = menu_bar_labels(horizontal_split);
+    let mut x = MENU_BAR_LEAD;
+    for lab in labels.iter().take(index) {
+        x = x
+            .saturating_add(lab.len() as u16)
+            .saturating_add(MENU_BAR_GAP);
+    }
+    x
+}
+
 /// Dual-pane rectangles inside the chrome content area.
 /// Vertical (default): side-by-side columns (Left | Right).
 /// Horizontal: stacked rows (Above / Below), split by [`panel_split`] on height.
@@ -42,7 +68,12 @@ pub fn dual_panel_rects(
     opt: &crate::app::LayoutOptions,
 ) -> (PanelRect, PanelRect) {
     let y = chrome.panel_top;
-    let h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+    // content_bottom is inclusive (the panel bottom frame). Off-by-one here
+    // left a blank row between the frames and the hint line vs live GNU mc.
+    let h = chrome
+        .content_bottom
+        .saturating_sub(chrome.panel_top)
+        .saturating_add(1);
     if opt.horizontal_split {
         let top_h = panel_split(h, opt.panel_ratio);
         let bot_h = h.saturating_sub(top_h);
@@ -169,6 +200,37 @@ mod tests {
     }
 
     #[test]
+    fn menu_bar_item_start_matches_live_gnu_80col() {
+        // Live GNU 4.8.30: `  Left     File     Command     Options     Right`
+        assert_eq!(super::menu_bar_item_start(0, false), 2);
+        assert_eq!(super::menu_bar_item_start(1, false), 11);
+        assert_eq!(super::menu_bar_item_start(2, false), 20);
+        assert_eq!(super::menu_bar_item_start(3, false), 32);
+        assert_eq!(super::menu_bar_item_start(4, false), 44);
+        assert_eq!(
+            super::menu_bar_labels(false),
+            ["Left", "File", "Command", "Options", "Right"]
+        );
+    }
+
+    #[test]
+    fn default_80x24_panels_fill_through_row_20() {
+        let opt = LayoutOptions::default();
+        let chrome = compute_chrome_geom(80, 24, &opt);
+        let (left, right) = dual_panel_rects(80, &chrome, &opt);
+        assert_eq!(chrome.panel_top, 1);
+        assert_eq!(chrome.hint_row, Some(21));
+        assert_eq!(chrome.content_bottom, 20);
+        assert_eq!(left.y, 1);
+        assert_eq!(
+            left.h, 20,
+            "inclusive panel height, no blank row above the hint"
+        );
+        assert_eq!(right.h, 20);
+        assert_eq!(left.y + left.h, chrome.hint_row.unwrap());
+    }
+
+    #[test]
     fn menu_bar_titles_above_below_when_horizontal() {
         assert_eq!(
             menu_bar_titles(true),
@@ -182,7 +244,10 @@ mod tests {
         assert!(!opt.horizontal_split);
         let chrome = compute_chrome_geom(80, 24, &opt);
         let (left, right) = dual_panel_rects(80, &chrome, &opt);
-        let content_h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+        let content_h = chrome
+            .content_bottom
+            .saturating_sub(chrome.panel_top)
+            .saturating_add(1);
         assert_eq!(left.w, panel_split(80, opt.panel_ratio));
         assert_eq!(right.w, 80 - left.w);
         assert_eq!(left.h, content_h);
@@ -200,7 +265,10 @@ mod tests {
             ..LayoutOptions::default()
         };
         let chrome = compute_chrome_geom(80, 24, &opt);
-        let content_h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+        let content_h = chrome
+            .content_bottom
+            .saturating_sub(chrome.panel_top)
+            .saturating_add(1);
         let (above, below) = dual_panel_rects(80, &chrome, &opt);
         assert_eq!(above.h, panel_split(content_h, 0.5));
         assert_eq!(below.h, content_h - above.h);
@@ -221,7 +289,10 @@ mod tests {
             ..LayoutOptions::default()
         };
         let chrome = compute_chrome_geom(80, 24, &opt);
-        let content_h = chrome.content_bottom.saturating_sub(chrome.panel_top);
+        let content_h = chrome
+            .content_bottom
+            .saturating_sub(chrome.panel_top)
+            .saturating_add(1);
         let (above, below) = dual_panel_rects(80, &chrome, &opt);
         assert_eq!(above.h, panel_split(content_h, 0.8));
         assert_eq!(below.h, content_h - above.h);
