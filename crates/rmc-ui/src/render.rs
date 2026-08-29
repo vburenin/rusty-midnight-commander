@@ -2440,21 +2440,12 @@ fn draw_editor(
         // Restore default for safety
         p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
     }
-    // Frameless GNU row-0 status (black;cyan). Transient messages append on the right
-    // only when they fit; the live 80-col field layout stays intact without a message.
+    // Frameless GNU row-0 status (black;cyan). Transient `status_msg` is not
+    // mixed into the cell-accurate field layout (GNU keeps those as dialogs).
+    let _ = status_msg;
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
     p.goto(0, 0);
-    let mut status = buf.gnu_status_line(cols as usize);
-    if let Some(msg) = status_msg {
-        if !msg.is_empty() && cols as usize > 8 {
-            let room = (cols as usize).saturating_sub(8);
-            let extra = format!(" {msg}");
-            if extra.chars().count() < room {
-                status = format!("{status}{extra}");
-                status = status.chars().take(cols as usize).collect();
-            }
-        }
-    }
+    let status = buf.gnu_status_line(cols as usize);
     let t = truncate(&status, cols as usize);
     p.text(&t);
     if t.chars().count() < cols as usize {
