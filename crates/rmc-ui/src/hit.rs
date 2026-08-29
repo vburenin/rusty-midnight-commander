@@ -6,7 +6,7 @@
 use rmc_core::app::CopyDialogFocus;
 use rmc_core::fileop::FileOpProgressView;
 
-use crate::render::top_menu_items;
+use crate::render::{dropdown_box_size, dropdown_origin_x, menu_row_is_separator, top_menu_items};
 
 /// Gap of two spaces between labels in `paint_dialog_button_cluster`.
 const BUTTON_GAP: u16 = 2;
@@ -281,10 +281,9 @@ pub(crate) fn menu_dropdown_item_at(
     horizontal_split: bool,
 ) -> Option<usize> {
     let items = top_menu_items(top_index);
-    let x = rmc_core::layout::menu_bar_item_start(top_index, horizontal_split);
+    let x = dropdown_origin_x(top_index, horizontal_split);
     let y = 1u16;
-    let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
-    let h = items.len() as u16 + 2;
+    let (w, h) = dropdown_box_size(top_index);
     if mx < x || mx >= x.saturating_add(w) {
         return None;
     }
@@ -292,7 +291,10 @@ pub(crate) fn menu_dropdown_item_at(
         return None;
     }
     let i = (my - y - 1) as usize;
-    (i < items.len()).then_some(i)
+    if i >= items.len() || menu_row_is_separator(top_index, i) {
+        return None;
+    }
+    Some(i)
 }
 
 #[cfg(test)]
@@ -335,13 +337,20 @@ mod tests {
 
     #[test]
     fn menu_file_copy_row_is_hittable() {
-        // File menu is top_index 1; Copy is the fourth item (index 3), row y=1+1+3=5.
-        assert_eq!(crate::render::FILE_MENU_ITEMS[3], "Copy");
+        // File menu is top_index 1; GNU Copy is index 4 (after View / View file / Filtered / Edit).
+        assert_eq!(crate::render::FILE_MENU_ITEMS[4], "Copy");
+        let x = crate::render::dropdown_origin_x(1, false) + 2;
         assert_eq!(
-            menu_dropdown_item_at(12, 5, 1, false),
-            Some(3),
+            menu_dropdown_item_at(x, 6, 1, false),
+            Some(4),
             "click on File→Copy row"
         );
-        assert!(menu_dropdown_item_at(12, 0, 1, false).is_none());
+        assert!(menu_dropdown_item_at(x, 0, 1, false).is_none());
+        // Separator after Quick cd is not a hit.
+        let sep = crate::render::FILE_MENU_ITEMS
+            .iter()
+            .position(|s| s.is_empty())
+            .expect("separator");
+        assert!(menu_dropdown_item_at(x, 2 + sep as u16, 1, false).is_none());
     }
 }

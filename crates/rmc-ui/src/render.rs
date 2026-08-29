@@ -2507,12 +2507,26 @@ fn draw_editor_menu_bar(p: &mut Painter, cols: u16, pal: McPalette, show_menu: O
 }
 
 /// Menu chrome: default white;cyan, selected white;black, hotkey yellow;cyan,
-/// hotkey+selected yellow;black. First non-space letter is the hotkey.
+/// hotkey+selected yellow;black. `hotkey` marks that letter (GNU `&`); when
+/// `None`, the first non-space letter is the hotkey.
 fn draw_menu_hotkey_label(
     p: &mut Painter,
     x: u16,
     y: u16,
     text: &str,
+    selected: bool,
+    pal: McPalette,
+    width: usize,
+) {
+    draw_menu_hotkey_label_at(p, x, y, text, None, selected, pal, width);
+}
+
+fn draw_menu_hotkey_label_at(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    text: &str,
+    hotkey: Option<char>,
     selected: bool,
     pal: McPalette,
     width: usize,
@@ -2535,7 +2549,12 @@ fn draw_menu_hotkey_label(
     let mut hotkey_done = false;
     let mut drawn = 0usize;
     for ch in line.chars().take(width) {
-        if !hotkey_done && !ch.is_whitespace() {
+        let is_hot = !hotkey_done
+            && match hotkey {
+                Some(h) => ch.eq_ignore_ascii_case(&h),
+                None => !ch.is_whitespace(),
+            };
+        if is_hot {
             p.set_fg_bg(hot_fg, hot_bg);
             hotkey_done = true;
         } else {
@@ -7305,26 +7324,172 @@ pub(crate) const LEFT_RIGHT_MENU_ITEMS: &[&str] = &[
     "Equal panel size",
 ];
 
-/// GNU mc(1) File menu labels. Shared with `terminal.rs`.
+/// One File-menu row. Empty `label` is a GNU separator (`├─…─┤`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FileMenuRow {
+    pub label: &'static str,
+    pub hotkey: Option<char>,
+    pub shortcut: &'static str,
+}
+
+impl FileMenuRow {
+    pub const fn is_separator(self) -> bool {
+        self.label.is_empty()
+    }
+}
+
+/// GNU mc 4.8.30 `create_file_menu` after `g_list_reverse`, plus default
+/// shortcut column (`midnight_get_shortcut` / `mc.default.keymap`).
+/// Empty `label` is a separator. Shared with `terminal.rs` and hit-testing.
+pub(crate) const FILE_MENU: &[FileMenuRow] = &[
+    FileMenuRow {
+        label: "View",
+        hotkey: Some('V'),
+        shortcut: "F3",
+    },
+    FileMenuRow {
+        label: "View file...",
+        hotkey: Some('w'),
+        shortcut: "",
+    },
+    FileMenuRow {
+        label: "Filtered view",
+        hotkey: Some('F'),
+        shortcut: "M-!",
+    },
+    FileMenuRow {
+        label: "Edit",
+        hotkey: Some('E'),
+        shortcut: "F4",
+    },
+    FileMenuRow {
+        label: "Copy",
+        hotkey: Some('C'),
+        shortcut: "F5",
+    },
+    FileMenuRow {
+        label: "Chmod",
+        hotkey: Some('h'),
+        shortcut: "C-x c",
+    },
+    FileMenuRow {
+        label: "Link",
+        hotkey: Some('L'),
+        shortcut: "C-x l",
+    },
+    FileMenuRow {
+        label: "Symlink",
+        hotkey: Some('S'),
+        shortcut: "C-x s",
+    },
+    FileMenuRow {
+        label: "Relative symlink",
+        hotkey: Some('k'),
+        shortcut: "C-x v",
+    },
+    FileMenuRow {
+        label: "Edit symlink",
+        hotkey: Some('y'),
+        shortcut: "C-x C-s",
+    },
+    FileMenuRow {
+        label: "Chown",
+        hotkey: Some('o'),
+        shortcut: "C-x o",
+    },
+    FileMenuRow {
+        label: "Advanced chown",
+        hotkey: Some('A'),
+        shortcut: "",
+    },
+    FileMenuRow {
+        label: "Chattr",
+        hotkey: Some('t'),
+        shortcut: "C-x e",
+    },
+    FileMenuRow {
+        label: "Rename/Move",
+        hotkey: Some('R'),
+        shortcut: "F6",
+    },
+    FileMenuRow {
+        label: "Mkdir",
+        hotkey: Some('M'),
+        shortcut: "F7",
+    },
+    FileMenuRow {
+        label: "Delete",
+        hotkey: Some('D'),
+        shortcut: "F8",
+    },
+    FileMenuRow {
+        label: "Quick cd",
+        hotkey: Some('Q'),
+        shortcut: "M-c",
+    },
+    FileMenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    FileMenuRow {
+        label: "Select group",
+        hotkey: Some('g'),
+        shortcut: "+",
+    },
+    FileMenuRow {
+        label: "Unselect group",
+        hotkey: Some('n'),
+        shortcut: "-",
+    },
+    FileMenuRow {
+        label: "Invert selection",
+        hotkey: Some('I'),
+        shortcut: "*",
+    },
+    FileMenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    FileMenuRow {
+        label: "Exit",
+        hotkey: Some('x'),
+        shortcut: "F10",
+    },
+];
+
+/// Labels including `""` separators so dropdown row indices match `FILE_MENU`.
 pub(crate) const FILE_MENU_ITEMS: &[&str] = &[
-    "Help",
     "View",
+    "View file...",
+    "Filtered view",
     "Edit",
     "Copy",
-    "Move",
+    "Chmod",
+    "Link",
+    "Symlink",
+    "Relative symlink",
+    "Edit symlink",
+    "Chown",
+    "Advanced chown",
+    "Chattr",
+    "Rename/Move",
     "Mkdir",
     "Delete",
     "Quick cd",
+    "",
     "Select group",
     "Unselect group",
     "Invert selection",
-    "Chmod",
-    "Chown",
-    "Hard link",
-    "SymLink",
-    "Relative symlink",
-    "Quit",
+    "",
+    "Exit",
 ];
+
+/// Live GNU 4.8.30 File drop-down: 26 inner cells + 2 borders.
+pub(crate) const FILE_MENU_BOX_WIDTH: u16 = 28;
+/// Inner column where the shortcut column starts (`max_hotkey_len + 3`).
+pub(crate) const FILE_MENU_SHORTCUT_COL: usize = 19;
 
 /// GNU mc(1) Options menu labels. Shared with `terminal.rs` and hit-testing.
 pub(crate) const OPTIONS_MENU_ITEMS: &[&str] = &[
@@ -7348,6 +7513,59 @@ pub(crate) fn top_menu_items(top_index: usize) -> &'static [&'static str] {
     }
 }
 
+/// GNU `menubar_draw_drop`: box at `start_x - 1` where `start_x` is the
+/// leading space before the title word (`menu_bar_item_start - 1`).
+pub(crate) fn dropdown_origin_x(top_index: usize, horizontal_split: bool) -> u16 {
+    rmc_core::layout::menu_bar_item_start(top_index, horizontal_split).saturating_sub(2)
+}
+
+pub(crate) fn dropdown_box_size(top_index: usize) -> (u16, u16) {
+    let items = top_menu_items(top_index);
+    let h = items.len() as u16 + 2;
+    if top_index == 1 {
+        (FILE_MENU_BOX_WIDTH, h)
+    } else {
+        (
+            (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16,
+            h,
+        )
+    }
+}
+
+pub(crate) fn menu_row_is_separator(top_index: usize, idx: usize) -> bool {
+    top_index == 1 && FILE_MENU.get(idx).is_some_and(|r| r.is_separator())
+}
+
+pub(crate) fn menu_item_hotkey(top_index: usize, idx: usize) -> Option<char> {
+    if top_index == 1 {
+        FILE_MENU.get(idx).and_then(|r| r.hotkey)
+    } else {
+        top_menu_items(top_index)
+            .get(idx)
+            .and_then(|s| s.chars().find(|c| !c.is_whitespace()))
+    }
+}
+
+/// GNU menubar: Up/Down stop at the ends and skip separator rows.
+pub(crate) fn step_menu_index(top_index: usize, selected: usize, delta: isize) -> usize {
+    let n = top_menu_items(top_index).len();
+    if n == 0 {
+        return 0;
+    }
+    let mut i = selected as isize;
+    for _ in 0..n {
+        i += delta;
+        if i < 0 || i >= n as isize {
+            return selected;
+        }
+        let u = i as usize;
+        if !menu_row_is_separator(top_index, u) {
+            return u;
+        }
+    }
+    selected
+}
+
 fn draw_menu_dropdown(
     p: &mut Painter,
     pal: McPalette,
@@ -7356,10 +7574,9 @@ fn draw_menu_dropdown(
     horizontal_split: bool,
 ) {
     let items = top_menu_items(top_index);
-    let x = rmc_core::layout::menu_bar_item_start(top_index, horizontal_split);
+    let x = dropdown_origin_x(top_index, horizontal_split);
     let y = 1u16;
-    let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
-    let h = items.len() as u16 + 2;
+    let (w, h) = dropdown_box_size(top_index);
     p.fill_rect(x, y, w, h, pal.menu_fg, pal.menu_bg);
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(x, y);
@@ -7377,10 +7594,59 @@ fn draw_menu_dropdown(
     let inner = (w - 2) as usize;
     for (i, it) in items.iter().enumerate() {
         let row = y + 1 + i as u16;
-        let mut line = String::from(" ");
-        line.push_str(it);
-        draw_menu_hotkey_label(p, x + 1, row, &line, i == selected, pal, inner);
+        if top_index == 1 && it.is_empty() {
+            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+            p.goto(x, row);
+            p.text("├");
+            p.hline(x + 1, row, w - 2, '─', pal.menu_fg, pal.menu_bg);
+            p.goto(x + w - 1, row);
+            p.text("┤");
+            continue;
+        }
+        let hotkey = menu_item_hotkey(top_index, i);
+        if top_index == 1 {
+            draw_file_menu_row(
+                p,
+                x,
+                row,
+                it,
+                hotkey,
+                FILE_MENU[i].shortcut,
+                i == selected,
+                pal,
+                inner,
+            );
+        } else {
+            let mut line = String::from(" ");
+            line.push_str(it);
+            draw_menu_hotkey_label_at(p, x + 1, row, &line, hotkey, i == selected, pal, inner);
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_file_menu_row(
+    p: &mut Painter,
+    x: u16,
+    row: u16,
+    label: &str,
+    hotkey: Option<char>,
+    shortcut: &str,
+    selected: bool,
+    pal: McPalette,
+    inner: usize,
+) {
+    // GNU `menubar_paint_idx`: leading space, label, shortcut at max_hotkey_len+3.
+    let mut line = String::from(" ");
+    line.push_str(label);
+    while line.chars().count() < FILE_MENU_SHORTCUT_COL {
+        line.push(' ');
+    }
+    line.push_str(shortcut);
+    while line.chars().count() < inner {
+        line.push(' ');
+    }
+    draw_menu_hotkey_label_at(p, x + 1, row, &line, hotkey, selected, pal, inner);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9478,7 +9744,7 @@ mod gnu_default_chrome_colors_tests {
             super::draw_menu_dropdown(&mut p, pal, 1, 0, false);
         }
         let grid = rasterize(&buf, 40, 20);
-        let x = rmc_core::layout::menu_bar_item_start(1, false) as usize;
+        let x = super::dropdown_origin_x(1, false) as usize;
         assert_eq!(grid[1][x].ch, '┌');
         assert_eq!(
             (grid[1][x].fg, grid[1][x].bg),
@@ -9486,41 +9752,114 @@ mod gnu_default_chrome_colors_tests {
             "dropdown frame is menu white;cyan"
         );
 
-        let (hx, hy) = find_text(&grid, " Help");
+        let (hx, hy) = find_text(&grid, " View");
         assert_eq!(hy, 2);
         assert_eq!(grid[hy][hx].ch, ' ');
         assert_eq!(
             (grid[hy][hx].fg, grid[hy][hx].bg),
             (Color::White, Color::Black)
         );
-        assert_eq!(grid[hy][hx + 1].ch, 'H');
+        assert_eq!(grid[hy][hx + 1].ch, 'V');
         assert_eq!(
             (grid[hy][hx + 1].fg, grid[hy][hx + 1].bg),
             (Color::Yellow, Color::Black),
             "selected hotkey is yellow;black"
         );
-        assert_eq!(grid[hy][hx + 2].ch, 'e');
+        assert_eq!(grid[hy][hx + 2].ch, 'i');
         assert_eq!(
             (grid[hy][hx + 2].fg, grid[hy][hx + 2].bg),
             (Color::White, Color::Black)
         );
 
-        let (vx, vy) = find_text(&grid, " View");
-        assert_eq!(grid[vy][vx].ch, ' ');
+        let (fx, fy) = find_text(&grid, " Filtered view");
+        assert_eq!(grid[fy][fx].ch, ' ');
         assert_eq!(
-            (grid[vy][vx].fg, grid[vy][vx].bg),
+            (grid[fy][fx].fg, grid[fy][fx].bg),
             (Color::White, Color::Cyan)
         );
-        assert_eq!(grid[vy][vx + 1].ch, 'V');
+        assert_eq!(grid[fy][fx + 1].ch, 'F');
         assert_eq!(
-            (grid[vy][vx + 1].fg, grid[vy][vx + 1].bg),
+            (grid[fy][fx + 1].fg, grid[fy][fx + 1].bg),
             (Color::Yellow, Color::Cyan),
             "idle hotkey is yellow;cyan"
         );
-        assert_eq!(grid[vy][vx + 2].ch, 'i');
+        assert_eq!(grid[fy][fx + 2].ch, 'i');
         assert_eq!(
-            (grid[vy][vx + 2].fg, grid[vy][vx + 2].bg),
+            (grid[fy][fx + 2].fg, grid[fy][fx + 2].bg),
             (Color::White, Color::Cyan)
+        );
+    }
+
+    #[test]
+    fn file_menu_matches_gnu_4_8_30_item_and_shortcut_columns() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_dropdown(&mut p, pal, 1, 0, false);
+        }
+        let grid = rasterize(&buf, 80, 30);
+        let x = super::dropdown_origin_x(1, false) as usize;
+        assert_eq!(x, 9, "live GNU File drop-down starts at column 9");
+        assert_eq!(super::FILE_MENU_BOX_WIDTH, 28);
+        assert_eq!(grid[1][x].ch, '┌');
+        assert_eq!(grid[1][x + 27].ch, '┐');
+
+        let expected = [
+            " View              F3     ",
+            " View file...             ",
+            " Filtered view     M-!    ",
+            " Edit              F4     ",
+            " Copy              F5     ",
+            " Chmod             C-x c  ",
+            " Link              C-x l  ",
+            " Symlink           C-x s  ",
+            " Relative symlink  C-x v  ",
+            " Edit symlink      C-x C-s",
+            " Chown             C-x o  ",
+            " Advanced chown           ",
+            " Chattr            C-x e  ",
+            " Rename/Move       F6     ",
+            " Mkdir             F7     ",
+            " Delete            F8     ",
+            " Quick cd          M-c    ",
+            "──────────────────────────",
+            " Select group      +      ",
+            " Unselect group    -      ",
+            " Invert selection  *      ",
+            "──────────────────────────",
+            " Exit              F10    ",
+        ];
+        assert_eq!(expected.len(), super::FILE_MENU.len());
+        for (i, want) in expected.iter().enumerate() {
+            let y = 2 + i;
+            let got: String = grid[y][x + 1..x + 27].iter().map(|c| c.ch).collect();
+            assert_eq!(got, *want, "File menu row {i}");
+            if want.chars().all(|c| c == '─') {
+                assert_eq!(grid[y][x].ch, '├');
+                assert_eq!(grid[y][x + 27].ch, '┤');
+            }
+        }
+        assert_eq!(grid[2 + expected.len()][x].ch, '└');
+
+        // GNU `&` hotkeys: Vie&w file..., C&hmod, E&xit — not the first letter.
+        let (wx, wy) = find_text(&grid, "View file...");
+        assert_eq!(grid[wy][wx + 3].ch, 'w');
+        assert_eq!(
+            (grid[wy][wx + 3].fg, grid[wy][wx + 3].bg),
+            (Color::Yellow, Color::Cyan)
+        );
+        let (hx, hy) = find_text(&grid, "Chmod");
+        assert_eq!(grid[hy][hx + 1].ch, 'h');
+        assert_eq!(
+            (grid[hy][hx + 1].fg, grid[hy][hx + 1].bg),
+            (Color::Yellow, Color::Cyan)
+        );
+        let (xx, xy) = find_text(&grid, "Exit");
+        assert_eq!(grid[xy][xx + 1].ch, 'x');
+        assert_eq!(
+            (grid[xy][xx + 1].fg, grid[xy][xx + 1].bg),
+            (Color::Yellow, Color::Cyan)
         );
     }
 

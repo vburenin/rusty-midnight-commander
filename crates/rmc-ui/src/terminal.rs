@@ -1,6 +1,9 @@
 use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::mc_ext::user_extension_file_path;
-use crate::render::{top_menu_items, viewer_menu_from_x, Renderer};
+use crate::render::{
+    menu_item_hotkey, menu_row_is_separator, step_menu_index, top_menu_items, viewer_menu_from_x,
+    Renderer,
+};
 
 #[cfg(test)]
 use crate::render::{COMMAND_MENU_ITEMS, FILE_MENU_ITEMS, LEFT_RIGHT_MENU_ITEMS};
@@ -4561,7 +4564,7 @@ impl TerminalApp {
                         if key.modifiers.is_empty()
                             && (*focus_ok
                                 || (matches!(key.code, KeyCode::Enter)
-                                    && title == QUICK_CD_TITLE)) =>
+                                    && input_dialog_enter_applies(title))) =>
                     {
                         // GNU Quick cd: Enter on the input applies the path
                         // without requiring Tab to the OK button. Space on OK
@@ -6830,8 +6833,8 @@ impl TerminalApp {
                         *selected_index = 0;
                     }
                     KeyCode::Up => {
-                        if *dropped && *selected_index > 0 {
-                            *selected_index -= 1;
+                        if *dropped {
+                            *selected_index = step_menu_index(*top_index, *selected_index, -1);
                         }
                     }
                     KeyCode::Down => {
@@ -6839,10 +6842,22 @@ impl TerminalApp {
                             *dropped = true;
                             *selected_index = 0;
                         } else {
-                            let max = menus.len().saturating_sub(1);
-                            if *selected_index < max {
-                                *selected_index += 1;
-                            }
+                            *selected_index = step_menu_index(*top_index, *selected_index, 1);
+                        }
+                    }
+                    KeyCode::Char(c)
+                        if key.modifiers.is_empty() && *dropped && c.is_ascii_alphabetic() =>
+                    {
+                        if let Some(idx) = (0..menus.len()).find(|&i| {
+                            menu_item_hotkey(*top_index, i)
+                                .is_some_and(|h| h.eq_ignore_ascii_case(&c))
+                        }) {
+                            *selected_index = idx;
+                            return Self::handle_key(
+                                app,
+                                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                                page_rows,
+                            );
                         }
                     }
                     KeyCode::Enter => {
@@ -6853,6 +6868,9 @@ impl TerminalApp {
                         }
                         let rec = (*top_index, *selected_index);
                         let item = menus[rec.1];
+                        if item.is_empty() || menu_row_is_separator(*top_index, rec.1) {
+                            return Ok(());
+                        }
                         app.last_menu_path = Some(rec);
                         match item {
                             "Help" => {
@@ -7137,6 +7155,12 @@ impl TerminalApp {
                                     page_rows,
                                 );
                             }
+                            "View file..." => {
+                                open_view_file_dialog(app);
+                            }
+                            "Filtered view" => {
+                                open_filtered_view_dialog(app);
+                            }
                             "Edit" => {
                                 return Self::leave_menu_function_key(
                                     app,
@@ -7153,7 +7177,7 @@ impl TerminalApp {
                                     page_rows,
                                 );
                             }
-                            "Move" => {
+                            "Move" | "Rename/Move" => {
                                 return Self::leave_menu_function_key(
                                     app,
                                     6,
@@ -7196,14 +7220,23 @@ impl TerminalApp {
                             "Chown" => {
                                 app.handle_action(Action::Chown)?;
                             }
-                            "Hard link" => {
+                            "Hard link" | "Link" => {
                                 app.handle_action(Action::LinkHard)?;
                             }
-                            "SymLink" => {
+                            "SymLink" | "Symlink" => {
                                 app.handle_action(Action::SymlinkAbs)?;
                             }
                             "Relative symlink" => {
                                 app.handle_action(Action::SymlinkRel)?;
+                            }
+                            "Edit symlink" => {
+                                open_edit_symlink_dialog(app);
+                            }
+                            "Advanced chown" => {
+                                app.handle_action(Action::Chown)?;
+                            }
+                            "Chattr" => {
+                                open_chattr_dialog(app);
                             }
                             "User menu" => {
                                 return Self::leave_menu_function_key(
@@ -7254,7 +7287,7 @@ impl TerminalApp {
                             "Screen list" => {
                                 open_screen_list(app);
                             }
-                            "Quit" => {
+                            "Quit" | "Exit" => {
                                 app.handle_action(Action::Quit)?;
                             }
                             _ => {
@@ -8649,6 +8682,18 @@ pub(crate) const HISTORY_CLEAN_TITLE: &str = "History cleaning";
 pub(crate) const HISTORY_CLEAN_MESSAGE: &str = "Do you want to clean this history?";
 pub(crate) const QUICK_CD_TITLE: &str = "Quick cd";
 pub(crate) const QUICK_CD_PROMPT: &str = "Enter directory";
+pub(crate) const VIEW_FILE_TITLE: &str = "View file";
+pub(crate) const VIEW_FILE_PROMPT: &str = "Filename:";
+pub(crate) const FILTERED_VIEW_TITLE: &str = "Filtered view";
+pub(crate) const FILTERED_VIEW_PROMPT: &str = "Filter command and arguments:";
+pub(crate) const EDIT_SYMLINK_TITLE: &str = "Edit symlink";
+
+fn input_dialog_enter_applies(title: &str) -> bool {
+    matches!(
+        title,
+        QUICK_CD_TITLE | VIEW_FILE_TITLE | FILTERED_VIEW_TITLE | EDIT_SYMLINK_TITLE
+    )
+}
 pub(crate) const COMPLETION_LIST_TITLE: &str = "Completion";
 
 fn is_complete_key(key: &KeyEvent) -> bool {
@@ -9219,6 +9264,179 @@ fn open_quick_cd(app: &mut App) {
     };
 }
 
+fn current_entry_name(app: &App) -> String {
+    app.active_panel()
+        .current_entry()
+        .map(|e| e.name.clone())
+        .unwrap_or_default()
+}
+
+fn resolve_panel_path(app: &App, input: &str) -> std::path::PathBuf {
+    let typed = std::path::PathBuf::from(input.trim());
+    if typed.is_absolute() || rmc_fs::pathutil::is_virtual_path(&typed) {
+        typed
+    } else {
+        app.active_panel().cwd.join(input.trim())
+    }
+}
+
+fn open_view_file_dialog(app: &mut App) {
+    app.ui_mode = UiMode::InputDialog {
+        title: VIEW_FILE_TITLE.into(),
+        prompt: VIEW_FILE_PROMPT.into(),
+        value: current_entry_name(app),
+        focus_ok: false,
+        on_submit: Box::new(|app, input| {
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                return Ok(());
+            }
+            view_path(app, &resolve_panel_path(app, trimmed), false)
+        }),
+    };
+}
+
+fn open_filtered_view_dialog(app: &mut App) {
+    app.ui_mode = UiMode::InputDialog {
+        title: FILTERED_VIEW_TITLE.into(),
+        prompt: FILTERED_VIEW_PROMPT.into(),
+        value: current_entry_name(app),
+        focus_ok: false,
+        on_submit: Box::new(|app, input| {
+            let cmd = input.trim();
+            if cmd.is_empty() {
+                return Ok(());
+            }
+            view_filtered_command(app, cmd)
+        }),
+    };
+}
+
+fn view_filtered_command(app: &mut App, cmd: &str) -> Result<()> {
+    let cwd = app.active_panel().cwd.clone();
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(&cwd)
+        .output();
+    match output {
+        Ok(out) => {
+            let mut data = out.stdout;
+            if !out.stderr.is_empty() {
+                if !data.is_empty() {
+                    data.push(b'\n');
+                }
+                data.extend_from_slice(&out.stderr);
+            }
+            let tmp = std::env::temp_dir().join(format!(
+                "mcr-filtered-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            std::fs::write(&tmp, &data)?;
+            view_path(app, &tmp, true)
+        }
+        Err(err) => {
+            app.show_error_dialog(format!("{err}"));
+            Ok(())
+        }
+    }
+}
+
+fn open_edit_symlink_dialog(app: &mut App) {
+    let Some(ent) = app.active_panel().current_entry().cloned() else {
+        return;
+    };
+    if !ent.is_symlink {
+        app.show_error_dialog(format!("'{}' is not a symbolic link", ent.name));
+        return;
+    }
+    let target = ent.symlink_target.clone().unwrap_or_default();
+    let name = ent.name.clone();
+    let src = ent.path.clone();
+    app.ui_mode = UiMode::InputDialog {
+        title: EDIT_SYMLINK_TITLE.into(),
+        prompt: format!("Symlink '{name}' points to:"),
+        value: target,
+        focus_ok: false,
+        on_submit: Box::new(move |app, input| {
+            let dest = input.trim();
+            if dest.is_empty() {
+                return Ok(());
+            }
+            if let Err(e) = app.vfs.remove(&src, false) {
+                app.show_error_dialog(format!("{e}"));
+                return Ok(());
+            }
+            if let Err(e) = app.vfs.symlink(std::path::Path::new(dest), &src) {
+                app.show_error_dialog(format!("{e}"));
+            }
+            Ok(())
+        }),
+    };
+}
+
+fn open_chattr_dialog(app: &mut App) {
+    let Some(ent) = app.active_panel().current_entry().cloned() else {
+        return;
+    };
+    if ent.is_parent_marker() {
+        app.show_error_dialog(r#"Cannot operate on ".."!"#.into());
+        return;
+    }
+    if ent.is_dir || ent.is_symlink {
+        app.show_error_dialog(format!("\"{}\" is not a regular file", ent.path.display()));
+        return;
+    }
+    // Full GNU Chattr checkbox dialog is out of this File-menu slice.
+    // Selecting the item must not silently close: reuse Chmod (same class of attrs).
+    app.handle_action(Action::Chmod).ok();
+}
+
+fn view_path(app: &mut App, path: &std::path::Path, raw: bool) -> Result<()> {
+    if let Ok(md) = app.vfs.stat(path) {
+        if md.is_dir {
+            app.change_dir(path)?;
+            return Ok(());
+        }
+    }
+    if app.config_opts.use_internal_view {
+        let view = if raw {
+            Ok(rmc_view::ViewData::from_path(path.to_path_buf()))
+        } else {
+            rmc_view::ViewData::open_view(path)
+        };
+        match view {
+            Ok(view) => {
+                park_current_viewer_to_cache();
+                if let Ok(mut g) = VIEWER_STATE.lock() {
+                    *g = Some(ViewerState {
+                        display_path: path.to_path_buf(),
+                        view,
+                    });
+                }
+                if raw {
+                    push_internal_screen(
+                        app,
+                        UiMode::new_viewer_with_parsed(path.to_path_buf(), false),
+                    );
+                } else {
+                    push_internal_screen(app, UiMode::new_viewer(path.to_path_buf()));
+                }
+            }
+            Err(err) => app.show_error_dialog(format!("{err}")),
+        }
+        return Ok(());
+    }
+    run_waited_external_viewer(path, &app.active_panel().cwd, None);
+    pause_after_waited_external(app);
+    app.reload_panels()?;
+    Ok(())
+}
+
 fn open_command_history(app: &mut App) {
     let selected_index = app.subshell.history_len().saturating_sub(1);
     app.ui_mode = UiMode::HistoryDialog {
@@ -9389,6 +9607,8 @@ fn open_panel_editor(app: &mut App, new_file: bool) {
         return;
     };
     if ent.is_dir {
+        // GNU File → Edit / F4: `"/path" is not a regular file`
+        app.show_error_dialog(format!("\"{}\" is not a regular file", ent.path.display()));
         return;
     }
     if app.config_opts.use_internal_edit {
@@ -9561,58 +9781,61 @@ fn view_current_file_with_pager(app: &mut App, pager_override: Option<&str>) -> 
 }
 
 fn view_current_file_with(app: &mut App, pager_override: Option<&str>, raw: bool) -> Result<()> {
+    if let Some(ent) = app.active_panel().current_entry().cloned() {
+        // GNU File → View / F3 on a directory (including `..`) chdirs.
+        if ent.is_dir {
+            app.change_dir(&ent.path)?;
+            return Ok(());
+        }
+    }
     if app.config_opts.use_internal_view {
         if let Some(ent) = app.active_panel().current_entry().cloned() {
-            if !ent.is_dir {
-                // Archives (.tar.gz / .tgz / …): F3 enters VFS, same as Enter.
-                // F13 raw skips that preprocessing and shows on-disk bytes.
-                if !raw {
-                    if let Some(entered) = app.vfs.enter_path(&ent.path) {
-                        app.change_dir(&entered)?;
-                        return Ok(());
+            // Archives (.tar.gz / .tgz / …): F3 enters VFS, same as Enter.
+            // F13 raw skips that preprocessing and shows on-disk bytes.
+            if !raw {
+                if let Some(entered) = app.vfs.enter_path(&ent.path) {
+                    app.change_dir(&entered)?;
+                    return Ok(());
+                }
+            }
+            let view = if raw {
+                Ok(rmc_view::ViewData::from_path(ent.path.clone()))
+            } else {
+                rmc_view::ViewData::open_view(&ent.path)
+            };
+            match view {
+                Ok(view) => {
+                    park_current_viewer_to_cache();
+                    if let Ok(mut g) = VIEWER_STATE.lock() {
+                        *g = Some(ViewerState {
+                            display_path: ent.path.clone(),
+                            view,
+                        });
+                    }
+                    if raw {
+                        push_internal_screen(
+                            app,
+                            UiMode::new_viewer_with_parsed(ent.path.clone(), false),
+                        );
+                    } else {
+                        app.handle_action(Action::ViewFile)?;
                     }
                 }
-                let view = if raw {
-                    Ok(rmc_view::ViewData::from_path(ent.path.clone()))
-                } else {
-                    rmc_view::ViewData::open_view(&ent.path)
-                };
-                match view {
-                    Ok(view) => {
-                        park_current_viewer_to_cache();
-                        if let Ok(mut g) = VIEWER_STATE.lock() {
-                            *g = Some(ViewerState {
-                                display_path: ent.path.clone(),
-                                view,
-                            });
-                        }
-                        if raw {
-                            push_internal_screen(
-                                app,
-                                UiMode::new_viewer_with_parsed(ent.path.clone(), false),
-                            );
-                        } else {
-                            app.handle_action(Action::ViewFile)?;
-                        }
-                    }
-                    Err(err) => {
-                        app.ui_mode = UiMode::DialogConfirm {
-                            title: "Error".into(),
-                            message: format!("{err}"),
-                            on_ok: Box::new(|_| Ok(())),
-                        };
-                    }
+                Err(err) => {
+                    app.ui_mode = UiMode::DialogConfirm {
+                        title: "Error".into(),
+                        message: format!("{err}"),
+                        on_ok: Box::new(|_| Ok(())),
+                    };
                 }
             }
         }
         return Ok(());
     }
     if let Some(ent) = app.active_panel().current_entry().cloned() {
-        if !ent.is_dir {
-            run_waited_external_viewer(&ent.path, &app.active_panel().cwd, pager_override);
-            pause_after_waited_external(app);
-            app.reload_panels()?;
-        }
+        run_waited_external_viewer(&ent.path, &app.active_panel().cwd, pager_override);
+        pause_after_waited_external(app);
+        app.reload_panels()?;
     }
     Ok(())
 }
@@ -20633,18 +20856,19 @@ mod help_viewer_tests {
     }
 
     #[test]
-    fn file_menu_help_opens_viewer() {
+    fn file_menu_f1_opens_help_and_view_is_first() {
         let root = temp_workspace();
         let mut app = make_app(&root);
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
+        assert_eq!(FILE_MENU_ITEMS[0], "View");
+        press(&mut app, KeyCode::F(1));
         match &app.ui_mode {
             UiMode::Help { .. } => {}
-            UiMode::FindDialog(_) => panic!("File→Help must not open Find File"),
-            UiMode::Menu { .. } => panic!("File→Help must open the help viewer"),
-            _ => panic!("File→Help must open Help"),
+            UiMode::FindDialog(_) => panic!("F1 from File menu must not open Find File"),
+            UiMode::Menu { .. } => panic!("F1 from File menu must open Help"),
+            _ => panic!("F1 from File menu must open Help"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -20979,8 +21203,8 @@ mod shell_cmdline_helpers_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right); // File
-        for _ in 0..7 {
-            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Down); // View .. Delete -> Quick cd
         }
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
@@ -21652,18 +21876,9 @@ mod command_menu_remaining_items_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right); // File
-        press(&mut app, KeyCode::Enter); // Help is first
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        assert!(
-            matches!(app.ui_mode, UiMode::Menu { .. }),
-            "leaving File→Help restores the File menu"
-        );
-        for _ in 0..7 {
-            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Down); // View .. Delete -> Quick cd
         }
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
@@ -21925,14 +22140,9 @@ mod listing_mode_dialog_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right); // File
-        press(&mut app, KeyCode::Enter); // Help first
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
-            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Down); // View .. Delete -> Quick cd
         }
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
@@ -22239,14 +22449,9 @@ mod filter_dialog_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right); // File
-        press(&mut app, KeyCode::Enter); // Help first
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
-            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Down); // View .. Delete -> Quick cd
         }
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
@@ -22593,14 +22798,9 @@ mod equalize_panels_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right); // File
-        press(&mut app, KeyCode::Enter); // Help first
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
-            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Down); // View .. Delete -> Quick cd
         }
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
@@ -23027,13 +23227,8 @@ mod sort_dialog_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -23419,13 +23614,8 @@ mod panel_quickview_info_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -23883,13 +24073,8 @@ mod panel_tree_mode_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -24514,13 +24699,8 @@ mod alt_tab_completion_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -24840,13 +25020,8 @@ mod panel_split_layout_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -24964,14 +25139,16 @@ mod select_group_dialog_tests {
         app.config_opts.drop_menus = true;
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
-        let idx = FILE_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing File menu item {label}"));
-        for _ in 0..idx {
+        for _ in 0..FILE_MENU_ITEMS.len() {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
+                if FILE_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("missing File menu item {label}");
     }
 
     fn open_left_right_item(app: &mut App, right: bool, label: &str) {
@@ -25203,18 +25380,9 @@ mod select_group_dialog_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right); // File
-        press(&mut app, KeyCode::Enter); // Help first
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        assert!(
-            matches!(app.ui_mode, UiMode::Menu { .. }),
-            "leaving File→Help restores the File menu"
-        );
-        for _ in 0..7 {
-            press(&mut app, KeyCode::Down); // Help .. Delete -> Quick cd
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Down); // View .. Delete -> Quick cd
         }
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
@@ -25467,14 +25635,16 @@ mod chmod_chown_link_dialog_tests {
         app.config_opts.drop_menus = true;
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
-        let idx = FILE_MENU_ITEMS
-            .iter()
-            .position(|s| *s == label)
-            .unwrap_or_else(|| panic!("missing File menu item {label}"));
-        for _ in 0..idx {
+        for _ in 0..FILE_MENU_ITEMS.len() {
+            if let UiMode::Menu { selected_index, .. } = &app.ui_mode {
+                if FILE_MENU_ITEMS.get(*selected_index) == Some(&label) {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("missing File menu item {label}");
     }
 
     fn open_left_right_item(app: &mut App, right: bool, label: &str) {
@@ -25850,13 +26020,8 @@ mod chmod_chown_link_dialog_tests {
         app.config_opts.drop_menus = true;
         press(&mut app, KeyCode::F(9));
         press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(app.ui_mode, UiMode::Help { .. }),
-            "File menu Help must stay first"
-        );
-        press(&mut app, KeyCode::Esc);
-        for _ in 0..7 {
+        assert_eq!(FILE_MENU_ITEMS[0], "View", "GNU File menu starts with View");
+        for _ in 0..16 {
             press(&mut app, KeyCode::Down);
         }
         press(&mut app, KeyCode::Enter);
@@ -25878,7 +26043,7 @@ mod chmod_chown_link_dialog_tests {
         assert!(matches!(app.ui_mode, UiMode::ChownDialog { .. }));
         press(&mut app, KeyCode::Esc);
 
-        open_file_item(&mut app, "Hard link");
+        open_file_item(&mut app, "Link");
         assert!(matches!(
             app.ui_mode,
             UiMode::LinkDialog {
@@ -25888,7 +26053,7 @@ mod chmod_chown_link_dialog_tests {
         ));
         press(&mut app, KeyCode::Esc);
 
-        open_file_item(&mut app, "SymLink");
+        open_file_item(&mut app, "Symlink");
         assert!(matches!(
             app.ui_mode,
             UiMode::LinkDialog {
@@ -28398,6 +28563,98 @@ mod panel_function_keys_tests {
             "File → Edit must open Editor, got {}",
             mode_name(&app)
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_menu_gnu_items_view_file_filtered_rename_exit_and_hotkeys() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        std::os::unix::fs::symlink(root.join("notes.txt"), root.join("link.txt")).unwrap();
+        let mut app = make_app(&root);
+        app.reload_panels().unwrap();
+        goto_name(&mut app, "notes.txt");
+        app.config_opts.drop_menus = true;
+
+        assert_eq!(FILE_MENU_ITEMS[0], "View");
+        assert_eq!(FILE_MENU_ITEMS[1], "View file...");
+        assert_eq!(FILE_MENU_ITEMS[2], "Filtered view");
+        assert_eq!(FILE_MENU_ITEMS[4], "Copy");
+        assert_eq!(FILE_MENU_ITEMS[13], "Rename/Move");
+        assert_eq!(FILE_MENU_ITEMS[22], "Exit");
+        assert!(FILE_MENU_ITEMS.contains(&"Chattr"));
+        assert!(FILE_MENU_ITEMS.contains(&"Advanced chown"));
+        assert!(FILE_MENU_ITEMS.contains(&"Edit symlink"));
+
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press_char(&mut app, 'w');
+        match &app.ui_mode {
+            UiMode::InputDialog { title, value, .. } => {
+                assert_eq!(title, VIEW_FILE_TITLE);
+                assert_eq!(value, "notes.txt");
+            }
+            _ => panic!("File → View file... must prompt, got {}", mode_name(&app)),
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Viewer { .. }),
+            "View file... OK must open Viewer"
+        );
+        press(&mut app, KeyCode::F(10));
+
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press_char(&mut app, 'F');
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, FILTERED_VIEW_TITLE),
+            _ => panic!("Filtered view must prompt, got {}", mode_name(&app)),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press_char(&mut app, 'y');
+        match &app.ui_mode {
+            UiMode::DialogConfirm { message, .. } => {
+                assert!(
+                    message.contains("not a symbolic link"),
+                    "Edit symlink on a file: {message}"
+                );
+            }
+            _ => panic!("Edit symlink on a file must error, got {}", mode_name(&app)),
+        }
+        press(&mut app, KeyCode::Enter);
+
+        goto_name(&mut app, "link.txt");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press_char(&mut app, 'y');
+        match &app.ui_mode {
+            UiMode::InputDialog { title, .. } => assert_eq!(title, EDIT_SYMLINK_TITLE),
+            _ => panic!(
+                "Edit symlink on a link must prompt, got {}",
+                mode_name(&app)
+            ),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        goto_name(&mut app, "..");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press_char(&mut app, 'e');
+        match &app.ui_mode {
+            UiMode::DialogConfirm { message, .. } => {
+                assert!(
+                    message.contains("is not a regular file"),
+                    "Edit on ..: {message}"
+                );
+            }
+            _ => panic!("Edit on .. must error, got {}", mode_name(&app)),
+        }
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
