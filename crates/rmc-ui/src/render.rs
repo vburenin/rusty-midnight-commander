@@ -6962,6 +6962,28 @@ pub(crate) const FILE_MENU_ITEMS: &[&str] = &[
     "Quit",
 ];
 
+/// GNU mc(1) Options menu labels. Shared with `terminal.rs` and hit-testing.
+pub(crate) const OPTIONS_MENU_ITEMS: &[&str] = &[
+    "Configuration",
+    "Layout",
+    "Panels",
+    "Confirmations",
+    "Appearance",
+    "Virtual FS...",
+    "Learn keys",
+    "Save setup",
+];
+
+/// Dropdown entries for F9 top index 0..=4 (Left, File, Command, Options, Right).
+pub(crate) fn top_menu_items(top_index: usize) -> &'static [&'static str] {
+    match top_index {
+        1 => FILE_MENU_ITEMS,
+        2 => COMMAND_MENU_ITEMS,
+        3 => OPTIONS_MENU_ITEMS,
+        _ => LEFT_RIGHT_MENU_ITEMS,
+    }
+}
+
 fn draw_menu_dropdown(
     p: &mut Painter,
     pal: McPalette,
@@ -6969,30 +6991,13 @@ fn draw_menu_dropdown(
     selected: usize,
     horizontal_split: bool,
 ) {
-    // Real top menus and stub items
-    let menus: [&[&str]; 5] = [
-        LEFT_RIGHT_MENU_ITEMS,
-        FILE_MENU_ITEMS,
-        COMMAND_MENU_ITEMS,
-        &[
-            "Configuration",
-            "Layout",
-            "Panels",
-            "Confirmations",
-            "Appearance",
-            "Virtual FS...",
-            "Learn keys",
-            "Save setup",
-        ],
-        LEFT_RIGHT_MENU_ITEMS,
-    ];
+    let items = top_menu_items(top_index);
     let titles = menu_bar_titles(horizontal_split);
     // Compute x position under the selected top title
     let mut x = 0u16;
     for title in titles.iter().take(top_index) {
         x += title.len() as u16;
     }
-    let items = menus[top_index];
     let y = 1u16;
     let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
     let h = items.len() as u16 + 2;
