@@ -81,6 +81,8 @@ pub enum Action {
     ToggleSubshell,
     // Hotlist
     OpenHotlist,
+    /// GNU mc(1) Command → Find file / `Find = alt-question` (not F17; F17 is viewer search-again).
+    FindFile,
     // Mouse interactions (coordinates handled by UI)
     MouseClick {
         x: u16,

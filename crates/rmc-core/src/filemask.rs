@@ -51,6 +51,68 @@ pub fn dest_is_directory(dest: &str, exists_as_dir: bool) -> bool {
     exists_as_dir || dest.ends_with('/')
 }
 
+/// GNU mc(1) `check_same_file`: refuse copy/move when dest is the source
+/// (same path or same inode) or a directory nested inside the source.
+/// Prevents same-dir F5→OK from copying a path onto itself (and dir-into-self).
+pub fn copy_pair_is_self(src: &Path, dst: &Path) -> bool {
+    if paths_same_or_dst_inside_src(src, dst) {
+        return true;
+    }
+    same_unix_inode(src, dst)
+}
+
+/// GNU Error body for a refused same-path pair (`"%s"\nand\n"%s"\nare the same file`).
+pub fn same_path_error_message(src: &Path, dst: &Path, is_dir: bool) -> String {
+    let kind = if is_dir { "directory" } else { "file" };
+    format!(
+        "\"{}\"\nand\n\"{}\"\nare the same {kind}",
+        src.display(),
+        dst.display()
+    )
+}
+
+fn paths_same_or_dst_inside_src(src: &Path, dst: &Path) -> bool {
+    if src == dst {
+        return true;
+    }
+    let src_n = normalize_path_components(src);
+    let dst_n = normalize_path_components(dst);
+    src_n == dst_n || dst_n.starts_with(&src_n)
+}
+
+fn normalize_path_components(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn same_unix_inode(src: &Path, dst: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(a) = std::fs::symlink_metadata(src) else {
+            return false;
+        };
+        let Ok(b) = std::fs::symlink_metadata(dst) else {
+            return false;
+        };
+        a.dev() == b.dev() && a.ino() == b.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (src, dst);
+        false
+    }
+}
+
 fn resolve_one(
     src_name: &str,
     mask: &str,
@@ -451,5 +513,28 @@ mod tests {
             file_mask_replace("*", "foo", r"pre\*", true).as_deref(),
             Some("pre*")
         );
+    }
+
+    #[test]
+    fn copy_pair_is_self_same_path_and_nested_dir() {
+        let src = PathBuf::from("/workspace/notes.txt");
+        assert!(copy_pair_is_self(&src, &src));
+        assert!(copy_pair_is_self(
+            &PathBuf::from("/workspace/dir"),
+            &PathBuf::from("/workspace/dir/sub")
+        ));
+        assert!(!copy_pair_is_self(
+            &PathBuf::from("/workspace/file"),
+            &PathBuf::from("/workspace/file.bak")
+        ));
+        assert!(!copy_pair_is_self(
+            &PathBuf::from("/workspace/docs"),
+            &PathBuf::from("/workspace/backup/docs")
+        ));
+        assert_eq!(
+            same_path_error_message(&src, &src, false),
+            "\"/workspace/notes.txt\"\nand\n\"/workspace/notes.txt\"\nare the same file"
+        );
+        assert!(same_path_error_message(&src, &src, true).contains("same directory"));
     }
 }

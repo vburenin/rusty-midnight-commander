@@ -236,6 +236,12 @@ impl KeyMap {
             KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL),
             OpenHotlist,
         );
+        // GNU mc 4.8.33 `mc.default.keymap`: `Find = alt-question` (help: Alt-?).
+        // F17 / S-F7 is viewer/editor SearchContinue, not Find File.
+        m.bind(
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::ALT),
+            Action::FindFile,
+        );
         // GNU mc(1) C-x prefix chords (UI still consumes Control-x as a prefix).
         m.set_ctrl_x_binding(new_event(KeyCode::Char('c')), Chmod);
         m.set_ctrl_x_binding(new_event(KeyCode::Char('o')), Chown);
@@ -460,6 +466,8 @@ fn parse_key(s: &str) -> Option<KeyEvent> {
         "backspace" => KeyCode::Backspace,
         "insert" => KeyCode::Insert,
         "space" => KeyCode::Char(' '),
+        // GNU mc.keymap writes `?` as `question` (`Find = alt-question`).
+        "question" => KeyCode::Char('?'),
         // GNU mc.keymap writes backslash as `\\` (and `C-\\`).
         "\\" | "\\\\" => KeyCode::Char('\\'),
         // Function keys
@@ -529,6 +537,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "SortSize" => Some(Sort(SortBy::Size)),
         "SortTime" => Some(Sort(SortBy::Time)),
         "OpenHotlist" => Some(OpenHotlist),
+        "Find" | "FindFile" => Some(Action::FindFile),
         _ => {
             // FunctionKeyN pattern (e.g., FunctionKey4)
             if let Some(num) = s.strip_prefix("FunctionKey") {
@@ -590,6 +599,7 @@ fn format_action(a: &Action) -> String {
         Action::Sort(SortBy::Size) => "SortSize",
         Action::Sort(SortBy::Time) => "SortTime",
         Action::OpenHotlist => "OpenHotlist",
+        Action::FindFile => "FindFile",
         Action::FunctionKey(n) => return format!("FunctionKey{}", n),
         Action::MouseClick { .. } | Action::MouseScroll { .. } => "Mouse",
     }
@@ -1382,6 +1392,13 @@ mod tests {
             km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
             Some(Action::UnselectGroup)
         ));
+        assert!(
+            matches!(
+                km.resolve(&KeyEvent::new(KeyCode::Char('?'), KeyModifiers::ALT)),
+                Some(Action::FindFile)
+            ),
+            "Alt-question must parse as FindFile"
+        );
         for (ch, want) in [
             ('c', "Chmod"),
             ('o', "Chown"),

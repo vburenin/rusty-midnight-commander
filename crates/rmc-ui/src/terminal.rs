@@ -2229,6 +2229,16 @@ impl TerminalApp {
             app.ui_mode = UiMode::Normal;
             return;
         }
+        if let Some((src, dst)) = pairs
+            .iter()
+            .find(|(s, d)| rmc_core::filemask::copy_pair_is_self(s, d))
+        {
+            let is_dir = app.vfs.stat(src).map(|m| m.is_dir).unwrap_or(false);
+            app.show_error_dialog(rmc_core::filemask::same_path_error_message(
+                src, dst, is_dir,
+            ));
+            return;
+        }
         let mut flags = app.config_opts.copy_flags();
         flags.follow_links = follow_links;
         flags.preserve_attrs = preserve_attrs;
@@ -4164,8 +4174,10 @@ impl TerminalApp {
                 return Ok(());
             }
             UiMode::HotlistDialog(state) => {
-                // Estimate list rows based on current terminal size
-                let (_cols, rows) = crossterm::terminal::size()?;
+                // Estimate list rows. Never `size()?` — tests/CI have no TTY.
+                let rows = crossterm::terminal::size()
+                    .map(|(_, r)| r)
+                    .unwrap_or(page_rows.max(1) as u16 + 3);
                 let list_rows = rows.saturating_sub(4).clamp(12, 20).saturating_sub(4) as usize;
                 match key.code {
                     KeyCode::Esc | KeyCode::F(10) => {
@@ -4469,7 +4481,7 @@ impl TerminalApp {
                 on_submit,
             } => {
                 match key.code {
-                    KeyCode::Esc => {
+                    KeyCode::Esc | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Enter => {
@@ -4754,7 +4766,7 @@ impl TerminalApp {
                         app.handle_action(Action::ShowHelp)?;
                         return Ok(());
                     }
-                    KeyCode::Esc => {
+                    KeyCode::Esc | KeyCode::F(10) => {
                         state.abort_search();
                         app.ui_mode = UiMode::Normal;
                     }
@@ -4771,7 +4783,7 @@ impl TerminalApp {
                             }
                         } else if state.selected_index > 0 {
                             state.selected_index -= 1;
-                            let (_c, r) = crossterm::terminal::size()?;
+                            let r = find_dialog_term_rows(page_rows);
                             let h = find_dialog_height(r);
                             let list_rows = find_dialog_list_rows(h);
                             if state.selected_index < state.scroll_top {
@@ -4792,7 +4804,7 @@ impl TerminalApp {
                             }
                         } else if state.selected_index + 1 < state.results.paths.len() {
                             state.selected_index += 1;
-                            let (_c, r) = crossterm::terminal::size()?;
+                            let r = find_dialog_term_rows(page_rows);
                             let h = find_dialog_height(r);
                             let list_rows = find_dialog_list_rows(h);
                             if state.selected_index < state.scroll_top {
@@ -4811,7 +4823,7 @@ impl TerminalApp {
                     KeyCode::End => {
                         if !state.results.paths.is_empty() {
                             state.selected_index = state.results.paths.len() - 1;
-                            let (_c, r) = crossterm::terminal::size()?;
+                            let r = find_dialog_term_rows(page_rows);
                             let h = find_dialog_height(r);
                             let list_rows = find_dialog_list_rows(h);
                             state.scroll_top = state
@@ -5960,7 +5972,7 @@ impl TerminalApp {
             }
             UiMode::MkdirDialog { value, focus_ok } => {
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
                     KeyCode::Tab => *focus_ok = !*focus_ok,
                     KeyCode::Enter | KeyCode::Char(' ')
                         if key.modifiers.is_empty()
@@ -6054,7 +6066,7 @@ impl TerminalApp {
                 focus_ok,
             } => {
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
                     KeyCode::Tab | KeyCode::Left | KeyCode::Right => *focus_ok = !*focus_ok,
                     KeyCode::Char('y') | KeyCode::Char('Y') if key.modifiers.is_empty() => {
                         *focus_ok = true;
@@ -6098,7 +6110,7 @@ impl TerminalApp {
             } => {
                 use rmc_core::app::CopyDialogFocus as F;
                 match key.code {
-                    KeyCode::Esc => app.ui_mode = UiMode::Normal,
+                    KeyCode::Esc | KeyCode::F(10) => app.ui_mode = UiMode::Normal,
                     KeyCode::Tab => {
                         *focus = match *focus {
                             F::Mask => F::To,
@@ -6177,7 +6189,8 @@ impl TerminalApp {
                         F::Checkbox3 => *preserve_attrs = !*preserve_attrs,
                         F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
                         F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
-                        F::Ok | F::Background => {
+                        // GNU [dialog] Ok = enter: input lines (mask / to:) submit OK.
+                        F::Mask | F::To | F::Ok | F::Background => {
                             let background = matches!(*focus, F::Background);
                             let op = if title == "Copy" {
                                 rmc_core::app::CopyMoveOp::Copy
@@ -6200,7 +6213,6 @@ impl TerminalApp {
                         F::Cancel => {
                             app.ui_mode = UiMode::Normal;
                         }
-                        _ => {}
                     },
 
                     _ => {}
@@ -8486,20 +8498,14 @@ impl TerminalApp {
         }
         // Dedicated handling for F2 User Menu action
         if let Some(Action::ShowUserMenu) = app.keymap.resolve(&key) {
-            // Load menu and open dialog
+            // GNU still opens User menu when every candidate file is missing.
             let cwd = app.active_panel().cwd.clone();
-            match rmc_core::user_menu::load_menu(&cwd) {
-                Ok(menu) => {
-                    app.ui_mode = UiMode::UserMenu {
-                        title: menu.title,
-                        entries: menu.entries,
-                        selected_index: 0,
-                    };
-                }
-                Err(_) => {
-                    // No menu found — ignore
-                }
-            }
+            let menu = rmc_core::user_menu::menu_for_f2(&cwd);
+            app.ui_mode = UiMode::UserMenu {
+                title: menu.title,
+                entries: menu.entries,
+                selected_index: 0,
+            };
             return Ok(());
         }
         Ok(())
@@ -10245,6 +10251,13 @@ fn directory_tree_delete(app: &mut App) {
 }
 
 const FIND_TREE_MAX_ENTRIES: usize = 2048;
+
+/// Rows for Find File list paging. Never `terminal::size()?` (no TTY in tests).
+fn find_dialog_term_rows(page_rows: usize) -> u16 {
+    crossterm::terminal::size()
+        .map(|(_, r)| r)
+        .unwrap_or(page_rows.max(1) as u16 + 3)
+}
 
 /// GNU mc(1) Find File action buttons. OK starts a new search; Stop/Start
 /// pauses or continues; Again returns to parameters.
@@ -27564,6 +27577,124 @@ mod panel_function_keys_tests {
         let s = String::from_utf8_lossy(&buf);
         assert!(s.contains("Error"));
         assert!(s.contains("Cannot operate") || s.contains(".."));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_dest_enter_same_dir_refuses_onto_self_and_does_not_abort() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(5));
+        match &app.ui_mode {
+            UiMode::CopyDialog { focus, to, .. } => {
+                assert!(
+                    matches!(*focus, rmc_core::app::CopyDialogFocus::To),
+                    "GNU Copy focuses the dest field"
+                );
+                assert!(to.ends_with('/'), "dest defaults to other-panel dir/");
+            }
+            _ => panic!("F5 must open Copy, got {}", mode_name(&app)),
+        }
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            press(&mut app, KeyCode::Enter);
+        }));
+        assert!(
+            panicked.is_ok(),
+            "same-dir F5 then dest Enter must not abort"
+        );
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, message, .. } => {
+                assert_eq!(title, "Error");
+                assert!(
+                    message.contains("are the same file"),
+                    "GNU same-file wording, got {message}"
+                );
+            }
+            _ => panic!(
+                "dest Enter must refuse copy-onto-self, got {}",
+                mode_name(&app)
+            ),
+        }
+        assert!(root.join("notes.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f10_cancels_copy_delete_mkdir_find() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(5));
+        assert_eq!(copy_title(&app), "Copy");
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Copy F10 must cancel, got {}",
+            mode_name(&app)
+        );
+        assert!(!app.quit, "dialog F10 is Cancel, not Quit");
+
+        press(&mut app, KeyCode::F(8));
+        assert!(matches!(app.ui_mode, UiMode::DeleteDialog { .. }));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(root.join("notes.txt").exists(), "Delete F10 must keep file");
+
+        press(&mut app, KeyCode::F(7));
+        assert!(matches!(app.ui_mode, UiMode::MkdirDialog { .. }));
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press_rows(&mut app, KeyCode::Char('?'), KeyModifiers::ALT, 10);
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "Alt-? must open Find File, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Find File F10 must dismiss, got {}",
+            mode_name(&app)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f2_empty_menu_and_hotlist_keys_work_without_tty() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let empty = rmc_core::user_menu::empty_user_menu();
+        app.ui_mode = UiMode::UserMenu {
+            title: empty.title,
+            entries: empty.entries,
+            selected_index: 0,
+        };
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "empty User menu F10 must dismiss"
+        );
+
+        press_ctrl(&mut app, '\\');
+        assert!(
+            matches!(app.ui_mode, UiMode::HotlistDialog(_)),
+            "C-\\\\ opens hotlist"
+        );
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            press(&mut app, KeyCode::Down);
+            press(&mut app, KeyCode::F(10));
+        }));
+        assert!(
+            ok.is_ok(),
+            "hotlist keys must not call terminal::size()? without a TTY"
+        );
+        assert!(matches!(app.ui_mode, UiMode::Normal));
         let _ = std::fs::remove_dir_all(&root);
     }
 
