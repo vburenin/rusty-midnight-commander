@@ -753,19 +753,30 @@ pub fn nav_end(path: &Path, cols: u16, rows: u16, wrap: bool) -> Result<u64> {
     }
 }
 
-/// GNU mcview Search-dialog flags (same four checkboxes as mcedit Search).
+/// GNU mcview 4.8.33 Search-dialog type radios.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchKind {
+    #[default]
+    Normal,
+    RegularExpression,
+    Hexadecimal,
+    WildcardSearch,
+}
+
+/// GNU mcview Search-dialog flags (type radios + four checkboxes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SearchOptions {
     pub case_sensitive: bool,
     pub backwards: bool,
     pub whole_words: bool,
-    pub regexp: bool,
+    pub kind: SearchKind,
+    pub all_charsets: bool,
 }
 
 /// Search with GNU mcview Search-dialog options. Empty needle is a no-op.
 /// Invalid regular expressions do not panic; they yield no match.
-/// Hex mode still searches the underlying file bytes (this replica's existing
-/// viewer search); GNU quoted-hex syntax is not implemented here.
+/// Invalid hexadecimal patterns return an error whose message uses the GNU
+/// `Hex pattern error at position %d:` wording.
 pub fn search_with_options(
     path: &Path,
     start_offset: u64,
@@ -799,16 +810,11 @@ fn search_impl(
         return Ok(None);
     }
     let hay = std::fs::read(path)?;
+    let prepared = prepare_search_needles(needle, opts)?;
+    if prepared.is_empty() {
+        return Ok(None);
+    }
     let len = hay.len() as u64;
-    let needle_b = needle.as_bytes();
-    let re = if opts.regexp {
-        match compile_search_regex(needle_b, !opts.case_sensitive, opts.whole_words) {
-            Some(re) => Some(re),
-            None => return Ok(None),
-        }
-    } else {
-        None
-    };
 
     let orig = start_offset.min(len);
     let from = if skip_current {
@@ -821,23 +827,306 @@ fn search_impl(
         orig
     };
 
-    if let Some(pos) = find_in_hay(&hay, needle_b, from, opts, re.as_ref(), skip_current) {
+    if let Some(pos) = find_prepared(&hay, &prepared, from, opts, skip_current) {
         return Ok(Some(pos));
     }
     if wrap {
         if opts.backwards {
-            if let Some(pos) = find_in_hay(&hay, needle_b, len, opts, re.as_ref(), false) {
+            if let Some(pos) = find_prepared(&hay, &prepared, len, opts, false) {
                 if pos >= orig {
                     return Ok(Some(pos));
                 }
             }
-        } else if let Some(pos) = find_in_hay(&hay, needle_b, 0, opts, re.as_ref(), false) {
+        } else if let Some(pos) = find_prepared(&hay, &prepared, 0, opts, false) {
             if pos <= orig {
                 return Ok(Some(pos));
             }
         }
     }
     Ok(None)
+}
+
+enum PreparedNeedle {
+    Bytes(Vec<u8>),
+    Regex(regex::bytes::Regex),
+}
+
+fn prepare_search_needles(needle: &str, opts: SearchOptions) -> Result<Vec<PreparedNeedle>> {
+    let encodings = charset_encodings(needle, opts.all_charsets);
+    let mut out = Vec::new();
+    let mut hex_err = None;
+    for enc in encodings {
+        match opts.kind {
+            SearchKind::Hexadecimal => match parse_hex_pattern(&enc) {
+                Ok(bytes) if !bytes.is_empty() => out.push(PreparedNeedle::Bytes(bytes)),
+                Ok(_) => {}
+                Err(e) => {
+                    if hex_err.is_none() {
+                        hex_err = Some(e);
+                    }
+                }
+            },
+            SearchKind::RegularExpression => {
+                if let Some(re) = compile_search_regex(&enc, !opts.case_sensitive, opts.whole_words)
+                {
+                    out.push(PreparedNeedle::Regex(re));
+                }
+            }
+            SearchKind::WildcardSearch => {
+                let Some(pat) = std::str::from_utf8(&enc).ok() else {
+                    continue;
+                };
+                let translated = glob_to_regex(pat);
+                if let Some(re) = compile_search_regex(
+                    translated.as_bytes(),
+                    !opts.case_sensitive,
+                    opts.whole_words,
+                ) {
+                    out.push(PreparedNeedle::Regex(re));
+                }
+            }
+            SearchKind::Normal => {
+                if !enc.is_empty() {
+                    out.push(PreparedNeedle::Bytes(enc));
+                }
+            }
+        }
+    }
+    if opts.kind == SearchKind::Hexadecimal && out.is_empty() {
+        if let Some(e) = hex_err {
+            bail!("{e}");
+        }
+    }
+    Ok(out)
+}
+
+fn find_prepared(
+    hay: &[u8],
+    prepared: &[PreparedNeedle],
+    from: u64,
+    opts: SearchOptions,
+    backwards_exclusive: bool,
+) -> Option<u64> {
+    let mut best = None;
+    for item in prepared {
+        let hit = match item {
+            PreparedNeedle::Bytes(needle) => {
+                let mut byte_opts = opts;
+                if opts.kind == SearchKind::Hexadecimal {
+                    byte_opts.whole_words = false;
+                }
+                find_in_hay(hay, needle, from, byte_opts, None, backwards_exclusive)
+            }
+            PreparedNeedle::Regex(re) => {
+                find_in_hay(hay, b"", from, opts, Some(re), backwards_exclusive)
+            }
+        };
+        best = pick_hit(best, hit, opts.backwards);
+    }
+    best
+}
+
+fn pick_hit(best: Option<u64>, hit: Option<u64>, backwards: bool) -> Option<u64> {
+    match (best, hit) {
+        (None, h) | (h, None) => h,
+        (Some(a), Some(b)) if backwards => Some(a.max(b)),
+        (Some(a), Some(b)) => Some(a.min(b)),
+    }
+}
+
+/// GNU 4.8.33 hex-pattern wording (`Hex pattern error at position %d:\n%s.`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HexPatternError {
+    position: usize,
+    detail: &'static str,
+}
+
+impl std::fmt::Display for HexPatternError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Hex pattern error at position {}:\n{}.",
+            self.position, self.detail
+        )
+    }
+}
+
+/// Parse a GNU mcview Hexadecimal needle: whitespace-separated byte numbers
+/// (optional `0x` prefix) mixed with double-quoted literal spans.
+fn parse_hex_pattern(input: &[u8]) -> Result<Vec<u8>, HexPatternError> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < input.len() {
+        while i < input.len() && input[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= input.len() {
+            break;
+        }
+        if input[i] == b'"' {
+            let quote_pos = i + 1;
+            i += 1;
+            let start = i;
+            while i < input.len() && input[i] != b'"' {
+                i += 1;
+            }
+            if i >= input.len() {
+                return Err(HexPatternError {
+                    position: quote_pos,
+                    detail: "Unmatched quotes character",
+                });
+            }
+            out.extend_from_slice(&input[start..i]);
+            i += 1;
+            continue;
+        }
+        let tok_pos = i + 1;
+        let tok_start = i;
+        while i < input.len() && !input[i].is_ascii_whitespace() && input[i] != b'"' {
+            i += 1;
+        }
+        match parse_hex_byte(&input[tok_start..i]) {
+            Ok(b) => out.push(b),
+            Err(detail) => {
+                return Err(HexPatternError {
+                    position: tok_pos,
+                    detail,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn parse_hex_byte(tok: &[u8]) -> Result<u8, &'static str> {
+    if tok.is_empty() {
+        return Err("Invalid character");
+    }
+    let digits = if let Some(rest) = tok.strip_prefix(b"0x").or_else(|| tok.strip_prefix(b"0X")) {
+        rest
+    } else {
+        tok
+    };
+    if digits.is_empty() || !digits.iter().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid character");
+    }
+    let s = std::str::from_utf8(digits).map_err(|_| "Invalid character")?;
+    match u32::from_str_radix(s, 16) {
+        Ok(n) if n <= 0xFF => Ok(n as u8),
+        Ok(_) => {
+            Err("Number out of range (should be in byte range, 0 <= n <= 0xFF, expressed in hex)")
+        }
+        Err(_) => Err("Invalid character"),
+    }
+}
+
+/// Translate a GNU Wildcard-search glob into a regex (`*` → `.*`, `?` → `.`).
+fn glob_to_regex(pat: &str) -> String {
+    let chars: Vec<char> = pat.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            '[' => {
+                out.push('[');
+                i += 1;
+                if i < chars.len() && (chars[i] == '!' || chars[i] == '^') {
+                    out.push('^');
+                    i += 1;
+                }
+                while i < chars.len() && chars[i] != ']' {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                if i < chars.len() && chars[i] == ']' {
+                    out.push(']');
+                }
+            }
+            c @ ('\\' | '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}') => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// UTF-8 plus 8-bit recodings used when GNU **All charsets** is on.
+fn charset_encodings(needle: &str, all_charsets: bool) -> Vec<Vec<u8>> {
+    let mut out = vec![needle.as_bytes().to_vec()];
+    if !all_charsets {
+        return out;
+    }
+    if let Some(latin1) = encode_iso8859_1(needle) {
+        push_unique_bytes(&mut out, latin1);
+    }
+    if let Some(cp1252) = encode_windows1252(needle) {
+        push_unique_bytes(&mut out, cp1252);
+    }
+    out
+}
+
+fn push_unique_bytes(out: &mut Vec<Vec<u8>>, bytes: Vec<u8>) {
+    if !out.iter().any(|e| e == &bytes) {
+        out.push(bytes);
+    }
+}
+
+fn encode_iso8859_1(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        let v = u32::from(c);
+        if v > 0xFF {
+            return None;
+        }
+        out.push(v as u8);
+    }
+    Some(out)
+}
+
+/// Windows-1252: Latin-1 plus the usual 0x80–0x9F extra letters/symbols.
+fn encode_windows1252(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        let b = match u32::from(c) {
+            v if v <= 0x7F => v as u8,
+            v if (0xA0..=0xFF).contains(&v) => v as u8,
+            0x20AC => 0x80,
+            0x201A => 0x82,
+            0x0192 => 0x83,
+            0x201E => 0x84,
+            0x2026 => 0x85,
+            0x2020 => 0x86,
+            0x2021 => 0x87,
+            0x02C6 => 0x88,
+            0x2030 => 0x89,
+            0x0160 => 0x8A,
+            0x2039 => 0x8B,
+            0x0152 => 0x8C,
+            0x017D => 0x8E,
+            0x2018 => 0x91,
+            0x2019 => 0x92,
+            0x201C => 0x93,
+            0x201D => 0x94,
+            0x2022 => 0x95,
+            0x2013 => 0x96,
+            0x2014 => 0x97,
+            0x02DC => 0x98,
+            0x2122 => 0x99,
+            0x0161 => 0x9A,
+            0x203A => 0x9B,
+            0x0153 => 0x9C,
+            0x017E => 0x9E,
+            0x0178 => 0x9F,
+            _ => return None,
+        };
+        out.push(b);
+    }
+    Some(out)
 }
 
 fn find_in_hay(
@@ -1227,7 +1516,22 @@ mod tests {
             case_sensitive,
             backwards,
             whole_words,
-            regexp,
+            kind: if regexp {
+                SearchKind::RegularExpression
+            } else {
+                SearchKind::Normal
+            },
+            all_charsets: false,
+        }
+    }
+
+    fn so_kind(kind: SearchKind) -> SearchOptions {
+        SearchOptions {
+            case_sensitive: true,
+            backwards: false,
+            whole_words: false,
+            kind,
+            all_charsets: false,
         }
     }
 
@@ -1334,6 +1638,88 @@ mod tests {
         assert_eq!(
             search_with_options(&path, 0, "AB", so(true, false, false, false), false).unwrap(),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn search_hexadecimal_numbers_and_quoted() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"xxAByy").unwrap();
+        let path = f.path().to_path_buf();
+        let opts = so_kind(SearchKind::Hexadecimal);
+        assert_eq!(
+            search_with_options(&path, 0, "41 42", opts, false).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            search_with_options(&path, 0, "0x41 \"B\"", opts, false).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            search_with_options(&path, 0, "41 00", opts, false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn search_hexadecimal_invalid_reports_gnu_wording() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"AB").unwrap();
+        let path = f.path().to_path_buf();
+        let err = search_with_options(&path, 0, "gg", so_kind(SearchKind::Hexadecimal), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("Hex pattern error at position "), "{err}");
+        assert!(err.contains("Invalid character"), "{err}");
+        let err = search_with_options(&path, 0, "\"AB", so_kind(SearchKind::Hexadecimal), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Unmatched quotes character"), "{err}");
+        let err = search_with_options(&path, 0, "100", so_kind(SearchKind::Hexadecimal), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Number out of range"), "{err}");
+    }
+
+    #[test]
+    fn search_wildcard_star_and_qmark() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"cat category cot").unwrap();
+        let path = f.path().to_path_buf();
+        let opts = so_kind(SearchKind::WildcardSearch);
+        assert_eq!(
+            search_with_options(&path, 0, "c?t", opts, false).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            search_next_with_options(&path, 0, "c?t", opts, false).unwrap(),
+            Some(13)
+        );
+        assert_eq!(
+            search_with_options(&path, 0, "cat*", opts, false).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            search_with_options(&path, 0, "dog*", opts, false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn search_all_charsets_finds_latin1() {
+        let mut f = NamedTempFile::new().unwrap();
+        // Latin-1 café (63 61 66 E9), not UTF-8 C3 A9.
+        f.write_all(&[b'c', b'a', b'f', 0xE9]).unwrap();
+        let path = f.path().to_path_buf();
+        let mut off = so(true, false, false, false);
+        assert_eq!(
+            search_with_options(&path, 0, "café", off, false).unwrap(),
+            None
+        );
+        off.all_charsets = true;
+        assert_eq!(
+            search_with_options(&path, 0, "café", off, false).unwrap(),
+            Some(0)
         );
     }
 

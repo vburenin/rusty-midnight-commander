@@ -141,7 +141,7 @@ Mark each sub-feature internally with Foundation (Copy/Move/Delete/Mkdir) vs Lat
 Per mcview(1) and mc(1) “Internal File Viewer”:
 - [x] Modes: text, hex, wrap toggle, raw/parsed, format/unformat
 - [x] Navigation: line/page/home/end, goto
-- [x] Search: F7 Search dialog (Enter search string; Case sensitive / Backwards / Whole words / Regular expression), /, n/F17 next
+- [x] Search: F7 Search dialog (Enter search string; radios Normal / Regular expression / Hexadecimal / Wildcard search; Case sensitive / Backwards / Whole words / All charsets), /, n/F17 next
 - [x] View compressed via filters (e.g., gzip) per extension rules
 - [x] Display options: show line numbers, underline/bold formatting, show CR as ^M
 - [x] Selection and keybindings parity (F-keys and movement)
