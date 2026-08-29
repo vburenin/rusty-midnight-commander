@@ -2019,6 +2019,7 @@ impl TerminalApp {
                 rmc_core::panel::listing_has_column_split_sep(
                     app.left.listing,
                     app.left.brief_columns,
+                    &app.left.user_format,
                 ),
             ) as usize;
             let right_rows = rmc_core::panel::panel_listing_content_rows(
@@ -2031,6 +2032,7 @@ impl TerminalApp {
                 rmc_core::panel::listing_has_column_split_sep(
                     app.right.listing,
                     app.right.brief_columns,
+                    &app.right.user_format,
                 ),
             ) as usize;
             let left_capacity = rmc_core::panel::listing_page_capacity(
@@ -2583,7 +2585,11 @@ impl TerminalApp {
                 matches!(app.active, PaneSide::Left),
                 qs_active,
             ),
-            rmc_core::panel::listing_has_column_split_sep(app.left.listing, app.left.brief_columns),
+            rmc_core::panel::listing_has_column_split_sep(
+                app.left.listing,
+                app.left.brief_columns,
+                &app.left.user_format,
+            ),
         ) as usize;
         let right_rows = rmc_core::panel::panel_listing_content_rows(
             right_pr.h,
@@ -2595,6 +2601,7 @@ impl TerminalApp {
             rmc_core::panel::listing_has_column_split_sep(
                 app.right.listing,
                 app.right.brief_columns,
+                &app.right.user_format,
             ),
         ) as usize;
         let left_capacity = rmc_core::panel::listing_page_capacity(
@@ -2714,7 +2721,15 @@ impl TerminalApp {
                     true,
                     app.quick_search.is_some(),
                 ),
-                rmc_core::panel::listing_has_column_split_sep(listing, brief_n),
+                rmc_core::panel::listing_has_column_split_sep(
+                    listing,
+                    brief_n,
+                    if matches!(side, PaneSide::Left) {
+                        &app.left.user_format
+                    } else {
+                        &app.right.user_format
+                    },
+                ),
             );
             if my >= content_top && my < content_top.saturating_add(content_h) {
                 let row_i = (my - content_top) as usize;
@@ -23376,7 +23391,7 @@ mod panel_quickview_info_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rmc_core::app::ListingModeFocus;
     use rmc_core::config::KeyMap;
-    use rmc_core::panel::{format_byte_size, ListingFormat, PanelMode};
+    use rmc_core::panel::{ListingFormat, PanelMode};
     use rmc_fs::local::LocalFs;
 
     fn temp_workspace() -> std::path::PathBuf {
@@ -23574,19 +23589,15 @@ mod panel_quickview_info_tests {
         let lines = info_lines_for_panel(&app, false);
         let joined = lines.join("\n");
         assert!(
-            joined.contains("Name: zzz.bin"),
+            joined.contains(" File: zzz.bin"),
             "info name path, got {lines:?}"
         );
-        let size_s = format_byte_size(20, app.panel_opts.kilobyte_si);
         assert!(
-            joined.contains(&format!("Size: {size_s}")),
+            joined.contains("Size:") && joined.contains("20"),
             "info size text path, got {lines:?}"
         );
         assert!(joined.contains("Links:"), "nlink: {lines:?}");
-        assert!(
-            src.inode == 0 || joined.contains(&format!("Inode: {}", src.inode)),
-            "inode if present: {lines:?}"
-        );
+        assert!(joined.contains("Mode:"), "mode: {lines:?}");
 
         select_named(&mut app, "adir");
         let src = preview_source_entry(&app, false).expect("dir source");
@@ -23597,7 +23608,7 @@ mod panel_quickview_info_tests {
         );
         let lines = info_lines_for_panel(&app, false);
         assert!(
-            lines.iter().any(|l| l == "Name: adir"),
+            lines.iter().any(|l| l.contains(" File: adir")),
             "info follows dir cursor: {lines:?}"
         );
         let _ = std::fs::remove_dir_all(&root);

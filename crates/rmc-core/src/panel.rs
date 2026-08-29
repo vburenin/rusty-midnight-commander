@@ -712,6 +712,14 @@ fn fit_right(s: &str, width: usize) -> String {
     }
 }
 
+fn user_perm_string_for(ent: &FileEntry) -> String {
+    let mut s = user_perm_string(ent.permissions, ent.is_dir);
+    if ent.is_symlink {
+        s.replace_range(..1, "l");
+    }
+    s
+}
+
 fn user_perm_string(mode: u32, is_dir: bool) -> String {
     let mut s = String::new();
     s.push(if is_dir { 'd' } else { '-' });
@@ -872,12 +880,34 @@ pub fn panel_listing_content_rows(
     panel_h.saturating_sub(chrome)
 }
 
-/// GNU `|` tokens in Full, and Brief packed-name gaps (2+ columns).
-pub fn listing_has_column_split_sep(listing: ListingFormat, brief_columns: u8) -> bool {
+/// GNU `|` tokens in Full, Brief packed-name gaps (2+ columns), and User
+/// formats that include a `|` column gap (default Alt-t User).
+pub fn listing_has_column_split_sep(
+    listing: ListingFormat,
+    brief_columns: u8,
+    user_format: &str,
+) -> bool {
     match listing {
         ListingFormat::Full => true,
         ListingFormat::Brief => clamp_brief_columns(brief_columns) > 1,
-        ListingFormat::Long | ListingFormat::User => false,
+        ListingFormat::Long => false,
+        ListingFormat::User => parse_user_listing_format(user_format)
+            .iter()
+            .any(|t| matches!(t, UserFormatToken::Gap)),
+    }
+}
+
+/// GNU `full` panel-size specifier: Long, or a User format that starts with `full`.
+/// That listing is painted across the whole screen; the other panel is hidden
+/// while this panel is active (live GNU 4.8.30 Alt-t Long).
+pub fn listing_is_full_span(listing: ListingFormat, user_format: &str) -> bool {
+    match listing {
+        ListingFormat::Long => true,
+        ListingFormat::User => user_format
+            .split_whitespace()
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("full")),
+        ListingFormat::Full | ListingFormat::Brief => false,
     }
 }
 
@@ -976,12 +1006,25 @@ fn user_mode_string(permissions: u32) -> String {
     format!("{:04o}", permissions & 0o7777)
 }
 
-fn format_listing_time(ts: SystemTime) -> String {
+/// GNU / `ls` listing timestamp: `Mon DD HH:MM` when recent, `Mon DD  YYYY`
+/// (two spaces) when older than ~6 months or more than an hour in the future.
+pub fn format_listing_time(ts: SystemTime) -> String {
     let dt: time::OffsetDateTime = ts.into();
-    dt.format(&time::macros::format_description!(
-        "[month repr:short] [day padding:space] [hour]:[minute]"
-    ))
-    .unwrap_or_default()
+    let now = time::OffsetDateTime::now_utc();
+    let age = now - dt;
+    let use_year = (age.is_positive() && age > time::Duration::days(183))
+        || (age.is_negative() && age.whole_hours().unsigned_abs() >= 1);
+    if use_year {
+        dt.format(&time::macros::format_description!(
+            "[month repr:short] [day padding:space]  [year]"
+        ))
+        .unwrap_or_default()
+    } else {
+        dt.format(&time::macros::format_description!(
+            "[month repr:short] [day padding:space] [hour]:[minute]"
+        ))
+        .unwrap_or_default()
+    }
 }
 
 fn user_mtime_string(ent: &FileEntry) -> String {
@@ -1036,8 +1079,8 @@ fn render_user_token(
             }
         }
         UserFormatToken::Perm => match ent {
-            Some(e) => user_perm_string(e.permissions, e.is_dir),
-            None => fit_left("Perm", 10),
+            Some(e) => user_perm_string_for(e),
+            None => fit_left("Permission", 10),
         },
         UserFormatToken::Mode => match ent {
             Some(e) => user_mode_string(e.permissions),
@@ -1153,17 +1196,43 @@ pub fn format_user_listing_header(tokens: &[UserFormatToken], width: usize) -> S
     join_user_parts(tokens, width, None, false, false)
 }
 
-/// `ls -l`–like Long listing prefix: perm, nlink, owner, group, size, mtime, trailing spaces.
-/// The file name is painted separately so filehighlight can color it.
+/// GNU Long listing first-char of `perm` (live 4.8.30: `l` symlink, `d` dir).
+fn long_perm_type_char(ent: &FileEntry) -> char {
+    if ent.is_symlink {
+        'l'
+    } else if ent.is_dir {
+        'd'
+    } else {
+        match ent.permissions & 0o170_000 {
+            0o140_000 => 's',
+            0o020_000 => 'c',
+            0o060_000 => 'b',
+            0o010_000 => 'p',
+            _ => '-',
+        }
+    }
+}
+
+/// Live GNU 4.8.30 Long (`full perm space nlink space owner …`): 10-char perm
+/// with type, 2-char nlink, 8-char left owner/group, 7-char size (`UP--DIR`
+/// only for `..`), 12-char mtime. Name is painted separately.
 pub fn format_long_listing_prefix(ent: &FileEntry, si: bool) -> String {
-    let perms = user_perm_string(ent.permissions, ent.is_dir);
-    let owner = ent.owner.as_deref().unwrap_or("-");
-    let group = ent.group.as_deref().unwrap_or("-");
-    let size = if ent.is_dir { 0 } else { ent.size };
-    let size_s = format!("{:>8}", format_byte_size(size, si));
-    let tm = user_mtime_string(ent);
+    let mut perms = user_perm_string(ent.permissions, ent.is_dir);
+    if let Some(rest) = perms.get(1..) {
+        perms = format!("{}{rest}", long_perm_type_char(ent));
+    }
+    let owner = fit_left(ent.owner.as_deref().unwrap_or("-"), 8);
+    let group = fit_left(ent.group.as_deref().unwrap_or("-"), 8);
+    let size_s = if ent.is_parent_marker() {
+        fit_left("UP--DIR", 7)
+    } else if si {
+        fit_right(&format_byte_size(ent.size, true), 7)
+    } else {
+        fit_right(&ent.size.to_string(), 7)
+    };
+    let tm = fit_left(&user_mtime_string(ent), 12);
     format!(
-        "{perms} {nlink:>4} {owner:>8} {group:>8} {size_s} {tm}  ",
+        "{perms} {nlink:>2} {owner} {group} {size_s} {tm} ",
         nlink = ent.nlink
     )
 }
@@ -2300,11 +2369,44 @@ mod tests {
         let p = PanelState::new(".");
         assert_eq!(p.brief_columns, BRIEF_COLUMNS_DEFAULT);
         assert_eq!(p.listing, ListingFormat::Full);
-        assert!(listing_has_column_split_sep(ListingFormat::Full, 2));
-        assert!(listing_has_column_split_sep(ListingFormat::Brief, 2));
-        assert!(!listing_has_column_split_sep(ListingFormat::Brief, 1));
-        assert!(!listing_has_column_split_sep(ListingFormat::Long, 2));
-        assert!(!listing_has_column_split_sep(ListingFormat::User, 2));
+        assert!(listing_has_column_split_sep(
+            ListingFormat::Full,
+            2,
+            DEFAULT_USER_LISTING_FORMAT
+        ));
+        assert!(listing_has_column_split_sep(
+            ListingFormat::Brief,
+            2,
+            DEFAULT_USER_LISTING_FORMAT
+        ));
+        assert!(!listing_has_column_split_sep(
+            ListingFormat::Brief,
+            1,
+            DEFAULT_USER_LISTING_FORMAT
+        ));
+        assert!(!listing_has_column_split_sep(
+            ListingFormat::Long,
+            2,
+            DEFAULT_USER_LISTING_FORMAT
+        ));
+        assert!(
+            listing_has_column_split_sep(ListingFormat::User, 2, DEFAULT_USER_LISTING_FORMAT),
+            "default User `type name | size | perm` has GNU `|` bars"
+        );
+        assert!(!listing_has_column_split_sep(
+            ListingFormat::User,
+            2,
+            "name size perm"
+        ));
+        assert!(listing_is_full_span(ListingFormat::Long, ""));
+        assert!(!listing_is_full_span(
+            ListingFormat::User,
+            DEFAULT_USER_LISTING_FORMAT
+        ));
+        assert!(listing_is_full_span(
+            ListingFormat::User,
+            "full perm space name"
+        ));
     }
 
     #[test]
@@ -2316,7 +2418,7 @@ mod tests {
         ent.group = Some("staff".into());
         let line = format_long_listing_line(&ent, false);
         assert!(line.contains("rw-r--r--"), "perms line={line:?}");
-        assert!(line.contains("   3"), "nlink line={line:?}");
+        assert!(line.contains(" 3"), "nlink 2-wide like live GNU: {line:?}");
         assert!(line.contains("alice"), "owner line={line:?}");
         assert!(line.contains("staff"), "group line={line:?}");
         assert!(line.contains("42"), "size line={line:?}");
