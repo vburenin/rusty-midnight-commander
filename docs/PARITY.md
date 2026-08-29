@@ -182,7 +182,7 @@ From README and mc(1):
 ## 8) Find file, content search, external panelize, directory tree — Status: Later
 
 Per mc(1) “Find File”, “External panelize”, and “Directory Tree”:
-- [x] Find File dialog: start dir (tree picker), filename pattern (glob/regex), content search string, case sensitivity, whole words
+- [x] Find File dialog: GNU 4.8 two-column setup (Alt-?): Start at / Tree / ignore dirs, File name vs Content columns, OK/Cancel; results list after OK
 - [x] Exclude/ignore directories list (colon-separated), follow symlinks options
 - [x] Buttons: OK, Stop/Start, Again, Chdir, Panelize, Quit
 - [x] Panelize results into panel; return to normal listing with “..” or switching mode

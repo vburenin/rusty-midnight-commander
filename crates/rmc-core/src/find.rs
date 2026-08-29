@@ -15,8 +15,28 @@ pub const FIND_DIALOG_MIN_H: u16 = 23;
 pub const FIND_DIALOG_MAX_H: u16 = 29;
 /// Rows from the top of the dialog to the results list (fields, checkboxes, ignore field, status).
 pub const FIND_DIALOG_LIST_TOP: u16 = 17;
+/// Results-only list origin (title + status), used after OK leaves the setup form.
+pub const FIND_RESULTS_LIST_TOP: u16 = 3;
 /// `list_h = dialog_h - FIND_DIALOG_LIST_CHROME` (list top + button/border chrome).
 pub const FIND_DIALOG_LIST_CHROME: u16 = 19;
+/// `list_h` for the results phase (list top + button/border chrome).
+pub const FIND_RESULTS_LIST_CHROME: u16 = 5;
+
+/// Live GNU mc 4.8.30 Find File **setup** dialog (Alt-?): 66×17, two columns.
+pub const FIND_SETUP_W: u16 = 66;
+pub const FIND_SETUP_H: u16 = 17;
+/// Interior left column (0-based from the left border, including the `│`).
+pub const FIND_SETUP_X1: u16 = 2;
+/// Interior right column (`Content:` / content checks).
+pub const FIND_SETUP_X2: u16 = 34;
+/// `[ Tree ]` origin, dialog-relative.
+pub const FIND_SETUP_TREE_X: u16 = 56;
+/// `[< OK >]` origin, dialog-relative.
+pub const FIND_SETUP_OK_X: u16 = 23;
+/// `[ Cancel ]` origin, dialog-relative.
+pub const FIND_SETUP_CANCEL_X: u16 = 32;
+/// Name / content input width (cells from the column origin to the other column).
+pub const FIND_SETUP_FIELD_W: u16 = 32;
 
 pub fn find_dialog_height(rows: u16) -> u16 {
     rows.saturating_sub(4)
@@ -25,6 +45,19 @@ pub fn find_dialog_height(rows: u16) -> u16 {
 
 pub fn find_dialog_list_rows(dialog_h: u16) -> usize {
     dialog_h.saturating_sub(FIND_DIALOG_LIST_CHROME) as usize
+}
+
+pub fn find_results_list_rows(dialog_h: u16) -> usize {
+    dialog_h.saturating_sub(FIND_RESULTS_LIST_CHROME) as usize
+}
+
+/// Live GNU 4.8.30: ceil((cols − 66) / 2) left, full-screen vertical center.
+pub fn find_setup_origin(cols: u16, rows: u16) -> (u16, u16) {
+    let w = FIND_SETUP_W.min(cols);
+    let h = FIND_SETUP_H.min(rows);
+    let x = cols.saturating_add(1).saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    (x, y)
 }
 
 /// Overlay height for the Find File directory-tree figure (mc(1) Tree button).
@@ -59,13 +92,18 @@ pub enum NamePattern {
     Glob(String),
 }
 
+fn serde_default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindParams {
     pub start_dir: PathBuf,
     pub name_pattern: NamePattern,
     pub content_substring: Option<String>,
+    /// File-name column **Case sensitive** (GNU default on).
     pub case_sensitive: bool,
-    /// Filename and Content are regexes when set; otherwise glob + substring.
+    /// Content-column **Regular expression**. Filename regex is `!using_shell_patterns`.
     pub regular_expression: bool,
     /// When false, only immediate children of `start_dir` are searched.
     pub find_recursively: bool,
@@ -76,11 +114,57 @@ pub struct FindParams {
     #[serde(default)]
     pub whole_words: bool,
     /// When set, skip directories listed in `ignore_dirs` during the walk.
-    #[serde(default)]
+    /// Live GNU 4.8.30 paints this checked on a clean profile.
+    #[serde(default = "serde_default_true")]
     pub enable_ignore_dirs: bool,
     /// Colon-separated directory names or absolute paths; unused when the checkbox is off.
     #[serde(default)]
     pub ignore_dirs: String,
+    /// File-name column **Using shell patterns** (GNU default on). Off → filename is a regex.
+    #[serde(default = "serde_default_true")]
+    pub using_shell_patterns: bool,
+    /// Content-column **Case sensitive** (GNU default on).
+    #[serde(default = "serde_default_true")]
+    pub content_case_sensitive: bool,
+    /// File-name column **All charsets** (stored; search stays UTF-8).
+    #[serde(default)]
+    pub file_all_charsets: bool,
+    /// Content-column **All charsets** (stored; search stays UTF-8).
+    #[serde(default)]
+    pub content_all_charsets: bool,
+    /// Content-column **First hit**: stop scanning a file after the first content match.
+    #[serde(default)]
+    pub first_hit: bool,
+}
+
+impl Default for FindParams {
+    fn default() -> Self {
+        Self {
+            start_dir: PathBuf::new(),
+            name_pattern: NamePattern::Glob("*".into()),
+            content_substring: None,
+            case_sensitive: true,
+            regular_expression: false,
+            find_recursively: true,
+            follow_symlinks: false,
+            skip_hidden: false,
+            whole_words: false,
+            enable_ignore_dirs: true,
+            ignore_dirs: String::new(),
+            using_shell_patterns: true,
+            content_case_sensitive: true,
+            file_all_charsets: false,
+            content_all_charsets: false,
+            first_hit: false,
+        }
+    }
+}
+
+/// Alt-? opens GNU's two-column setup; OK switches to the results list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindDialogPhase {
+    Setup,
+    Results,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,18 +172,27 @@ pub enum FindDialogFocus {
     StartDir,
     /// GNU mc(1) Find File **Tree** button (directory-tree figure).
     Tree,
-    NamePattern,
-    Content,
-    WholeWords,
-    CaseSensitive,
-    RegularExpression,
-    FindRecursively,
-    FollowSymlinks,
-    SkipHidden,
     EnableIgnoreDirs,
     IgnoreDirs,
+    NamePattern,
+    Content,
+    FindRecursively,
+    FollowSymlinks,
+    UsingShellPatterns,
+    /// File-name column **Case sensitive**.
+    CaseSensitive,
+    FileAllCharsets,
+    SkipHidden,
+    WholeWords,
+    /// Content-column **Regular expression**.
+    RegularExpression,
+    ContentCaseSensitive,
+    ContentAllCharsets,
+    FirstHit,
     /// GNU mc(1) **OK**: start a new search (not the in-search Start resume).
     ButtonOk,
+    /// Setup-phase **Cancel** (closes without searching).
+    ButtonCancel,
     /// GNU mc(1) **Stop** / **Start** pair: pause a running search, resume a stopped one.
     ButtonStop,
     ButtonAgain,
@@ -109,50 +202,112 @@ pub enum FindDialogFocus {
 }
 
 impl FindDialogFocus {
-    pub fn next(self) -> Self {
+    /// GNU widget-add Tab order on the two-column setup form.
+    pub fn next_setup(self) -> Self {
         match self {
             Self::StartDir => Self::Tree,
-            Self::Tree => Self::NamePattern,
-            Self::NamePattern => Self::Content,
-            Self::Content => Self::WholeWords,
-            Self::WholeWords => Self::CaseSensitive,
-            Self::CaseSensitive => Self::RegularExpression,
-            Self::RegularExpression => Self::FindRecursively,
-            Self::FindRecursively => Self::FollowSymlinks,
-            Self::FollowSymlinks => Self::SkipHidden,
-            Self::SkipHidden => Self::EnableIgnoreDirs,
+            Self::Tree => Self::EnableIgnoreDirs,
             Self::EnableIgnoreDirs => Self::IgnoreDirs,
-            Self::IgnoreDirs => Self::ButtonOk,
+            Self::IgnoreDirs => Self::NamePattern,
+            Self::NamePattern => Self::Content,
+            Self::Content => Self::FindRecursively,
+            Self::FindRecursively => Self::FollowSymlinks,
+            Self::FollowSymlinks => Self::UsingShellPatterns,
+            Self::UsingShellPatterns => Self::CaseSensitive,
+            Self::CaseSensitive => Self::FileAllCharsets,
+            Self::FileAllCharsets => Self::SkipHidden,
+            Self::SkipHidden => Self::WholeWords,
+            Self::WholeWords => Self::RegularExpression,
+            Self::RegularExpression => Self::ContentCaseSensitive,
+            Self::ContentCaseSensitive => Self::ContentAllCharsets,
+            Self::ContentAllCharsets => Self::FirstHit,
+            Self::FirstHit => Self::ButtonOk,
+            Self::ButtonOk => Self::ButtonCancel,
+            Self::ButtonCancel => Self::StartDir,
+            // Results-only widgets wrap into the setup cycle from OK.
+            Self::ButtonStop
+            | Self::ButtonAgain
+            | Self::ButtonChdir
+            | Self::ButtonPanelize
+            | Self::ButtonQuit => Self::ButtonOk,
+        }
+    }
+
+    pub fn prev_setup(self) -> Self {
+        match self {
+            Self::StartDir => Self::ButtonCancel,
+            Self::Tree => Self::StartDir,
+            Self::EnableIgnoreDirs => Self::Tree,
+            Self::IgnoreDirs => Self::EnableIgnoreDirs,
+            Self::NamePattern => Self::IgnoreDirs,
+            Self::Content => Self::NamePattern,
+            Self::FindRecursively => Self::Content,
+            Self::FollowSymlinks => Self::FindRecursively,
+            Self::UsingShellPatterns => Self::FollowSymlinks,
+            Self::CaseSensitive => Self::UsingShellPatterns,
+            Self::FileAllCharsets => Self::CaseSensitive,
+            Self::SkipHidden => Self::FileAllCharsets,
+            Self::WholeWords => Self::SkipHidden,
+            Self::RegularExpression => Self::WholeWords,
+            Self::ContentCaseSensitive => Self::RegularExpression,
+            Self::ContentAllCharsets => Self::ContentCaseSensitive,
+            Self::FirstHit => Self::ContentAllCharsets,
+            Self::ButtonOk => Self::FirstHit,
+            Self::ButtonCancel => Self::ButtonOk,
+            Self::ButtonStop
+            | Self::ButtonAgain
+            | Self::ButtonChdir
+            | Self::ButtonPanelize
+            | Self::ButtonQuit => Self::ButtonCancel,
+        }
+    }
+
+    /// Results-phase action row (OK / Stop / Again / Chdir / Panelize / Quit).
+    pub fn next_results(self) -> Self {
+        match self {
             Self::ButtonOk => Self::ButtonStop,
             Self::ButtonStop => Self::ButtonAgain,
             Self::ButtonAgain => Self::ButtonChdir,
             Self::ButtonChdir => Self::ButtonPanelize,
             Self::ButtonPanelize => Self::ButtonQuit,
-            Self::ButtonQuit => Self::StartDir,
+            Self::ButtonQuit => Self::ButtonOk,
+            _ => Self::ButtonOk,
         }
     }
 
-    pub fn prev(self) -> Self {
+    pub fn prev_results(self) -> Self {
         match self {
-            Self::StartDir => Self::ButtonQuit,
-            Self::Tree => Self::StartDir,
-            Self::NamePattern => Self::Tree,
-            Self::Content => Self::NamePattern,
-            Self::WholeWords => Self::Content,
-            Self::CaseSensitive => Self::WholeWords,
-            Self::RegularExpression => Self::CaseSensitive,
-            Self::FindRecursively => Self::RegularExpression,
-            Self::FollowSymlinks => Self::FindRecursively,
-            Self::SkipHidden => Self::FollowSymlinks,
-            Self::EnableIgnoreDirs => Self::SkipHidden,
-            Self::IgnoreDirs => Self::EnableIgnoreDirs,
-            Self::ButtonOk => Self::IgnoreDirs,
+            Self::ButtonOk => Self::ButtonQuit,
             Self::ButtonStop => Self::ButtonOk,
             Self::ButtonAgain => Self::ButtonStop,
             Self::ButtonChdir => Self::ButtonAgain,
             Self::ButtonPanelize => Self::ButtonChdir,
             Self::ButtonQuit => Self::ButtonPanelize,
+            _ => Self::ButtonQuit,
         }
+    }
+
+    pub fn next_in(self, phase: FindDialogPhase) -> Self {
+        match phase {
+            FindDialogPhase::Setup => self.next_setup(),
+            FindDialogPhase::Results => self.next_results(),
+        }
+    }
+
+    pub fn prev_in(self, phase: FindDialogPhase) -> Self {
+        match phase {
+            FindDialogPhase::Setup => self.prev_setup(),
+            FindDialogPhase::Results => self.prev_results(),
+        }
+    }
+
+    /// Legacy combined-dialog cycle (results buttons after the form).
+    pub fn next(self) -> Self {
+        self.next_setup()
+    }
+
+    pub fn prev(self) -> Self {
+        self.prev_setup()
     }
 
     pub fn is_checkbox(self) -> bool {
@@ -165,19 +320,25 @@ impl FindDialogFocus {
                 | Self::FollowSymlinks
                 | Self::SkipHidden
                 | Self::EnableIgnoreDirs
+                | Self::UsingShellPatterns
+                | Self::FileAllCharsets
+                | Self::ContentCaseSensitive
+                | Self::ContentAllCharsets
+                | Self::FirstHit
         )
     }
 
-    /// Tree plus the bottom-row action buttons (`< OK >`, Stop/Start, …).
+    /// Tree plus setup/results action buttons.
     pub fn is_button(self) -> bool {
         self == Self::Tree || self.is_action_button()
     }
 
-    /// Bottom-row GNU actions: OK, Stop/Start, Again, Chdir, Panelize, Quit.
+    /// Bottom-row GNU actions, including setup Cancel.
     pub fn is_action_button(self) -> bool {
         matches!(
             self,
             Self::ButtonOk
+                | Self::ButtonCancel
                 | Self::ButtonStop
                 | Self::ButtonAgain
                 | Self::ButtonChdir
@@ -193,6 +354,77 @@ impl FindDialogFocus {
                 self,
                 Self::StartDir | Self::Tree | Self::NamePattern | Self::Content | Self::IgnoreDirs
             )
+    }
+
+    /// GNU spatial Down on the two-column setup (stay in column).
+    pub fn setup_down(self) -> Self {
+        match self {
+            Self::StartDir | Self::Tree => Self::EnableIgnoreDirs,
+            Self::EnableIgnoreDirs => Self::IgnoreDirs,
+            Self::IgnoreDirs => Self::NamePattern,
+            Self::NamePattern => Self::FindRecursively,
+            Self::Content => Self::WholeWords,
+            Self::FindRecursively => Self::FollowSymlinks,
+            Self::FollowSymlinks => Self::UsingShellPatterns,
+            Self::UsingShellPatterns => Self::CaseSensitive,
+            Self::CaseSensitive => Self::FileAllCharsets,
+            Self::FileAllCharsets => Self::SkipHidden,
+            Self::SkipHidden => Self::ButtonOk,
+            Self::WholeWords => Self::RegularExpression,
+            Self::RegularExpression => Self::ContentCaseSensitive,
+            Self::ContentCaseSensitive => Self::ContentAllCharsets,
+            Self::ContentAllCharsets => Self::FirstHit,
+            Self::FirstHit => Self::ButtonCancel,
+            Self::ButtonOk | Self::ButtonCancel => self,
+            other => other.next_setup(),
+        }
+    }
+
+    /// GNU spatial Up on the two-column setup (stay in column).
+    pub fn setup_up(self) -> Self {
+        match self {
+            Self::StartDir | Self::Tree => self,
+            Self::EnableIgnoreDirs => Self::StartDir,
+            Self::IgnoreDirs => Self::EnableIgnoreDirs,
+            Self::NamePattern | Self::Content => Self::IgnoreDirs,
+            Self::FindRecursively => Self::NamePattern,
+            Self::FollowSymlinks => Self::FindRecursively,
+            Self::UsingShellPatterns => Self::FollowSymlinks,
+            Self::CaseSensitive => Self::UsingShellPatterns,
+            Self::FileAllCharsets => Self::CaseSensitive,
+            Self::SkipHidden => Self::FileAllCharsets,
+            Self::WholeWords => Self::Content,
+            Self::RegularExpression => Self::WholeWords,
+            Self::ContentCaseSensitive => Self::RegularExpression,
+            Self::ContentAllCharsets => Self::ContentCaseSensitive,
+            Self::FirstHit => Self::ContentAllCharsets,
+            Self::ButtonOk => Self::SkipHidden,
+            Self::ButtonCancel => Self::FirstHit,
+            other => other.prev_setup(),
+        }
+    }
+
+    /// GNU spatial Left/Right: jump between the two columns on the same row.
+    pub fn setup_across(self) -> Self {
+        match self {
+            Self::StartDir => Self::Tree,
+            Self::Tree => Self::StartDir,
+            Self::NamePattern => Self::Content,
+            Self::Content => Self::NamePattern,
+            Self::FindRecursively => Self::WholeWords,
+            Self::WholeWords => Self::FindRecursively,
+            Self::FollowSymlinks => Self::RegularExpression,
+            Self::RegularExpression => Self::FollowSymlinks,
+            Self::UsingShellPatterns => Self::ContentCaseSensitive,
+            Self::ContentCaseSensitive => Self::UsingShellPatterns,
+            Self::CaseSensitive => Self::ContentAllCharsets,
+            Self::ContentAllCharsets => Self::CaseSensitive,
+            Self::FileAllCharsets => Self::FirstHit,
+            Self::FirstHit => Self::FileAllCharsets,
+            Self::ButtonOk => Self::ButtonCancel,
+            Self::ButtonCancel => Self::ButtonOk,
+            other => other,
+        }
     }
 }
 
@@ -280,6 +512,8 @@ pub struct FindDialogState {
     pub params: FindParams,
     pub start_dir_edit: String,
     pub focus: FindDialogFocus,
+    /// Alt-? opens [`FindDialogPhase::Setup`]; OK switches to results.
+    pub phase: FindDialogPhase,
     pub running: bool,
     pub results: FindResults,
     pub cancel: Option<CancelHandle>,
@@ -295,19 +529,11 @@ impl FindDialogState {
         Self {
             params: FindParams {
                 start_dir: start_dir.clone(),
-                name_pattern: NamePattern::Glob("*".into()),
-                content_substring: None,
-                case_sensitive: false,
-                regular_expression: false,
-                find_recursively: true,
-                follow_symlinks: false,
-                skip_hidden: false,
-                whole_words: false,
-                enable_ignore_dirs: false,
-                ignore_dirs: String::new(),
+                ..FindParams::default()
             },
             start_dir_edit: start_dir.display().to_string(),
             focus: FindDialogFocus::NamePattern,
+            phase: FindDialogPhase::Setup,
             running: false,
             results: FindResults::default(),
             cancel: None,
@@ -343,6 +569,26 @@ impl FindDialogState {
             }
             FindDialogFocus::WholeWords => {
                 self.params.whole_words = !self.params.whole_words;
+                true
+            }
+            FindDialogFocus::UsingShellPatterns => {
+                self.params.using_shell_patterns = !self.params.using_shell_patterns;
+                true
+            }
+            FindDialogFocus::FileAllCharsets => {
+                self.params.file_all_charsets = !self.params.file_all_charsets;
+                true
+            }
+            FindDialogFocus::ContentCaseSensitive => {
+                self.params.content_case_sensitive = !self.params.content_case_sensitive;
+                true
+            }
+            FindDialogFocus::ContentAllCharsets => {
+                self.params.content_all_charsets = !self.params.content_all_charsets;
+                true
+            }
+            FindDialogFocus::FirstHit => {
+                self.params.first_hit = !self.params.first_hit;
                 true
             }
             FindDialogFocus::EnableIgnoreDirs => {
@@ -389,6 +635,7 @@ impl FindDialogState {
         self.cancel = Some(cancel);
         self.results_rx = Some(rx);
         self.running = true;
+        self.phase = FindDialogPhase::Results;
         std::thread::spawn(move || {
             search_files_streaming(&params, &flag, &pause, |p| {
                 let _ = tx.send(p);
@@ -417,6 +664,7 @@ impl FindDialogState {
     /// GNU **Again**: ask for new parameters (focus the filename field; do not search).
     pub fn again_parameters(&mut self) {
         self.abort_search();
+        self.phase = FindDialogPhase::Setup;
         self.focus = FindDialogFocus::NamePattern;
     }
 }
@@ -449,7 +697,8 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
         NamePattern::Glob(s) => s.as_str(),
     };
 
-    let name_re = if params.regular_expression {
+    let name_is_regex = !params.using_shell_patterns;
+    let name_re = if name_is_regex {
         match RegexBuilder::new(name_pat)
             .case_insensitive(!params.case_sensitive)
             .build()
@@ -460,7 +709,7 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
     } else {
         None
     };
-    let glob = if params.regular_expression {
+    let glob = if name_is_regex {
         None
     } else {
         Some(GlobMatcher::new(name_pat, params.case_sensitive))
@@ -505,7 +754,7 @@ pub fn search_files_streaming<F: FnMut(PathBuf)>(
             ContentFilter::InvalidRegex => {}
             ContentFilter::Substring(q) => {
                 if entry.file_type().is_file()
-                    && file_contains(p, q, params.case_sensitive, whole_words)
+                    && file_contains(p, q, params.content_case_sensitive, whole_words)
                 {
                     on_hit(p.to_path_buf());
                 }
@@ -596,7 +845,7 @@ fn compile_content_filter(params: &FindParams) -> ContentFilter<'_> {
     match params.content_substring.as_deref() {
         None => ContentFilter::None,
         Some(q) if params.regular_expression => match RegexBuilder::new(q)
-            .case_insensitive(!params.case_sensitive)
+            .case_insensitive(!params.content_case_sensitive)
             .build()
         {
             Ok(re) => ContentFilter::Regex(re),
@@ -769,16 +1018,8 @@ mod tests {
     fn params(root: PathBuf) -> FindParams {
         FindParams {
             start_dir: root,
-            name_pattern: NamePattern::Glob("*".into()),
-            content_substring: None,
-            case_sensitive: true,
-            regular_expression: false,
-            find_recursively: true,
-            follow_symlinks: false,
-            skip_hidden: false,
-            whole_words: false,
             enable_ignore_dirs: false,
-            ignore_dirs: String::new(),
+            ..FindParams::default()
         }
     }
 
@@ -808,6 +1049,7 @@ mod tests {
         p.name_pattern = NamePattern::Glob("*.txt".into());
         p.content_substring = Some("world".into());
         p.case_sensitive = false;
+        p.content_case_sensitive = false;
         let res = hits(&p);
         assert_eq!(res.len(), 1);
         assert_eq!(res[0], foo);
@@ -848,7 +1090,7 @@ mod tests {
         std::fs::write(&other, "b").unwrap();
         let mut p = params(root.to_path_buf());
         p.name_pattern = NamePattern::Glob(r"foo.*\.txt".into());
-        p.regular_expression = true;
+        p.using_shell_patterns = false;
         let res = hits(&p);
         assert_eq!(res, vec![foo]);
         assert!(!res.contains(&other));
@@ -869,6 +1111,7 @@ mod tests {
             "substring must not treat '.' as any char"
         );
         p.name_pattern = NamePattern::Glob(".*".into());
+        p.using_shell_patterns = false;
         p.regular_expression = true;
         assert_eq!(hits(&p), vec![f]);
     }
@@ -969,7 +1212,7 @@ mod tests {
         std::fs::write(root.join("foo.txt"), "x").unwrap();
         let mut p = params(root.to_path_buf());
         p.name_pattern = NamePattern::Glob("*".into());
-        p.regular_expression = true;
+        p.using_shell_patterns = false;
         assert!(hits(&p).is_empty());
     }
 
@@ -1121,15 +1364,25 @@ mod tests {
         }"#;
         let p: FindParams = serde_json::from_str(json).unwrap();
         assert!(!p.whole_words);
-        assert!(!p.enable_ignore_dirs);
+        assert!(p.enable_ignore_dirs);
         assert!(p.ignore_dirs.is_empty());
+        assert!(p.using_shell_patterns);
+        assert!(p.content_case_sensitive);
+        assert!(!p.file_all_charsets);
+        assert!(!p.first_hit);
     }
 
     #[test]
     fn tree_focus_follows_start_dir_in_cycle() {
         assert_eq!(FindDialogFocus::StartDir.next(), FindDialogFocus::Tree);
-        assert_eq!(FindDialogFocus::Tree.next(), FindDialogFocus::NamePattern);
-        assert_eq!(FindDialogFocus::NamePattern.prev(), FindDialogFocus::Tree);
+        assert_eq!(
+            FindDialogFocus::Tree.next(),
+            FindDialogFocus::EnableIgnoreDirs
+        );
+        assert_eq!(
+            FindDialogFocus::NamePattern.prev(),
+            FindDialogFocus::IgnoreDirs
+        );
         assert_eq!(FindDialogFocus::Tree.prev(), FindDialogFocus::StartDir);
         assert!(FindDialogFocus::Tree.is_button());
         assert!(FindDialogFocus::Tree.is_form_widget());
@@ -1157,41 +1410,26 @@ mod tests {
 
     #[test]
     fn action_buttons_tab_in_gnu_order() {
-        assert_eq!(
-            FindDialogFocus::IgnoreDirs.next(),
-            FindDialogFocus::ButtonOk
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonOk.next(),
-            FindDialogFocus::ButtonStop
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonStop.next(),
-            FindDialogFocus::ButtonAgain
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonAgain.next(),
-            FindDialogFocus::ButtonChdir
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonChdir.next(),
-            FindDialogFocus::ButtonPanelize
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonPanelize.next(),
-            FindDialogFocus::ButtonQuit
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonQuit.next(),
-            FindDialogFocus::StartDir
-        );
-        assert_eq!(
-            FindDialogFocus::ButtonOk.prev(),
-            FindDialogFocus::IgnoreDirs
-        );
-        assert!(FindDialogFocus::ButtonOk.is_action_button());
-        assert!(FindDialogFocus::ButtonStop.is_action_button());
-        assert!(!FindDialogFocus::Tree.is_action_button());
+        use FindDialogFocus as F;
+        use FindDialogPhase as P;
+        assert_eq!(F::IgnoreDirs.next_setup(), F::NamePattern);
+        assert_eq!(F::FirstHit.next_setup(), F::ButtonOk);
+        assert_eq!(F::ButtonOk.next_setup(), F::ButtonCancel);
+        assert_eq!(F::ButtonCancel.next_setup(), F::StartDir);
+        assert_eq!(F::ButtonOk.prev_setup(), F::FirstHit);
+        assert_eq!(F::ButtonOk.next_in(P::Results), F::ButtonStop);
+        assert_eq!(F::ButtonStop.next_in(P::Results), F::ButtonAgain);
+        assert_eq!(F::ButtonAgain.next_in(P::Results), F::ButtonChdir);
+        assert_eq!(F::ButtonChdir.next_in(P::Results), F::ButtonPanelize);
+        assert_eq!(F::ButtonPanelize.next_in(P::Results), F::ButtonQuit);
+        assert_eq!(F::ButtonQuit.next_in(P::Results), F::ButtonOk);
+        assert_eq!(F::FindRecursively.setup_across(), F::WholeWords);
+        assert_eq!(F::NamePattern.setup_down(), F::FindRecursively);
+        assert_eq!(F::Content.setup_down(), F::WholeWords);
+        assert!(F::ButtonOk.is_action_button());
+        assert!(F::ButtonCancel.is_action_button());
+        assert!(F::ButtonStop.is_action_button());
+        assert!(!F::Tree.is_action_button());
     }
 
     #[test]
