@@ -1156,7 +1156,9 @@ fn apply_ini_line(app: &mut crate::app::App, section: &mut String, raw: &str) {
             "menubar_visible" => assign_bool(&mut app.layout.menubar_visible, &v),
             "command_prompt" => assign_bool(&mut app.layout.command_prompt, &v),
             "keybar_visible" => assign_bool(&mut app.layout.keybar_visible, &v),
-            "hintbar_visible" => assign_bool(&mut app.layout.hintbar_visible, &v),
+            "hintbar_visible" | "message_visible" => {
+                assign_bool(&mut app.layout.hintbar_visible, &v)
+            }
             "xterm_title" => assign_bool(&mut app.layout.xterm_title, &v),
             "show_free_space" => assign_bool(&mut app.layout.show_free_space, &v),
             "panel_ratio" => {
@@ -1881,6 +1883,23 @@ mod tests {
                 Some(Action::Quit)
             ),
             "MC_DATADIR/mc.keymap must be used when MC_KEYMAP is unset"
+        );
+    }
+
+    #[test]
+    fn gnu_message_visible_alias_hides_the_hint_line() {
+        use crate::app::App;
+        use rmc_fs::local::LocalFs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("ini"), "[Layout]\nmessage_visible=false\n").unwrap();
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        assert!(app.layout.hintbar_visible, "GNU default: hintbar on");
+        load_user_setup_from(&mut app, tmp.path()).expect("load");
+        assert!(
+            !app.layout.hintbar_visible,
+            "GNU [Layout] message_visible=false hides the hint row"
         );
     }
 }

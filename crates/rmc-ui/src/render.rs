@@ -40,6 +40,18 @@ impl Renderer {
         self.palette = palette;
     }
 
+    /// Idle hint tick: rewrite only the hint row (no Clear, no panel/F-bar/prompt).
+    pub fn draw_hint_row(&mut self, app: &App) -> Result<()> {
+        let (cols, rows) = terminal::size()?;
+        let geom = compute_chrome_geom(cols, rows, &app.layout);
+        if let Some(y) = geom.hint_row {
+            let mut painter = Painter { out: &mut self.out };
+            draw_hint(&mut painter, y, cols, self.palette, app.hint.text());
+            painter.out.flush()?;
+        }
+        Ok(())
+    }
+
     pub fn draw(&mut self, app: &App) -> Result<()> {
         let (cols, rows) = terminal::size()?;
         let mut painter = Painter { out: &mut self.out };
@@ -224,7 +236,7 @@ impl Renderer {
         )?;
         // Free space is in each panel's bottom frame (not a below-panels chrome row).
         if let Some(y) = geom.hint_row {
-            draw_hint(&mut painter, y, cols, self.palette);
+            draw_hint(&mut painter, y, cols, self.palette, app.hint.text());
         }
         if let Some(y) = geom.cmd_row {
             draw_cmdline(&mut painter, y, cols, self.palette, app);
@@ -5005,14 +5017,19 @@ fn paint_panel_frame_free_space(
     let start = x + w - 1 - n;
     paint_span(p, start, y + h - 1, frame_fg, frame_bg, &text);
 }
-fn draw_hint(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+/// Live GNU 4.8.30 default-skin hintbar: text is `hintbar=default;default`
+/// (SGR 39;49). The remainder of the row is left as the screen-clear fill
+/// (`core` lightgray;blue). Partial ticks must rewrite the pad so a longer
+/// previous hint cannot leave leftover glyphs.
+fn draw_hint(p: &mut Painter, y: u16, cols: u16, pal: McPalette, text: &str) {
+    let t = truncate(text, cols as usize);
+    let n = t.chars().count();
+    p.set_fg_bg(pal.hintbar_fg, pal.hintbar_bg);
     p.goto(0, y);
-    let hint = "Hint: Use C-x t to copy tagged file names to the command line.";
-    let t = truncate(hint, cols as usize);
     p.text(&t);
-    if t.len() < cols as usize {
-        p.text(&" ".repeat(cols as usize - t.len()));
+    if n < cols as usize {
+        p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+        p.text(&" ".repeat(cols as usize - n));
     }
 }
 fn draw_cmdline(p: &mut Painter, y: u16, cols: u16, _pal: McPalette, app: &App) {
@@ -8887,6 +8904,102 @@ mod gnu_default_chrome_colors_tests {
         assert_eq!(super::fbar_slot_bounds(80)[0], (1, 9));
         assert_eq!(super::fbar_slot_bounds(80)[8], (65, 72));
         assert_eq!(super::fbar_slot_bounds(80)[9], (72, 80));
+    }
+
+    fn paint_hint_line(text: &str) -> Vec<u8> {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_hint(&mut p, 0, 80, pal, text);
+        }
+        buf
+    }
+
+    #[test]
+    fn hint_row_80x24_cells_match_live_gnu_rest_state() {
+        // Live GNU 4.8.30 /tmp/mcr-fixture 80×24: rest-state hint on row 21.
+        let pal = McPalette::default();
+        assert_eq!(
+            (pal.hintbar_fg, pal.hintbar_bg),
+            (Color::Reset, Color::Reset)
+        );
+        assert_eq!(
+            (pal.core_default_fg, pal.core_default_bg),
+            (Color::Grey, Color::Blue)
+        );
+        let text = rmc_core::hint::GNU_REST_HINT;
+        let grid = rasterize(&paint_hint_line(text), 80, 1);
+        let row = row_str(&grid, 0);
+        assert_eq!(row, rmc_core::hint::gnu_80col_rest_hint_row());
+        assert_eq!(row.chars().count(), 80);
+        assert_eq!(&row[..text.len()], "Hint: Tab changes your current panel.");
+        for (i, cell) in grid[0].iter().enumerate() {
+            if i < text.chars().count() {
+                assert_eq!(
+                    (cell.fg, cell.bg),
+                    (Color::Reset, Color::Reset),
+                    "hint glyph {i} must be default;default 39;49, got {:?}/{:?} {:?}",
+                    cell.fg,
+                    cell.bg,
+                    cell.ch
+                );
+            } else {
+                assert_eq!(cell.ch, ' ', "pad {i}");
+                assert_eq!(
+                    (cell.fg, cell.bg),
+                    (Color::Grey, Color::Blue),
+                    "unpainted remainder matches screen-clear lightgray;blue at {i}"
+                );
+            }
+        }
+        let raw = String::from_utf8_lossy(&paint_hint_line(text));
+        assert!(
+            raw.contains("\x1b[39;49m"),
+            "hintbar SGR must be 39;49, got {raw:?}"
+        );
+        assert!(
+            !raw.contains("\x1b[37;44mHint"),
+            "hint text must not use core lightgray;blue: {raw:?}"
+        );
+    }
+
+    #[test]
+    fn hint_tick_rewrites_only_the_hint_row_cells() {
+        let rest = rasterize(&paint_hint_line(rmc_core::hint::HINTS[0]), 80, 1);
+        let next = rasterize(&paint_hint_line(rmc_core::hint::HINTS[1]), 80, 1);
+        let rest_s = row_str(&rest, 0);
+        let next_s = row_str(&next, 0);
+        assert_ne!(rest_s, next_s, "idle tick must change the hint text");
+        assert_eq!(rest_s.chars().count(), 80);
+        assert_eq!(next_s.chars().count(), 80);
+        // Same dummy chrome row painted before/after the tick stays byte-identical.
+        let pal = McPalette::default();
+        let mut fbar_a = Vec::new();
+        let mut fbar_b = Vec::new();
+        {
+            let mut p = Painter { out: &mut fbar_a };
+            super::draw_fbar(&mut p, 0, 80, pal);
+        }
+        {
+            let mut p = Painter { out: &mut fbar_b };
+            super::draw_fbar(&mut p, 0, 80, pal);
+        }
+        assert_eq!(
+            fbar_a, fbar_b,
+            "F-bar bytes must stay stable across a hint tick"
+        );
+    }
+
+    #[test]
+    fn hintbar_hidden_skips_the_hint_row() {
+        let hidden = rmc_core::app::LayoutOptions {
+            hintbar_visible: false,
+            ..rmc_core::app::LayoutOptions::default()
+        };
+        let geom = rmc_core::layout::compute_chrome_geom(80, 24, &hidden);
+        assert_eq!(geom.hint_row, None);
+        assert_eq!(geom.content_bottom, 21);
     }
 
     #[test]

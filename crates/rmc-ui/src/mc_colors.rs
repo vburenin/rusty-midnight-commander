@@ -44,6 +44,9 @@ pub struct McPalette {
     pub buttonbar_button_bg: Color,
     pub statusbar_fg: Color,
     pub statusbar_bg: Color,
+    /// Public GNU default.ini `[core] hintbar=default;default` (SGR 39;49).
+    pub hintbar_fg: Color,
+    pub hintbar_bg: Color,
     // filehighlight
     pub dir_color: Color,
     pub exec_color: Color,
@@ -113,6 +116,8 @@ impl McPalette {
             buttonbar_button_bg: Color::Cyan,
             statusbar_fg: Color::Black,
             statusbar_bg: Color::Cyan,
+            hintbar_fg: Color::Reset,
+            hintbar_bg: Color::Reset,
             dir_color: Color::White,
             exec_color: Color::Green,      // brightgreen approximation
             archive_color: Color::Magenta, // brightmagenta approximation

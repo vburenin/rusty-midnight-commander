@@ -7,6 +7,7 @@ pub mod events;
 pub mod filemask;
 pub mod fileop;
 pub mod find;
+pub mod hint;
 pub mod hotlist;
 pub mod jobs;
 pub mod layout;
