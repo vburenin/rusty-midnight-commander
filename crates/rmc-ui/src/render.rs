@@ -5495,6 +5495,17 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Truncate to `width` characters and right-pad with spaces.
+///
+/// Must use character count, not UTF-8 bytes: [`truncate`] may append `…`
+/// (U+2026, 3 bytes) and a path can have more bytes than columns. The Copy
+/// dialog used `width - s.len()` and aborted on F5 when the dest was long.
+fn pad_field(s: &str, width: usize) -> String {
+    let t = truncate(s, width);
+    let n = t.chars().count();
+    format!("{t}{}", " ".repeat(width.saturating_sub(n)))
+}
+
 fn human_bytes(b: u64) -> String {
     const G: f64 = 1024.0 * 1024.0 * 1024.0;
     const M: f64 = 1024.0 * 1024.0;
@@ -6304,8 +6315,8 @@ fn draw_copy_move_dialog(
     use rmc_core::app::CopyDialogFocus as F;
     let w = (cols as usize).min(74) as u16;
     let h = 15u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
     // Frame
     p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -6377,8 +6388,7 @@ fn draw_copy_move_dialog(
         },
     );
     p.goto(x + 2, y + 3);
-    let m = truncate(mask, (w - 4) as usize);
-    p.text(&format!("{m}{}", " ".repeat((w - 4) as usize - m.len())));
+    p.text(&pad_field(mask, w.saturating_sub(4) as usize));
     // to:
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 5);
@@ -6397,8 +6407,7 @@ fn draw_copy_move_dialog(
         },
     );
     p.goto(x + 6, y + 5);
-    let t = truncate(to, (w - 8) as usize);
-    p.text(&format!("{t}{}", " ".repeat((w - 8) as usize - t.len())));
+    p.text(&pad_field(to, w.saturating_sub(8) as usize));
     // Checkboxes
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     let checks = [
@@ -8988,5 +8997,106 @@ mod gnu_default_chrome_colors_tests {
         let (fx, fy) = find_text(&grid, "fn");
         assert_span(&grid, fx, fy, "fn", Color::Green, Color::Magenta);
         assert_ne!(grid[fy][fx].bg, pal.marked_bg);
+    }
+}
+
+/// F5 / File→Copy / F-bar `5Copy` paint the GNU Copy dialog. Padding used
+/// `width - truncated.len()` (UTF-8 bytes). `truncate` may append `…` (3
+/// bytes) or keep a unicode path whose byte length exceeds the field, so
+/// `str::repeat` underflowed and aborted the process.
+#[cfg(test)]
+mod copy_dialog_paint_tests {
+    use super::{draw_copy_move_dialog, draw_overlays};
+    use crate::mc_colors::McPalette;
+    use crate::widgets::Painter;
+    use rmc_core::app::{App, CopyDialogFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_fs::local::LocalFs;
+
+    fn paint_copy(mask: &str, to: &str, cols: u16, rows: u16) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            draw_copy_move_dialog(
+                &mut p,
+                cols,
+                rows,
+                McPalette::default(),
+                "Copy",
+                "notes.txt",
+                mask,
+                to,
+                true,
+                false,
+                true,
+                false,
+                false,
+                CopyDialogFocus::To,
+                true,
+            );
+        }
+        buf
+    }
+
+    #[test]
+    fn copy_dialog_long_ascii_dest_does_not_panic() {
+        // Field width is min(cols, 74) - 8 = 66 on an 80-col screen.
+        let dest = format!("{}notes.txt", "/very/long/path/segment".repeat(8));
+        assert!(
+            dest.len() > 66,
+            "precondition: dest must exceed the Copy 'to' field"
+        );
+        let buf = paint_copy("*", &dest, 80, 24);
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Copy"), "GNU Copy dialog title");
+        assert!(s.contains("to:"), "GNU dest prompt");
+        assert!(s.contains('…'), "long dest is truncated, not a panic");
+    }
+
+    #[test]
+    fn copy_dialog_unicode_dest_shorter_in_chars_than_bytes_does_not_panic() {
+        // 40 CJK chars / 120 UTF-8 bytes: old pad used .len() and underflowed
+        // even though chars().count() fits in the 66-column field.
+        let dest = "文件".repeat(20);
+        assert!(dest.chars().count() < 66);
+        assert!(dest.len() > 66);
+        let buf = paint_copy("*", &dest, 80, 24);
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn copy_dialog_fits_on_short_terminal() {
+        let dest = format!("{}notes.txt", "/very/long/path/segment".repeat(8));
+        let buf = paint_copy("*", &dest, 80, 10);
+        assert!(!buf.is_empty(), "rows < dialog height must not abort");
+    }
+
+    #[test]
+    fn overlay_paint_of_copy_dialog_with_long_dest_does_not_panic() {
+        let dest = format!("{}notes.txt", "/very/long/path/segment".repeat(8));
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.ui_mode = UiMode::CopyDialog {
+            title: "Copy".into(),
+            src_name: "notes.txt".into(),
+            src_path: dest.clone().into(),
+            src_paths: vec![dest.clone().into()],
+            mask: "*".into(),
+            to: dest,
+            using_shell_patterns: true,
+            follow_links: false,
+            preserve_attrs: true,
+            dive_into_subdir: false,
+            stable_symlinks: false,
+            focus: CopyDialogFocus::To,
+        };
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            draw_overlays(&mut p, &app, 80, 24, McPalette::default()).unwrap();
+        }
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Copy"));
+        assert!(s.contains("to:"));
     }
 }

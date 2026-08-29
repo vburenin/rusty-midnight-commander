@@ -6781,6 +6781,9 @@ impl TerminalApp {
                                 enter_panel_tree_mode(app, set_left);
                             }
                             "Copy" => {
+                                // Leave Menu first: handle_key matches ui_mode
+                                // before the keymap, so F5 while Menu is a no-op.
+                                app.ui_mode = UiMode::Normal;
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(5), key.modifiers),
@@ -6788,6 +6791,7 @@ impl TerminalApp {
                                 );
                             }
                             "Move" => {
+                                app.ui_mode = UiMode::Normal;
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(6), key.modifiers),
@@ -6795,6 +6799,7 @@ impl TerminalApp {
                                 );
                             }
                             "Mkdir" => {
+                                app.ui_mode = UiMode::Normal;
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(7), key.modifiers),
@@ -6802,6 +6807,7 @@ impl TerminalApp {
                                 );
                             }
                             "Delete" => {
+                                app.ui_mode = UiMode::Normal;
                                 return Self::handle_key(
                                     app,
                                     KeyEvent::new(KeyCode::F(8), key.modifiers),
@@ -26669,6 +26675,27 @@ mod panel_function_keys_tests {
     }
 
     #[test]
+    fn file_menu_copy_opens_copy_dialog() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        let idx = FILE_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Copy")
+            .expect("File → Copy");
+        for _ in 0..idx {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(copy_title(&app), "Copy", "File → Copy must open Copy");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn esc_number_emulates_f1_f5_f10() {
         let root = temp_workspace();
         seed_listing(&root);
@@ -28291,6 +28318,49 @@ mod mouse_shift_passthrough_tests {
         assert!(
             matches!(app.ui_mode, UiMode::Help { .. }),
             "plain F1 F-bar click still opens Help"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_copy_label_opens_copy_dialog() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == "aaa.txt")
+            .expect("aaa.txt");
+        app.active_panel_mut().cursor = idx;
+
+        let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
+        let fbar_y = geom.fbar_row.expect("F-bar");
+        let mut copy_x = None;
+        for x in 0..COLS {
+            if fbar_function_from_xy(&app, x, fbar_y, COLS, ROWS) == Some(5) {
+                // Prefer the 'C' of `5Copy`, not only the leading `5`.
+                copy_x = Some(x.saturating_add(1));
+                break;
+            }
+        }
+        let x = copy_x.expect("F-bar 5Copy hit");
+        assert_eq!(
+            fbar_function_from_xy(&app, x, fbar_y, COLS, ROWS),
+            Some(5),
+            "click target must stay on the Copy segment"
+        );
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            fbar_y,
+            KeyModifiers::NONE,
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::CopyDialog { ref title, .. } if title == "Copy"),
+            "F-bar 5Copy must open Copy"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
