@@ -3658,16 +3658,34 @@ fn draw_dialog_box(
     buttons: &[&str],
     show_shadow: bool,
 ) {
-    let w = (cols as usize).min(60) as u16;
-    let h = 7u16;
+    let max_w = (cols as usize).saturating_sub(2).max(8);
+    let classic_w = 60.min(max_w);
+    let longest = message
+        .lines()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let w = classic_w.max((longest + 4).min(max_w)) as u16;
+    let inner = w.saturating_sub(4) as usize;
+    let lines = dialog_body_lines(message, inner.max(1));
+    let h = (6 + lines.len() as u16).max(7);
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
     let error = dialog_is_error_title(title);
     paint_dialog_frame(p, x, y, w, h, title, pal, error);
     let (fg, bg) = dialog_chrome_pair(pal, error);
     p.set_fg_bg(fg, bg);
-    p.goto(x.saturating_add(2), y.saturating_add(2));
-    p.text(&truncate(message, w.saturating_sub(4) as usize));
+    let btn_row = y.saturating_add(h.saturating_sub(2));
+    for (i, line) in lines.iter().enumerate() {
+        let row = y.saturating_add(2).saturating_add(i as u16);
+        if row >= btn_row {
+            break;
+        }
+        let shown = truncate(line, inner);
+        let pad = inner.saturating_sub(shown.chars().count()) / 2;
+        p.goto(x.saturating_add(2).saturating_add(pad as u16), row);
+        p.text(&shown);
+    }
     let items: Vec<(&str, bool)> = buttons
         .iter()
         .enumerate()
@@ -3680,6 +3698,38 @@ fn draw_dialog_box(
     if show_shadow {
         paint_dialog_shadow(p, x, y, w, h, pal);
     }
+}
+
+/// Split a GNU Error body (`"%s"\nand\n"%s"\nare the same file`) into
+/// wrapped rows. Newlines are real line breaks; long paths wrap.
+fn dialog_body_lines(message: &str, inner_width: usize) -> Vec<String> {
+    let width = inner_width.max(1);
+    let mut out = Vec::new();
+    for raw in message.split('\n') {
+        if raw.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut rest = raw;
+        while !rest.is_empty() {
+            let n = rest.chars().count();
+            if n <= width {
+                out.push(rest.to_string());
+                break;
+            }
+            let split_at = rest
+                .char_indices()
+                .nth(width)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+            out.push(rest[..split_at].to_string());
+            rest = &rest[split_at..];
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9120,6 +9170,33 @@ mod copy_dialog_paint_tests {
         assert!(!buf.is_empty(), "cols < dialog width must not abort");
         let tiny = paint_copy("*", &dest, 3, 5);
         assert!(!tiny.is_empty(), "cols < 4 / rows < 15 must not abort");
+    }
+
+    #[test]
+    fn error_dialog_shows_gnu_same_file_last_line() {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        let src = std::path::Path::new("/tmp/mcr-live/fixture/alpha/notes.txt");
+        app.ui_mode = UiMode::DialogConfirm {
+            title: "Error".into(),
+            message: rmc_core::filemask::same_path_error_message(src, src, false),
+            on_ok: Box::new(|_| Ok(())),
+        };
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            draw_overlays(&mut p, &app, 80, 24, McPalette::default()).unwrap();
+        }
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Error"), "Error title must paint, got {s:?}");
+        assert!(
+            s.contains("are the same file"),
+            "GNU same-file last line must be visible, got {s:?}"
+        );
+        assert!(
+            s.contains("/tmp/mcr-live/fixture/alpha/notes.txt"),
+            "quoted path must paint, got {s:?}"
+        );
     }
 
     #[test]

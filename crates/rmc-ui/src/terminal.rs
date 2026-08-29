@@ -2837,6 +2837,8 @@ impl TerminalApp {
     }
 
     fn handle_key(app: &mut App, mut key: KeyEvent, page_rows: usize) -> Result<()> {
+        // Crossterm reports TTY 0x1C (GNU C-\ / HotList) as Ctrl-4.
+        key = rmc_core::actions::normalize_crossterm_ctrl_key(key);
         let capturing_learn = matches!(
             app.ui_mode,
             UiMode::LearnKeysDialog {
@@ -27685,6 +27687,14 @@ mod panel_function_keys_tests {
         assert!(
             matches!(app.ui_mode, UiMode::HotlistDialog(_)),
             "C-\\\\ opens hotlist"
+        );
+        press(&mut app, KeyCode::F(10));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        // Crossterm decodes TTY 0x1C (GNU HotList) as Ctrl-4.
+        press_ctrl(&mut app, '4');
+        assert!(
+            matches!(app.ui_mode, UiMode::HotlistDialog(_)),
+            "TTY 0x1C / crossterm Ctrl-4 must open the hotlist"
         );
         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             press(&mut app, KeyCode::Down);
