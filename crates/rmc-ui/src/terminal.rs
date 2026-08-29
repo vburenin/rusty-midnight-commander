@@ -27242,7 +27242,7 @@ mod button_activation_tests {
             _ => panic!("F-bar Delete (F8) must open Yes/No"),
         }
         assert_eq!(crate::hit::delete_button_at(COLS, ROWS, 0, 0, true), None);
-        let by = (ROWS - 7) / 2 + 5;
+        let by = crate::render::gnu_dialog_top(ROWS, 6) + 4;
         assert!(
             (0..COLS).any(|x| crate::hit::delete_button_at(COLS, ROWS, x, by, true) == Some(true)),
             "Yes is hittable"
@@ -27282,7 +27282,7 @@ mod button_activation_tests {
         select_named(&mut app, "aaa.txt");
         press(&mut app, KeyCode::F(5));
         let focus = copy_focus(&app);
-        let by = (ROWS - 12) / 2 + 10;
+        let by = crate::render::gnu_dialog_top(ROWS, 12) + 10;
         let mx = (0..COLS)
             .find(|&x| {
                 crate::hit::copy_move_hit_at(COLS, ROWS, x, by, focus)
@@ -27344,7 +27344,7 @@ mod button_activation_tests {
             UiMode::DeleteDialog { focus_ok, .. } => *focus_ok,
             _ => panic!("DeleteDialog"),
         };
-        let by = (ROWS - 7) / 2 + 5;
+        let by = crate::render::gnu_dialog_top(ROWS, 6) + 4;
         let mx = (0..COLS)
             .find(|&x| crate::hit::delete_button_at(COLS, ROWS, x, by, focus_ok) == Some(false))
             .expect("No x");
@@ -27417,7 +27417,7 @@ mod button_activation_tests {
             UiMode::MkdirDialog { focus_ok, .. } => *focus_ok,
             _ => panic!("MkdirDialog"),
         };
-        let by = (ROWS - 7) / 2 + 5;
+        let by = crate::render::gnu_dialog_top(ROWS, 6) + 4;
         let mx = (0..COLS)
             .find(|&x| crate::hit::mkdir_button_at(COLS, ROWS, x, by, focus_ok) == Some(false))
             .expect("Cancel x");

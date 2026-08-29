@@ -75,8 +75,8 @@ pub(crate) fn delete_button_at(
     if cols < w || rows < h {
         return None;
     }
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let x = crate::render::gnu_dialog_left(cols, w);
+    let y = crate::render::gnu_dialog_top(rows, h);
     let items = ["[ Yes ]", "[ No ]"];
     let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + BUTTON_GAP as usize;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
@@ -96,13 +96,13 @@ pub(crate) fn mkdir_button_at(
     my: u16,
     focus_ok: bool,
 ) -> Option<bool> {
-    let w = (cols as usize).min(44) as u16;
+    let w = (cols as usize).min(38) as u16;
     let h = 6u16;
     if cols < w || rows < h {
         return None;
     }
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let x = crate::render::gnu_dialog_left(cols, w);
+    let y = crate::render::gnu_dialog_top(rows, h);
     let ok = if focus_ok { "[< OK >]" } else { "[ OK ]" };
     let cancel = if focus_ok {
         "[ Cancel ]"
@@ -110,9 +110,9 @@ pub(crate) fn mkdir_button_at(
         "[< Cancel >]"
     };
     let items = [ok, cancel];
-    let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + BUTTON_GAP as usize;
+    let btns_w = items.iter().map(|s| s.len()).sum::<usize>() + 1;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
-    button_cluster_at(bx, y + h - 2, &items, mx, my).map(|i| i == 0)
+    button_cluster_at_gap(bx, y + h - 2, &items, mx, my, 1).map(|i| i == 0)
 }
 
 /// Input / Quick cd OK/Cancel. `true` is OK.
@@ -139,7 +139,13 @@ pub(crate) fn input_dialog_button_at(
 }
 
 fn copy_button_label(focus: CopyDialogFocus, which: CopyDialogFocus, txt: &str) -> String {
-    if focus == which {
+    let marked = match which {
+        CopyDialogFocus::Ok => {
+            !matches!(focus, CopyDialogFocus::Background | CopyDialogFocus::Cancel)
+        }
+        _ => focus == which,
+    };
+    if marked {
         format!("[< {txt} >]")
     } else {
         format!("[ {txt} ]")
@@ -159,8 +165,8 @@ pub(crate) fn copy_move_hit_at(
     if cols < w || rows < h {
         return None;
     }
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let x = crate::render::gnu_dialog_left(cols, w);
+    let y = crate::render::gnu_dialog_top(rows, h);
     if my == y + 2 && mx >= x + 2 && mx < x + w.saturating_sub(2) {
         return Some(CopyDialogFocus::Mask);
     }
@@ -168,7 +174,7 @@ pub(crate) fn copy_move_hit_at(
         return Some(CopyDialogFocus::To);
     }
     let shell = "[x] Using shell patterns";
-    let shell_x = x + w.saturating_sub(2 + shell.len() as u16);
+    let shell_x = x + 33;
     if my == y + 3 && mx >= shell_x && mx < shell_x.saturating_add(shell.len() as u16) {
         return Some(CopyDialogFocus::Checkbox1);
     }
@@ -194,7 +200,7 @@ pub(crate) fn copy_move_hit_at(
     }
     for (f, text, row) in RIGHT {
         if my == y + row {
-            let start = x + 35;
+            let start = x + 33;
             if mx >= start && mx < start.saturating_add(text.len() as u16) {
                 return Some(f);
             }
@@ -306,10 +312,16 @@ mod tests {
     #[test]
     fn delete_yes_and_no_are_distinct_hits() {
         let yes = (0..80u16)
-            .find(|&x| delete_button_at(80, 24, x, (24 - 6) / 2 + 4, true) == Some(true))
+            .find(|&x| {
+                delete_button_at(80, 24, x, crate::render::gnu_dialog_top(24, 6) + 4, true)
+                    == Some(true)
+            })
             .expect("Yes");
         let no = (0..80u16)
-            .find(|&x| delete_button_at(80, 24, x, (24 - 6) / 2 + 4, true) == Some(false))
+            .find(|&x| {
+                delete_button_at(80, 24, x, crate::render::gnu_dialog_top(24, 6) + 4, true)
+                    == Some(false)
+            })
             .expect("No");
         assert_ne!(yes, no);
         assert!(delete_button_at(80, 24, yes, 0, true).is_none());
@@ -317,7 +329,7 @@ mod tests {
 
     #[test]
     fn copy_ok_background_cancel_are_distinct() {
-        let by = (24u16 - 12) / 2 + 10;
+        let by = crate::render::gnu_dialog_top(24, 12) + 10;
         let ok = (0..80u16)
             .find(|&x| copy_move_hit_at(80, 24, x, by, F::To) == Some(F::Ok))
             .expect("OK");

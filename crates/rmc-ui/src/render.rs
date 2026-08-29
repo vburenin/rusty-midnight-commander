@@ -3828,12 +3828,13 @@ fn draw_error_dialog(
     message: &str,
     show_shadow: bool,
 ) {
-    // Live GNU 4.8.30 F5 on `..`: compact white;red box, no buttons.
-    let inner = message.chars().count().max(5) + 4;
-    let w = (inner as u16 + 2).min(cols.saturating_sub(2)).max(17);
+    // Live GNU 4.8.30 F5 on `..`: 27-wide (`msg + 4`), no buttons.
+    let w = ((message.chars().count() + 4) as u16)
+        .min(cols.saturating_sub(2))
+        .max(17);
     let h = 5u16.min(rows.saturating_sub(1)).max(3);
-    let x = cols.saturating_sub(w) / 2;
-    let y = rows.saturating_sub(h) / 2;
+    let x = gnu_dialog_left(cols, w);
+    let y = gnu_dialog_top(rows, h);
     paint_dialog_frame(p, x, y, w, h, "Error", pal, true);
     let (fg, bg) = dialog_chrome_pair(pal, true);
     p.set_fg_bg(fg, bg);
@@ -4654,6 +4655,21 @@ fn draw_panel(
             TOP_WIDGET_RIGHT,
         );
     }
+    // Live GNU never leaves ┬ on the top frame: after the path, fill ─ to `.[^]>`.
+    let path_end = cap_x
+        .min(x + w.saturating_sub(2))
+        .saturating_add(path_str_display.chars().count() as u16);
+    let right_x = x + w.saturating_sub(1 + widget_right_w);
+    if path_end < right_x {
+        p.hline(
+            path_end,
+            y,
+            right_x.saturating_sub(path_end),
+            '─',
+            frame_fg,
+            frame_bg,
+        );
+    }
     match listing {
         rmc_core::panel::ListingFormat::Full => {
             let ind = rmc_core::panel::full_listing_sort_indicator(panel.sort_by, panel.sort_dir);
@@ -5055,6 +5071,18 @@ pub(crate) fn panel_fbar_labels() -> [&'static str; 10] {
     [
         "Help", "Menu", "View", "Edit", "Copy", "RenMov", "Mkdir", "Delete", "PullDn", "Quit",
     ]
+}
+
+/// Live GNU 4.8 dialog left edge: ceil((cols − w) / 2) so odd leftovers
+/// sit on the left (`Delete` 21-wide at x=30 on 80 cols, not 29).
+pub(crate) fn gnu_dialog_left(cols: u16, w: u16) -> u16 {
+    cols.saturating_add(1).saturating_sub(w) / 2
+}
+
+/// Live GNU 4.8 dialog top: center in the panel band (screen minus menu,
+/// hint, prompt, F-bar) so a 12-row Copy sits on row 4 of 80×24.
+pub(crate) fn gnu_dialog_top(rows: u16, h: u16) -> u16 {
+    rows.saturating_sub(4).saturating_sub(h) / 2
 }
 
 /// Live GNU 4.8 F-bar slots on an 80-col screen: one leading space, eight
@@ -5796,11 +5824,11 @@ fn draw_mkdir_dialog(
     focus_ok: bool,
     show_shadow: bool,
 ) {
-    // Live GNU 4.8.30 F7: prompt, field, section bar, `[< OK >] [ Cancel ]`.
-    let w = (cols as usize).min(44) as u16;
+    // Live GNU 4.8.30 F7: 38×6, prompt, field, section bar, `[< OK >] [ Cancel ]`.
+    let w = (cols as usize).min(38) as u16;
     let h = 6u16;
-    let x = cols.saturating_sub(w) / 2;
-    let y = rows.saturating_sub(h) / 2;
+    let x = gnu_dialog_left(cols, w);
+    let y = gnu_dialog_top(rows, h);
     paint_dialog_frame(p, x, y, w, h, "Create a new Directory", pal, false);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(x + 2, y + 1);
@@ -5827,10 +5855,25 @@ fn draw_mkdir_dialog(
     } else {
         "[< Cancel >]"
     };
+    // Live GNU uses one space between `[< OK >]` and `[ Cancel ]`.
     let items = [(ok, focus_ok), (cancel, !focus_ok)];
-    let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2;
+    let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 1;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
-    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, false);
+    let (gap_fg, gap_bg) = (pal.dialog_default_fg, pal.dialog_default_bg);
+    let mut cx = bx;
+    for (i, (label, focused)) in items.iter().enumerate() {
+        if i > 0 {
+            p.set_fg_bg(gap_fg, gap_bg);
+            p.goto(cx, y + h - 2);
+            p.text(" ");
+            cx += 1;
+        }
+        let (fg, bg) = dialog_focus_pair(pal, *focused, false);
+        p.set_fg_bg(fg, bg);
+        p.goto(cx, y + h - 2);
+        p.text(label);
+        cx += label.len() as u16;
+    }
     if show_shadow {
         paint_dialog_shadow(p, x, y, w, h, pal);
     }
@@ -5849,14 +5892,14 @@ fn draw_delete_dialog(
     // Live GNU 4.8.30 F8: compact box, two-line prompt, section bar, `[ Yes ]  [ No ]`.
     let w = 21u16.min(cols.saturating_sub(2)).max(17);
     let h = 6u16;
-    let x = cols.saturating_sub(w) / 2;
-    let y = rows.saturating_sub(h) / 2;
+    let x = gnu_dialog_left(cols, w);
+    let y = gnu_dialog_top(rows, h);
     paint_dialog_frame(p, x, y, w, h, "Delete", pal, false);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 3, y + 1);
+    p.goto(x + 4, y + 1);
     p.text("Delete file");
     let quoted = format!("\"{name}\"?");
-    p.goto(x + 3, y + 2);
+    p.goto(x + 4, y + 2);
     p.text(&truncate(&quoted, w.saturating_sub(6) as usize));
     p.goto(x, y + 3);
     p.text("├");
@@ -6649,8 +6692,8 @@ fn draw_copy_move_dialog(
     // Live GNU 4.8.30 F5: 66×12, two-column checks, section bars.
     let w = (cols as usize).min(66) as u16;
     let h = 12u16.min(rows.saturating_sub(1)).max(7);
-    let x = cols.saturating_sub(w) / 2;
-    let y = rows.saturating_sub(h) / 2;
+    let x = gnu_dialog_left(cols, w);
+    let y = gnu_dialog_top(rows, h);
     // Frame
     p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
@@ -6727,7 +6770,8 @@ fn draw_copy_move_dialog(
         "[{}] Using shell patterns",
         if using_shell_patterns { 'x' } else { ' ' }
     );
-    let shell_x = x + w.saturating_sub(2 + shell.len() as u16);
+    // Live GNU 4.8.30: shell check and the right-hand checks share column 33.
+    let shell_x = x + 33;
     if matches!(focus, F::Checkbox1) {
         p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     } else {
@@ -6786,7 +6830,7 @@ fn draw_copy_move_dialog(
     );
     paint_check(
         p,
-        x + 35,
+        x + 33,
         y + 7,
         dive_into_subdir,
         "Dive into subdir if exists",
@@ -6802,7 +6846,7 @@ fn draw_copy_move_dialog(
     );
     paint_check(
         p,
-        x + 35,
+        x + 33,
         y + 8,
         stable_symlinks,
         "Stable symlinks",
@@ -6822,7 +6866,12 @@ fn draw_copy_move_dialog(
     p.goto(x + w - 1, y + 9);
     p.text("┤");
     let sel = |f: F, txt: &str| {
-        if f == focus {
+        // GNU marks the default action `[< OK >]` while focus stays on `to:`.
+        let marked = match f {
+            F::Ok => !matches!(focus, F::Background | F::Cancel),
+            _ => f == focus,
+        };
+        if marked {
             format!("[< {txt} >]")
         } else {
             format!("[ {txt} ]")
@@ -8591,6 +8640,16 @@ mod gnu_default_chrome_colors_tests {
         }
         let header = row_str(&rasterize(&buf, 40, 12), 1);
         assert_eq!(header, "│.n     Name      │ Size  │Modify time │");
+        let top = row_str(&rasterize(&buf, 40, 12), 0);
+        assert!(
+            !top.contains('┬'),
+            "live GNU top frame has no ┬ under a short path: {top:?}"
+        );
+        assert!(
+            top.starts_with("┌<─ /tmp "),
+            "path left-aligned after <─: {top:?}"
+        );
+        assert!(top.contains(".[^]>"), "{top:?}");
     }
 
     fn row_str(grid: &[Vec<Cell>], y: usize) -> String {
@@ -8800,8 +8859,8 @@ mod gnu_default_chrome_colors_tests {
             );
             assert_eq!(
                 grid[0][bx].ch,
-                '┬',
-                "top frame ┬ at {bx}: {}",
+                '─',
+                "live GNU top frame is ─ (path/fill covers ┬) at {bx}: {}",
                 row_str(&grid, 0)
             );
             // Live GNU 4.8.30 mini-status split is solid ─ (no ┴).
@@ -8871,7 +8930,12 @@ mod gnu_default_chrome_colors_tests {
             row_str(&grid, 1)
         );
         assert_ne!(grid[1][bx].ch, '|');
-        assert_eq!(grid[0][bx].ch, '┬');
+        assert_eq!(
+            grid[0][bx].ch,
+            '─',
+            "Brief top frame fill is ─, not ┬: {}",
+            row_str(&grid, 0)
+        );
         assert_eq!(
             grid[9][bx].ch, '─',
             "Brief mini-status split is solid ─, not bottom ┴"
@@ -8925,7 +8989,12 @@ mod gnu_default_chrome_colors_tests {
         let bars = inner_bars(&grid, 1, 0, 40);
         assert_eq!(bars.len(), 2);
         for &bx in &bars {
-            assert_eq!(grid[0][bx].ch, '┬');
+            assert_eq!(
+                grid[0][bx].ch,
+                '─',
+                "top frame fill is ─ even with mini-status off: {}",
+                row_str(&grid, 0)
+            );
             assert_eq!(
                 grid[11][bx].ch,
                 '┴',
@@ -9274,6 +9343,13 @@ mod gnu_default_chrome_colors_tests {
         }
         let grid = rasterize(&buf, 80, 24);
         let (tx, ty) = find_text(&grid, " Error ");
+        let x = super::gnu_dialog_left(80, 27) as usize;
+        let y = super::gnu_dialog_top(24, 5) as usize;
+        assert_eq!(x, 27, "GNU Error x on 80-col");
+        assert_eq!(y, 7, "GNU Error y on 24-row");
+        assert_eq!(ty, y);
+        let title: String = grid[y][x..x + 27].iter().map(|c| c.ch).collect();
+        assert_eq!(title, "┌───────── Error ─────────┐");
         assert!(
             (0..80).any(|x| grid[ty][x].ch == '┌'),
             "compact error frame on the title row"
@@ -9315,19 +9391,20 @@ mod gnu_default_chrome_colors_tests {
         let grid = rasterize(&buf, 80, 24);
         let w = 21usize;
         let h = 6usize;
-        let x = (80 - w) / 2;
-        let y = (24 - h) / 2;
+        let x = super::gnu_dialog_left(80, 21) as usize;
+        let y = super::gnu_dialog_top(24, 6) as usize;
+        assert_eq!(x, 30, "GNU Delete x on 80-col");
+        assert_eq!(y, 7, "GNU Delete y on 24-row");
         assert_eq!(grid[y][x].ch, '┌');
         assert_eq!(grid[y][x + w - 1].ch, '┐');
         assert_eq!(grid[y + h - 1][x].ch, '└');
-        let title_row: String = grid[y].iter().map(|c| c.ch).collect();
-        assert!(
-            title_row.contains(" Delete "),
-            "GNU Delete title: {title_row:?}"
-        );
+        let title_row: String = grid[y][x..x + w].iter().map(|c| c.ch).collect();
+        assert_eq!(title_row, "┌───── Delete ──────┐");
+        let prompt: String = grid[y + 1][x..x + w].iter().map(|c| c.ch).collect();
+        assert_eq!(prompt, "│   Delete file     │");
+        let quoted: String = grid[y + 2][x..x + w].iter().map(|c| c.ch).collect();
+        assert_eq!(quoted, "│   \"notes.txt\"?    │");
         let body: String = grid.iter().flatten().map(|c| c.ch).collect();
-        assert!(body.contains("Delete file"), "{body:?}");
-        assert!(body.contains("\"notes.txt\"?"), "{body:?}");
         assert!(body.contains("[ Yes ]"), "{body:?}");
         assert!(body.contains("[ No ]"), "{body:?}");
         let bar: String = grid[y + 3].iter().map(|c| c.ch).collect();
@@ -9346,17 +9423,22 @@ mod gnu_default_chrome_colors_tests {
             super::draw_mkdir_dialog(&mut p, 80, 24, pal, "", true, false);
         }
         let grid = rasterize(&buf, 80, 24);
-        let w = 44usize;
+        let w = 38usize;
         let h = 6usize;
-        let x = (80 - w) / 2;
-        let y = (24 - h) / 2;
+        let x = super::gnu_dialog_left(80, 38) as usize;
+        let y = super::gnu_dialog_top(24, 6) as usize;
+        assert_eq!(x, 21, "GNU Mkdir x on 80-col");
         assert_eq!(grid[y][x].ch, '┌');
         assert_eq!(grid[y][x + w - 1].ch, '┐');
-        let body: String = grid.iter().flatten().map(|c| c.ch).collect();
-        assert!(body.contains("Create a new Directory"), "{body:?}");
-        assert!(body.contains("Enter directory name:"), "{body:?}");
-        assert!(body.contains("[< OK >]"), "{body:?}");
-        assert!(body.contains("[ Cancel ]"), "{body:?}");
+        let title: String = grid[y][x..x + w].iter().map(|c| c.ch).collect();
+        assert_eq!(title, "┌────── Create a new Directory ──────┐");
+        let prompt: String = grid[y + 1][x..x + w].iter().map(|c| c.ch).collect();
+        assert!(prompt.contains("Enter directory name:"), "{prompt:?}");
+        let btns: String = grid[y + h - 2][x..x + w].iter().map(|c| c.ch).collect();
+        assert!(
+            btns.contains("[< OK >] [ Cancel ]"),
+            "one-space GNU buttons: {btns:?}"
+        );
         let bar: String = grid[y + 3].iter().map(|c| c.ch).collect();
         assert!(
             bar.contains('├') && bar.contains('┤'),
@@ -9577,8 +9659,8 @@ mod copy_dialog_paint_tests {
             "GNU header, got {s:?}"
         );
         assert!(
-            s.contains("[< OK >]") || s.contains("[ OK ]"),
-            "GNU button chrome, got {s:?}"
+            s.contains("[< OK >]"),
+            "GNU default button stays [< OK >] while dest is focused, got {s:?}"
         );
         assert!(s.contains("Using shell patterns"), "{s:?}");
         assert!(s.contains("to:"), "{s:?}");
