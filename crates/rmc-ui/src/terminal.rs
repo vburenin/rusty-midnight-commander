@@ -20294,7 +20294,7 @@ mod cli_startup_flags_tests {
         let start = root.join("start");
         std::fs::create_dir_all(&start).unwrap();
         let mut app = make_app(&start);
-        apply_cli_args(&mut app, &[name.clone()]).unwrap();
+        apply_cli_args(&mut app, std::slice::from_ref(&name)).unwrap();
         assert!(
             same_dir(&app.left.cwd, &abs),
             "relative DIR1 must join process cwd, got {:?}",
