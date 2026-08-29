@@ -21,6 +21,7 @@ whoami.workspace = true
 hostname.workspace = true
 rmc-view = { path = "../rmc-view" }
 once_cell = "1.19"
+libc = "0.2"
 
 [dev-dependencies]
 pretty_assertions = "1.4"

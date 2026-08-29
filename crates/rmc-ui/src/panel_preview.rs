@@ -3,7 +3,6 @@
 use rmc_core::app::App;
 use rmc_core::panel::FileEntry;
 use std::path::Path;
-use time::OffsetDateTime;
 
 /// Listing panel that feeds a Quick view / Info panel (`preview_is_left`).
 pub(crate) fn preview_source_panel(
@@ -23,6 +22,8 @@ pub(crate) fn preview_source_entry(app: &App, preview_is_left: bool) -> Option<&
 }
 
 /// Short directory placeholder (no listing dump). `None` for regular files.
+/// Paint uses the GNU "Cannot view" line; tests still assert this helper.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn quick_view_directory_line(ent: &FileEntry) -> Option<String> {
     if ent.is_dir {
         Some(format!("Directory: {}", ent.name))
@@ -31,9 +32,15 @@ pub(crate) fn quick_view_directory_line(ent: &FileEntry) -> Option<String> {
     }
 }
 
-fn perm_string(mode: u32, is_dir: bool) -> String {
+fn perm_string(ent: &FileEntry) -> String {
     let mut s = String::new();
-    s.push(if is_dir { 'd' } else { '-' });
+    s.push(if ent.is_symlink {
+        'l'
+    } else if ent.is_dir {
+        'd'
+    } else {
+        '-'
+    });
     let bits = [
         (0o400, 'r'),
         (0o200, 'w'),
@@ -46,7 +53,7 @@ fn perm_string(mode: u32, is_dir: bool) -> String {
         (0o001, 'x'),
     ];
     for (bit, ch) in bits {
-        s.push(if mode & bit != 0 { ch } else { '-' });
+        s.push(if ent.permissions & bit != 0 { ch } else { '-' });
     }
     s
 }
@@ -75,38 +82,136 @@ pub(crate) fn filesystem_free_line(path: &Path) -> Option<String> {
     }
 }
 
+fn listing_ts(ts: std::time::SystemTime) -> String {
+    rmc_core::panel::format_listing_time(ts)
+}
+
+fn info_value_line(label: &str, value: &str) -> String {
+    // Live GNU 4.8.30: two-space indent, values start at inner column 14.
+    let mut line = format!("  {label}:");
+    while line.chars().count() < 14 {
+        line.push(' ');
+    }
+    line.push_str(value);
+    line
+}
+
+fn hex_dev_ino(dev: u64, ino: u64) -> String {
+    format!("{dev:X}h:{ino:X}h")
+}
+
+#[cfg(unix)]
+fn unix_stat_bits(path: &Path) -> Option<(u64, u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::symlink_metadata(path).ok()?;
+    Some((md.dev(), md.ino(), md.blocks()))
+}
+
+#[cfg(not(unix))]
+fn unix_stat_bits(_path: &Path) -> Option<(u64, u64, u64)> {
+    None
+}
+
+#[cfg(unix)]
+fn statvfs_free_nodes(path: &Path) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+    let c = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    let mut buf = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c.as_ptr(), buf.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    let st = unsafe { buf.assume_init() };
+    Some((st.f_ffree, st.f_files))
+}
+
+#[cfg(not(unix))]
+fn statvfs_free_nodes(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+fn mount_info_for(path: &Path) -> Option<(String, String, String)> {
+    // (mountpoint, device, fstype) from /proc/mounts — public procfs, not GPL.
+    let text = std::fs::read_to_string("/proc/mounts").ok()?;
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut best: Option<(usize, String, String, String)> = None;
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let dev = it.next()?.to_string();
+        let mp = it.next()?.to_string();
+        let fstype = it.next()?.to_string();
+        if canon.starts_with(&mp) || canon.to_string_lossy().starts_with(&mp) {
+            let score = mp.len();
+            if best.as_ref().is_none_or(|(s, ..)| score >= *s) {
+                best = Some((score, mp, dev, fstype));
+            }
+        }
+    }
+    best.map(|(_, mp, dev, fstype)| (mp, dev, fstype))
+}
+
 /// Info panel facts for the currently selected file. No TTY.
+///
+/// Field labels and value column match live GNU 4.8.30 (` File:`, `  Location:`
+/// at inner column 14). Banner / title are painted by the panel chrome.
 pub(crate) fn info_lines_for_entry(
     ent: &FileEntry,
-    si: bool,
+    _si: bool,
     show_free_space: bool,
 ) -> Vec<String> {
-    let perms = perm_string(ent.permissions, ent.is_dir);
+    let perms = perm_string(ent);
+    let mode_oct = format!("{:04o}", ent.permissions & 0o7777);
     let owner = ent.owner.as_deref().unwrap_or("-");
     let group = ent.group.as_deref().unwrap_or("-");
-    let size_s = rmc_core::panel::format_byte_size(ent.size, si);
-    let tm: OffsetDateTime = ent.modified.into();
-    let ts = tm
-        .format(&time::macros::format_description!(
-            "[year]-[month repr:numerical]-[day] [hour]:[minute]"
-        ))
-        .unwrap_or_default();
+    let (dev, ino, blocks) = unix_stat_bits(&ent.path).unwrap_or((0, ent.inode, 0));
     let mut lines = vec![
-        format!("Name: {}", ent.name),
-        format!("Path: {}", ent.path.display()),
-        format!("Type: {}", if ent.is_dir { "Directory" } else { "File" }),
-        format!("Size: {size_s}"),
-        format!("Owner: {owner}  Group: {group}"),
-        format!("Perms: {perms}"),
-        format!("Modified: {ts}"),
-        format!("Links: {}", ent.nlink),
+        format!(" File: {}", ent.name),
+        info_value_line("Location", &hex_dev_ino(dev, ino)),
+        info_value_line("Mode", &format!("{perms} ({mode_oct})")),
+        info_value_line("Attributes", "unavailable"),
+        info_value_line("Links", &ent.nlink.to_string()),
+        info_value_line("Owner", &format!("{owner}/{group}")),
+        info_value_line("Size", &format!("{} ({blocks} blocks)", ent.size)),
+        info_value_line("Changed", &listing_ts(ent.changed)),
+        info_value_line("Modified", &listing_ts(ent.modified)),
+        info_value_line("Accessed", &listing_ts(ent.accessed)),
     ];
-    if ent.inode != 0 {
-        lines.push(format!("Inode: {}", ent.inode));
+    if let Some((mp, device, fstype)) = mount_info_for(&ent.path) {
+        lines.push(info_value_line("Filesystem", &mp));
+        lines.push(info_value_line("Device", &device));
+        lines.push(info_value_line("Type", &format!("{fstype} ({dev:X}h)")));
     }
     if show_free_space {
-        if let Some(free) = filesystem_free_line(&ent.path) {
+        if let (Ok(avail), Ok(total)) =
+            (fs2::available_space(&ent.path), fs2::total_space(&ent.path))
+        {
+            let pct = if total > 0 {
+                (avail as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            lines.push(info_value_line(
+                "Free space",
+                &format!(
+                    "{} / {} ({:.0}%)",
+                    human_bytes(avail),
+                    human_bytes(total),
+                    pct
+                ),
+            ));
+        } else if let Some(free) = filesystem_free_line(&ent.path) {
             lines.push(free);
+        }
+        if let Some((free, files)) = statvfs_free_nodes(&ent.path) {
+            let pct = if files > 0 {
+                (free as f64 / files as f64) * 100.0
+            } else {
+                0.0
+            };
+            lines.push(info_value_line(
+                "Free nodes",
+                &format!("{free} / {files} ({:.0}%)", pct),
+            ));
         }
     }
     lines

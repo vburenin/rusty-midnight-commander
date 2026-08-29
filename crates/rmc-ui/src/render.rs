@@ -3,7 +3,7 @@ use crate::filehighlight::{listing_name_color, name_span_in_line};
 use crate::find::draw_find_dialog;
 use crate::help::{initial_topic_or_contents, HelpIndex, HelpItem};
 use crate::mc_colors::McPalette;
-use crate::panel_preview::{info_lines_for_panel, preview_source_entry, quick_view_directory_line};
+use crate::panel_preview::{info_lines_for_panel, preview_source_entry};
 use crate::panelize::draw_external_panelize_dialog;
 use crate::widgets::Painter;
 use anyhow::Result;
@@ -198,28 +198,90 @@ impl Renderer {
         // rows: [menu?] + 1 frame top + content + frame bottom + [gauge?] + [hint?] + [cmd?] + [fbar?]
         let geom = compute_chrome_geom(cols, rows, &app.layout);
         let (left_rect, right_rect) = dual_panel_rects(cols, &geom, &app.layout);
-        draw_panel(
-            &mut painter,
-            left_rect.x,
-            left_rect.y,
-            left_rect.w,
-            left_rect.h,
-            true,
-            app,
-            true,
-            self.palette,
-        )?;
-        draw_panel(
-            &mut painter,
-            right_rect.x,
-            right_rect.y,
-            right_rect.w,
-            right_rect.h,
-            false,
-            app,
-            false,
-            self.palette,
-        )?;
+        let left_span = matches!(app.left.mode, PanelMode::Listing)
+            && rmc_core::panel::listing_is_full_span(app.left.listing, &app.left.user_format);
+        let right_span = matches!(app.right.mode, PanelMode::Listing)
+            && rmc_core::panel::listing_is_full_span(app.right.listing, &app.right.user_format);
+        let only_left = left_span && matches!(app.active, rmc_core::actions::PaneSide::Left);
+        let only_right = right_span && matches!(app.active, rmc_core::actions::PaneSide::Right);
+        if only_left {
+            draw_panel(
+                &mut painter,
+                0,
+                left_rect.y,
+                cols,
+                left_rect.h,
+                true,
+                app,
+                true,
+                self.palette,
+            )?;
+        } else if only_right {
+            draw_panel(
+                &mut painter,
+                0,
+                right_rect.y,
+                cols,
+                right_rect.h,
+                false,
+                app,
+                false,
+                self.palette,
+            )?;
+        } else {
+            if left_span {
+                draw_panel(
+                    &mut painter,
+                    0,
+                    left_rect.y,
+                    cols,
+                    left_rect.h,
+                    true,
+                    app,
+                    true,
+                    self.palette,
+                )?;
+            }
+            if right_span {
+                draw_panel(
+                    &mut painter,
+                    0,
+                    right_rect.y,
+                    cols,
+                    right_rect.h,
+                    false,
+                    app,
+                    false,
+                    self.palette,
+                )?;
+            }
+            if !left_span {
+                draw_panel(
+                    &mut painter,
+                    left_rect.x,
+                    left_rect.y,
+                    left_rect.w,
+                    left_rect.h,
+                    true,
+                    app,
+                    true,
+                    self.palette,
+                )?;
+            }
+            if !right_span {
+                draw_panel(
+                    &mut painter,
+                    right_rect.x,
+                    right_rect.y,
+                    right_rect.w,
+                    right_rect.h,
+                    false,
+                    app,
+                    false,
+                    self.palette,
+                )?;
+            }
+        }
         // Free space is in each panel's bottom frame (not a below-panels chrome row).
         if let Some(y) = geom.hint_row {
             draw_hint(&mut painter, y, cols, self.palette);
@@ -228,7 +290,12 @@ impl Renderer {
             draw_cmdline(&mut painter, y, cols, self.palette, app);
         }
         if let Some(y) = geom.fbar_row {
-            draw_fbar(&mut painter, y, cols, self.palette);
+            let labels = if matches!(app.active_panel().mode, PanelMode::Tree) {
+                tree_fbar_labels()
+            } else {
+                panel_fbar_labels()
+            };
+            paint_mc_fbar(&mut painter, y, cols, self.palette, &labels);
         }
         // Overlays (dialogs)
         draw_overlays(&mut painter, app, cols, rows, self.palette)?;
@@ -4302,15 +4369,62 @@ fn brief_column_bar_xs(x: u16, w: u16, columns: u8) -> Vec<u16> {
         .collect()
 }
 
+/// Default Alt-t User (`half type name | size | perm`): same 7-char size as
+/// Full, but the last column is 10-char `Permission` instead of 12-char mtime.
+fn user_perm_listing_cols(x: u16, w: u16) -> FullListingCols {
+    let left = x.saturating_add(1);
+    let inner_right = x.saturating_add(w.saturating_sub(2));
+    if inner_right <= left {
+        return FullListingCols {
+            size_bar: left,
+            size_x: left,
+            time_bar: left,
+            time_x: left,
+        };
+    }
+    let time_x = x
+        .saturating_add(w.saturating_sub(11))
+        .clamp(left, inner_right);
+    let time_bar = time_x.saturating_sub(1).clamp(left, inner_right);
+    let size_x = time_bar
+        .saturating_sub(7)
+        .clamp(left.saturating_add(1).min(inner_right), inner_right);
+    let size_bar = size_x.saturating_sub(1).clamp(left, inner_right);
+    FullListingCols {
+        size_bar,
+        size_x,
+        time_bar,
+        time_x,
+    }
+}
+
+fn is_default_user_listing(tokens: &[rmc_core::panel::UserFormatToken]) -> bool {
+    matches!(
+        tokens,
+        [
+            rmc_core::panel::UserFormatToken::Type,
+            rmc_core::panel::UserFormatToken::Name,
+            rmc_core::panel::UserFormatToken::Gap,
+            rmc_core::panel::UserFormatToken::Size,
+            rmc_core::panel::UserFormatToken::Gap,
+            rmc_core::panel::UserFormatToken::Perm
+        ]
+    )
+}
+
 fn listing_column_bar_xs(
     listing: rmc_core::panel::ListingFormat,
     x: u16,
     w: u16,
     brief_columns: u8,
+    user_tokens: &[rmc_core::panel::UserFormatToken],
 ) -> Vec<u16> {
     match listing {
         rmc_core::panel::ListingFormat::Full => full_listing_bar_xs(full_listing_cols(x, w), x, w),
         rmc_core::panel::ListingFormat::Brief => brief_column_bar_xs(x, w, brief_columns),
+        rmc_core::panel::ListingFormat::User if is_default_user_listing(user_tokens) => {
+            full_listing_bar_xs(user_perm_listing_cols(x, w), x, w)
+        }
         rmc_core::panel::ListingFormat::Long | rmc_core::panel::ListingFormat::User => Vec::new(),
     }
 }
@@ -4343,6 +4457,52 @@ fn paint_mini_status_split(
         &LISTING_SEP_RIGHT.to_string(),
     );
     // Live GNU 4.8.30 mini-status split is a solid ├────────┤ (no ┴).
+}
+
+fn paint_centered_frame_title(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    w: u16,
+    title: &str,
+    fg: Color,
+    bg: Color,
+) {
+    let label = format!(" {title} ");
+    let n = label.chars().count() as u16;
+    if n >= w {
+        paint_span(
+            p,
+            x + 1,
+            y,
+            fg,
+            bg,
+            &truncate(&label, w.saturating_sub(2) as usize),
+        );
+        return;
+    }
+    let tx = x + w.saturating_sub(n) / 2;
+    paint_span(p, tx, y, fg, bg, &label);
+}
+
+/// GNU mcview-style middle truncation (`/tmp/mc-live-cmp~xture/readme.txt`).
+fn middle_truncate(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "~".chars().take(max).collect();
+    }
+    let keep = max - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    let chars: Vec<char> = s.chars().collect();
+    format!(
+        "{}~{}",
+        chars[..head].iter().collect::<String>(),
+        chars[n - tail..].iter().collect::<String>()
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4426,28 +4586,30 @@ fn draw_panel(
     let cap_x = x + 1 + widget_left_w + 1;
     // GNU: active panel path is selected (black;cyan); inactive stays on the frame.
     let (path_fg, path_bg) = panel_path_caption_colors(&pal, is_active_panel);
-    paint_span(
-        p,
-        cap_x.min(x + w.saturating_sub(2)),
-        y,
-        path_fg,
-        path_bg,
-        &path_str_display,
-    );
-    paint_span(p, x + 1, y, frame_fg, frame_bg, TOP_WIDGET_LEFT);
-    if w > 2 + widget_left_w + widget_right_w {
+    // Non-listing panel modes (QuickView/Info/Tree): no path widgets (live GNU 4.8.30).
+    let panel = if is_left { &app.left } else { &app.right };
+    let listing_chrome = matches!(panel.mode, PanelMode::Listing);
+    if listing_chrome {
         paint_span(
             p,
-            x + w - 1 - widget_right_w,
+            cap_x.min(x + w.saturating_sub(2)),
             y,
-            frame_fg,
-            frame_bg,
-            TOP_WIDGET_RIGHT,
+            path_fg,
+            path_bg,
+            &path_str_display,
         );
+        paint_span(p, x + 1, y, frame_fg, frame_bg, TOP_WIDGET_LEFT);
+        if w > 2 + widget_left_w + widget_right_w {
+            paint_span(
+                p,
+                x + w - 1 - widget_right_w,
+                y,
+                frame_fg,
+                frame_bg,
+                TOP_WIDGET_RIGHT,
+            );
+        }
     }
-
-    // Non-listing panel modes (QuickView/Info/Tree): override standard listing rendering.
-    let panel = if is_left { &app.left } else { &app.right };
     if !matches!(panel.mode, PanelMode::Listing) {
         let content_top = y + 1;
         let content_h = h.saturating_sub(2);
@@ -4459,18 +4621,53 @@ fn draw_panel(
         }
         match panel.mode {
             PanelMode::QuickView => {
-                // Selected file on the other (listing) panel — not this panel's
-                // leftover cursor, and not a full UiMode::Viewer (F3) screen.
+                // Live GNU 4.8.30: blank top frame (no path widgets), status
+                // row with middle-truncated path + `100%`, or `Cannot view`.
                 if let Some(ent) = preview_source_entry(app, is_left) {
-                    if let Some(msg) = quick_view_directory_line(ent) {
-                        p.goto(x + 1, content_top);
-                        p.text(&truncate(&msg, (w - 2) as usize));
+                    let inner = (w - 2) as usize;
+                    if ent.is_dir || ent.is_symlink {
+                        let pct = format!("{:>width$}", "100%", width = inner);
+                        paint_span(
+                            p,
+                            x + 1,
+                            content_top,
+                            pal.core_default_fg,
+                            pal.core_default_bg,
+                            &pct,
+                        );
+                        if content_h > 1 {
+                            paint_span(
+                                p,
+                                x + 1,
+                                content_top + 1,
+                                pal.core_default_fg,
+                                pal.core_default_bg,
+                                &truncate("Cannot view: not a regular file", inner),
+                            );
+                        }
                     } else {
+                        let path_s = ent.path.display().to_string();
+                        let path_w = inner.saturating_sub(5);
+                        let shown = middle_truncate(&path_s, path_w);
+                        let mut status = shown;
+                        while status.chars().count() < path_w {
+                            status.push(' ');
+                        }
+                        status.push_str(" 100%");
+                        paint_span(
+                            p,
+                            x + 1,
+                            content_top,
+                            pal.core_default_fg,
+                            pal.core_default_bg,
+                            &truncate(&status, inner),
+                        );
                         let offset = if panel.preview_path.as_ref() == Some(&ent.path) {
                             panel.preview_offset
                         } else {
                             0
                         };
+                        let body_h = content_h.saturating_sub(1);
                         let rr = rmc_view::render_window(
                             &ent.path,
                             rmc_view::ViewOptions {
@@ -4481,38 +4678,67 @@ fn draw_panel(
                             },
                             offset,
                             w.saturating_sub(2),
-                            content_h,
+                            body_h,
                         )?;
                         for (i, line) in rr.lines.into_iter().enumerate() {
-                            if (i as u16) >= content_h {
+                            if (i as u16) >= body_h {
                                 break;
                             }
-                            p.goto(x + 1, content_top + i as u16);
-                            let t = truncate(&line, (w - 2) as usize);
-                            p.text(&t);
+                            paint_span(
+                                p,
+                                x + 1,
+                                content_top + 1 + i as u16,
+                                pal.core_default_fg,
+                                pal.core_default_bg,
+                                &truncate(&line, inner),
+                            );
                         }
                     }
                 }
             }
             PanelMode::Info => {
+                paint_centered_frame_title(p, x, y, w, "Information", frame_fg, frame_bg);
+                let inner = (w - 2) as usize;
+                // Banner + ├─┤ split + GNU field labels (live 4.8.30).
+                paint_span(
+                    p,
+                    x + 1,
+                    content_top,
+                    pal.core_default_fg,
+                    pal.core_default_bg,
+                    &truncate("  rusty-midnight-commander", inner),
+                );
+                if content_h > 1 {
+                    paint_mini_status_split(p, x, content_top + 1, w, &[], frame_fg, frame_bg);
+                }
                 let lines = info_lines_for_panel(app, is_left);
                 for (i, line) in lines.iter().enumerate() {
-                    if (i as u16) >= content_h {
+                    let row = content_top + 2 + i as u16;
+                    if row >= y + h.saturating_sub(1) {
                         break;
                     }
-                    p.goto(x + 1, content_top + i as u16);
-                    p.text(&truncate(line, (w - 2) as usize));
+                    paint_span(
+                        p,
+                        x + 1,
+                        row,
+                        pal.core_default_fg,
+                        pal.core_default_bg,
+                        &truncate(line, inner),
+                    );
                 }
             }
             PanelMode::Tree => {
+                paint_centered_frame_title(p, x, y, w, "Directory tree", frame_fg, frame_bg);
                 if let Some(tree) = &panel.tree {
                     let status = rmc_core::panel::tree_panel_mini_status(
                         tree,
                         app.panel_opts.show_mini_status,
                         is_active_panel,
                     );
+                    // Live GNU: ├─┤ above mini-status; no free-space on the
+                    // bottom frame.
                     let list_h = if status.is_some() {
-                        content_h.saturating_sub(1)
+                        content_h.saturating_sub(2)
                     } else {
                         content_h
                     };
@@ -4540,6 +4766,15 @@ fn draw_panel(
                         }
                     }
                     if let Some(text) = status {
+                        paint_mini_status_split(
+                            p,
+                            x,
+                            y + h.saturating_sub(3),
+                            w,
+                            &[],
+                            frame_fg,
+                            frame_bg,
+                        );
                         let status_y = y + h - 2;
                         p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
                         p.goto(x + 1, status_y);
@@ -4558,13 +4793,7 @@ fn draw_panel(
             }
             PanelMode::Listing => {}
         }
-        paint_panel_frame_free_space(
-            p,
-            (x, y, w, h),
-            path,
-            app.layout.show_free_space,
-            (frame_fg, frame_bg),
-        );
+        // Info / Quick view / Tree: live GNU has no free/total on the bottom frame.
         return Ok(());
     }
 
@@ -4593,8 +4822,14 @@ fn draw_panel(
     } else {
         panel.listing
     };
-    let full_cols = full_listing_cols(x, w);
-    let bar_xs = listing_column_bar_xs(listing, x, w, panel.brief_columns);
+    let full_cols = if matches!(listing, rmc_core::panel::ListingFormat::User)
+        && is_default_user_listing(&user_tokens)
+    {
+        user_perm_listing_cols(x, w)
+    } else {
+        full_listing_cols(x, w)
+    };
+    let bar_xs = listing_column_bar_xs(listing, x, w, panel.brief_columns, &user_tokens);
     // Junctions share the listing-row split x. Path/widgets are painted after
     // so a long caption covers ┬ the way live GNU does.
     paint_column_bars(p, &bar_xs, y, frame_fg, frame_bg, LISTING_COL_TEE_TOP);
@@ -4656,33 +4891,73 @@ fn draw_panel(
             );
         }
         rmc_core::panel::ListingFormat::Brief => {
-            paint_span(p, x + 1, y + 1, header_fg, header_bg, "Name");
+            // Live GNU 4.8.30: center "Name" in each packed column; `.n` sits
+            // on the left of column 0 (same sort mark as Full).
+            let ind = rmc_core::panel::full_listing_sort_indicator(panel.sort_by, panel.sort_dir);
+            let ind_s: String = ind.iter().collect();
+            let cols_n = rmc_core::panel::clamp_brief_columns(panel.brief_columns);
+            let per = rmc_core::panel::brief_column_width(w, cols_n);
+            for col in 0..cols_n as usize {
+                let col_x = x + 1 + col as u16 * (per + 1);
+                let name_x = col_x + per.saturating_sub(4) / 2;
+                paint_span(p, name_x, y + 1, header_fg, header_bg, "Name");
+            }
+            paint_span(p, x + 1, y + 1, header_fg, header_bg, &ind_s);
         }
         rmc_core::panel::ListingFormat::User => {
-            let header = rmc_core::panel::format_user_listing_header(&user_tokens, inner as usize);
+            if is_default_user_listing(&user_tokens) {
+                let ind =
+                    rmc_core::panel::full_listing_sort_indicator(panel.sort_by, panel.sort_dir);
+                let ind_s: String = ind.iter().collect();
+                paint_span(p, x + 1, y + 1, header_fg, header_bg, &ind_s);
+                let name_field = full_cols.size_bar.saturating_sub(x.saturating_add(1));
+                let name_rest = name_field.saturating_sub(2);
+                let name_x = x + 1 + 2 + name_rest.saturating_sub(4) / 2;
+                paint_span(p, name_x, y + 1, header_fg, header_bg, "Name");
+                let size_w = full_cols.time_bar.saturating_sub(full_cols.size_x);
+                let size_x = full_cols.size_x + size_w.saturating_sub(4) / 2;
+                paint_span(p, size_x, y + 1, header_fg, header_bg, "Size");
+                paint_span(
+                    p,
+                    full_cols.time_x,
+                    y + 1,
+                    header_fg,
+                    header_bg,
+                    "Permission",
+                );
+            } else {
+                let header =
+                    rmc_core::panel::format_user_listing_header(&user_tokens, inner as usize);
+                paint_span(
+                    p,
+                    x + 1,
+                    y + 1,
+                    header_fg,
+                    header_bg,
+                    &truncate(&header, inner as usize),
+                );
+            }
+        }
+        rmc_core::panel::ListingFormat::Long => {
+            // Live GNU 4.8.30 Long header on an 80-col full-span panel.
             paint_span(
                 p,
                 x + 1,
                 y + 1,
                 header_fg,
                 header_bg,
-                &truncate(&header, inner as usize),
+                "Permission Nl  Owner    Group    Size   Modify time",
             );
-        }
-        rmc_core::panel::ListingFormat::Long => {
-            // Column-aligned like ls -l: perm, nlink, owner, group, size, mtime
-            let perms_col = x + 1;
-            let nlink_col = perms_col + 11; // 10 perms + 1 space
-            let owner_col = nlink_col + 5; // nlink 4 + 1 space
-            let group_col = owner_col + 9; // owner 8 + 1 space
-            let size_col = group_col + 9; // group 8 + 1 space
-            let time_col = size_col + 9; // size 8 + 1 space
-            paint_span(p, perms_col, y + 1, header_fg, header_bg, "Perms");
-            paint_span(p, nlink_col, y + 1, header_fg, header_bg, "Nl");
-            paint_span(p, owner_col, y + 1, header_fg, header_bg, "Owner");
-            paint_span(p, group_col, y + 1, header_fg, header_bg, "Group");
-            paint_span(p, size_col, y + 1, header_fg, header_bg, "Size");
-            paint_span(p, time_col, y + 1, header_fg, header_bg, "Modify time");
+            let name_x0 = x.saturating_add(54);
+            let name_right = x.saturating_add(w.saturating_sub(1));
+            if name_x0 < name_right {
+                let name_w = name_right.saturating_sub(name_x0);
+                let ind =
+                    rmc_core::panel::full_listing_sort_indicator(panel.sort_by, panel.sort_dir);
+                let lab = format!("{}Name", ind[0]);
+                let nx = name_x0 + name_w.saturating_sub(lab.chars().count() as u16) / 2;
+                paint_span(p, nx, y + 1, header_fg, header_bg, &lab);
+            }
         }
     }
     // Header `|` token is yellow;blue — do not skip this row.
@@ -4698,9 +4973,11 @@ fn draw_panel(
         is_active_panel,
         app.quick_search.is_some(),
     );
-    let column_split_sep =
-        rmc_core::panel::listing_has_column_split_sep(listing, panel.brief_columns)
-            && !bar_xs.is_empty();
+    let column_split_sep = rmc_core::panel::listing_has_column_split_sep(
+        listing,
+        panel.brief_columns,
+        &panel.user_format,
+    ) && !bar_xs.is_empty();
     let content_h =
         rmc_core::panel::panel_listing_content_rows(h, reserve_status, column_split_sep);
     let _panel = if is_left { &app.left } else { &app.right };
@@ -4858,40 +5135,105 @@ fn draw_panel(
             }
         }
         rmc_core::panel::ListingFormat::User => {
-            for i in 0..content_h as usize {
-                let row_y = content_top + i as u16;
-                p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
-                p.goto(x + 1, row_y);
-                p.text(&" ".repeat((w - 2) as usize));
-                let idx = panel.scroll_top + i;
-                if let Some(ent) = panel.entries.get(idx) {
-                    let is_active_panel = (is_left
-                        && matches!(app.active, rmc_core::actions::PaneSide::Left))
-                        || (!is_left && matches!(app.active, rmc_core::actions::PaneSide::Right));
-                    let is_cursor = idx == panel.cursor;
-                    let selected = panel.selection.is_selected(idx);
-                    let (fg, bg) = if is_cursor && is_active_panel {
-                        (pal.selected_fg, pal.selected_bg)
-                    } else if selected && is_cursor {
-                        (pal.markselect_fg, pal.markselect_bg)
-                    } else if selected {
-                        (pal.marked_fg, pal.marked_bg)
-                    } else {
-                        (pal.core_default_fg, pal.core_default_bg)
-                    };
-                    p.set_fg_bg(fg, bg);
-                    let mut line = rmc_core::panel::format_user_listing_line(
-                        ent,
-                        &user_tokens,
-                        (w - 2) as usize,
-                        app.panel_opts.kilobyte_si,
-                        selected,
-                    );
-                    line = truncate(&line, (w - 2) as usize);
+            if is_default_user_listing(&user_tokens) {
+                let name_width = full_cols.size_bar.saturating_sub(x.saturating_add(1));
+                let size_width = full_cols.time_bar.saturating_sub(full_cols.size_x);
+                let perm_width = (x + w).saturating_sub(1).saturating_sub(full_cols.time_x);
+                for i in 0..content_h as usize {
+                    let row_y = content_top + i as u16;
+                    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
                     p.goto(x + 1, row_y);
-                    let name_fg =
-                        listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
-                    paint_line_with_name_color(p, &line, &ent.name, name_fg, fg, bg);
+                    p.text(&" ".repeat((w - 2) as usize));
+                    let idx = panel.scroll_top + i;
+                    let mut bar_bg = pal.frame_bg;
+                    if let Some(ent) = panel.entries.get(idx) {
+                        let is_active_panel = (is_left
+                            && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                            || (!is_left
+                                && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                        let is_cursor = idx == panel.cursor;
+                        let selected = panel.selection.is_selected(idx);
+                        let (fg, bg) = if is_cursor && is_active_panel {
+                            (pal.selected_fg, pal.selected_bg)
+                        } else if selected && is_cursor {
+                            (pal.markselect_fg, pal.markselect_bg)
+                        } else if selected {
+                            (pal.marked_fg, pal.marked_bg)
+                        } else {
+                            (pal.core_default_fg, pal.core_default_bg)
+                        };
+                        paint_span(p, x + 1, row_y, fg, bg, &" ".repeat((w - 2) as usize));
+                        let display_name = format_entry_name(ent);
+                        let name_trunc = truncate(&display_name, name_width as usize);
+                        let name_fg =
+                            listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
+                        paint_span(p, x + 1, row_y, name_fg, bg, &name_trunc);
+                        let size_text = rmc_core::panel::format_full_listing_size(
+                            ent,
+                            app.panel_opts.kilobyte_si,
+                        );
+                        let size = if ent.is_parent_marker() {
+                            truncate(&size_text, size_width as usize)
+                        } else {
+                            fit_right_cell(&size_text, size_width as usize)
+                        };
+                        paint_span(p, full_cols.size_x, row_y, fg, bg, &size);
+                        let perm = rmc_core::panel::format_user_listing_line(
+                            ent,
+                            &[rmc_core::panel::UserFormatToken::Perm],
+                            perm_width as usize,
+                            false,
+                            false,
+                        );
+                        paint_span(
+                            p,
+                            full_cols.time_x,
+                            row_y,
+                            fg,
+                            bg,
+                            &truncate(&perm, perm_width as usize),
+                        );
+                        bar_bg = bg;
+                    }
+                    paint_column_bars(p, &bar_xs, row_y, pal.frame_fg, bar_bg, LISTING_COL_BAR);
+                }
+            } else {
+                for i in 0..content_h as usize {
+                    let row_y = content_top + i as u16;
+                    p.set_fg_bg(pal.core_default_fg, pal.core_default_bg);
+                    p.goto(x + 1, row_y);
+                    p.text(&" ".repeat((w - 2) as usize));
+                    let idx = panel.scroll_top + i;
+                    if let Some(ent) = panel.entries.get(idx) {
+                        let is_active_panel = (is_left
+                            && matches!(app.active, rmc_core::actions::PaneSide::Left))
+                            || (!is_left
+                                && matches!(app.active, rmc_core::actions::PaneSide::Right));
+                        let is_cursor = idx == panel.cursor;
+                        let selected = panel.selection.is_selected(idx);
+                        let (fg, bg) = if is_cursor && is_active_panel {
+                            (pal.selected_fg, pal.selected_bg)
+                        } else if selected && is_cursor {
+                            (pal.markselect_fg, pal.markselect_bg)
+                        } else if selected {
+                            (pal.marked_fg, pal.marked_bg)
+                        } else {
+                            (pal.core_default_fg, pal.core_default_bg)
+                        };
+                        p.set_fg_bg(fg, bg);
+                        let mut line = rmc_core::panel::format_user_listing_line(
+                            ent,
+                            &user_tokens,
+                            (w - 2) as usize,
+                            app.panel_opts.kilobyte_si,
+                            selected,
+                        );
+                        line = truncate(&line, (w - 2) as usize);
+                        p.goto(x + 1, row_y);
+                        let name_fg =
+                            listing_name_color(ent, &pal, is_cursor, is_active_panel, selected);
+                        paint_line_with_name_color(p, &line, &ent.name, name_fg, fg, bg);
+                    }
                 }
             }
         }
@@ -5035,6 +5377,14 @@ pub(crate) fn panel_fbar_labels() -> [&'static str; 10] {
     ]
 }
 
+/// Live GNU 4.8.30 F-bar when the active panel is Tree (`4Dynamc` is the
+/// 6-char truncation of Dynamic in the 8-col slot).
+pub(crate) fn tree_fbar_labels() -> [&'static str; 10] {
+    [
+        "Help", "Rescan", "Forget", "Dynamc", "Copy", "RenMov", "", "Rmdir", "PullDn", "Quit",
+    ]
+}
+
 /// Live GNU 4.8 dialog left edge: ceil((cols − w) / 2) so odd leftovers
 /// sit on the left (`Delete` 21-wide at x=30 on 80 cols, not 29).
 pub(crate) fn gnu_dialog_left(cols: u16, w: u16) -> u16 {
@@ -5107,6 +5457,7 @@ fn paint_mc_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette, labels: &[&
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
     paint_mc_fbar(p, y, cols, pal, &panel_fbar_labels());
 }
@@ -5736,11 +6087,7 @@ fn fit_right_cell(s: &str, width: usize) -> String {
 }
 
 fn format_time(ent: &FileEntry) -> String {
-    let dt: OffsetDateTime = ent.modified.into();
-    dt.format(&time::macros::format_description!(
-        "[month repr:short] [day padding:space] [hour]:[minute]"
-    ))
-    .unwrap_or_default()
+    rmc_core::panel::format_listing_time(ent.modified)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -9164,19 +9511,23 @@ mod gnu_default_chrome_colors_tests {
         let pal = McPalette::default();
         let mut buf = Vec::new();
         let mut painter = Painter { out: &mut buf };
-        super::draw_panel(&mut painter, 0, 0, 40, 12, true, &app, true, pal).unwrap();
-        let grid = rasterize(&buf, 40, 12);
+        super::draw_panel(&mut painter, 0, 0, 80, 12, true, &app, true, pal).unwrap();
+        let grid = rasterize(&buf, 80, 12);
         let top = row_str(&grid, 0);
         let header = row_str(&grid, 1);
         assert!(
-            !(1..39).any(|x| grid[0][x].ch == '┬'),
+            !(1..79).any(|x| grid[0][x].ch == '┬'),
             "Long has no ┬ junctions: {top:?}"
         );
         assert!(
-            inner_bars(&grid, 1, 0, 40).is_empty(),
+            inner_bars(&grid, 1, 0, 80).is_empty(),
             "Long header is spaces not bars: {header:?}"
         );
-        assert!(header.contains("Perms"), "{header:?}");
+        assert!(
+            header.contains("Permission"),
+            "live GNU Long header: {header:?}"
+        );
+        assert!(header.contains(".Name"), "sort mark on Name: {header:?}");
         assert!(!header.contains('|'), "{header:?}");
         assert_ne!(
             grid[9][0].ch,
@@ -9184,6 +9535,257 @@ mod gnu_default_chrome_colors_tests {
             "Long does not grow a column-bar split-line: {}",
             row_str(&grid, 9)
         );
+    }
+
+    #[test]
+    fn brief_listing_40col_header_matches_live_gnu() {
+        let mut app = panel_app(ListingFormat::Brief);
+        app.left.brief_columns = 2;
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        }
+        let header = row_str(&rasterize(&buf, 40, 12), 1);
+        assert_eq!(header, "│.n     Name       │       Name        │");
+        let parent = row_str(&rasterize(&buf, 40, 12), 2);
+        let pchars: String = parent.chars().skip(1).take(3).collect();
+        assert_eq!(pchars, "/..");
+        assert_eq!(header.chars().nth(19), Some('│'));
+    }
+
+    #[test]
+    fn user_listing_40col_default_format_matches_live_gnu() {
+        let mut app = panel_app(ListingFormat::User);
+        app.left.user_format = rmc_core::panel::DEFAULT_USER_LISTING_FORMAT.into();
+        app.left.entries[0].permissions = 0o755;
+        {
+            let ent = &mut app.left.entries[1];
+            ent.permissions = 0o644;
+        }
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        }
+        let grid = rasterize(&buf, 40, 12);
+        let header = row_str(&grid, 1);
+        assert_eq!(header, "│.n      Name       │ Size  │Permission│");
+        let parent = row_str(&grid, 2);
+        assert!(parent.contains("/.."), "{parent:?}");
+        assert!(parent.contains("UP--DIR"), "{parent:?}");
+        assert!(parent.contains("drwxr-xr-x"), "{parent:?}");
+        assert_eq!(grid[1][20].ch, '│');
+        assert_eq!(grid[1][28].ch, '│');
+        assert_eq!(grid[2][20].ch, '│');
+        assert_eq!(grid[9][0].ch, '├');
+        assert_eq!(grid[9][39].ch, '┤');
+    }
+
+    #[test]
+    fn long_listing_80col_header_and_parent_updir_match_live_gnu() {
+        let mut app = panel_app(ListingFormat::Long);
+        app.left.entries[0].nlink = 8;
+        app.left.entries[0].owner = Some("ubuntu".into());
+        app.left.entries[0].group = Some("ubuntu".into());
+        app.left.entries[0].permissions = 0o755;
+        app.left.entries[1].owner = Some("ubuntu".into());
+        app.left.entries[1].group = Some("ubuntu".into());
+        app.left.entries[1].permissions = 0o644;
+        app.left.entries[1].nlink = 1;
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 80, 12, true, &app, true, pal).unwrap();
+        }
+        let grid = rasterize(&buf, 80, 12);
+        let header = row_str(&grid, 1);
+        let head: String = header.chars().take(52).collect();
+        assert_eq!(head, "│Permission Nl  Owner    Group    Size   Modify time");
+        assert!(header.contains(".Name"), "{header:?}");
+        assert_eq!(header.chars().nth(64), Some('.'));
+        let parent = row_str(&grid, 2);
+        assert!(parent.contains("drwxr-xr-x"), "{parent:?}");
+        assert!(parent.contains("UP--DIR"), "parent size: {parent:?}");
+        assert!(
+            parent.contains(" .."),
+            "name without type prefix: {parent:?}"
+        );
+        let file = row_str(&grid, 3);
+        assert!(file.contains("readme.txt"), "{file:?}");
+        assert_eq!(
+            grid[3][54].ch, 'r',
+            "Long name has no type-cell prefix: {file:?}"
+        );
+    }
+
+    #[test]
+    fn listing_time_uses_year_for_old_files() {
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_698_220_980);
+        let s = rmc_core::panel::format_listing_time(old);
+        assert_eq!(s, "Oct 25  2023", "ls-style year, got {s:?}");
+        let recent = SystemTime::now();
+        let s = rmc_core::panel::format_listing_time(recent);
+        assert!(s.contains(':'), "recent files keep HH:MM, got {s:?}");
+        assert!(!s.contains("202"), "recent must not use year: {s:?}");
+    }
+
+    #[test]
+    fn full_listing_80col_horizontal_header_matches_live_gnu() {
+        let app = panel_app(ListingFormat::Full);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 80, 10, true, &app, true, pal).unwrap();
+        }
+        let header = row_str(&rasterize(&buf, 80, 10), 1);
+        assert_eq!(
+            header,
+            "│.n                         Name                          │ Size  │Modify time │"
+        );
+        assert_eq!(header.chars().nth(58), Some('│'));
+        assert_eq!(header.chars().nth(66), Some('│'));
+        let name_at = header.chars().position(|c| c == 'N').expect("Name");
+        assert_eq!(name_at, 28);
+    }
+
+    #[test]
+    fn info_panel_chrome_is_information_title_without_path_widgets() {
+        let mut app = panel_app(ListingFormat::Full);
+        app.right.mode = rmc_core::panel::PanelMode::Info;
+        app.left.cursor = 1;
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 40, 20, false, &app, false, pal).unwrap();
+        }
+        let grid = rasterize(&buf, 40, 20);
+        let top = row_str(&grid, 0);
+        assert!(top.contains("Information"), "GNU Info title: {top:?}");
+        assert!(!top.contains('<'), "no path widget: {top:?}");
+        assert!(!top.contains("[^]"), "no history widget: {top:?}");
+        let banner = row_str(&grid, 1);
+        assert!(banner.contains("rusty-midnight-commander"), "{banner:?}");
+        assert_eq!(grid[2][0].ch, '├');
+        assert_eq!(grid[2][39].ch, '┤');
+        let file = row_str(&grid, 3);
+        assert!(file.contains(" File:"), "{file:?}");
+        let loc = row_str(&grid, 4);
+        assert!(loc.contains("Location:"), "{loc:?}");
+        let mode = row_str(&grid, 5);
+        assert!(mode.contains("Mode:"), "{mode:?}");
+        let bottom = row_str(&grid, 19);
+        assert!(
+            !bottom.contains('%') || !bottom.contains(" / "),
+            "Info has no free-space on the bottom frame: {bottom:?}"
+        );
+        assert_eq!(bottom.chars().next(), Some('└'));
+    }
+
+    #[test]
+    fn quick_view_chrome_has_no_path_widgets_and_cannot_view_dirs() {
+        let mut app = panel_app(ListingFormat::Full);
+        app.right.mode = rmc_core::panel::PanelMode::QuickView;
+        app.left.cursor = 0; // parent dir
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 40, 20, false, &app, false, pal).unwrap();
+        }
+        let grid = rasterize(&buf, 40, 20);
+        let top = row_str(&grid, 0);
+        assert!(!top.contains('<'), "QV top is blank frame: {top:?}");
+        assert!(!top.contains("[^]"), "{top:?}");
+        let status = row_str(&grid, 1);
+        assert!(
+            status.contains("100%"),
+            "QV percent on first inner row: {status:?}"
+        );
+        let msg = row_str(&grid, 2);
+        assert!(msg.contains("Cannot view: not a regular file"), "{msg:?}");
+        let bottom = row_str(&grid, 19);
+        assert_eq!(bottom.chars().next(), Some('└'));
+        assert!(
+            !bottom.contains(" / ") || !bottom.contains('%'),
+            "QV has no free-space: {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn tree_panel_chrome_is_directory_tree_title() {
+        let mut app = panel_app(ListingFormat::Full);
+        app.left.mode = rmc_core::panel::PanelMode::Tree;
+        app.left.tree = Some(rmc_core::panel::TreeState {
+            figure: rmc_core::dirtree::DirectoryTreeState::new(
+                vec![rmc_core::panel::TreeEntry {
+                    path: PathBuf::from("/"),
+                    depth: 0,
+                }],
+                Path::new("/"),
+            ),
+            search_active: false,
+        });
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 40, 20, true, &app, true, pal).unwrap();
+        }
+        let grid = rasterize(&buf, 40, 20);
+        let top = row_str(&grid, 0);
+        assert!(top.contains("Directory tree"), "GNU Tree title: {top:?}");
+        assert!(!top.contains('<'), "no path widget: {top:?}");
+        assert!(!top.contains("[^]"), "{top:?}");
+        let bottom = row_str(&grid, 19);
+        assert!(
+            !bottom.contains(" / ") || !bottom.contains('%'),
+            "Tree has no free-space: {bottom:?}"
+        );
+        assert_eq!(super::tree_fbar_labels()[1], "Rescan", "active Tree F-bar");
+        assert_eq!(super::tree_fbar_labels()[3], "Dynamc");
+        assert_eq!(super::tree_fbar_labels()[7], "Rmdir");
+    }
+
+    #[test]
+    fn tree_fbar_80col_matches_live_gnu() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::paint_mc_fbar(&mut p, 0, 80, pal, &super::tree_fbar_labels());
+        }
+        let row = row_str(&rasterize(&buf, 80, 1), 0);
+        assert_eq!(
+            row,
+            " 1Help   2Rescan 3Forget 4Dynamc 5Copy   6RenMov 7       8Rmdir  9PullDn10Quit  "
+        );
+    }
+
+    #[test]
+    fn menu_bar_above_below_when_horizontal_split() {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_bar(&mut p, 80, pal, None, true);
+        }
+        let row = row_str(&rasterize(&buf, 80, 1), 0);
+        assert_eq!(
+            row.trim_end(),
+            "  Above     File     Command     Options     Below"
+        );
+    }
+
+    #[test]
+    fn middle_truncate_matches_live_gnu_qv_path() {
+        let s = super::middle_truncate("/tmp/mc-live-cmp/fixture/readme.txt", 33);
+        assert_eq!(s, "/tmp/mc-live-cmp~xture/readme.txt");
     }
 
     #[test]
