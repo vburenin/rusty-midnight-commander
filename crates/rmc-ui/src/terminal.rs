@@ -26564,6 +26564,8 @@ mod button_activation_tests {
         let vfs = LocalFs::new();
         let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
         app.layout = rmc_core::app::LayoutOptions::default();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
         app.mouse_enabled = true;
         app.change_dir(cwd).unwrap();
         app.active = PaneSide::Right;
@@ -26630,6 +26632,47 @@ mod button_activation_tests {
     }
 
     #[test]
+    fn fbar_f3_click_opens_viewer() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 2);
+        assert!(
+            matches!(app.ui_mode, UiMode::Viewer { .. }),
+            "F-bar View (F3) must open the internal viewer"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f4_click_opens_editor() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 3);
+        assert!(
+            matches!(app.ui_mode, UiMode::Editor { .. }),
+            "F-bar Edit (F4) must open the internal editor"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f10_click_quits() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        click_fbar(&mut app, 9);
+        assert!(
+            app.quit,
+            "F-bar 10Quit must quit (F10 key may be stolen by the terminal)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn fbar_f5_click_opens_copy_dialog() {
         let root = temp_workspace();
         std::fs::write(root.join("aaa.txt"), b"a").unwrap();
@@ -26664,9 +26707,25 @@ mod button_activation_tests {
         let mut app = make_app(&root);
         select_named(&mut app, "aaa.txt");
         click_fbar(&mut app, 7);
+        match &app.ui_mode {
+            UiMode::DeleteDialog { name, focus_ok, .. } => {
+                assert_eq!(name, "aaa.txt");
+                assert!(
+                    *focus_ok,
+                    "Delete defaults to Yes (safe-delete off), not OK/Cancel"
+                );
+            }
+            _ => panic!("F-bar Delete (F8) must open Yes/No"),
+        }
+        assert_eq!(crate::hit::delete_button_at(COLS, ROWS, 0, 0, true), None);
+        let by = (ROWS - 7) / 2 + 5;
         assert!(
-            matches!(app.ui_mode, UiMode::DeleteDialog { .. }),
-            "F-bar Delete (F8) must open Yes/No"
+            (0..COLS).any(|x| crate::hit::delete_button_at(COLS, ROWS, x, by, true) == Some(true)),
+            "Yes is hittable"
+        );
+        assert!(
+            (0..COLS).any(|x| crate::hit::delete_button_at(COLS, ROWS, x, by, true) == Some(false)),
+            "No is hittable"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

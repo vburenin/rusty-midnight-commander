@@ -556,7 +556,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 rows,
                 pal,
                 "Delete",
-                &format!("Delete \"{name}\"?"),
+                &format!("Delete file \"{name}\"?"),
                 &[yes, no],
                 app.shadows,
             );
