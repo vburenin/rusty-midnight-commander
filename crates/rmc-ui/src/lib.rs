@@ -2,6 +2,7 @@ mod dirtree;
 mod filehighlight;
 pub mod find;
 pub mod help;
+mod hit;
 pub mod hotlist;
 mod mc_colors;
 mod mc_ext;

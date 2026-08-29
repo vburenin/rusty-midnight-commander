@@ -1451,6 +1451,38 @@ pub enum CopyDialogFocus {
     Background,
     Cancel,
 }
+
+impl CopyDialogFocus {
+    /// GNU Copy/Move action row: OK, Background, Cancel.
+    pub fn is_action_button(self) -> bool {
+        matches!(self, Self::Ok | Self::Background | Self::Cancel)
+    }
+
+    pub fn next_action_button(self) -> Self {
+        match self {
+            Self::Ok => Self::Background,
+            Self::Background => Self::Cancel,
+            Self::Cancel => Self::Ok,
+            other => other,
+        }
+    }
+
+    pub fn prev_action_button(self) -> Self {
+        match self {
+            Self::Ok => Self::Cancel,
+            Self::Background => Self::Ok,
+            Self::Cancel => Self::Background,
+            other => other,
+        }
+    }
+
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Self::Checkbox1 | Self::Checkbox2 | Self::Checkbox3 | Self::Checkbox4 | Self::Checkbox5
+        )
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HistoryDialogFocus {
     /// The history list has focus; Up/Down change the selected row.

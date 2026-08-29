@@ -1,9 +1,9 @@
 use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::mc_ext::user_extension_file_path;
-use crate::render::{
-    panel_fbar_labels, viewer_menu_from_x, Renderer, COMMAND_MENU_ITEMS, FILE_MENU_ITEMS,
-    LEFT_RIGHT_MENU_ITEMS,
-};
+use crate::render::{panel_fbar_labels, top_menu_items, viewer_menu_from_x, Renderer};
+
+#[cfg(test)]
+use crate::render::{COMMAND_MENU_ITEMS, FILE_MENU_ITEMS, LEFT_RIGHT_MENU_ITEMS};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -63,6 +63,52 @@ struct PaintNeed {
 
 fn should_full_paint(need: PaintNeed) -> bool {
     need.input_or_first_frame || need.force_clear || need.timed_ui_changed
+}
+
+/// Event-loop tick: queue `Renderer::draw` (Clear+repaint) only when `need` is set.
+fn tick_emits_full_redraw(need: PaintNeed) -> bool {
+    should_full_paint(need)
+}
+
+fn compose_paint_need(
+    input_or_first_frame: bool,
+    force_clear: bool,
+    size_changed: bool,
+    timed_cells_changed: bool,
+) -> PaintNeed {
+    PaintNeed {
+        input_or_first_frame,
+        force_clear,
+        timed_ui_changed: size_changed || timed_cells_changed,
+    }
+}
+
+/// Mouse kinds that GNU mc treats as input. Motion / release / drag do not
+/// change a cell by themselves and must not force Clear+repaint.
+fn mouse_kind_requests_paint(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::Down(_)
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+    )
+}
+
+/// Progress-dialog cells for the current tick. `None` when not in FileOpProgress.
+fn file_op_progress_view_for_paint(
+    app: &App,
+    cols: u16,
+) -> Option<rmc_core::fileop::FileOpProgressView> {
+    match &app.ui_mode {
+        UiMode::FileOpProgress { state, .. } => {
+            let w = (cols as usize).min(74);
+            let bar_width = w.saturating_sub(6).max(16);
+            Some(state.view(bar_width, app.panel_opts.kilobyte_si))
+        }
+        _ => None,
+    }
 }
 
 // Keep the current viewer's effective bytes alive across renders and filtering.
@@ -2021,12 +2067,13 @@ impl TerminalApp {
                 current_skin = app.skin_name.clone();
                 skin_dirty = true;
             }
-            // Poll the jobs worker without blocking the copy. Redraw the GNU mc
-            // progress dialog on every tick so File/Total bars fill, and redraw
-            // immediately when Abort or completion returns to Normal.
-            let file_op_before = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
+            // Poll the jobs worker without blocking the copy. Redraw only when
+            // File/Total bar cells actually change, or when Abort/completion
+            // leaves the progress dialog.
+            let file_op_view_before = file_op_progress_view_for_paint(app, cols);
             app.drive_pending_file_op()?;
-            let file_op_after = matches!(app.ui_mode, UiMode::FileOpProgress { .. });
+            let file_op_view_after = file_op_progress_view_for_paint(app, cols);
+            let file_op_cells_changed = file_op_view_before != file_op_view_after;
             // GNU mc Esc-number: idle timeout must not leave a stuck Esc prefix.
             let had_esc = app.pending_esc.is_some();
             app.expire_esc_number_prefix();
@@ -2034,18 +2081,14 @@ impl TerminalApp {
             // GNU mc(1) C-l: full clear+redraw from current App state (draw already
             // queues Clear(All)). Consume the flag before draw; do not reload panels.
             let force_repaint = app.take_needs_full_clear();
-            let timed_ui_changed = size_changed
-                || subshell_dirty
-                || find_dirty
-                || skin_dirty
-                || file_op_before
-                || file_op_after
-                || esc_expired;
-            if should_full_paint(PaintNeed {
-                input_or_first_frame: need_paint,
-                force_clear: force_repaint,
-                timed_ui_changed,
-            }) {
+            let timed_cells_changed =
+                subshell_dirty || find_dirty || skin_dirty || file_op_cells_changed || esc_expired;
+            if tick_emits_full_redraw(compose_paint_need(
+                need_paint,
+                force_repaint,
+                size_changed,
+                timed_cells_changed,
+            )) {
                 renderer.draw(app)?;
                 need_paint = false;
             }
@@ -2064,6 +2107,7 @@ impl TerminalApp {
                         need_paint = true;
                     }
                     Event::Mouse(mev) => {
+                        let requests_paint = mouse_kind_requests_paint(mev.kind);
                         Self::dispatch_mouse(
                             app,
                             mev,
@@ -2072,7 +2116,9 @@ impl TerminalApp {
                             &mut last_click_time,
                             &mut last_click_target,
                         )?;
-                        need_paint = true;
+                        if requests_paint {
+                            need_paint = true;
+                        }
                     }
                     Event::Resize(c, r) => {
                         // Resize PTY if alive; redraw next loop
@@ -2267,8 +2313,8 @@ impl TerminalApp {
 
     /// Mouse entry used by the event loop and unit tests. GNU `-d`/`--nomouse`
     /// never handles events. Shift+mouse is a passthrough so the terminal can
-    /// select/paste. Editor/dialog modes do not consume clicks except Find File
-    /// action buttons (GNU OK / Stop-Start / Again / Chdir / Panelize / Quit).
+    /// select/paste. Listing F-bar, F9 menu items, and dialog action buttons
+    /// (Copy/Move/Delete/Find File OK/Cancel/…) activate on left-click.
     fn dispatch_mouse(
         app: &mut App,
         mev: MouseEvent,
@@ -2299,10 +2345,167 @@ impl TerminalApp {
         {
             return handle_find_dialog_mouse(app, mev, cols, rows);
         }
+        if matches!(app.ui_mode, UiMode::Menu { .. })
+            && matches!(mev.kind, MouseEventKind::Down(MouseButton::Left))
+        {
+            return Self::handle_menu_mouse(app, mev, cols, rows);
+        }
         if !matches!(app.ui_mode, UiMode::Normal) {
+            if matches!(mev.kind, MouseEventKind::Down(MouseButton::Left)) {
+                return Self::handle_dialog_mouse(app, mev, cols, rows);
+            }
             return Ok(());
         }
         Self::handle_panel_mouse(app, mev, cols, rows, last_click_time, last_click_target)
+    }
+
+    fn handle_menu_mouse(app: &mut App, mev: MouseEvent, cols: u16, rows: u16) -> Result<()> {
+        let (top_index, horizontal) = match &app.ui_mode {
+            UiMode::Menu { top_index, .. } => (*top_index, app.layout.horizontal_split),
+            _ => return Ok(()),
+        };
+        if let Some(i) =
+            crate::hit::menu_dropdown_item_at(mev.column, mev.row, top_index, horizontal)
+        {
+            if let UiMode::Menu {
+                selected_index,
+                dropped,
+                ..
+            } = &mut app.ui_mode
+            {
+                *selected_index = i;
+                *dropped = true;
+            }
+            let (left_rows, right_rows, _, _) = Self::panel_mouse_geom(app, cols, rows);
+            let page = match app.active {
+                PaneSide::Left => left_rows,
+                PaneSide::Right => right_rows,
+            };
+            return Self::handle_key(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), page);
+        }
+        if mev.row == 0 {
+            if let Some(top) = menu_top_index_from_x(mev.column, horizontal) {
+                if let UiMode::Menu {
+                    top_index,
+                    selected_index,
+                    dropped,
+                } = &mut app.ui_mode
+                {
+                    *top_index = top;
+                    *selected_index = 0;
+                    *dropped = true;
+                }
+                return Ok(());
+            }
+        }
+        if let Some(n) = fbar_function_from_xy(app, mev.column, mev.row, cols, rows) {
+            // Menu only eats F1/F9/F10. GNU F-bar still fires F5–F8 with a
+            // dropdown open: leave Normal first, then dispatch the F-key.
+            app.ui_mode = UiMode::Normal;
+            let (left_rows, right_rows, _, _) = Self::panel_mouse_geom(app, cols, rows);
+            let page = match app.active {
+                PaneSide::Left => left_rows,
+                PaneSide::Right => right_rows,
+            };
+            return Self::handle_key(app, KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE), page);
+        }
+        app.ui_mode = UiMode::Normal;
+        Ok(())
+    }
+
+    fn handle_dialog_mouse(app: &mut App, mev: MouseEvent, cols: u16, rows: u16) -> Result<()> {
+        let (left_rows, right_rows, _, _) = Self::panel_mouse_geom(app, cols, rows);
+        let page = match app.active {
+            PaneSide::Left => left_rows,
+            PaneSide::Right => right_rows,
+        };
+        let mx = mev.column;
+        let my = mev.row;
+        match &app.ui_mode {
+            UiMode::CopyDialog { focus, .. } => {
+                let Some(hit) = crate::hit::copy_move_hit_at(cols, rows, mx, my, *focus) else {
+                    return Ok(());
+                };
+                if let UiMode::CopyDialog { focus, .. } = &mut app.ui_mode {
+                    *focus = hit;
+                }
+                let code = if hit.is_action_button() {
+                    KeyCode::Enter
+                } else if hit.is_checkbox() {
+                    KeyCode::Char(' ')
+                } else {
+                    return Ok(());
+                };
+                return Self::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), page);
+            }
+            UiMode::DeleteDialog { focus_ok, .. } => {
+                let Some(yes) = crate::hit::delete_button_at(cols, rows, mx, my, *focus_ok) else {
+                    return Ok(());
+                };
+                if let UiMode::DeleteDialog { focus_ok, .. } = &mut app.ui_mode {
+                    *focus_ok = yes;
+                }
+                return Self::handle_key(
+                    app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    page,
+                );
+            }
+            UiMode::DialogConfirm { .. } | UiMode::PromptInput { .. } => {
+                let Some(ok) = crate::hit::confirm_button_at(cols, rows, mx, my) else {
+                    return Ok(());
+                };
+                let code = if ok { KeyCode::Enter } else { KeyCode::Esc };
+                return Self::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), page);
+            }
+            UiMode::MkdirDialog { focus_ok, .. } => {
+                let Some(ok) = crate::hit::mkdir_button_at(cols, rows, mx, my, *focus_ok) else {
+                    return Ok(());
+                };
+                if let UiMode::MkdirDialog { focus_ok, .. } = &mut app.ui_mode {
+                    *focus_ok = ok;
+                }
+                return Self::handle_key(
+                    app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    page,
+                );
+            }
+            UiMode::InputDialog { focus_ok, .. } => {
+                let Some(ok) = crate::hit::input_dialog_button_at(cols, rows, mx, my, *focus_ok)
+                else {
+                    return Ok(());
+                };
+                if ok {
+                    if let UiMode::InputDialog { focus_ok, .. } = &mut app.ui_mode {
+                        *focus_ok = true;
+                    }
+                    return Self::handle_key(
+                        app,
+                        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                        page,
+                    );
+                }
+                return Self::handle_key(
+                    app,
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                    page,
+                );
+            }
+            UiMode::FileOpProgress { .. } => {
+                if let Some(view) = file_op_progress_view_for_paint(app, cols) {
+                    if crate::hit::file_op_abort_at(cols, rows, mx, my, &view) {
+                        return Self::handle_key(
+                            app,
+                            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                            page,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn panel_mouse_geom(app: &App, cols: u16, rows: u16) -> (usize, usize, usize, usize) {
@@ -2683,6 +2886,7 @@ impl TerminalApp {
                 KeyCode::Esc
                 | KeyCode::F(10)
                 | KeyCode::Enter
+                | KeyCode::Char(' ')
                 | KeyCode::Char('a')
                 | KeyCode::Char('A') => {
                     app.abort_file_op()?;
@@ -4300,22 +4504,25 @@ impl TerminalApp {
                     KeyCode::Tab => {
                         *focus_ok = !*focus_ok;
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char(' ')
+                        if key.modifiers.is_empty()
+                            && (*focus_ok
+                                || (matches!(key.code, KeyCode::Enter)
+                                    && title == QUICK_CD_TITLE)) =>
+                    {
                         // GNU Quick cd: Enter on the input applies the path
-                        // without requiring Tab to the OK button.
-                        let submit = *focus_ok || title == QUICK_CD_TITLE;
-                        if submit {
-                            let cb = std::mem::replace(on_submit, Box::new(|_, _| Ok(())));
-                            let val = value.clone();
-                            app.ui_mode = UiMode::Normal;
-                            cb(app, val)?;
-                            app.reload_panels()?;
-                        }
+                        // without requiring Tab to the OK button. Space on OK
+                        // also submits; Space in the field still inserts below.
+                        let cb = std::mem::replace(on_submit, Box::new(|_, _| Ok(())));
+                        let val = value.clone();
+                        app.ui_mode = UiMode::Normal;
+                        cb(app, val)?;
+                        app.reload_panels()?;
                     }
-                    KeyCode::Backspace => {
+                    KeyCode::Backspace if !*focus_ok => {
                         value.pop();
                     }
-                    KeyCode::Char(c) if key.modifiers.is_empty() => {
+                    KeyCode::Char(c) if !*focus_ok && key.modifiers.is_empty() => {
                         value.push(c);
                     }
                     _ => {}
@@ -4510,7 +4717,7 @@ impl TerminalApp {
                     KeyCode::Esc | KeyCode::F(10) => {
                         app.ui_mode = UiMode::Normal;
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
                         let cb = std::mem::replace(on_ok, Box::new(|_| Ok(())));
                         app.ui_mode = UiMode::Normal;
                         cb(app)?;
@@ -5755,7 +5962,12 @@ impl TerminalApp {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
                     KeyCode::Tab => *focus_ok = !*focus_ok,
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char(' ')
+                        if key.modifiers.is_empty()
+                            && (*focus_ok || matches!(key.code, KeyCode::Enter)) =>
+                    {
+                        // Enter always activates the focused widget (field = Cancel
+                        // path when !focus_ok). Space activates only the buttons.
                         if *focus_ok {
                             if !value.is_empty() {
                                 let dir = active_cwd.join(value.clone());
@@ -5843,8 +6055,20 @@ impl TerminalApp {
             } => {
                 match key.code {
                     KeyCode::Esc => app.ui_mode = UiMode::Normal,
-                    KeyCode::Tab => *focus_ok = !*focus_ok,
-                    KeyCode::Enter => {
+                    KeyCode::Tab | KeyCode::Left | KeyCode::Right => *focus_ok = !*focus_ok,
+                    KeyCode::Char('y') | KeyCode::Char('Y') if key.modifiers.is_empty() => {
+                        *focus_ok = true;
+                        if let Err(e) = app.vfs.remove(path, true) {
+                            app.show_error_dialog(format!("{e}"));
+                            return Ok(());
+                        }
+                        app.reload_panels()?;
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') if key.modifiers.is_empty() => {
+                        app.ui_mode = UiMode::Normal;
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
                         if *focus_ok {
                             if let Err(e) = app.vfs.remove(path, true) {
                                 app.show_error_dialog(format!("{e}"));
@@ -5898,6 +6122,12 @@ impl TerminalApp {
                         }
                         _ => {}
                     },
+                    KeyCode::Left if focus.is_action_button() => {
+                        *focus = focus.prev_action_button();
+                    }
+                    KeyCode::Right if focus.is_action_button() => {
+                        *focus = focus.next_action_button();
+                    }
                     KeyCode::Char(c) => {
                         if key.modifiers.is_empty() {
                             if c == ' ' {
@@ -5907,6 +6137,29 @@ impl TerminalApp {
                                     F::Checkbox3 => *preserve_attrs = !*preserve_attrs,
                                     F::Checkbox4 => *dive_into_subdir = !*dive_into_subdir,
                                     F::Checkbox5 => *stable_symlinks = !*stable_symlinks,
+                                    F::Ok | F::Background => {
+                                        let background = matches!(*focus, F::Background);
+                                        let op = if title == "Copy" {
+                                            rmc_core::app::CopyMoveOp::Copy
+                                        } else {
+                                            rmc_core::app::CopyMoveOp::Move
+                                        };
+                                        let sources = src_paths.clone();
+                                        let mask_s = mask.clone();
+                                        let to_s = to.clone();
+                                        let shell = *using_shell_patterns;
+                                        let follow = *follow_links;
+                                        let preserve = *preserve_attrs;
+                                        let dive = *dive_into_subdir;
+                                        let stable = *stable_symlinks;
+                                        Self::submit_copy_move_dialog(
+                                            app, op, sources, mask_s, to_s, shell, follow,
+                                            preserve, dive, stable, background,
+                                        );
+                                    }
+                                    F::Cancel => {
+                                        app.ui_mode = UiMode::Normal;
+                                    }
                                     _ => {}
                                 }
                             } else {
@@ -6459,22 +6712,7 @@ impl TerminalApp {
                 selected_index,
                 dropped,
             } => {
-                let menus: [&[&str]; 5] = [
-                    LEFT_RIGHT_MENU_ITEMS,
-                    FILE_MENU_ITEMS,
-                    COMMAND_MENU_ITEMS,
-                    &[
-                        "Configuration",
-                        "Layout",
-                        "Panels",
-                        "Confirmations",
-                        "Appearance",
-                        "Virtual FS...",
-                        "Learn keys",
-                        "Save setup",
-                    ],
-                    LEFT_RIGHT_MENU_ITEMS,
-                ];
+                let menus = top_menu_items(*top_index);
                 match key.code {
                     KeyCode::F(1) => {
                         app.handle_action(Action::ShowHelp)?;
@@ -6505,7 +6743,7 @@ impl TerminalApp {
                             *dropped = true;
                             *selected_index = 0;
                         } else {
-                            let max = menus[*top_index].len().saturating_sub(1);
+                            let max = menus.len().saturating_sub(1);
                             if *selected_index < max {
                                 *selected_index += 1;
                             }
@@ -6517,7 +6755,7 @@ impl TerminalApp {
                             *selected_index = 0;
                             return Ok(());
                         }
-                        let item = menus[*top_index][*selected_index];
+                        let item = menus[*selected_index];
                         match item {
                             "Help" => {
                                 app.handle_action(Action::ShowHelp)?;
@@ -26205,7 +26443,11 @@ mod panel_toggle_mark_tests {
 
 #[cfg(test)]
 mod idle_paint_tests {
-    use super::{should_full_paint, PaintNeed};
+    use super::{
+        compose_paint_need, mouse_kind_requests_paint, should_full_paint, tick_emits_full_redraw,
+        PaintNeed,
+    };
+    use crossterm::event::{MouseButton, MouseEventKind};
 
     #[test]
     fn idle_timeout_does_not_full_paint() {
@@ -26218,6 +26460,23 @@ mod idle_paint_tests {
             force_clear: false,
             timed_ui_changed: false,
         }));
+    }
+
+    #[test]
+    fn idle_tick_does_not_emit_full_redraw() {
+        // Same decision the event loop uses after poll() times out with no
+        // input, no C-l, no resize, and no timer that changed a cell.
+        let mut clears = 0u32;
+        for _ in 0..8 {
+            let need = compose_paint_need(false, false, false, false);
+            if tick_emits_full_redraw(need) {
+                clears += 1;
+            }
+        }
+        assert_eq!(
+            clears, 0,
+            "eight idle ticks must not queue Renderer::draw (Clear+repaint)"
+        );
     }
 
     #[test]
@@ -26234,18 +26493,475 @@ mod idle_paint_tests {
 
     #[test]
     fn input_c_l_and_timed_ui_do_paint() {
-        assert!(should_full_paint(PaintNeed {
-            input_or_first_frame: true,
-            ..PaintNeed::default()
-        }));
-        assert!(should_full_paint(PaintNeed {
-            force_clear: true,
-            ..PaintNeed::default()
-        }));
-        assert!(should_full_paint(PaintNeed {
-            timed_ui_changed: true,
-            ..PaintNeed::default()
-        }));
+        assert!(tick_emits_full_redraw(compose_paint_need(
+            true, false, false, false
+        )));
+        assert!(tick_emits_full_redraw(compose_paint_need(
+            false, true, false, false
+        )));
+        assert!(tick_emits_full_redraw(compose_paint_need(
+            false, false, true, false
+        )));
+        assert!(tick_emits_full_redraw(compose_paint_need(
+            false, false, false, true
+        )));
+    }
+
+    #[test]
+    fn mouse_up_and_move_do_not_request_paint() {
+        assert!(!mouse_kind_requests_paint(MouseEventKind::Up(
+            MouseButton::Left
+        )));
+        assert!(!mouse_kind_requests_paint(MouseEventKind::Moved));
+        assert!(!mouse_kind_requests_paint(MouseEventKind::Drag(
+            MouseButton::Left
+        )));
+        assert!(mouse_kind_requests_paint(MouseEventKind::Down(
+            MouseButton::Left
+        )));
+        assert!(mouse_kind_requests_paint(MouseEventKind::ScrollDown));
+    }
+
+    #[test]
+    fn unchanged_file_op_view_is_not_a_timed_cell_change() {
+        let need = compose_paint_need(false, false, false, false);
+        assert!(
+            !tick_emits_full_redraw(need),
+            "progress dialog with identical cells must not Clear+repaint"
+        );
+    }
+}
+
+#[cfg(test)]
+mod button_activation_tests {
+    use super::*;
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use rmc_core::actions::PaneSide;
+    use rmc_core::app::{App, CopyDialogFocus, UiMode};
+    use rmc_core::config::KeyMap;
+    use rmc_core::find::FindDialogState;
+    use rmc_fs::local::LocalFs;
+
+    const COLS: u16 = 80;
+    const ROWS: u16 = 24;
+
+    fn temp_workspace() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rmc-btn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn make_app(cwd: &std::path::Path) -> App {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.layout = rmc_core::app::LayoutOptions::default();
+        app.config_opts.use_internal_view = true;
+        app.config_opts.use_internal_edit = true;
+        app.mouse_enabled = true;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Right;
+        app.change_dir(cwd).unwrap();
+        app.active = PaneSide::Left;
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        TerminalApp::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 10).unwrap();
+    }
+
+    fn click(app: &mut App, column: u16, row: u16) {
+        let mut last_click_time = None;
+        let mut last_click_target = None;
+        TerminalApp::dispatch_mouse(
+            app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            COLS,
+            ROWS,
+            &mut last_click_time,
+            &mut last_click_target,
+        )
+        .unwrap();
+    }
+
+    fn select_named(app: &mut App, name: &str) {
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        app.active_panel_mut().cursor = idx;
+    }
+
+    fn copy_focus(app: &App) -> CopyDialogFocus {
+        match &app.ui_mode {
+            UiMode::CopyDialog { focus, .. } => *focus,
+            _ => panic!("expected CopyDialog"),
+        }
+    }
+
+    fn click_fbar(app: &mut App, fn_index: usize) {
+        let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
+        let fbar_y = geom.fbar_row.expect("F-bar");
+        let labels = panel_fbar_labels();
+        let mut x = 0u16;
+        for (i, lab) in labels.iter().enumerate() {
+            let num = if i == 9 { "10" } else { &(i + 1).to_string() };
+            let w = num.len() as u16 + lab.len() as u16 + 1;
+            if i == fn_index {
+                click(app, x, fbar_y);
+                return;
+            }
+            x = x.saturating_add(w);
+        }
+        panic!("F-bar index {fn_index} out of range");
+    }
+
+    #[test]
+    fn fbar_f3_click_opens_viewer() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 2);
+        assert!(
+            matches!(app.ui_mode, UiMode::Viewer { .. }),
+            "F-bar View (F3) must open the internal viewer"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f4_click_opens_editor() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 3);
+        assert!(
+            matches!(app.ui_mode, UiMode::Editor { .. }),
+            "F-bar Edit (F4) must open the internal editor"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f10_click_quits() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        click_fbar(&mut app, 9);
+        assert!(
+            app.quit,
+            "F-bar 10Quit must quit (F10 key may be stolen by the terminal)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f5_click_opens_copy_dialog() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 4);
+        assert!(
+            matches!(app.ui_mode, UiMode::CopyDialog { .. }),
+            "F-bar Copy (F5) must open the Copy dialog"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f7_click_opens_mkdir_dialog() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 6);
+        assert!(
+            matches!(app.ui_mode, UiMode::MkdirDialog { .. }),
+            "F-bar Mkdir (F7) must open Create a new Directory"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f8_click_opens_delete_yes_no() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        click_fbar(&mut app, 7);
+        match &app.ui_mode {
+            UiMode::DeleteDialog { name, focus_ok, .. } => {
+                assert_eq!(name, "aaa.txt");
+                assert!(
+                    *focus_ok,
+                    "Delete defaults to Yes (safe-delete off), not OK/Cancel"
+                );
+            }
+            _ => panic!("F-bar Delete (F8) must open Yes/No"),
+        }
+        assert_eq!(crate::hit::delete_button_at(COLS, ROWS, 0, 0, true), None);
+        let by = (ROWS - 7) / 2 + 5;
+        assert!(
+            (0..COLS).any(|x| crate::hit::delete_button_at(COLS, ROWS, x, by, true) == Some(true)),
+            "Yes is hittable"
+        );
+        assert!(
+            (0..COLS).any(|x| crate::hit::delete_button_at(COLS, ROWS, x, by, true) == Some(false)),
+            "No is hittable"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_space_on_cancel_dismisses() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        press(&mut app, KeyCode::F(5));
+        assert!(matches!(app.ui_mode, UiMode::CopyDialog { .. }));
+        while !matches!(copy_focus(&app), CopyDialogFocus::Cancel) {
+            press(&mut app, KeyCode::Tab);
+        }
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Space on Cancel must dismiss Copy"
+        );
+        assert!(root.join("aaa.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_mouse_on_cancel_dismisses() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        press(&mut app, KeyCode::F(5));
+        let focus = copy_focus(&app);
+        let by = (ROWS - 15) / 2 + 13;
+        let mx = (0..COLS)
+            .find(|&x| {
+                crate::hit::copy_move_hit_at(COLS, ROWS, x, by, focus)
+                    == Some(CopyDialogFocus::Cancel)
+            })
+            .expect("Cancel x");
+        click(&mut app, mx, by);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "mouse on Cancel must dismiss Copy"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_y_confirms_and_n_cancels() {
+        let root = temp_workspace();
+        std::fs::write(root.join("victim.txt"), b"x").unwrap();
+        std::fs::write(root.join("keep.txt"), b"y").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "keep.txt");
+        press(&mut app, KeyCode::F(8));
+        press(&mut app, KeyCode::Char('n'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(root.join("keep.txt").exists(), "n must keep the file");
+        select_named(&mut app, "victim.txt");
+        press(&mut app, KeyCode::F(8));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(!root.join("victim.txt").exists(), "y must delete");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_space_on_yes_removes_file() {
+        let root = temp_workspace();
+        std::fs::write(root.join("victim.txt"), b"x").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "victim.txt");
+        press(&mut app, KeyCode::F(8));
+        assert!(matches!(app.ui_mode, UiMode::DeleteDialog { .. }));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            !root.join("victim.txt").exists(),
+            "Space on Yes must delete"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_mouse_on_no_keeps_file() {
+        let root = temp_workspace();
+        std::fs::write(root.join("keep.txt"), b"x").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "keep.txt");
+        press(&mut app, KeyCode::F(8));
+        let focus_ok = match &app.ui_mode {
+            UiMode::DeleteDialog { focus_ok, .. } => *focus_ok,
+            _ => panic!("DeleteDialog"),
+        };
+        let by = (ROWS - 7) / 2 + 5;
+        let mx = (0..COLS)
+            .find(|&x| crate::hit::delete_button_at(COLS, ROWS, x, by, focus_ok) == Some(false))
+            .expect("No x");
+        click(&mut app, mx, by);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            root.join("keep.txt").exists(),
+            "mouse on No must not delete"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn menu_mouse_find_file_opens_dialog() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::Menu {
+            top_index: 2,
+            selected_index: 0,
+            dropped: true,
+        };
+        let idx = crate::render::COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Find file")
+            .expect("Find file");
+        let my = 1 + 1 + idx as u16;
+        click(&mut app, 20, my);
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "mouse on Command→Find file must open Find File"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn confirm_space_activates_ok() {
+        let root = temp_workspace();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::DialogConfirm {
+            title: "Info".into(),
+            message: "ok".into(),
+            on_ok: Box::new(|_| Ok(())),
+        };
+        press(&mut app, KeyCode::Char(' '));
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "Space on Confirm OK must dismiss"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mkdir_space_on_ok_creates_and_mouse_cancel_dismisses() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        press(&mut app, KeyCode::F(7));
+        assert!(matches!(app.ui_mode, UiMode::MkdirDialog { .. }));
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('w'));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(root.join("new").is_dir(), "Space on Mkdir OK must create");
+
+        press(&mut app, KeyCode::F(7));
+        let focus_ok = match &app.ui_mode {
+            UiMode::MkdirDialog { focus_ok, .. } => *focus_ok,
+            _ => panic!("MkdirDialog"),
+        };
+        let by = (ROWS - 7) / 2 + 5;
+        let mx = (0..COLS)
+            .find(|&x| crate::hit::mkdir_button_at(COLS, ROWS, x, by, focus_ok) == Some(false))
+            .expect("Cancel x");
+        click(&mut app, mx, by);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "mouse on Mkdir Cancel must dismiss"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f5_with_menu_open_leaves_normal_then_copy() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        app.ui_mode = UiMode::Menu {
+            top_index: 1,
+            selected_index: 0,
+            dropped: true,
+        };
+        click_fbar(&mut app, 4);
+        assert!(
+            matches!(app.ui_mode, UiMode::CopyDialog { .. }),
+            "GNU F-bar Copy still fires while a dropdown is open"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f7_with_menu_open_opens_mkdir() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        app.ui_mode = UiMode::Menu {
+            top_index: 1,
+            selected_index: 0,
+            dropped: true,
+        };
+        click_fbar(&mut app, 6);
+        assert!(
+            matches!(app.ui_mode, UiMode::MkdirDialog { .. }),
+            "GNU F-bar Mkdir still fires while a dropdown is open"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_file_ok_still_starts_from_space() {
+        let root = temp_workspace();
+        std::fs::write(root.join("hit.txt"), b"x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        if let UiMode::FindDialog(st) = &mut app.ui_mode {
+            st.focus = rmc_core::find::FindDialogFocus::ButtonOk;
+        }
+        press(&mut app, KeyCode::Char(' '));
+        let running = match &app.ui_mode {
+            UiMode::FindDialog(st) => st.running || !st.results.paths.is_empty(),
+            _ => false,
+        };
+        assert!(running, "Space on Find File OK must start a search");
+        if let UiMode::FindDialog(st) = &mut app.ui_mode {
+            st.abort_search();
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
