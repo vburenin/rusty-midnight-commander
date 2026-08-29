@@ -27,7 +27,8 @@ pub enum Action {
     Repaint,
     ToggleHidden,
     SwapPanels,
-    /// GNU mc Left/Right → Equal panel size (Alt-=). 50/50 split; does not swap.
+    /// GNU mc SplitEqual (Alt-=). 50/50 split; does not swap. Not a Left/Right
+    /// drop-down row in GNU 4.8.30 (`create_panel_menu`).
     EqualizePanels,
     /// GNU mc Layout Alt-, (Alt-comma): toggle Vertical ↔ Horizontal panel split.
     TogglePanelSplit,

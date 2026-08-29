@@ -7314,53 +7314,235 @@ fn draw_chown_dialog(
     }
 }
 
-/// GNU mc(1) Command menu labels. Shared with `terminal.rs` so both copies match.
+/// One drop-down row. Empty `label` is a GNU separator (`├─…─┤`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MenuRow {
+    pub label: &'static str,
+    pub hotkey: Option<char>,
+    pub shortcut: &'static str,
+}
+
+impl MenuRow {
+    pub const fn is_separator(self) -> bool {
+        self.label.is_empty()
+    }
+}
+
+/// File menu rows keep this alias so #174 cell tests stay on `FILE_MENU`.
+pub(crate) type FileMenuRow = MenuRow;
+
+/// GNU mc 4.8.30 `create_command_menu` after `g_list_reverse`, plus default
+/// shortcut column (`midnight_get_shortcut` / `mc.default.keymap`).
+/// Items without an existing handler are omitted (see leftover list).
+pub(crate) const COMMAND_MENU: &[MenuRow] = &[
+    MenuRow {
+        label: "User menu",
+        hotkey: Some('U'),
+        shortcut: "F2",
+    },
+    MenuRow {
+        label: "Directory tree",
+        hotkey: Some('D'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Find file",
+        hotkey: Some('F'),
+        shortcut: "M-?",
+    },
+    MenuRow {
+        label: "Swap panels",
+        hotkey: Some('w'),
+        shortcut: "C-u",
+    },
+    MenuRow {
+        label: "Switch panels on/off",
+        hotkey: Some('p'),
+        shortcut: "C-o",
+    },
+    MenuRow {
+        label: "Compare directories",
+        hotkey: Some('C'),
+        shortcut: "C-x d",
+    },
+    MenuRow {
+        label: "Compare files",
+        hotkey: Some('o'),
+        shortcut: "C-x C-d",
+    },
+    MenuRow {
+        label: "External panelize",
+        hotkey: Some('x'),
+        shortcut: "C-x !",
+    },
+    MenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Command history",
+        hotkey: Some('h'),
+        shortcut: "M-h",
+    },
+    MenuRow {
+        label: "Directory hotlist",
+        hotkey: Some('r'),
+        shortcut: "C-\\",
+    },
+    MenuRow {
+        label: "Background jobs",
+        hotkey: Some('B'),
+        shortcut: "C-x j",
+    },
+    MenuRow {
+        label: "Screen list",
+        hotkey: Some('t'),
+        shortcut: "M-`",
+    },
+    MenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Edit extension file",
+        hotkey: Some('e'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Edit menu file",
+        hotkey: Some('m'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Edit highlighting group file",
+        hotkey: Some('g'),
+        shortcut: "",
+    },
+];
+
+/// Labels including `""` separators so dropdown row indices match `COMMAND_MENU`.
 pub(crate) const COMMAND_MENU_ITEMS: &[&str] = &[
     "User menu",
     "Directory tree",
     "Find file",
     "Swap panels",
     "Switch panels on/off",
-    "Compare dirs",
+    "Compare directories",
+    "Compare files",
     "External panelize",
+    "",
     "Command history",
     "Directory hotlist",
+    "Background jobs",
+    "Screen list",
+    "",
     "Edit extension file",
     "Edit menu file",
-    "Screen list",
+    "Edit highlighting group file",
 ];
 
-/// GNU mc(1) Left/Right menu labels. Shared with `terminal.rs`.
+/// GNU `menu_arrange`: box = max_hotkey_len + max_shortcut_len + 5.
+pub(crate) const COMMAND_MENU_BOX_WIDTH: u16 = 41;
+/// Inner column where the shortcut column starts (`max_hotkey_len + 3`).
+pub(crate) const COMMAND_MENU_SHORTCUT_COL: usize = 32;
+
+/// GNU mc 4.8.30 `create_panel_menu` after `g_list_reverse` (FTP/FISH/SFTP
+/// typical 4.8 build). Encoding... / Panelize omitted (no existing handler).
+pub(crate) const LEFT_RIGHT_MENU: &[MenuRow] = &[
+    MenuRow {
+        label: "File listing",
+        hotkey: Some('g'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Quick view",
+        hotkey: Some('Q'),
+        shortcut: "C-x q",
+    },
+    MenuRow {
+        label: "Info",
+        hotkey: Some('I'),
+        shortcut: "C-x i",
+    },
+    MenuRow {
+        label: "Tree",
+        hotkey: Some('T'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Listing format...",
+        hotkey: Some('L'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Sort order...",
+        hotkey: Some('S'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Filter...",
+        hotkey: Some('F'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    MenuRow {
+        label: "FTP link...",
+        hotkey: Some('P'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Shell link...",
+        hotkey: Some('h'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "SFTP link...",
+        hotkey: Some('n'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Rescan",
+        hotkey: Some('R'),
+        shortcut: "C-r",
+    },
+];
+
+/// Labels including `""` separators so dropdown row indices match `LEFT_RIGHT_MENU`.
 pub(crate) const LEFT_RIGHT_MENU_ITEMS: &[&str] = &[
-    "Copy",
-    "Move",
-    "Mkdir",
-    "Delete",
-    "FTP link",
-    "Shell link",
-    "SFTP link",
-    "SMB link",
-    "Listing mode...",
-    "Sort order...",
+    "File listing",
+    "Quick view",
+    "Info",
     "Tree",
-    "Filter",
-    "Reread",
-    "Equal panel size",
+    "",
+    "Listing format...",
+    "Sort order...",
+    "Filter...",
+    "",
+    "FTP link...",
+    "Shell link...",
+    "SFTP link...",
+    "",
+    "Rescan",
 ];
 
-/// One File-menu row. Empty `label` is a GNU separator (`├─…─┤`).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct FileMenuRow {
-    pub label: &'static str,
-    pub hotkey: Option<char>,
-    pub shortcut: &'static str,
-}
-
-impl FileMenuRow {
-    pub const fn is_separator(self) -> bool {
-        self.label.is_empty()
-    }
-}
+pub(crate) const LEFT_RIGHT_MENU_BOX_WIDTH: u16 = 27;
+pub(crate) const LEFT_RIGHT_MENU_SHORTCUT_COL: usize = 20;
 
 /// GNU mc 4.8.30 `create_file_menu` after `g_list_reverse`, plus default
 /// shortcut column (`midnight_get_shortcut` / `mc.default.keymap`).
@@ -7515,17 +7697,71 @@ pub(crate) const FILE_MENU_BOX_WIDTH: u16 = 28;
 /// Inner column where the shortcut column starts (`max_hotkey_len + 3`).
 pub(crate) const FILE_MENU_SHORTCUT_COL: usize = 19;
 
-/// GNU mc(1) Options menu labels. Shared with `terminal.rs` and hit-testing.
+/// GNU mc 4.8.30 `create_options_menu` after `g_list_reverse`.
+/// Display bits... omitted (no existing handler).
+pub(crate) const OPTIONS_MENU: &[MenuRow] = &[
+    MenuRow {
+        label: "Configuration...",
+        hotkey: Some('C'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Layout...",
+        hotkey: Some('L'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Panel options...",
+        hotkey: Some('P'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Confirmation...",
+        hotkey: Some('o'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Appearance...",
+        hotkey: Some('A'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Learn keys...",
+        hotkey: Some('k'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Virtual FS...",
+        hotkey: Some('V'),
+        shortcut: "",
+    },
+    MenuRow {
+        label: "",
+        hotkey: None,
+        shortcut: "",
+    },
+    MenuRow {
+        label: "Save setup",
+        hotkey: Some('S'),
+        shortcut: "",
+    },
+];
+
+/// Labels including `""` separators so dropdown row indices match `OPTIONS_MENU`.
 pub(crate) const OPTIONS_MENU_ITEMS: &[&str] = &[
-    "Configuration",
-    "Layout",
-    "Panels",
-    "Confirmations",
-    "Appearance",
+    "Configuration...",
+    "Layout...",
+    "Panel options...",
+    "Confirmation...",
+    "Appearance...",
+    "Learn keys...",
     "Virtual FS...",
-    "Learn keys",
+    "",
     "Save setup",
 ];
+
+pub(crate) const OPTIONS_MENU_BOX_WIDTH: u16 = 21;
+pub(crate) const OPTIONS_MENU_SHORTCUT_COL: usize = 19;
 
 /// Dropdown entries for F9 top index 0..=4 (Left, File, Command, Options, Right).
 pub(crate) fn top_menu_items(top_index: usize) -> &'static [&'static str] {
@@ -7534,6 +7770,15 @@ pub(crate) fn top_menu_items(top_index: usize) -> &'static [&'static str] {
         2 => COMMAND_MENU_ITEMS,
         3 => OPTIONS_MENU_ITEMS,
         _ => LEFT_RIGHT_MENU_ITEMS,
+    }
+}
+
+pub(crate) fn top_menu_rows(top_index: usize) -> &'static [MenuRow] {
+    match top_index {
+        1 => FILE_MENU,
+        2 => COMMAND_MENU,
+        3 => OPTIONS_MENU,
+        _ => LEFT_RIGHT_MENU,
     }
 }
 
@@ -7546,28 +7791,32 @@ pub(crate) fn dropdown_origin_x(top_index: usize, horizontal_split: bool) -> u16
 pub(crate) fn dropdown_box_size(top_index: usize) -> (u16, u16) {
     let items = top_menu_items(top_index);
     let h = items.len() as u16 + 2;
-    if top_index == 1 {
-        (FILE_MENU_BOX_WIDTH, h)
-    } else {
-        (
-            (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16,
-            h,
-        )
+    let w = match top_index {
+        1 => FILE_MENU_BOX_WIDTH,
+        2 => COMMAND_MENU_BOX_WIDTH,
+        3 => OPTIONS_MENU_BOX_WIDTH,
+        _ => LEFT_RIGHT_MENU_BOX_WIDTH,
+    };
+    (w, h)
+}
+
+pub(crate) fn menu_shortcut_col(top_index: usize) -> usize {
+    match top_index {
+        1 => FILE_MENU_SHORTCUT_COL,
+        2 => COMMAND_MENU_SHORTCUT_COL,
+        3 => OPTIONS_MENU_SHORTCUT_COL,
+        _ => LEFT_RIGHT_MENU_SHORTCUT_COL,
     }
 }
 
 pub(crate) fn menu_row_is_separator(top_index: usize, idx: usize) -> bool {
-    top_index == 1 && FILE_MENU.get(idx).is_some_and(|r| r.is_separator())
+    top_menu_rows(top_index)
+        .get(idx)
+        .is_some_and(|r| r.is_separator())
 }
 
 pub(crate) fn menu_item_hotkey(top_index: usize, idx: usize) -> Option<char> {
-    if top_index == 1 {
-        FILE_MENU.get(idx).and_then(|r| r.hotkey)
-    } else {
-        top_menu_items(top_index)
-            .get(idx)
-            .and_then(|s| s.chars().find(|c| !c.is_whitespace()))
-    }
+    top_menu_rows(top_index).get(idx).and_then(|r| r.hotkey)
 }
 
 /// GNU menubar: Up/Down stop at the ends and skip separator rows.
@@ -7616,9 +7865,11 @@ fn draw_menu_dropdown(
     p.goto(x + w - 1, y + h - 1);
     p.text("┘");
     let inner = (w - 2) as usize;
+    let shortcut_col = menu_shortcut_col(top_index);
+    let rows = top_menu_rows(top_index);
     for (i, it) in items.iter().enumerate() {
         let row = y + 1 + i as u16;
-        if top_index == 1 && it.is_empty() {
+        if menu_row_is_separator(top_index, i) {
             p.set_fg_bg(pal.menu_fg, pal.menu_bg);
             p.goto(x, row);
             p.text("├");
@@ -7628,34 +7879,31 @@ fn draw_menu_dropdown(
             continue;
         }
         let hotkey = menu_item_hotkey(top_index, i);
-        if top_index == 1 {
-            draw_file_menu_row(
-                p,
-                x,
-                row,
-                it,
-                hotkey,
-                FILE_MENU[i].shortcut,
-                i == selected,
-                pal,
-                inner,
-            );
-        } else {
-            let mut line = String::from(" ");
-            line.push_str(it);
-            draw_menu_hotkey_label_at(p, x + 1, row, &line, hotkey, i == selected, pal, inner);
-        }
+        let shortcut = rows.get(i).map(|r| r.shortcut).unwrap_or("");
+        draw_dropdown_menu_row(
+            p,
+            x,
+            row,
+            it,
+            hotkey,
+            shortcut,
+            shortcut_col,
+            i == selected,
+            pal,
+            inner,
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_file_menu_row(
+fn draw_dropdown_menu_row(
     p: &mut Painter,
     x: u16,
     row: u16,
     label: &str,
     hotkey: Option<char>,
     shortcut: &str,
+    shortcut_col: usize,
     selected: bool,
     pal: McPalette,
     inner: usize,
@@ -7663,7 +7911,7 @@ fn draw_file_menu_row(
     // GNU `menubar_paint_idx`: leading space, label, shortcut at max_hotkey_len+3.
     let mut line = String::from(" ");
     line.push_str(label);
-    while line.chars().count() < FILE_MENU_SHORTCUT_COL {
+    while line.chars().count() < shortcut_col {
         line.push(' ');
     }
     line.push_str(shortcut);
@@ -9913,6 +10161,164 @@ mod gnu_default_chrome_colors_tests {
             (grid[xy][xx + 1].fg, grid[xy][xx + 1].bg),
             (Color::Yellow, Color::Cyan)
         );
+    }
+
+    fn assert_dropdown_rows(top_index: usize, origin: usize, width: u16, expected: &[&str]) {
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_dropdown(&mut p, pal, top_index, 0, false);
+        }
+        let grid = rasterize(&buf, 80, 40);
+        let x = super::dropdown_origin_x(top_index, false) as usize;
+        assert_eq!(x, origin, "drop-down {top_index} origin");
+        assert_eq!(grid[1][x].ch, '┌');
+        assert_eq!(grid[1][x + width as usize - 1].ch, '┐');
+        let inner = width as usize - 2;
+        for (i, want) in expected.iter().enumerate() {
+            let y = 2 + i;
+            let got: String = grid[y][x + 1..x + 1 + inner].iter().map(|c| c.ch).collect();
+            assert_eq!(got, *want, "menu {top_index} row {i}");
+            if want.chars().all(|c| c == '─') {
+                assert_eq!(grid[y][x].ch, '├');
+                assert_eq!(grid[y][x + width as usize - 1].ch, '┤');
+            }
+        }
+        assert_eq!(grid[2 + expected.len()][x].ch, '└');
+    }
+
+    #[test]
+    fn left_menu_matches_gnu_4_8_30_item_and_shortcut_columns() {
+        assert_eq!(super::LEFT_RIGHT_MENU_BOX_WIDTH, 27);
+        assert_eq!(super::dropdown_origin_x(0, false), 0);
+        let expected = [
+            " File listing            ",
+            " Quick view         C-x q",
+            " Info               C-x i",
+            " Tree                    ",
+            "─────────────────────────",
+            " Listing format...       ",
+            " Sort order...           ",
+            " Filter...               ",
+            "─────────────────────────",
+            " FTP link...             ",
+            " Shell link...           ",
+            " SFTP link...            ",
+            "─────────────────────────",
+            " Rescan             C-r  ",
+        ];
+        assert_dropdown_rows(0, 0, 27, &expected);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_dropdown(&mut p, pal, 0, 0, false);
+        }
+        let grid = rasterize(&buf, 80, 40);
+        let (gx, gy) = find_text(&grid, "File listing");
+        assert_eq!(grid[gy][gx + 11].ch, 'g');
+        assert_eq!(
+            (grid[gy][gx + 11].fg, grid[gy][gx + 11].bg),
+            (Color::Yellow, Color::Black),
+            "selected File listing hotkey g is yellow;black"
+        );
+        let (qx, qy) = find_text(&grid, "Quick view");
+        assert_eq!(grid[qy][qx].ch, 'Q');
+        assert_eq!(
+            (grid[qy][qx].fg, grid[qy][qx].bg),
+            (Color::Yellow, Color::Cyan),
+            "idle Quick view hotkey Q is yellow;cyan"
+        );
+        let (px, py) = find_text(&grid, "FTP link...");
+        assert_eq!(grid[py][px + 2].ch, 'P');
+        assert_eq!(
+            (grid[py][px + 2].fg, grid[py][px + 2].bg),
+            (Color::Yellow, Color::Cyan)
+        );
+    }
+
+    #[test]
+    fn command_menu_matches_gnu_4_8_30_item_and_shortcut_columns() {
+        assert_eq!(super::COMMAND_MENU_BOX_WIDTH, 41);
+        assert_eq!(super::dropdown_origin_x(2, false), 18);
+        let expected = [
+            " User menu                      F2     ",
+            " Directory tree                        ",
+            " Find file                      M-?    ",
+            " Swap panels                    C-u    ",
+            " Switch panels on/off           C-o    ",
+            " Compare directories            C-x d  ",
+            " Compare files                  C-x C-d",
+            " External panelize              C-x !  ",
+            "───────────────────────────────────────",
+            " Command history                M-h    ",
+            " Directory hotlist              C-\\    ",
+            " Background jobs                C-x j  ",
+            " Screen list                    M-`    ",
+            "───────────────────────────────────────",
+            " Edit extension file                   ",
+            " Edit menu file                        ",
+            " Edit highlighting group file          ",
+        ];
+        assert_dropdown_rows(2, 18, 41, &expected);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_dropdown(&mut p, pal, 2, 0, false);
+        }
+        let grid = rasterize(&buf, 80, 40);
+        let (wx, wy) = find_text(&grid, "Swap panels");
+        assert_eq!(grid[wy][wx + 1].ch, 'w');
+        assert_eq!(
+            (grid[wy][wx + 1].fg, grid[wy][wx + 1].bg),
+            (Color::Yellow, Color::Cyan)
+        );
+    }
+
+    #[test]
+    fn options_menu_matches_gnu_4_8_30_item_and_shortcut_columns() {
+        assert_eq!(super::OPTIONS_MENU_BOX_WIDTH, 21);
+        assert_eq!(super::dropdown_origin_x(3, false), 30);
+        let expected = [
+            " Configuration...  ",
+            " Layout...         ",
+            " Panel options...  ",
+            " Confirmation...   ",
+            " Appearance...     ",
+            " Learn keys...     ",
+            " Virtual FS...     ",
+            "───────────────────",
+            " Save setup        ",
+        ];
+        assert_dropdown_rows(3, 30, 21, &expected);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_menu_dropdown(&mut p, pal, 3, 0, false);
+        }
+        let grid = rasterize(&buf, 80, 30);
+        let (ox, oy) = find_text(&grid, "Confirmation...");
+        assert_eq!(grid[oy][ox + 1].ch, 'o');
+        assert_eq!(
+            (grid[oy][ox + 1].fg, grid[oy][ox + 1].bg),
+            (Color::Yellow, Color::Cyan)
+        );
+        let (kx, ky) = find_text(&grid, "Learn keys...");
+        assert_eq!(grid[ky][kx + 6].ch, 'k');
+        assert_eq!(
+            (grid[ky][kx + 6].fg, grid[ky][kx + 6].bg),
+            (Color::Yellow, Color::Cyan)
+        );
+    }
+
+    #[test]
+    fn right_menu_origin_and_width_match_left_chrome() {
+        assert_eq!(super::dropdown_origin_x(4, false), 42);
+        assert_eq!(super::dropdown_box_size(4), (27, 16));
+        assert_eq!(super::dropdown_box_size(0), (27, 16));
     }
 
     fn paint_editor(pal: McPalette, buf: &rmc_edit::EditorBuffer, cols: u16, rows: u16) -> Vec<u8> {
