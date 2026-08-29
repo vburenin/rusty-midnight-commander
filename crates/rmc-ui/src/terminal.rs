@@ -2399,6 +2399,9 @@ impl TerminalApp {
             }
         }
         if let Some(n) = fbar_function_from_xy(app, mev.column, mev.row, cols, rows) {
+            // Menu only eats F1/F9/F10. GNU F-bar still fires F5–F8 with a
+            // dropdown open: leave Normal first, then dispatch the F-key.
+            app.ui_mode = UiMode::Normal;
             let (left_rows, right_rows, _, _) = Self::panel_mouse_geom(app, cols, rows);
             let page = match app.active {
                 PaneSide::Left => left_rows,
@@ -26839,6 +26842,44 @@ mod button_activation_tests {
         assert!(
             matches!(app.ui_mode, UiMode::Normal),
             "mouse on Mkdir Cancel must dismiss"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f5_with_menu_open_leaves_normal_then_copy() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        app.ui_mode = UiMode::Menu {
+            top_index: 1,
+            selected_index: 0,
+            dropped: true,
+        };
+        click_fbar(&mut app, 4);
+        assert!(
+            matches!(app.ui_mode, UiMode::CopyDialog { .. }),
+            "GNU F-bar Copy still fires while a dropdown is open"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fbar_f7_with_menu_open_opens_mkdir() {
+        let root = temp_workspace();
+        std::fs::write(root.join("aaa.txt"), b"a").unwrap();
+        let mut app = make_app(&root);
+        select_named(&mut app, "aaa.txt");
+        app.ui_mode = UiMode::Menu {
+            top_index: 1,
+            selected_index: 0,
+            dropped: true,
+        };
+        click_fbar(&mut app, 6);
+        assert!(
+            matches!(app.ui_mode, UiMode::MkdirDialog { .. }),
+            "GNU F-bar Mkdir still fires while a dropdown is open"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
