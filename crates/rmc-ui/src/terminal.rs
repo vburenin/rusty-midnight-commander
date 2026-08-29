@@ -12252,15 +12252,23 @@ mod drop_menus_tests {
         press(&mut app, KeyCode::Right);
         press(&mut app, KeyCode::Right);
         assert_menu(&app, 2, 0, true);
-        // Command menu: User menu, Directory tree, Find file, Swap panels,
-        // Switch panels on/off, Compare dirs, External panelize (index 6).
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        assert_menu(&app, 2, 6, true);
+        // Command menu: walk to External panelize (after Compare files).
+        let ext = COMMAND_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "External panelize")
+            .expect("External panelize");
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if *selected_index == ext {
+                    break;
+                }
+            }
+            press(&mut app, KeyCode::Down);
+        }
+        assert_menu(&app, 2, ext, true);
         press(&mut app, KeyCode::Enter);
         match &app.ui_mode {
             UiMode::ExternalPanelizeDialog(_) => {}
@@ -19248,11 +19256,19 @@ mod external_panelize_dialog_tests {
         press(app, KeyCode::F(9));
         press(app, KeyCode::Right);
         press(app, KeyCode::Right);
-        // User menu → … → External panelize (index 6).
-        for _ in 0..6 {
+        for _ in 0..COMMAND_MENU_ITEMS.len() {
+            if let UiMode::Menu {
+                selected_index, ..
+            } = &app.ui_mode
+            {
+                if COMMAND_MENU_ITEMS.get(*selected_index) == Some(&"External panelize") {
+                    press(app, KeyCode::Enter);
+                    return;
+                }
+            }
             press(app, KeyCode::Down);
         }
-        press(app, KeyCode::Enter);
+        panic!("did not reach External panelize");
     }
 
     fn panelize_state(app: &App) -> &ExternalPanelizeDialogState {
