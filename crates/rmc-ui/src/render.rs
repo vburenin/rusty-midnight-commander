@@ -2521,6 +2521,7 @@ fn draw_menu_hotkey_label(
     draw_menu_hotkey_label_at(p, x, y, text, None, selected, pal, width);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_menu_hotkey_label_at(
     p: &mut Painter,
     x: u16,
