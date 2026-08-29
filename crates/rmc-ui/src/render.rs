@@ -2328,14 +2328,11 @@ fn draw_editor(
         p.goto(0, y);
         p.text(&" ".repeat(cols as usize));
     }
-    // Top bar (mcedit menu bar)
-    draw_editor_menu_bar(p, cols, pal, show_menu);
-    // Status line (bottom-2) and F-bar (bottom-1)
-    let status_row = rows.saturating_sub(2);
+    // GNU mcedit: frameless row-0 status; F-bar on the last row; content in between.
+    // The File/Edit/… menu replaces row 0 only while F9 is open.
     let fbar_row = rows.saturating_sub(1);
-    // Editor content box between menu and status
     let content_top = 1u16;
-    let content_h = status_row.saturating_sub(content_top);
+    let content_h = fbar_row.saturating_sub(content_top);
     // Render buffer window
     // We can't mutate buf here; assume viewport was adjusted by the event loop.
     // Draw content lines
@@ -2443,23 +2440,30 @@ fn draw_editor(
         // Restore default for safety
         p.set_fg_bg(pal.edit_normal_fg, pal.edit_normal_bg);
     }
-    // Status line
+    // Frameless GNU row-0 status (black;cyan). Transient messages append on the right
+    // only when they fit; the live 80-col field layout stays intact without a message.
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-    p.goto(0, status_row);
-    let mut status = buf.status_text();
+    p.goto(0, 0);
+    let mut status = buf.gnu_status_line(cols as usize);
     if let Some(msg) = status_msg {
-        status.push_str("  ");
-        status.push_str(msg);
+        if !msg.is_empty() && cols as usize > 8 {
+            let room = (cols as usize).saturating_sub(8);
+            let extra = format!(" {msg}");
+            if extra.chars().count() < room {
+                status = format!("{status}{extra}");
+                status = status.chars().take(cols as usize).collect();
+            }
+        }
     }
     let t = truncate(&status, cols as usize);
     p.text(&t);
-    if t.len() < cols as usize {
-        p.text(&" ".repeat(cols as usize - t.len()));
+    if t.chars().count() < cols as usize {
+        p.text(&" ".repeat(cols as usize - t.chars().count()));
     }
-    // Bottom F-key bar for editor (packed MC style)
     draw_editor_fbar(p, fbar_row, cols, pal);
-    // If show_menu, draw the GNU mcedit drop-down under the active title
+    // F9: menu bar replaces the status row; dropdown hangs under the active title.
     if let Some(menu) = show_menu {
+        draw_editor_menu_bar(p, cols, pal, Some(menu));
         draw_editor_menu_dropdown(p, pal, menu);
     }
     if let Some(dlg) = save_as_dialog {
@@ -4094,61 +4098,13 @@ fn draw_viewer(
         p.goto(0, y);
         p.text(&" ".repeat(cols as usize));
     }
-    // Frame
-    p.set_fg_bg(pal.frame_fg, pal.viewer_default_bg);
-    p.goto(0, 0);
-    p.text("┌");
-    p.hline(
-        1,
-        0,
-        cols.saturating_sub(2),
-        '─',
-        pal.frame_fg,
-        pal.viewer_default_bg,
-    );
-    p.goto(cols - 1, 0);
-    p.text("┐");
-    p.vline(
-        0,
-        1,
-        rows.saturating_sub(2),
-        '│',
-        pal.frame_fg,
-        pal.viewer_default_bg,
-    );
-    p.vline(
-        cols - 1,
-        1,
-        rows.saturating_sub(2),
-        '│',
-        pal.frame_fg,
-        pal.viewer_default_bg,
-    );
-    p.goto(0, rows - 1);
-    p.text("└");
-    p.hline(
-        1,
-        rows - 1,
-        cols.saturating_sub(2),
-        '─',
-        pal.frame_fg,
-        pal.viewer_default_bg,
-    );
-    p.goto(cols - 1, rows - 1);
-    p.text("┘");
-    // Title (show original path selected in panels)
-    let title = format!(" {} ", display_path.display());
-    let tx = (cols.saturating_sub(title.len() as u16)) / 2;
-    p.goto(tx, 0);
-    p.text(&title);
-    // Render content window using rmc-view (windowed)
-    // Layout: full frame; content rows = rows - 3 (status + fbar)
-    let content_rows = rows.saturating_sub(3);
+    // GNU mcview: frameless. Row 0 is the status line; last row is the F-bar.
+    let content_rows = rows.saturating_sub(2);
     // Reserve space for optional line numbers (text mode only)
     let ln_enabled = show_line_numbers && !hex;
     // Compute line number gutter width conservatively (up to 7 digits + space)
     let ln_gutter: u16 = if ln_enabled { 8 } else { 0 };
-    let content_cols = cols.saturating_sub(2 + ln_gutter);
+    let content_cols = cols.saturating_sub(ln_gutter);
     // Ensure a stable view for the selected path (may be a filtered temp view)
     let content_path = crate::terminal::viewer_ensure_view_for(display_path);
     let rr = rmc_view::render_window(
@@ -4179,13 +4135,13 @@ fn draw_viewer(
     });
     for (i, line) in rr.lines.into_iter().enumerate() {
         let row_y = 1 + i as u16;
-        p.goto(1, row_y);
+        p.goto(0, row_y);
         if ln_enabled {
             // Draw gray-ish line number gutter
             p.set_fg_bg(pal.frame_fg, pal.viewer_default_bg);
             let label = format!("{:>6} ", start_ln + i as u64);
             p.text(&label);
-            p.goto(1 + ln_gutter, row_y);
+            p.goto(ln_gutter, row_y);
         }
         let t = truncate(&line, content_cols as usize);
         let line_sel = sel_range
@@ -4196,38 +4152,33 @@ fn draw_viewer(
         let (fg, bg) = viewer_line_style(line_sel, pal);
         p.set_fg_bg(fg, bg);
         p.text(&t);
-        if (1 + i as u16) >= rows.saturating_sub(2) {
+        if row_y >= rows.saturating_sub(2) {
             break;
         }
     }
-    // Status line (MC-style: percent / offset / mode)
+    // Frameless GNU row-0 status: path + bytes/total (or hex offset) + percent.
     p.set_fg_bg(pal.statusbar_fg, pal.statusbar_bg);
-    p.goto(0, rows.saturating_sub(2));
-    let mode = if hex {
-        "[HEX]"
-    } else if wrap {
-        "[TEXT WRAP]"
-    } else {
-        "[TEXT]"
-    };
+    p.goto(0, 0);
     let total = rmc_view::file_len(&content_path).unwrap_or(0);
-    let pct = rr
-        .offset
-        .saturating_mul(100)
-        .checked_div(total)
-        .unwrap_or(100);
-    let mut status = format!(" {:>3}%  0x{:08X}  {}", pct, rr.offset, mode);
-    if ln_enabled {
-        if let Ok(cur_ln) = rmc_view::line_number_at(&content_path, rr.offset) {
-            status.push_str(&format!("  Ln {}", cur_ln));
-        }
-    }
-    if let Some(msg) = status_msg {
-        status.push_str("  ");
-        status.push_str(msg);
-    }
+    let end_bytes = if hex {
+        rr.offset
+    } else {
+        rr.next_screen_offset.min(total)
+    };
+    let _ = status_msg;
+    let status = rmc_view::gnu_status_line(
+        cols as usize,
+        display_path,
+        hex,
+        rr.offset,
+        end_bytes,
+        total,
+    );
     let st = truncate(&status, cols as usize);
     p.text(&st);
+    if st.chars().count() < cols as usize {
+        p.text(&" ".repeat(cols as usize - st.chars().count()));
+    }
     // Viewer F-bar (GNU mcview 10-key: Help / Wrap / Quit / Hex / Goto / … / Quit)
     draw_viewer_fbar(
         p,
@@ -9630,7 +9581,7 @@ mod gnu_default_chrome_colors_tests {
 
         let grid = rasterize(&out, 40, 10);
         let (fx, fy) = find_text(&grid, "fn");
-        assert_eq!(fy, 1, "content starts under the menu bar");
+        assert_eq!(fy, 1, "content starts under the row-0 status line");
         assert_span(&grid, fx, fy, "fn", Color::Yellow, Color::Green);
         let (hx, hy) = find_text(&grid, "hello");
         assert_eq!(hy, fy);
@@ -9697,6 +9648,148 @@ mod gnu_default_chrome_colors_tests {
         let (fx, fy) = find_text(&grid, "fn");
         assert_span(&grid, fx, fy, "fn", Color::Green, Color::Magenta);
         assert_ne!(grid[fy][fx].bg, pal.marked_bg);
+    }
+
+    fn paint_viewer(path: &Path, cols: u16, rows: u16, hex: bool) -> Vec<u8> {
+        let pal = McPalette::default();
+        let goto_prompt: Option<String> = None;
+        let mut out = Vec::new();
+        {
+            let mut p = Painter { out: &mut out };
+            super::draw_viewer(
+                &mut p,
+                cols,
+                rows,
+                pal,
+                path,
+                hex,
+                false,
+                0,
+                false,
+                false,
+                false,
+                true,
+                None,
+                0,
+                None,
+                None,
+                None,
+                None,
+                &goto_prompt,
+                false,
+            )
+            .expect("draw viewer");
+        }
+        out
+    }
+
+    #[test]
+    fn viewer_is_frameless_with_gnu_row0_status() {
+        let dir = std::path::Path::new("/tmp/mcr-fixture");
+        let _ = std::fs::create_dir_all(dir);
+        let path = dir.join("notes.txt");
+        std::fs::write(&path, "hello from notes\n").expect("write notes");
+        let grid = rasterize(&paint_viewer(&path, 80, 24, false), 80, 24);
+        let row0: String = grid[0].iter().map(|c| c.ch).collect();
+        assert_eq!(
+            row0,
+            "/tmp/mcr-fixture/notes.txt                             17/17                100%"
+        );
+        assert_eq!(
+            (grid[0][0].fg, grid[0][0].bg),
+            (Color::Black, Color::Cyan),
+            "viewer status is statusbar black;cyan"
+        );
+        assert_ne!(grid[0][0].ch, '┌', "GNU mcview has no box frame");
+        assert_eq!(grid[1][0].ch, 'h', "content starts at col 0 under status");
+        let row1: String = grid[1].iter().map(|c| c.ch).collect();
+        assert!(row1.starts_with("hello from notes"));
+        assert_eq!(grid[1][79].ch, ' ', "no right-hand frame");
+        let fbar: String = grid[23].iter().map(|c| c.ch).collect();
+        assert!(
+            fbar.contains("1Help"),
+            "F-bar stays on the last row: {fbar:?}"
+        );
+        assert!(!fbar.contains("┌"));
+    }
+
+    #[test]
+    fn viewer_hex_row0_uses_offset_not_bytes_counter() {
+        let dir = std::path::Path::new("/tmp/mcr-fixture");
+        let _ = std::fs::create_dir_all(dir);
+        let path = dir.join("notes.txt");
+        std::fs::write(&path, "hello from notes\n").expect("write notes");
+        let grid = rasterize(&paint_viewer(&path, 80, 24, true), 80, 24);
+        let row0: String = grid[0].iter().map(|c| c.ch).collect();
+        assert_eq!(
+            row0,
+            "/tmp/mcr-fixture/notes.txt                      0x00000000                    0%"
+        );
+    }
+
+    #[test]
+    fn editor_idle_is_frameless_gnu_row0_status_not_menu() {
+        let buf = rmc_edit::EditorBuffer::from_bytes(
+            b"hello from notes\n",
+            Some(PathBuf::from("/tmp/mcr-fixture/notes.txt")),
+        );
+        let pal = McPalette::default();
+        let grid = rasterize(&paint_editor(pal, &buf, 80, 24), 80, 24);
+        let row0: String = grid[0].iter().map(|c| c.ch).collect();
+        assert_eq!(
+            row0,
+            "/tmp/mcr~otes.txt   [----]  0 L:[  1+ 0   1/  2] *(0   /  17b) 0104 0x068 [*][X]"
+        );
+        assert_eq!((grid[0][0].fg, grid[0][0].bg), (Color::Black, Color::Cyan));
+        assert!(
+            !row0.contains("File"),
+            "idle editor must not show the F9 menu bar"
+        );
+        let row1: String = grid[1].iter().map(|c| c.ch).collect();
+        assert!(row1.starts_with("hello from notes"));
+        let fbar: String = grid[23].iter().map(|c| c.ch).collect();
+        assert!(fbar.contains("1Help") && fbar.contains("2Save"));
+    }
+
+    #[test]
+    fn editor_f9_replaces_row0_with_menu_bar() {
+        let buf = rmc_edit::EditorBuffer::from_bytes(
+            b"hello from notes\n",
+            Some(PathBuf::from("/tmp/mcr-fixture/notes.txt")),
+        );
+        let pal = McPalette::default();
+        let mut out = Vec::new();
+        {
+            let mut p = Painter { out: &mut out };
+            super::draw_editor(
+                &mut p,
+                80,
+                24,
+                pal,
+                &buf,
+                Some(rmc_core::app::EditorMenu::default_open()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+            );
+        }
+        let grid = rasterize(&out, 80, 24);
+        let row0: String = grid[0].iter().map(|c| c.ch).collect();
+        assert!(
+            row0.contains("File"),
+            "F9 paints the menu on row 0: {row0:?}"
+        );
+        assert!(
+            !row0.contains("[----]"),
+            "menu replaces the status line while open"
+        );
     }
 }
 

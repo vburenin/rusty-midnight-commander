@@ -27,6 +27,26 @@ pub const DEFAULT_TAB_WIDTH: usize = 8;
 pub const MIN_TAB_WIDTH: usize = 2;
 pub const MAX_TAB_WIDTH: usize = 16;
 
+/// GNU `str_trunc`-style shrink: keep head, a `~`, and tail so the result is `width`.
+pub fn mid_tilde_trunc(s: &str, width: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return chars.into_iter().collect();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "~".to_string();
+    }
+    let keep_left = (width - 1) / 2;
+    let keep_right = width - 1 - keep_left;
+    let mut out: String = chars.iter().take(keep_left).collect();
+    out.push('~');
+    out.extend(chars.iter().skip(chars.len() - keep_right));
+    out
+}
+
 /// A single high-level editor operation suitable for macro recording/replay.
 /// These mirror existing `EditorBuffer` methods and are intentionally coarse-grained
 /// (we do not record raw key events).
@@ -874,6 +894,91 @@ impl EditorBuffer {
         let rec = if self.macro_recording { " REC" } else { "" };
         let dirty = if self.dirty { " *" } else { "" };
         format!("{name}  Ln {ln}, Col {col}  [{mode}]{rec}{dirty}")
+    }
+
+    /// Bytes in the buffer, counting a `\\n` between stored lines (GNU size field).
+    pub fn total_bytes(&self) -> usize {
+        let body: usize = self.lines.iter().map(|l| l.len()).sum();
+        body + self.lines.len().saturating_sub(1)
+    }
+
+    /// Byte offset of the cursor from the start of the buffer.
+    pub fn cursor_byte_offset(&self) -> usize {
+        let mut n = 0usize;
+        for (i, line) in self.lines.iter().enumerate() {
+            if i < self.row {
+                n = n.saturating_add(line.len()).saturating_add(1);
+            } else {
+                n = n.saturating_add(self.col.min(line.len()));
+                break;
+            }
+        }
+        n
+    }
+
+    /// Byte under the cursor, or `None` at EOF (empty last line with no following newline).
+    pub fn byte_at_cursor(&self) -> Option<u8> {
+        let line = self.lines.get(self.row)?;
+        if self.col < line.len() {
+            return Some(line[self.col]);
+        }
+        if self.row + 1 < self.lines.len() {
+            Some(b'\n')
+        } else {
+            None
+        }
+    }
+
+    /// Live GNU mcedit 4.8.x row-0 status (frameless). `[*][X]` are the
+    /// maximized-window widgets GNU paints on that line.
+    pub fn gnu_status_line(&self, cols: usize) -> String {
+        if cols == 0 {
+            return String::new();
+        }
+        let raw_name = self
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<untitled>".to_string());
+        let flags = format!(
+            "[{}{}{}{}]",
+            if self.sel_start.is_some() { 'B' } else { '-' },
+            if self.dirty { 'M' } else { '-' },
+            if self.macro_recording { 'R' } else { '-' },
+            if self.overwrite { 'O' } else { '-' },
+        );
+        let col = self.cursor_visual_col();
+        let view = self.view_row.saturating_add(1);
+        let off = self.row.saturating_sub(self.view_row);
+        let line = self.row.saturating_add(1);
+        let nlines = self.lines.len().max(1);
+        let byte = self.cursor_byte_offset();
+        let size = self.total_bytes();
+        let ch = match self.byte_at_cursor() {
+            Some(b) => format!("{b:04} 0x{b:03X}"),
+            None => "<EOF>".to_string(),
+        };
+        let right = format!(
+            "{flags} {col:>2} L:[{view:>3}+{off:>2} {line:>3}/{nlines:>3}] *({byte:<4}/{size:>4}b) {ch:<10} [*][X]"
+        );
+        let name_w = cols.saturating_sub(right.chars().count().saturating_add(3));
+        let name = if name_w == 0 {
+            String::new()
+        } else {
+            mid_tilde_trunc(&raw_name, name_w)
+        };
+        let mut line = if name_w == 0 {
+            right
+        } else {
+            format!("{name:<name_w$}   {right}")
+        };
+        let n = line.chars().count();
+        if n < cols {
+            line.push_str(&" ".repeat(cols - n));
+        } else if n > cols {
+            line = line.chars().take(cols).collect();
+        }
+        line
     }
 
     /// Begin block selection at current cursor (mark start).
@@ -2071,6 +2176,64 @@ mod tests {
         assert!(txt_kinds
             .iter()
             .all(|k| *k == TokenKind::Normal || *k == TokenKind::Whitespace));
+    }
+
+    #[test]
+    fn gnu_status_line_matches_live_mc_4_8_30_notes() {
+        let buf = EditorBuffer::from_bytes(
+            b"hello from notes\n",
+            Some(PathBuf::from("/tmp/mcr-fixture/notes.txt")),
+        );
+        assert_eq!(buf.total_bytes(), 17);
+        assert_eq!(
+            buf.gnu_status_line(80),
+            "/tmp/mcr~otes.txt   [----]  0 L:[  1+ 0   1/  2] *(0   /  17b) 0104 0x068 [*][X]"
+        );
+        let mut col2 = buf.clone();
+        col2.col = 1;
+        assert_eq!(
+            col2.gnu_status_line(80),
+            "/tmp/mcr~otes.txt   [----]  1 L:[  1+ 0   1/  2] *(1   /  17b) 0101 0x065 [*][X]"
+        );
+        let mut eof = buf.clone();
+        eof.row = 1;
+        eof.col = 0;
+        assert_eq!(
+            eof.gnu_status_line(80),
+            "/tmp/mcr~otes.txt   [----]  0 L:[  1+ 1   2/  2] *(17  /  17b) <EOF>      [*][X]"
+        );
+        let mut dirty = eof.clone();
+        dirty.dirty = true;
+        dirty.lines[1] = b"x".to_vec();
+        dirty.col = 1;
+        assert_eq!(dirty.total_bytes(), 18);
+        assert_eq!(
+            dirty.gnu_status_line(80),
+            "/tmp/mcr~otes.txt   [-M--]  1 L:[  1+ 1   2/  2] *(18  /  18b) <EOF>      [*][X]"
+        );
+        let mut ovr = buf.clone();
+        ovr.overwrite = true;
+        assert!(ovr.gnu_status_line(80).contains("[---O]"));
+        let mut mark = buf.clone();
+        mark.mark_start();
+        assert!(mark.gnu_status_line(80).contains("[B---]"));
+    }
+
+    #[test]
+    fn gnu_status_line_three_txt_and_tilde_path() {
+        let buf = EditorBuffer::from_bytes(
+            b"line one\nline two\nline three\n",
+            Some(PathBuf::from("/tmp/mcr-fixture/three.txt")),
+        );
+        assert_eq!(buf.total_bytes(), 29);
+        assert_eq!(
+            buf.gnu_status_line(80),
+            "/tmp/mcr~hree.txt   [----]  0 L:[  1+ 0   1/  4] *(0   /  29b) 0108 0x06C [*][X]"
+        );
+        assert_eq!(
+            mid_tilde_trunc("/tmp/mcr-fixture/a", 17),
+            "/tmp/mcr~ixture/a"
+        );
     }
 
     #[test]

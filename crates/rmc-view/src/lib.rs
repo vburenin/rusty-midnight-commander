@@ -260,6 +260,98 @@ pub fn file_len(path: &Path) -> Result<u64> {
     Ok(std::fs::metadata(path)?.len())
 }
 
+/// GNU mcview 4.8.x row-0 status: path left, `bytes/total` or `0xOFFSET` anchored
+/// so `/` (text) or the last hex digit sit at `cols-23`, percent flush right.
+pub fn gnu_status_line(
+    cols: usize,
+    path: &Path,
+    hex: bool,
+    view_offset: u64,
+    end_bytes: u64,
+    total: u64,
+) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    let pct = if total == 0 {
+        100
+    } else if hex {
+        view_offset.saturating_mul(100) / total
+    } else {
+        end_bytes.saturating_mul(100) / total
+    };
+    let pct_s = format!("{pct}%");
+    let mut line = vec![' '; cols];
+    let pct_ch: Vec<char> = pct_s.chars().collect();
+    if pct_ch.len() <= cols {
+        let start = cols - pct_ch.len();
+        for (i, ch) in pct_ch.iter().enumerate() {
+            line[start + i] = *ch;
+        }
+    }
+    // Live 80-col GNU: `/` of `1738/3160` and last digit of `0x00000000` sit at col 57.
+    let anchor = cols.saturating_sub(23);
+    if hex {
+        let mid: Vec<char> = format!("0x{view_offset:08X}").chars().collect();
+        let start = (anchor + 1).saturating_sub(mid.len());
+        for (i, ch) in mid.iter().enumerate() {
+            if start + i < cols {
+                line[start + i] = *ch;
+            }
+        }
+    } else {
+        let left: Vec<char> = end_bytes.to_string().chars().collect();
+        let right: Vec<char> = total.to_string().chars().collect();
+        if anchor < cols {
+            line[anchor] = '/';
+        }
+        let ls = anchor.saturating_sub(left.len());
+        for (i, ch) in left.iter().enumerate() {
+            if ls + i < cols {
+                line[ls + i] = *ch;
+            }
+        }
+        for (i, ch) in right.iter().enumerate() {
+            if anchor + 1 + i < cols {
+                line[anchor + 1 + i] = *ch;
+            }
+        }
+    }
+    let mut path_max = 0usize;
+    while path_max < cols && line[path_max] == ' ' {
+        path_max += 1;
+    }
+    path_max = path_max.saturating_sub(1); // keep one space before the mid field
+    if path_max > 0 {
+        let shown = gnu_mid_tilde_trunc(&path.display().to_string(), path_max);
+        for (i, ch) in shown.chars().enumerate() {
+            if i < cols {
+                line[i] = ch;
+            }
+        }
+    }
+    line.into_iter().collect()
+}
+
+fn gnu_mid_tilde_trunc(s: &str, width: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return chars.into_iter().collect();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "~".to_string();
+    }
+    let keep_left = (width - 1) / 2;
+    let keep_right = width - 1 - keep_left;
+    let mut out: String = chars.iter().take(keep_left).collect();
+    out.push('~');
+    out.extend(chars.iter().skip(chars.len() - keep_right));
+    out
+}
+
 pub fn clamp_offset(path: &Path, offset: u64) -> Result<u64> {
     let len = file_len(path)?;
     Ok(min(offset, len))
@@ -1886,6 +1978,39 @@ mod tests {
         assert_eq!(map.get(".gz").map(|f| f.program.as_str()), Some("gzip"));
         assert_eq!(map.get(".bz2").map(|f| f.program.as_str()), Some("bzip2"));
         assert_eq!(map.get(".xz").map(|f| f.program.as_str()), Some("xz"));
+    }
+
+    #[test]
+    fn gnu_status_line_matches_live_mc_4_8_30() {
+        use std::path::PathBuf;
+        let notes = PathBuf::from("/tmp/mcr-fixture/notes.txt");
+        assert_eq!(
+            gnu_status_line(80, &notes, false, 0, 17, 17),
+            "/tmp/mcr-fixture/notes.txt                             17/17                100%"
+        );
+        assert_eq!(
+            gnu_status_line(80, &notes, true, 0, 17, 17),
+            "/tmp/mcr-fixture/notes.txt                      0x00000000                    0%"
+        );
+        let long = PathBuf::from("/tmp/mcr-fixture/long.txt");
+        assert_eq!(
+            gnu_status_line(80, &long, false, 0, 1738, 3160),
+            "/tmp/mcr-fixture/long.txt                            1738/3160               55%"
+        );
+        let z = PathBuf::from("/tmp/mcr-fixture/z");
+        assert_eq!(
+            gnu_status_line(80, &z, false, 0, 1760, 5000),
+            "/tmp/mcr-fixture/z                                   1760/5000               35%"
+        );
+        assert_eq!(
+            gnu_status_line(80, &z, false, 0, 5000, 5000),
+            "/tmp/mcr-fixture/z                                   5000/5000              100%"
+        );
+        let tiny = PathBuf::from("/tmp/mcr-fixture/tiny");
+        assert_eq!(
+            gnu_status_line(80, &tiny, false, 0, 0, 0),
+            "/tmp/mcr-fixture/tiny                                   0/0                 100%"
+        );
     }
 
     #[test]
