@@ -1684,7 +1684,7 @@ mod tests {
     #[test]
     fn search_wildcard_star_and_qmark() {
         let mut f = NamedTempFile::new().unwrap();
-        f.write_all(b"cat category cot").unwrap();
+        f.write_all(b"cat x cot").unwrap();
         let path = f.path().to_path_buf();
         let opts = so_kind(SearchKind::WildcardSearch);
         assert_eq!(
@@ -1693,7 +1693,7 @@ mod tests {
         );
         assert_eq!(
             search_next_with_options(&path, 0, "c?t", opts, false).unwrap(),
-            Some(13)
+            Some(6)
         );
         assert_eq!(
             search_with_options(&path, 0, "cat*", opts, false).unwrap(),
