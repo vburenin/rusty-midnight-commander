@@ -1,6 +1,6 @@
 use crate::help::{apply_help_key, global_index, HelpAction};
 use crate::mc_ext::user_extension_file_path;
-use crate::render::{panel_fbar_labels, top_menu_items, viewer_menu_from_x, Renderer};
+use crate::render::{top_menu_items, viewer_menu_from_x, Renderer};
 
 #[cfg(test)]
 use crate::render::{COMMAND_MENU_ITEMS, FILE_MENU_ITEMS, LEFT_RIGHT_MENU_ITEMS};
@@ -35,7 +35,7 @@ use rmc_core::find::{
     FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
-use rmc_core::layout::{compute_chrome_geom, dual_panel_rects, menu_bar_titles};
+use rmc_core::layout::{compute_chrome_geom, dual_panel_rects};
 use rmc_core::panelize::{
     ExternalPanelizeDialogState, ExternalPanelizeFocus as EPF, PanelizeStore,
 };
@@ -1846,16 +1846,13 @@ fn run_compare_dirs(app: &mut App, mode: rmc_core::app::CompareDirsMode) -> anyh
 
 // Hit-test helpers mirroring render.rs packing logic
 fn menu_top_index_from_x(x: u16, horizontal_split: bool) -> Option<usize> {
-    // Titles: Left/Right or Above/Below, placed sequentially starting at x=0
-    let items = menu_bar_titles(horizontal_split);
-    let mut cur = 0u16;
+    let items = rmc_core::layout::menu_bar_labels(horizontal_split);
     for (i, it) in items.iter().enumerate() {
-        let start = cur;
-        let end = cur + it.len() as u16; // exclusive
+        let start = rmc_core::layout::menu_bar_item_start(i, horizontal_split).saturating_sub(1);
+        let end = start.saturating_add(it.len() as u16).saturating_add(2);
         if x >= start && x < end {
             return Some(i);
         }
-        cur = end;
     }
     None
 }
@@ -1925,27 +1922,9 @@ fn fbar_function_from_xy(app: &App, x: u16, y: u16, cols: u16, rows: u16) -> Opt
     if y != fbar_y {
         return None;
     }
-    // Packing from render::draw_fbar: number, label, space
-    let labels = panel_fbar_labels();
-    let mut cur_x = 0u16;
-    for (i, lab) in labels.iter().enumerate() {
-        let num_str = if i == 9 { "10" } else { &(i + 1).to_string() };
-        let num_len = num_str.len() as u16;
-        let lab_len = lab.len() as u16;
-        let seg_start = cur_x;
-        let seg_end = {
-            let mut e = cur_x + num_len + lab_len;
-            if e < cols {
-                e += 1; // trailing space if fits
-            }
-            e.min(cols)
-        };
-        if x >= seg_start && x < seg_end {
+    for (i, (start, end)) in crate::render::fbar_slot_bounds(cols).iter().enumerate() {
+        if x >= *start && x < *end {
             return Some(if i == 9 { 10 } else { (i + 1) as u8 });
-        }
-        cur_x = seg_end;
-        if cur_x >= cols {
-            break;
         }
     }
     None
@@ -2838,28 +2817,15 @@ impl TerminalApp {
             }
             return Ok(());
         }
-        let (_cols, rows) = viewer_term_size(page_rows);
+        let (cols, rows) = viewer_term_size(page_rows);
         if mev.row == rows.saturating_sub(1) {
-            // F-bar click: packed number+label+space like draw_viewer_fbar.
-            if let UiMode::Viewer {
-                wrap,
-                hex,
-                parsed,
-                format_nroff,
-                ..
-            } = &app.ui_mode
-            {
-                let labels = crate::render::viewer_fbar_labels(*wrap, *hex, *parsed, *format_nroff);
-                let mut x = 0u16;
+            if let UiMode::Viewer { .. } = &app.ui_mode {
                 let mut hit = None;
-                for (i, lab) in labels.iter().enumerate() {
-                    let num = if i == 9 { "10" } else { &(i + 1).to_string() };
-                    let w = num.len() as u16 + lab.len() as u16 + 1;
-                    if mev.column >= x && mev.column < x.saturating_add(w) {
+                for (i, (start, end)) in crate::render::fbar_slot_bounds(cols).iter().enumerate() {
+                    if mev.column >= *start && mev.column < *end {
                         hit = Some((i + 1) as u8);
                         break;
                     }
-                    x = x.saturating_add(w);
                 }
                 if let Some(n) = hit {
                     return Self::handle_key(
@@ -27184,18 +27150,9 @@ mod button_activation_tests {
     fn click_fbar(app: &mut App, fn_index: usize) {
         let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
         let fbar_y = geom.fbar_row.expect("F-bar");
-        let labels = panel_fbar_labels();
-        let mut x = 0u16;
-        for (i, lab) in labels.iter().enumerate() {
-            let num = if i == 9 { "10" } else { &(i + 1).to_string() };
-            let w = num.len() as u16 + lab.len() as u16 + 1;
-            if i == fn_index {
-                click(app, x, fbar_y);
-                return;
-            }
-            x = x.saturating_add(w);
-        }
-        panic!("F-bar index {fn_index} out of range");
+        let (start, end) = crate::render::fbar_slot_bounds(COLS)[fn_index];
+        let x = start.saturating_add(end.saturating_sub(start) / 2);
+        click(app, x, fbar_y);
     }
 
     #[test]
@@ -27325,7 +27282,7 @@ mod button_activation_tests {
         select_named(&mut app, "aaa.txt");
         press(&mut app, KeyCode::F(5));
         let focus = copy_focus(&app);
-        let by = (ROWS - 15) / 2 + 13;
+        let by = (ROWS - 12) / 2 + 10;
         let mx = (0..COLS)
             .find(|&x| {
                 crate::hit::copy_move_hit_at(COLS, ROWS, x, by, focus)
@@ -30063,7 +30020,7 @@ mod mouse_shift_passthrough_tests {
         send(
             &mut app,
             MouseEventKind::Down(MouseButton::Left),
-            0,
+            1,
             fbar_y,
             KeyModifiers::NONE,
         );

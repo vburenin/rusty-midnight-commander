@@ -12,7 +12,7 @@ use crossterm::style::Color;
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::QueueableCommand;
 use rmc_core::app::{App, EditorMenu, LayoutFocus, LayoutOptions};
-use rmc_core::layout::{compute_chrome_geom, dual_panel_rects, menu_bar_titles};
+use rmc_core::layout::{compute_chrome_geom, dual_panel_rects};
 use rmc_core::panel::{FileEntry, PanelMode};
 use std::io::{stdout, Stdout};
 use time::OffsetDateTime;
@@ -244,26 +244,31 @@ fn draw_menu_bar(
     selected: Option<usize>,
     horizontal_split: bool,
 ) {
-    // Entire bar is menu white;cyan. Only F9's open menu uses menusel white;black.
+    // Live GNU 4.8: `  Left     File     Command     Options     Right`
     p.set_fg_bg(pal.menu_fg, pal.menu_bg);
     p.goto(0, 0);
     p.text(&" ".repeat(cols as usize));
-    let items = menu_bar_titles(horizontal_split);
-    let mut x = 0u16;
+    let items = rmc_core::layout::menu_bar_labels(horizontal_split);
     for (i, it) in items.iter().enumerate() {
-        if selected == Some(i) {
-            p.set_fg_bg(pal.menusel_fg, pal.menusel_bg);
-        } else {
-            p.set_fg_bg(pal.menu_fg, pal.menu_bg);
+        let x = rmc_core::layout::menu_bar_item_start(i, horizontal_split);
+        if x >= cols {
+            break;
         }
-        p.goto(x, 0);
-        p.text(it);
-        x += it.len() as u16;
-    }
-    if x < cols {
-        p.set_fg_bg(pal.menu_fg, pal.menu_bg);
-        p.goto(x, 0);
-        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
+        let (fg, bg) = if selected == Some(i) {
+            (pal.menusel_fg, pal.menusel_bg)
+        } else {
+            (pal.menu_fg, pal.menu_bg)
+        };
+        let start = x.saturating_sub(1);
+        let padded = format!(" {it} ");
+        paint_span(
+            p,
+            start,
+            0,
+            fg,
+            bg,
+            &truncate(&padded, (cols - start) as usize),
+        );
     }
 }
 
@@ -291,16 +296,20 @@ pub(crate) fn paint_overlays_for_test(app: &App, cols: u16, rows: u16) -> Result
 fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalette) -> Result<()> {
     match &app.ui_mode {
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
-            draw_dialog_box(
-                p,
-                cols,
-                rows,
-                pal,
-                title,
-                message,
-                &["< OK >", "Cancel"],
-                app.shadows,
-            );
+            if dialog_is_error_title(title) {
+                draw_error_dialog(p, cols, rows, pal, message, app.shadows);
+            } else {
+                draw_dialog_box(
+                    p,
+                    cols,
+                    rows,
+                    pal,
+                    title,
+                    message,
+                    &["< OK >", "Cancel"],
+                    app.shadows,
+                );
+            }
         }
         rmc_core::app::UiMode::ConfirmationsDialog { draft, focus } => {
             draw_confirmations_dialog(p, cols, rows, pal, draft, *focus, app.shadows);
@@ -553,14 +562,14 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             focus_ok,
             ..
         } => {
-            let yes = if *focus_ok { "< Yes >" } else { "  Yes  " };
-            let no = if *focus_ok { "  No  " } else { "< No >" };
-            let msg = if paths.len() > 1 {
-                format!("Delete {} files?", paths.len())
+            if paths.len() > 1 {
+                let yes = if *focus_ok { "< Yes >" } else { "  Yes  " };
+                let no = if *focus_ok { "  No  " } else { "< No >" };
+                let msg = format!("Delete {} files?", paths.len());
+                draw_dialog_box(p, cols, rows, pal, "Delete", &msg, &[yes, no], app.shadows);
             } else {
-                format!("Delete file \"{name}\"?")
-            };
-            draw_dialog_box(p, cols, rows, pal, "Delete", &msg, &[yes, no], app.shadows);
+                draw_delete_dialog(p, cols, rows, pal, name, *focus_ok, app.shadows);
+            }
         }
         rmc_core::app::UiMode::CopyDialog {
             title,
@@ -575,6 +584,17 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
             focus,
             ..
         } => {
+            let src_kind = app
+                .active_panel()
+                .current_entry()
+                .map(|e| {
+                    if e.is_dir && !e.is_parent_marker() {
+                        "directory"
+                    } else {
+                        "file"
+                    }
+                })
+                .unwrap_or("file");
             draw_copy_move_dialog(
                 p,
                 cols,
@@ -582,6 +602,7 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
                 pal,
                 title,
                 src_name,
+                src_kind,
                 mask,
                 to,
                 *using_shell_patterns,
@@ -2567,34 +2588,15 @@ fn draw_editor_menu_dropdown(p: &mut Painter, pal: McPalette, menu: EditorMenu) 
 }
 
 fn draw_editor_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = [
-        "Help", "Save", "Mark", "Replac", "Copy", "Move", "Search", "Delete", "PullDn", "Quit",
-    ];
-    let mut x = 0u16;
-    for (i, lab) in labels.iter().enumerate() {
-        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
-        // number: white on black
-        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg);
-        p.goto(x, y);
-        p.text(num);
-        x += num.len() as u16;
-        // label: black on cyan
-        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-        p.goto(x, y);
-        p.text(lab);
-        x += lab.len() as u16;
-        if x < cols {
-            p.goto(x, y);
-            p.text(" ");
-            x += 1;
-        } else {
-            break;
-        }
-    }
-    if x < cols {
-        p.goto(x, y);
-        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
-    }
+    paint_mc_fbar(
+        p,
+        y,
+        cols,
+        pal,
+        &[
+            "Help", "Save", "Mark", "Replac", "Copy", "Move", "Search", "Delete", "PullDn", "Quit",
+        ],
+    );
 }
 
 fn draw_editor_search_dialog(
@@ -3815,6 +3817,32 @@ fn draw_dialog_ync(
     }
 }
 #[allow(clippy::too_many_arguments)]
+fn draw_error_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    message: &str,
+    show_shadow: bool,
+) {
+    // Live GNU 4.8.30 F5 on `..`: compact white;red box, no buttons.
+    let inner = message.chars().count().max(5) + 4;
+    let w = (inner as u16 + 2).min(cols.saturating_sub(2)).max(17);
+    let h = 5u16.min(rows.saturating_sub(1)).max(3);
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    paint_dialog_frame(p, x, y, w, h, "Error", pal, true);
+    let (fg, bg) = dialog_chrome_pair(pal, true);
+    p.set_fg_bg(fg, bg);
+    let msg = truncate(message, w.saturating_sub(4) as usize);
+    let mx = x + (w.saturating_sub(msg.chars().count() as u16)) / 2;
+    p.goto(mx, y + h / 2);
+    p.text(&msg);
+    if show_shadow {
+        paint_dialog_shadow(p, x, y, w, h, pal);
+    }
+}
+
 fn draw_dialog_box(
     p: &mut Painter,
     cols: u16,
@@ -4261,13 +4289,14 @@ fn full_listing_cols(x: u16, w: u16) -> FullListingCols {
             time_x: left,
         };
     }
-    // Keep the historical mtime start (`x + w - 15`): 12-char time plus padding.
+    // Live GNU 4.8 Full listing on a 40-col panel: 7-char size, 12-char mtime,
+    // bars at x+18 / x+26 (`│ Size  │Modify time │`).
     let time_x = x
-        .saturating_add(w.saturating_sub(15))
+        .saturating_add(w.saturating_sub(13))
         .clamp(left, inner_right);
     let time_bar = time_x.saturating_sub(1).clamp(left, inner_right);
     let size_x = time_bar
-        .saturating_sub(8)
+        .saturating_sub(7)
         .clamp(left.saturating_add(1).min(inner_right), inner_right);
     let size_bar = size_x.saturating_sub(1).clamp(left, inner_right);
     FullListingCols {
@@ -4332,7 +4361,7 @@ fn paint_mini_status_split(
     x: u16,
     y: u16,
     w: u16,
-    bar_xs: &[u16],
+    _bar_xs: &[u16],
     fg: Color,
     bg: Color,
 ) {
@@ -4346,7 +4375,7 @@ fn paint_mini_status_split(
         bg,
         &LISTING_SEP_RIGHT.to_string(),
     );
-    paint_column_bars(p, bar_xs, y, fg, bg, LISTING_COL_TEE_BOT);
+    // Live GNU 4.8.30 mini-status split is a solid ├────────┤ (no ┴).
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4419,22 +4448,20 @@ fn draw_panel(
             format!(" {} ", path.display())
         }
     };
-    // Leave cells for `<` on the left and `.[^]>` on the right (GNU panel widgets).
+    // Leave cells for `<─` on the left and `.[^]>` on the right (GNU panel widgets).
     const TOP_WIDGET_LEFT: &str = "<";
     const TOP_WIDGET_RIGHT: &str = ".[^]>";
     let widget_left_w = TOP_WIDGET_LEFT.chars().count() as u16;
     let widget_right_w = TOP_WIDGET_RIGHT.chars().count() as u16;
-    let inner = w.saturating_sub(2 + widget_left_w + widget_right_w);
+    // Live GNU left-aligns ` /path ` after `<─`, then fills with ─ to `.[^]>`.
+    let inner = w.saturating_sub(3 + widget_left_w + widget_right_w);
     let path_str_display = truncate(&path_str_display, inner as usize);
-    let cap_x = x
-        + 1
-        + widget_left_w
-        + ((inner.saturating_sub(path_str_display.chars().count() as u16)) / 2);
+    let cap_x = x + 1 + widget_left_w + 1;
     // GNU: active panel path is selected (black;cyan); inactive stays on the frame.
     let (path_fg, path_bg) = panel_path_caption_colors(&pal, is_active_panel);
     paint_span(
         p,
-        cap_x.max(x + 1 + widget_left_w),
+        cap_x.min(x + w.saturating_sub(2)),
         y,
         path_fg,
         path_bg,
@@ -4601,16 +4628,42 @@ fn draw_panel(
     };
     let full_cols = full_listing_cols(x, w);
     let bar_xs = listing_column_bar_xs(listing, x, w, panel.brief_columns);
-    // Junctions share the listing-row split x: ┬ on the top frame (after the path).
+    // Junctions share the listing-row split x. Path/widgets are painted after
+    // so a long caption covers ┬ the way live GNU does.
     paint_column_bars(p, &bar_xs, y, frame_fg, frame_bg, LISTING_COL_TEE_TOP);
+    paint_span(
+        p,
+        cap_x.min(x + w.saturating_sub(2)),
+        y,
+        path_fg,
+        path_bg,
+        &path_str_display,
+    );
+    paint_span(p, x + 1, y, frame_fg, frame_bg, TOP_WIDGET_LEFT);
+    if w > 2 + widget_left_w + widget_right_w {
+        paint_span(
+            p,
+            x + w - 1 - widget_right_w,
+            y,
+            frame_fg,
+            frame_bg,
+            TOP_WIDGET_RIGHT,
+        );
+    }
     match listing {
         rmc_core::panel::ListingFormat::Full => {
             let ind = rmc_core::panel::full_listing_sort_indicator(panel.sort_by, panel.sort_dir);
             let ind_s: String = ind.iter().collect();
             paint_span(p, x + 1, y + 1, header_fg, header_bg, &ind_s);
-            // `.n` occupies the type-field cells; "Name" follows after a space.
-            paint_span(p, x + 4, y + 1, header_fg, header_bg, "Name");
-            paint_span(p, full_cols.size_x, y + 1, header_fg, header_bg, "Size");
+            // Live GNU: `.n     Name      │ Size  │Modify time │` — Name is
+            // centered in the leftover name field; Size is centered in 7 cells.
+            let name_field = full_cols.size_bar.saturating_sub(x.saturating_add(1));
+            let name_rest = name_field.saturating_sub(2);
+            let name_x = x + 1 + 2 + name_rest.saturating_sub(4) / 2;
+            paint_span(p, name_x, y + 1, header_fg, header_bg, "Name");
+            let size_w = full_cols.time_bar.saturating_sub(full_cols.size_x);
+            let size_x = full_cols.size_x + size_w.saturating_sub(4) / 2;
+            paint_span(p, size_x, y + 1, header_fg, header_bg, "Size");
             paint_span(
                 p,
                 full_cols.time_x,
@@ -4926,15 +4979,15 @@ fn draw_panel(
 fn panel_free_space_label(cwd: &std::path::Path) -> String {
     match (fs2::available_space(cwd), fs2::total_space(cwd)) {
         (Ok(avail), Ok(total)) => {
-            let used = total.saturating_sub(avail);
+            // Live GNU paints free/total (93%), not used/total.
             let pct = if total > 0 {
-                (used as f64 / total as f64) * 100.0
+                (avail as f64 / total as f64) * 100.0
             } else {
                 0.0
             };
             format!(
-                " {} / {} ({:.0}%)",
-                human_bytes(used),
+                " {} / {} ({:.0}%) ─",
+                human_bytes(avail),
                 human_bytes(total),
                 pct
             )
@@ -5000,34 +5053,68 @@ pub(crate) fn panel_fbar_labels() -> [&'static str; 10] {
     ]
 }
 
-fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = panel_fbar_labels();
-    let mut x = 0u16;
-    for (i, lab) in labels.iter().enumerate() {
-        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
-        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg);
-        p.goto(x, y);
-        p.text(num);
-        x += num.len() as u16;
-        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-        p.goto(x, y);
-        p.text(lab);
-        x += lab.len() as u16;
-        if x < cols {
-            p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-            p.goto(x, y);
-            p.text(" ");
-            x += 1;
-        }
-        if x >= cols {
+/// Live GNU 4.8 F-bar slots on an 80-col screen: one leading space, eight
+/// 8-col buttons, F9 squeezed to 7 so `9PullDn10Quit` has no gap.
+pub(crate) fn fbar_slot_bounds(cols: u16) -> [(u16, u16); 10] {
+    let slot = (cols / 10).max(1);
+    let lead = u16::from(cols >= 80);
+    let mut out = [(0u16, 0u16); 10];
+    let mut x = lead;
+    for i in 0..10 {
+        let width = if i == 8 && cols >= 80 { 7 } else { slot };
+        let end = x.saturating_add(width).min(cols);
+        out[i] = (x, end);
+        x = end;
+    }
+    out
+}
+
+fn paint_mc_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette, labels: &[&str]) {
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    p.goto(0, y);
+    p.text(&" ".repeat(cols as usize));
+    for (i, (start, end)) in fbar_slot_bounds(cols).iter().enumerate() {
+        if *start >= cols || start >= end {
             break;
         }
+        let width = (*end - *start) as usize;
+        let num = if i == 9 {
+            "10".to_string()
+        } else {
+            (i + 1).to_string()
+        };
+        let lab = labels.get(i).copied().unwrap_or("");
+        let mut text = format!("{num}{lab}");
+        while text.chars().count() < width {
+            text.push(' ');
+        }
+        let text: String = text.chars().take(width).collect();
+        let num_n = num.chars().count().min(width);
+        let num_s: String = text.chars().take(num_n).collect();
+        let rest: String = text.chars().skip(num_n).collect();
+        paint_span(
+            p,
+            *start,
+            y,
+            pal.buttonbar_hotkey_fg,
+            pal.buttonbar_hotkey_bg,
+            &num_s,
+        );
+        if !rest.is_empty() {
+            paint_span(
+                p,
+                start.saturating_add(num_n as u16),
+                y,
+                pal.buttonbar_button_fg,
+                pal.buttonbar_button_bg,
+                &rest,
+            );
+        }
     }
-    if x < cols {
-        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-        p.goto(x, y);
-        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
-    }
+}
+
+fn draw_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
+    paint_mc_fbar(p, y, cols, pal, &panel_fbar_labels());
 }
 
 fn draw_help(
@@ -5161,33 +5248,7 @@ pub(crate) fn help_fbar_labels() -> [&'static str; 10] {
 }
 
 fn draw_help_fbar(p: &mut Painter, y: u16, cols: u16, pal: McPalette) {
-    let labels = help_fbar_labels();
-    let mut x = 0u16;
-    for (i, lab) in labels.iter().enumerate() {
-        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
-        // number: white on black
-        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg);
-        p.goto(x, y);
-        p.text(num);
-        x += num.len() as u16;
-        // label: black on cyan; keep spacing even when empty
-        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-        p.goto(x, y);
-        let text = if lab.is_empty() { "     " } else { *lab };
-        p.text(text);
-        x += text.len() as u16;
-        if x < cols {
-            p.goto(x, y);
-            p.text(" ");
-            x += 1;
-        } else {
-            break;
-        }
-    }
-    if x < cols {
-        p.goto(x, y);
-        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
-    }
+    paint_mc_fbar(p, y, cols, pal, &help_fbar_labels());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5202,32 +5263,7 @@ fn draw_viewer_fbar(
     format: bool,
 ) {
     let labels = viewer_fbar_labels(wrap, hex, parsed, format);
-    let mut x = 0u16;
-    for (i, lab) in labels.iter().enumerate() {
-        let num = if i == 9 { "10" } else { &(i + 1).to_string() };
-        p.set_fg_bg(pal.buttonbar_hotkey_fg, pal.buttonbar_hotkey_bg); // white on black
-        p.goto(x, y);
-        p.text(num);
-        x += num.len() as u16;
-        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg); // black on cyan
-        p.goto(x, y);
-        p.text(lab);
-        x += lab.len() as u16;
-        if x < cols {
-            p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-            p.goto(x, y);
-            p.text(" ");
-            x += 1;
-        }
-        if x >= cols {
-            break;
-        }
-    }
-    if x < cols {
-        p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-        p.goto(x, y);
-        p.text(&" ".repeat(cols.saturating_sub(x) as usize));
-    }
+    paint_mc_fbar(p, y, cols, pal, &labels);
 }
 
 /// GNU mcview 10-key bar. Button text is the mode you *enter* (mc(1): F8 Raw/Parsed,
@@ -5686,7 +5722,7 @@ pub(crate) fn panel_header_colors(pal: &McPalette) -> (Color, Color) {
 
 fn format_entry_name(ent: &FileEntry) -> String {
     // GNU `type` is always one cell, including a leading space for regular
-    // files and parent `..` so names line up with `/docs` and `*run.sh`.
+    // files so names line up with `/docs`, `/..`, and `*run.sh`.
     let mark = rmc_core::panel::listing_type_char(ent);
     format!("{mark}{}", ent.name)
 }
@@ -5756,17 +5792,37 @@ fn draw_mkdir_dialog(
     focus_ok: bool,
     show_shadow: bool,
 ) {
-    let w = (cols as usize).min(60) as u16;
-    let h = 7u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    // Live GNU 4.8.30 F7: prompt, field, section bar, `[< OK >] [ Cancel ]`.
+    let w = (cols as usize).min(44) as u16;
+    let h = 6u16;
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
     paint_dialog_frame(p, x, y, w, h, "Create a new Directory", pal, false);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 1);
+    p.text("Enter directory name:");
     p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
     p.goto(x + 2, y + 2);
-    let t = truncate(value, (w - 4) as usize);
-    p.text(&format!("{t}{}", " ".repeat((w - 4) as usize - t.len())));
-    let ok = if focus_ok { "< OK >" } else { "  OK  " };
-    let cancel = if focus_ok { " Cancel " } else { "[ Cancel ]" };
+    p.text(&pad_field(value, w.saturating_sub(4) as usize));
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x, y + 3);
+    p.text("├");
+    p.hline(
+        x + 1,
+        y + 3,
+        w.saturating_sub(2),
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + 3);
+    p.text("┤");
+    let ok = if focus_ok { "[< OK >]" } else { "[ OK ]" };
+    let cancel = if focus_ok {
+        "[ Cancel ]"
+    } else {
+        "[< Cancel >]"
+    };
     let items = [(ok, focus_ok), (cancel, !focus_ok)];
     let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2;
     let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
@@ -5777,6 +5833,48 @@ fn draw_mkdir_dialog(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn draw_delete_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    name: &str,
+    focus_ok: bool,
+    show_shadow: bool,
+) {
+    // Live GNU 4.8.30 F8: compact box, two-line prompt, section bar, `[ Yes ]  [ No ]`.
+    let w = 21u16.min(cols.saturating_sub(2)).max(17);
+    let h = 6u16;
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
+    paint_dialog_frame(p, x, y, w, h, "Delete", pal, false);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 3, y + 1);
+    p.text("Delete file");
+    let quoted = format!("\"{name}\"?");
+    p.goto(x + 3, y + 2);
+    p.text(&truncate(&quoted, w.saturating_sub(6) as usize));
+    p.goto(x, y + 3);
+    p.text("├");
+    p.hline(
+        x + 1,
+        y + 3,
+        w.saturating_sub(2),
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + 3);
+    p.text("┤");
+    let items = [("[ Yes ]", focus_ok), ("[ No ]", !focus_ok)];
+    let btns_w = items.iter().map(|(s, _)| s.len()).sum::<usize>() + 2;
+    let bx = x + (w.saturating_sub(btns_w as u16)) / 2;
+    paint_dialog_button_cluster(p, bx, y + h - 2, pal, &items, false);
+    if show_shadow {
+        paint_dialog_shadow(p, x, y, w, h, pal);
+    }
+}
+
 fn draw_input_dialog(
     p: &mut Painter,
     cols: u16,
@@ -6531,6 +6629,7 @@ fn draw_copy_move_dialog(
     pal: McPalette,
     title: &str,
     src_name: &str,
+    src_kind: &str,
     mask: &str,
     to: &str,
     using_shell_patterns: bool,
@@ -6542,8 +6641,9 @@ fn draw_copy_move_dialog(
     show_shadow: bool,
 ) {
     use rmc_core::app::CopyDialogFocus as F;
-    let w = (cols as usize).min(74) as u16;
-    let h = 15u16;
+    // Live GNU 4.8.30 F5: 66×12, two-column checks, section bars.
+    let w = (cols as usize).min(66) as u16;
+    let h = 12u16.min(rows.saturating_sub(1)).max(7);
     let x = cols.saturating_sub(w) / 2;
     let y = rows.saturating_sub(h) / 2;
     // Frame
@@ -6595,14 +6695,13 @@ fn draw_copy_move_dialog(
     let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
     p.goto(tx, y);
     p.text(&ttl);
-    // Lines
+    // Lines — live GNU 4.8.30 F5
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 2);
+    p.goto(x + 2, y + 1);
     p.text(&truncate(
-        &format!("{title} file \"{src_name}\" with source mask:"),
+        &format!("{title} {src_kind} \"{src_name}\" with source mask:"),
         w.saturating_sub(4) as usize,
     ));
-    // mask field
     let mask_focus = matches!(focus, F::Mask);
     p.set_fg_bg(
         if mask_focus {
@@ -6616,11 +6715,23 @@ fn draw_copy_move_dialog(
             pal.dialog_default_bg
         },
     );
-    p.goto(x + 2, y + 3);
+    p.goto(x + 2, y + 2);
     p.text(&pad_field(mask, w.saturating_sub(4) as usize));
-    // to:
+    // Using shell patterns is right-aligned on the next row.
+    let shell = format!(
+        "[{}] Using shell patterns",
+        if using_shell_patterns { 'x' } else { ' ' }
+    );
+    let shell_x = x + w.saturating_sub(2 + shell.len() as u16);
+    if matches!(focus, F::Checkbox1) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(shell_x, y + 3);
+    p.text(&shell);
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 5);
+    p.goto(x + 2, y + 4);
     p.text("to:");
     let to_focus = matches!(focus, F::To);
     p.set_fg_bg(
@@ -6635,51 +6746,91 @@ fn draw_copy_move_dialog(
             pal.dialog_default_bg
         },
     );
-    p.goto(x + 6, y + 5);
-    p.text(&pad_field(to, w.saturating_sub(8) as usize));
-    // Checkboxes
+    p.goto(x + 2, y + 5);
+    p.text(&pad_field(to, w.saturating_sub(4) as usize));
+    // Section bar, two-column checks, section bar.
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    let checks = [
-        ("Using shell patterns", using_shell_patterns),
-        ("Follow links", follow_links),
-        ("Preserve attributes", preserve_attrs),
-        ("Dive into subdir if exists", dive_into_subdir),
-        ("Stable symlinks", stable_symlinks),
-    ];
-    for (i, (label, on)) in checks.iter().enumerate() {
-        let row_y = y + 7 + i as u16;
-        p.goto(x + 4, row_y);
-        let focused = matches!(
-            (i, focus),
-            (0, F::Checkbox1)
-                | (1, F::Checkbox2)
-                | (2, F::Checkbox3)
-                | (3, F::Checkbox4)
-                | (4, F::Checkbox5)
-        );
+    p.goto(x, y + 6);
+    p.text("├");
+    p.hline(
+        x + 1,
+        y + 6,
+        w.saturating_sub(2),
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + 6);
+    p.text("┤");
+    let paint_check = |p: &mut Painter, xx: u16, yy: u16, on: bool, label: &str, focused: bool| {
         if focused {
             p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
         } else {
             p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
         }
-        p.text(&format!("[{}] {}", if *on { 'x' } else { ' ' }, label));
-    }
-    // Buttons
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+        p.goto(xx, yy);
+        p.text(&format!("[{}] {label}", if on { 'x' } else { ' ' }));
+    };
+    paint_check(
+        p,
+        x + 2,
+        y + 7,
+        follow_links,
+        "Follow links",
+        matches!(focus, F::Checkbox2),
+    );
+    paint_check(
+        p,
+        x + 35,
+        y + 7,
+        dive_into_subdir,
+        "Dive into subdir if exists",
+        matches!(focus, F::Checkbox4),
+    );
+    paint_check(
+        p,
+        x + 2,
+        y + 8,
+        preserve_attrs,
+        "Preserve attributes",
+        matches!(focus, F::Checkbox3),
+    );
+    paint_check(
+        p,
+        x + 35,
+        y + 8,
+        stable_symlinks,
+        "Stable symlinks",
+        matches!(focus, F::Checkbox5),
+    );
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x, y + 9);
+    p.text("├");
+    p.hline(
+        x + 1,
+        y + 9,
+        w.saturating_sub(2),
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + 9);
+    p.text("┤");
     let sel = |f: F, txt: &str| {
         if f == focus {
-            format!("< {txt} >")
+            format!("[< {txt} >]")
         } else {
             format!("[ {txt} ]")
         }
     };
     let btns = format!(
-        "{}  {}  {}",
+        "{} {} {}",
         sel(F::Ok, "OK"),
         sel(F::Background, "Background"),
         sel(F::Cancel, "Cancel")
     );
     let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
     p.goto(bx, y + h - 2);
     p.text(&btns);
     // Shadow
@@ -7209,12 +7360,7 @@ fn draw_menu_dropdown(
     horizontal_split: bool,
 ) {
     let items = top_menu_items(top_index);
-    let titles = menu_bar_titles(horizontal_split);
-    // Compute x position under the selected top title
-    let mut x = 0u16;
-    for title in titles.iter().take(top_index) {
-        x += title.len() as u16;
-    }
+    let x = rmc_core::layout::menu_bar_item_start(top_index, horizontal_split);
     let y = 1u16;
     let w = (items.iter().map(|s| s.len()).max().unwrap_or(8) + 4) as u16;
     let h = items.len() as u16 + 2;
@@ -8196,7 +8342,7 @@ mod gnu_default_chrome_colors_tests {
         assert_eq!(sort_ind, ".n", "sort-indicator column, got {:?}", {
             grid[1].iter().map(|c| c.ch).collect::<String>()
         });
-        let name: String = grid[1][4..8].iter().map(|c| c.ch).collect();
+        let name: String = grid[1][8..12].iter().map(|c| c.ch).collect();
         assert_eq!(name, "Name", "header label, got {:?}", {
             grid[1].iter().map(|c| c.ch).collect::<String>()
         });
@@ -8361,7 +8507,7 @@ mod gnu_default_chrome_colors_tests {
         }
         let grid = rasterize(&buf, 40, 1);
         let left: String = grid[0][0..6].iter().map(|c| c.ch).collect();
-        assert_eq!(left, " Left ");
+        assert_eq!(left, "  Left");
         for cell in &grid[0][0..6] {
             assert_eq!(
                 (cell.fg, cell.bg),
@@ -8385,18 +8531,61 @@ mod gnu_default_chrome_colors_tests {
             super::draw_menu_bar(&mut painter, 40, pal, Some(0), false);
         }
         let grid = rasterize(&sel, 40, 1);
-        for cell in &grid[0][0..6] {
+        for cell in &grid[0][1..7] {
             assert_eq!(
                 (cell.fg, cell.bg),
                 (Color::White, Color::Black),
                 "F9-selected Left is white;black"
             );
         }
+        assert_eq!(grid[0][0].bg, Color::Cyan, "lead space stays menu cyan");
         assert_eq!(
-            grid[0][6].bg,
+            grid[0][7].bg,
             Color::Cyan,
             "unselected rest stays menu cyan"
         );
+    }
+
+    #[test]
+    fn menu_bar_and_fbar_match_live_gnu_80col_cells() {
+        let pal = McPalette::default();
+        let mut menu = Vec::new();
+        {
+            let mut p = Painter { out: &mut menu };
+            super::draw_menu_bar(&mut p, 80, pal, None, false);
+        }
+        let menu_row = row_str(&rasterize(&menu, 80, 1), 0);
+        assert_eq!(
+            menu_row.trim_end(),
+            "  Left     File     Command     Options     Right"
+        );
+
+        let mut fbar = Vec::new();
+        {
+            let mut p = Painter { out: &mut fbar };
+            super::draw_fbar(&mut p, 0, 80, pal);
+        }
+        let fbar_row = row_str(&rasterize(&fbar, 80, 1), 0);
+        assert_eq!(
+            fbar_row,
+            " 1Help   2Menu   3View   4Edit   5Copy   6RenMov 7Mkdir  8Delete 9PullDn10Quit  "
+        );
+        assert_eq!(super::fbar_slot_bounds(80)[0], (1, 9));
+        assert_eq!(super::fbar_slot_bounds(80)[8], (65, 72));
+        assert_eq!(super::fbar_slot_bounds(80)[9], (72, 80));
+    }
+
+    #[test]
+    fn full_listing_40col_header_matches_live_gnu() {
+        let app = panel_app(ListingFormat::Full);
+        let pal = McPalette::default();
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            super::draw_panel(&mut p, 0, 0, 40, 12, true, &app, true, pal).unwrap();
+        }
+        let header = row_str(&rasterize(&buf, 40, 12), 1);
+        assert_eq!(header, "│.n     Name      │ Size  │Modify time │");
     }
 
     fn row_str(grid: &[Vec<Cell>], y: usize) -> String {
@@ -8441,6 +8630,8 @@ mod gnu_default_chrome_colors_tests {
         app.right.entries = vec![epoch_parent()];
         app.left.cursor = 1;
         app.right.cursor = 0;
+        app.left.cwd = PathBuf::from("/tmp");
+        app.right.cwd = PathBuf::from("/tmp");
         app.panel_opts.show_mini_status = true;
         app.layout.show_free_space = false;
         app
@@ -8449,7 +8640,7 @@ mod gnu_default_chrome_colors_tests {
     #[test]
     fn format_entry_name_keeps_gnu_type_cell_including_space() {
         let parent = epoch_parent();
-        assert_eq!(super::format_entry_name(&parent), " ..");
+        assert_eq!(super::format_entry_name(&parent), "/..");
         let mut dir = epoch_file("docs", 4096);
         dir.is_dir = true;
         assert_eq!(super::format_entry_name(&dir), "/docs");
@@ -8538,18 +8729,18 @@ mod gnu_default_chrome_colors_tests {
     #[test]
     fn full_listing_cols_pack_size_and_mtime_on_the_right() {
         let c = super::full_listing_cols(0, 40);
-        assert_eq!(c.time_x, 25, "mtime stays at x+w-15");
-        assert_eq!(c.time_bar, 24);
-        assert_eq!(c.size_x, 16);
-        assert_eq!(c.size_bar, 15);
+        assert_eq!(c.time_x, 27, "mtime stays at x+w-13 (12-char field)");
+        assert_eq!(c.time_bar, 26);
+        assert_eq!(c.size_x, 19);
+        assert_eq!(c.size_bar, 18);
         assert!(c.size_bar > 1, "bar is inside the frame");
         assert!(c.size_bar < c.size_x);
         assert!(
-            c.size_x + 7 < c.time_bar,
-            "8-char size fits before time bar"
+            c.size_x + 6 < c.time_bar,
+            "7-char size fits before time bar"
         );
         let bars = super::full_listing_bar_xs(c, 0, 40);
-        assert_eq!(bars, vec![15, 24]);
+        assert_eq!(bars, vec![18, 26]);
     }
 
     #[test]
@@ -8608,11 +8799,11 @@ mod gnu_default_chrome_colors_tests {
                 "top frame ┬ at {bx}: {}",
                 row_str(&grid, 0)
             );
-            // GNU mini-status split `├─┴─┴─┤` at y=h-3 (row 9), not the bottom frame.
+            // Live GNU 4.8.30 mini-status split is solid ─ (no ┴).
             assert_eq!(
                 grid[9][bx].ch,
-                '┴',
-                "mini-status split ┴ at {bx}: {}",
+                '─',
+                "mini-status split is solid ─ at {bx}: {}",
                 row_str(&grid, 9)
             );
             assert_eq!(
@@ -8677,8 +8868,8 @@ mod gnu_default_chrome_colors_tests {
         assert_ne!(grid[1][bx].ch, '|');
         assert_eq!(grid[0][bx].ch, '┬');
         assert_eq!(
-            grid[9][bx].ch, '┴',
-            "Brief ┴ on mini-status split, not bottom"
+            grid[9][bx].ch, '─',
+            "Brief mini-status split is solid ─, not bottom ┴"
         );
         assert_eq!(grid[9][0].ch, '├');
         assert_eq!(grid[9][39].ch, '┤');
@@ -8802,8 +8993,8 @@ mod gnu_default_chrome_colors_tests {
         assert!(parent_row.contains(".."), "{parent_row:?}");
         let parent_type_name: String = grid[2][1..4].iter().map(|c| c.ch).collect();
         assert_eq!(
-            parent_type_name, " ..",
-            "GNU parent Full listing is type-cell space then `..`: {parent_row:?}"
+            parent_type_name, "/..",
+            "GNU parent Full listing is `/..`: {parent_row:?}"
         );
         assert!(
             parent_row.contains("UP--DIR"),
@@ -9074,50 +9265,38 @@ mod gnu_default_chrome_colors_tests {
         let mut buf = Vec::new();
         {
             let mut p = Painter { out: &mut buf };
-            super::draw_dialog_box(
-                &mut p,
-                80,
-                24,
-                pal,
-                "Error",
-                "Cannot hard-link a directory",
-                &["< OK >", "Cancel"],
-                false,
-            );
+            super::draw_error_dialog(&mut p, 80, 24, pal, "Cannot operate on \"..\"!", false);
         }
         let grid = rasterize(&buf, 80, 24);
-        let w = 60usize;
-        let h = 7usize;
-        let x = (80 - w) / 2;
-        let y = (24 - h) / 2;
-        assert_eq!(grid[y][x].ch, '┌');
-        assert_eq!(
-            (grid[y][x].fg, grid[y][x].bg),
-            (Color::White, Color::Red),
-            "error frame is white;red, not dialog lightgray"
-        );
-        assert_ne!(grid[y][x].bg, pal.dialog_default_bg);
-        assert_eq!(
-            (grid[y + 1][x + 2].fg, grid[y + 1][x + 2].bg),
-            (Color::White, Color::Red)
-        );
-
         let (tx, ty) = find_text(&grid, " Error ");
-        assert_span(&grid, tx, ty, " Error ", Color::White, Color::Red);
-        let (mx, my) = find_text(&grid, "Cannot hard-link a directory");
+        assert!(
+            (0..80).any(|x| grid[ty][x].ch == '┌'),
+            "compact error frame on the title row"
+        );
+        assert_eq!(
+            (grid[ty][tx].fg, grid[ty][tx].bg),
+            (Color::White, Color::Red),
+            "error title is white;red, not dialog lightgray"
+        );
+        assert_ne!(grid[ty][tx].bg, pal.dialog_default_bg);
+        let (mx, my) = find_text(&grid, "Cannot operate on \"..\"!");
         assert_span(
             &grid,
             mx,
             my,
-            "Cannot hard-link a directory",
+            "Cannot operate on \"..\"!",
             Color::White,
             Color::Red,
         );
-
-        let (ox, oy) = find_text(&grid, "< OK >");
-        assert_span(&grid, ox, oy, "< OK >", Color::Black, Color::Grey);
-        let (cx, cy) = find_text(&grid, "Cancel");
-        assert_span(&grid, cx, cy, "Cancel", Color::White, Color::Red);
+        let all: String = grid.iter().flatten().map(|c| c.ch).collect();
+        assert!(
+            !all.contains("Cancel"),
+            "live GNU parent-copy error has no Cancel: {all:?}"
+        );
+        assert!(
+            !all.contains("< OK >"),
+            "live GNU parent-copy error has no OK button: {all:?}"
+        );
     }
 
     #[test]
@@ -9143,7 +9322,7 @@ mod gnu_default_chrome_colors_tests {
             super::draw_menu_dropdown(&mut p, pal, 1, 0, false);
         }
         let grid = rasterize(&buf, 40, 20);
-        let x = " Left ".len();
+        let x = rmc_core::layout::menu_bar_item_start(1, false) as usize;
         assert_eq!(grid[1][x].ch, '┌');
         assert_eq!(
             (grid[1][x].fg, grid[1][x].bg),
@@ -9332,6 +9511,10 @@ mod copy_dialog_paint_tests {
             s.contains("Copy file \"notes.txt\" with source mask:"),
             "GNU header, got {s:?}"
         );
+        assert!(
+            s.contains("[< OK >]") || s.contains("[ OK ]"),
+            "GNU button chrome, got {s:?}"
+        );
         assert!(s.contains("Using shell patterns"), "{s:?}");
         assert!(s.contains("to:"), "{s:?}");
         assert!(s.contains("/workspace/"), "{s:?}");
@@ -9356,6 +9539,7 @@ mod copy_dialog_paint_tests {
                 McPalette::default(),
                 "Copy",
                 "notes.txt",
+                "file",
                 mask,
                 to,
                 true,

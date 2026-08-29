@@ -739,9 +739,6 @@ fn user_perm_string(mode: u32, is_dir: bool) -> String {
 /// stale symlink, and a space for a regular file or parent `..`. The space is
 /// not optional — names must stay aligned with `/docs` and `*run.sh`.
 pub fn listing_type_char(ent: &FileEntry) -> char {
-    if ent.is_parent_marker() {
-        return ' ';
-    }
     if ent.is_stale_symlink {
         return '!';
     }
@@ -1710,7 +1707,7 @@ mod tests {
             format_user_listing_line(&linkdir, &tokens, 40, false, false).starts_with('~'),
             "symlink-to-dir type"
         );
-        assert_eq!(listing_type_char(&make_entry("..", 0, now, true)), ' ');
+        assert_eq!(listing_type_char(&make_entry("..", 0, now, true)), '/');
         let regular = make_entry("Cargo.lock", 72688, now, false);
         assert_eq!(listing_type_char(&regular), ' ');
         let regular_line = format_user_listing_line(&regular, &tokens, 40, false, false);
@@ -1724,8 +1721,8 @@ mod tests {
             format_user_listing_line(&make_entry("..", 0, now, true), &tokens, 40, false, false);
         assert_eq!(
             parent_line.chars().next(),
-            Some(' '),
-            "parent `..` keeps the GNU type-cell space: {parent_line:?}"
+            Some('/'),
+            "parent `..` is a directory type cell `/..` on live GNU: {parent_line:?}"
         );
         assert_eq!(
             full_listing_sort_indicator(SortBy::Name, SortDir::Asc),
@@ -1790,7 +1787,7 @@ mod tests {
         assert_eq!(
             panel_listing_content_rows(20, true, true),
             15,
-            "Full/Brief mini-status also reserves the ├─┴─┴─┤ split-line"
+            "Full/Brief mini-status also reserves the ├────────┤ split-line"
         );
     }
 
