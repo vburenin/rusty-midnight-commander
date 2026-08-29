@@ -3648,14 +3648,14 @@ fn draw_dialog_box(
 ) {
     let w = (cols as usize).min(60) as u16;
     let h = 7u16;
-    let x = (cols - w) / 2;
-    let y = (rows - h) / 2;
+    let x = cols.saturating_sub(w) / 2;
+    let y = rows.saturating_sub(h) / 2;
     let error = dialog_is_error_title(title);
     paint_dialog_frame(p, x, y, w, h, title, pal, error);
     let (fg, bg) = dialog_chrome_pair(pal, error);
     p.set_fg_bg(fg, bg);
-    p.goto(x + 2, y + 2);
-    p.text(&truncate(message, (w - 4) as usize));
+    p.goto(x.saturating_add(2), y.saturating_add(2));
+    p.text(&truncate(message, w.saturating_sub(4) as usize));
     let items: Vec<(&str, bool)> = buttons
         .iter()
         .enumerate()
@@ -6371,7 +6371,7 @@ fn draw_copy_move_dialog(
     p.goto(x + 2, y + 2);
     p.text(&truncate(
         &format!("{title} file \"{src_name}\" with source mask:"),
-        (w - 4) as usize,
+        w.saturating_sub(4) as usize,
     ));
     // mask field
     let mask_focus = matches!(focus, F::Mask);
@@ -9069,6 +9069,37 @@ mod copy_dialog_paint_tests {
         let dest = format!("{}notes.txt", "/very/long/path/segment".repeat(8));
         let buf = paint_copy("*", &dest, 80, 10);
         assert!(!buf.is_empty(), "rows < dialog height must not abort");
+    }
+
+    #[test]
+    fn copy_dialog_fits_on_narrow_terminal() {
+        let dest = format!("{}notes.txt", "/very/long/path/segment".repeat(8));
+        let buf = paint_copy("*", &dest, 8, 8);
+        assert!(!buf.is_empty(), "cols < dialog width must not abort");
+        let tiny = paint_copy("*", &dest, 3, 5);
+        assert!(!tiny.is_empty(), "cols < 4 / rows < 15 must not abort");
+    }
+
+    #[test]
+    fn error_dialog_for_parent_copy_fits_on_small_terminal() {
+        let vfs = LocalFs::new();
+        let mut app = App::new(Box::new(vfs), KeyMap::mc_defaults()).unwrap();
+        app.ui_mode = UiMode::DialogConfirm {
+            title: "Error".into(),
+            message: r#"Cannot operate on ".."!"#.into(),
+            on_ok: Box::new(|_| Ok(())),
+        };
+        let mut buf = Vec::new();
+        {
+            let mut p = Painter { out: &mut buf };
+            draw_overlays(&mut p, &app, 20, 6, McPalette::default()).unwrap();
+        }
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Error"), "Error title must paint, got {s:?}");
+        assert!(
+            s.contains("Cannot") || s.contains(".."),
+            "GNU parent-dir message must paint (possibly truncated): {s:?}"
+        );
     }
 
     #[test]
