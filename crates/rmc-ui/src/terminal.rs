@@ -32,8 +32,8 @@ use rmc_core::complete::{
 };
 use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
-    find_dialog_height, find_dialog_list_rows, find_tree_picker_list_rows, FindDialogFocus as FF,
-    FindDialogState, FindTreePicker,
+    find_dialog_height, find_results_list_rows, find_tree_picker_list_rows, FindDialogFocus as FF,
+    FindDialogPhase, FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
 use rmc_core::layout::{compute_chrome_geom, dual_panel_rects};
@@ -4812,21 +4812,27 @@ impl TerminalApp {
                         app.ui_mode = UiMode::Normal;
                     }
                     KeyCode::Tab => {
-                        state.focus = state.focus.next();
+                        state.focus = state.focus.next_in(state.phase);
                     }
                     KeyCode::BackTab => {
-                        state.focus = state.focus.prev();
+                        state.focus = state.focus.prev_in(state.phase);
+                    }
+                    KeyCode::Left | KeyCode::Right
+                        if state.phase == FindDialogPhase::Setup
+                            && (state.focus.is_form_widget() || state.focus.is_action_button()) =>
+                    {
+                        state.focus = state.focus.setup_across();
                     }
                     KeyCode::Up => {
-                        if state.focus.is_form_widget() {
-                            if !matches!(state.focus, FF::StartDir) {
-                                state.focus = state.focus.prev();
-                            }
+                        if state.phase == FindDialogPhase::Setup
+                            && (state.focus.is_form_widget() || state.focus.is_action_button())
+                        {
+                            state.focus = state.focus.setup_up();
                         } else if state.selected_index > 0 {
                             state.selected_index -= 1;
                             let r = find_dialog_term_rows(page_rows);
                             let h = find_dialog_height(r);
-                            let list_rows = find_dialog_list_rows(h);
+                            let list_rows = find_results_list_rows(h);
                             if state.selected_index < state.scroll_top {
                                 state.scroll_top = state.selected_index;
                             } else if state.selected_index >= state.scroll_top + list_rows {
@@ -4837,17 +4843,15 @@ impl TerminalApp {
                         }
                     }
                     KeyCode::Down => {
-                        if state.focus.is_form_widget() {
-                            let n = state.focus.next();
-                            // Do not wrap from the last form widget back to Start at.
-                            if !matches!(n, FF::StartDir) {
-                                state.focus = n;
-                            }
+                        if state.phase == FindDialogPhase::Setup
+                            && (state.focus.is_form_widget() || state.focus.is_action_button())
+                        {
+                            state.focus = state.focus.setup_down();
                         } else if state.selected_index + 1 < state.results.paths.len() {
                             state.selected_index += 1;
                             let r = find_dialog_term_rows(page_rows);
                             let h = find_dialog_height(r);
-                            let list_rows = find_dialog_list_rows(h);
+                            let list_rows = find_results_list_rows(h);
                             if state.selected_index < state.scroll_top {
                                 state.scroll_top = state.selected_index;
                             } else if state.selected_index >= state.scroll_top + list_rows {
@@ -4866,7 +4870,7 @@ impl TerminalApp {
                             state.selected_index = state.results.paths.len() - 1;
                             let r = find_dialog_term_rows(page_rows);
                             let h = find_dialog_height(r);
-                            let list_rows = find_dialog_list_rows(h);
+                            let list_rows = find_results_list_rows(h);
                             state.scroll_top = state
                                 .selected_index
                                 .saturating_sub(list_rows.saturating_sub(1));
@@ -4958,6 +4962,9 @@ impl TerminalApp {
                             }
                             focus if focus.is_action_button() => {
                                 activate_find_file_button(app, focus, &active_cwd)?;
+                            }
+                            _ if state.phase == FindDialogPhase::Setup => {
+                                activate_find_file_button(app, FF::ButtonOk, &active_cwd)?;
                             }
                             _ => {}
                         }
@@ -10466,7 +10473,7 @@ fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> R
                 app.ui_mode = UiMode::Normal;
             }
         }
-        FF::ButtonQuit => {
+        FF::ButtonQuit | FF::ButtonCancel => {
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
                 state.abort_search();
             }
@@ -10479,19 +10486,37 @@ fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> R
 
 fn handle_find_dialog_mouse(app: &mut App, mev: MouseEvent, cols: u16, rows: u16) -> Result<()> {
     let cwd = app.active_panel().cwd.clone();
-    let (focus, paused) = match &app.ui_mode {
-        UiMode::FindDialog(st) => (st.focus, st.is_paused()),
+    let (focus, paused, phase) = match &app.ui_mode {
+        UiMode::FindDialog(st) => (st.focus, st.is_paused(), st.phase),
         _ => return Ok(()),
     };
-    let Some(hit) =
+    let hit = if phase == FindDialogPhase::Setup {
+        crate::find::find_setup_widget_at(cols, rows, mev.column, mev.row)
+    } else {
         crate::find::find_action_button_at(cols, rows, mev.column, mev.row, focus, paused)
-    else {
+    };
+    let Some(hit) = hit else {
         return Ok(());
     };
     if let UiMode::FindDialog(st) = &mut app.ui_mode {
         st.focus = hit;
     }
-    activate_find_file_button(app, hit, &cwd)
+    if matches!(hit, FF::Tree) {
+        if let UiMode::FindDialog(st) = &mut app.ui_mode {
+            open_find_tree_picker(&*app.vfs, st);
+        }
+        return Ok(());
+    }
+    if hit.is_checkbox() {
+        if let UiMode::FindDialog(st) = &mut app.ui_mode {
+            let _ = st.toggle_focused_checkbox();
+        }
+        return Ok(());
+    }
+    if hit.is_action_button() {
+        activate_find_file_button(app, hit, &cwd)?;
+    }
+    Ok(())
 }
 
 /// Open the Find File directory-tree figure. Idempotent: a second open does not nest.
@@ -16079,13 +16104,16 @@ mod find_file_dialog_tests {
         open_find_via_command_menu(&mut app);
         let st = find_state(&app);
         assert_eq!(st.focus, FF::NamePattern);
+        assert_eq!(st.phase, rmc_core::find::FindDialogPhase::Setup);
         assert!(!st.params.regular_expression);
         assert!(st.params.find_recursively);
         assert!(!st.params.follow_symlinks);
         assert!(!st.params.skip_hidden);
-        assert!(!st.params.case_sensitive);
+        assert!(st.params.case_sensitive);
+        assert!(st.params.content_case_sensitive);
+        assert!(st.params.using_shell_patterns);
         assert!(!st.params.whole_words);
-        assert!(!st.params.enable_ignore_dirs);
+        assert!(st.params.enable_ignore_dirs);
         assert!(st.params.ignore_dirs.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -16096,30 +16124,9 @@ mod find_file_dialog_tests {
         let mut app = make_app(&root);
         app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
 
-        // NamePattern -> Content -> Whole words -> Case sensitive
+        // GNU add order: NamePattern -> Content -> Find recursively (not Whole words).
         press(&mut app, KeyCode::Tab);
         assert_eq!(find_state(&app).focus, FF::Content);
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(find_state(&app).focus, FF::WholeWords);
-        assert!(!find_state(&app).params.whole_words);
-        press(&mut app, KeyCode::Char(' '));
-        assert!(find_state(&app).params.whole_words);
-        press(&mut app, KeyCode::Enter);
-        assert!(!find_state(&app).params.whole_words);
-
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(find_state(&app).focus, FF::CaseSensitive);
-        assert!(!find_state(&app).params.case_sensitive);
-        press(&mut app, KeyCode::Char(' '));
-        assert!(find_state(&app).params.case_sensitive);
-        press(&mut app, KeyCode::Enter);
-        assert!(!find_state(&app).params.case_sensitive);
-
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(find_state(&app).focus, FF::RegularExpression);
-        press(&mut app, KeyCode::Char(' '));
-        assert!(find_state(&app).params.regular_expression);
-
         press(&mut app, KeyCode::Tab);
         assert_eq!(find_state(&app).focus, FF::FindRecursively);
         assert!(find_state(&app).params.find_recursively);
@@ -16132,18 +16139,59 @@ mod find_file_dialog_tests {
         assert!(find_state(&app).params.follow_symlinks);
 
         press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::UsingShellPatterns);
+        assert!(find_state(&app).params.using_shell_patterns);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!find_state(&app).params.using_shell_patterns);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::CaseSensitive);
+        assert!(find_state(&app).params.case_sensitive);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!find_state(&app).params.case_sensitive);
+        press(&mut app, KeyCode::Enter);
+        assert!(find_state(&app).params.case_sensitive);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::FileAllCharsets);
+        press(&mut app, KeyCode::Tab);
         assert_eq!(find_state(&app).focus, FF::SkipHidden);
         press(&mut app, KeyCode::Char(' '));
         assert!(find_state(&app).params.skip_hidden);
 
         press(&mut app, KeyCode::Tab);
-        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
-        assert!(!find_state(&app).params.enable_ignore_dirs);
+        assert_eq!(find_state(&app).focus, FF::WholeWords);
+        assert!(!find_state(&app).params.whole_words);
         press(&mut app, KeyCode::Char(' '));
-        assert!(find_state(&app).params.enable_ignore_dirs);
+        assert!(find_state(&app).params.whole_words);
         press(&mut app, KeyCode::Enter);
-        assert!(!find_state(&app).params.enable_ignore_dirs);
+        assert!(!find_state(&app).params.whole_words);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::RegularExpression);
         press(&mut app, KeyCode::Char(' '));
+        assert!(find_state(&app).params.regular_expression);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::ContentCaseSensitive);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::ContentAllCharsets);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::FirstHit);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::ButtonOk);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::ButtonCancel);
+
+        find_state_mut(&mut app).focus = FF::StartDir;
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::Tree);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
+        assert!(find_state(&app).params.enable_ignore_dirs);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!find_state(&app).params.enable_ignore_dirs);
+        press(&mut app, KeyCode::Enter);
         assert!(find_state(&app).params.enable_ignore_dirs);
 
         press(&mut app, KeyCode::Tab);
@@ -16160,19 +16208,22 @@ mod find_file_dialog_tests {
         press(&mut app, KeyCode::BackTab);
         assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
 
-        // Down/Up also walk the checkbox row and ignore-dirs field.
+        // Spatial Down/Up stay in the left column.
         press(&mut app, KeyCode::Down);
         assert_eq!(find_state(&app).focus, FF::IgnoreDirs);
         press(&mut app, KeyCode::Up);
         assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
-        press(&mut app, KeyCode::Up);
-        assert_eq!(find_state(&app).focus, FF::SkipHidden);
-        press(&mut app, KeyCode::Down);
-        assert_eq!(find_state(&app).focus, FF::EnableIgnoreDirs);
-
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(find_state(&app).focus, FF::ButtonOk);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            find_state(&app).focus,
+            FF::EnableIgnoreDirs,
+            "full-width ignore check has no right-hand pair"
+        );
+        find_state_mut(&mut app).focus = FF::FindRecursively;
+        press(&mut app, KeyCode::Right);
+        assert_eq!(find_state(&app).focus, FF::WholeWords);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(find_state(&app).focus, FF::FindRecursively);
 
         // Typing still goes to Filename when that field is focused; Space inserts.
         find_state_mut(&mut app).focus = FF::NamePattern;
@@ -16360,6 +16411,7 @@ mod find_file_dialog_tests {
             "OK must start a new search, hits={:?}",
             st.results.paths
         );
+        assert_eq!(st.phase, rmc_core::find::FindDialogPhase::Results);
         assert!(!st.running);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -16400,6 +16452,21 @@ mod find_file_dialog_tests {
     }
 
     #[test]
+    fn setup_cancel_closes_without_searching() {
+        let root = temp_workspace();
+        std::fs::write(root.join("hit.txt"), "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        find_state_mut(&mut app).focus = FF::ButtonCancel;
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Normal),
+            "setup Cancel must close Find File"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn again_reopens_parameters_without_searching() {
         let root = temp_workspace();
         std::fs::write(root.join("hit.txt"), "x").unwrap();
@@ -16413,6 +16480,7 @@ mod find_file_dialog_tests {
         press(&mut app, KeyCode::Enter);
         let st = find_state(&app);
         assert_eq!(st.focus, FF::NamePattern, "Again asks for new parameters");
+        assert_eq!(st.phase, rmc_core::find::FindDialogPhase::Setup);
         assert!(!st.running, "Again must not start a search");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -16507,14 +16575,11 @@ mod find_file_dialog_tests {
         let mut app = make_app(&root2);
         app.mouse_enabled = true;
         app.ui_mode = UiMode::FindDialog(FindDialogState::new(root2.clone()));
-        let h = find_dialog_height(28);
-        let y = (28 - h) / 2 + h - 2;
+        let (_sx, sy) = rmc_core::find::find_setup_origin(80, 28);
+        let y = sy + 15;
         let mx = (0..80u16)
-            .find(|&x| {
-                crate::find::find_action_button_at(80, 28, x, y, FF::NamePattern, false)
-                    == Some(FF::ButtonOk)
-            })
-            .expect("OK button x");
+            .find(|&x| crate::find::find_setup_widget_at(80, 28, x, y) == Some(FF::ButtonOk))
+            .expect("setup OK button x");
         let mut last_t = None;
         let mut last_tgt = None;
         TerminalApp::dispatch_mouse(

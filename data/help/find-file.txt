@@ -4,9 +4,12 @@
 Command menu Find file searches under a start directory by name and,
 optionally, by file content.
 
-Fields: Start at, Filename, Content, Ignore dirs (colon-separated names
-skipped when that option is on). Checkboxes cover case, whole words,
-regular expressions, recursion, hidden files, and following symlinks.
+Fields: Start at, File name, Content, Enable ignore directories
+(colon-separated names skipped when that option is on). The setup form
+is two columns: file-name options on the left (Find recursively, Follow
+symlinks, Using shell patterns, Case sensitive, All charsets, Skip
+hidden) and content options on the right (Whole words, Regular
+expression, Case sensitive, All charsets, First hit).
 
 Tree opens a directory-tree picker for the start path. OK starts a new
 search. During the search, Stop pauses and Start continues. Again asks

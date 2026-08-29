@@ -1,8 +1,10 @@
 use crate::mc_colors::McPalette;
 use crate::widgets::Painter;
 use rmc_core::find::{
-    find_dialog_height, find_tree_picker_height, find_tree_picker_list_rows, FindDialogFocus as F,
-    FindDialogState, FIND_DIALOG_LIST_TOP,
+    find_dialog_height, find_setup_origin, find_tree_picker_height, find_tree_picker_list_rows,
+    FindDialogFocus as F, FindDialogPhase, FindDialogState, FIND_RESULTS_LIST_TOP,
+    FIND_SETUP_CANCEL_X, FIND_SETUP_FIELD_W, FIND_SETUP_H, FIND_SETUP_OK_X, FIND_SETUP_TREE_X,
+    FIND_SETUP_W, FIND_SETUP_X1, FIND_SETUP_X2,
 };
 
 /// GNU mc(1) Find File bottom-row labels. Stop/Start is one slot: Stop while
@@ -74,6 +76,353 @@ pub fn find_action_button_at(
     None
 }
 
+fn setup_btn(label: &str, marked: bool) -> String {
+    if marked {
+        format!("[< {label} >]")
+    } else {
+        format!("[ {label} ]")
+    }
+}
+
+fn setup_ok_cancel(focus: F) -> (String, String) {
+    (
+        setup_btn("OK", !matches!(focus, F::ButtonCancel)),
+        setup_btn("Cancel", matches!(focus, F::ButtonCancel)),
+    )
+}
+
+/// Hit-test the GNU 4.8.30 two-column setup (fields, checks, Tree, OK/Cancel).
+pub fn find_setup_widget_at(cols: u16, rows: u16, mx: u16, my: u16) -> Option<F> {
+    let (x, y) = find_setup_origin(cols, rows);
+    let w = FIND_SETUP_W.min(cols);
+    let h = FIND_SETUP_H.min(rows);
+    if mx < x || mx >= x.saturating_add(w) || my < y || my >= y.saturating_add(h) {
+        return None;
+    }
+    let rel_x = mx.saturating_sub(x);
+    let rel_y = my.saturating_sub(y);
+    let in_left = rel_x < FIND_SETUP_X2;
+    let on_check = |col_x: u16, width: u16| rel_x >= col_x && rel_x < col_x.saturating_add(width);
+    match rel_y {
+        2 if on_check(FIND_SETUP_TREE_X, 8) => Some(F::Tree),
+        2 if on_check(
+            FIND_SETUP_X1,
+            FIND_SETUP_TREE_X.saturating_sub(FIND_SETUP_X1),
+        ) =>
+        {
+            Some(F::StartDir)
+        }
+        3 if on_check(FIND_SETUP_X1, 32) => Some(F::EnableIgnoreDirs),
+        4 if on_check(FIND_SETUP_X1, w.saturating_sub(4)) => Some(F::IgnoreDirs),
+        7 if in_left => Some(F::NamePattern),
+        7 => Some(F::Content),
+        8 if in_left => Some(F::FindRecursively),
+        8 => Some(F::WholeWords),
+        9 if in_left => Some(F::FollowSymlinks),
+        9 => Some(F::RegularExpression),
+        10 if in_left => Some(F::UsingShellPatterns),
+        10 => Some(F::ContentCaseSensitive),
+        11 if in_left => Some(F::CaseSensitive),
+        11 => Some(F::ContentAllCharsets),
+        12 if in_left => Some(F::FileAllCharsets),
+        12 => Some(F::FirstHit),
+        13 if in_left => Some(F::SkipHidden),
+        15 => {
+            let (ok, cancel) = setup_ok_cancel(F::NamePattern);
+            if on_check(FIND_SETUP_OK_X, ok.len() as u16) {
+                Some(F::ButtonOk)
+            } else if on_check(FIND_SETUP_CANCEL_X, cancel.len() as u16) {
+                Some(F::ButtonCancel)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn paint_hline(p: &mut Painter, x: u16, y: u16, w: u16, pal: McPalette) {
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("├");
+    p.hline(
+        x + 1,
+        y,
+        w.saturating_sub(2),
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y);
+    p.text("┤");
+}
+
+fn paint_setup_field(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    w: u16,
+    text: &str,
+    focus: bool,
+    pal: McPalette,
+) {
+    p.set_fg_bg(
+        if focus {
+            pal.dfocus_fg
+        } else {
+            pal.dialog_default_fg
+        },
+        if focus {
+            pal.dfocus_bg
+        } else {
+            pal.dialog_default_bg
+        },
+    );
+    p.goto(x, y);
+    let t = truncate(text, w as usize);
+    p.text(&format!("{t}{}", " ".repeat(w as usize - t.len())));
+}
+
+fn paint_setup_check(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    checked: bool,
+    focused: bool,
+    label: &str,
+    pal: McPalette,
+) {
+    p.set_fg_bg(
+        if focused {
+            pal.dfocus_fg
+        } else {
+            pal.dialog_default_fg
+        },
+        if focused {
+            pal.dfocus_bg
+        } else {
+            pal.dialog_default_bg
+        },
+    );
+    p.goto(x, y);
+    p.text(&format!("[{}] {label}", if checked { 'x' } else { ' ' }));
+}
+
+fn paint_dialog_chrome(
+    p: &mut Painter,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    title: &str,
+    pal: McPalette,
+) {
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let ttl = format!(" {title} ");
+    let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(&ttl);
+}
+
+fn draw_find_setup_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    st: &FindDialogState,
+) {
+    let w = FIND_SETUP_W.min(cols);
+    let h = FIND_SETUP_H.min(rows);
+    let (x, y) = find_setup_origin(cols, rows);
+    paint_dialog_chrome(p, x, y, w, h, "Find File", pal);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + FIND_SETUP_X1, y + 1);
+    p.text("Start at:");
+    let tree = setup_btn("Tree", matches!(st.focus, F::Tree));
+    paint_setup_field(
+        p,
+        x + FIND_SETUP_X1,
+        y + 2,
+        FIND_SETUP_TREE_X.saturating_sub(FIND_SETUP_X1),
+        &st.start_dir_edit,
+        matches!(st.focus, F::StartDir),
+        pal,
+    );
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    p.goto(x + FIND_SETUP_TREE_X, y + 2);
+    p.text(&tree);
+    paint_setup_check(
+        p,
+        x + FIND_SETUP_X1,
+        y + 3,
+        st.params.enable_ignore_dirs,
+        matches!(st.focus, F::EnableIgnoreDirs),
+        "Enable ignore directories:",
+        pal,
+    );
+    paint_setup_field(
+        p,
+        x + FIND_SETUP_X1,
+        y + 4,
+        w.saturating_sub(FIND_SETUP_X1 + 2),
+        &st.params.ignore_dirs,
+        matches!(st.focus, F::IgnoreDirs),
+        pal,
+    );
+    paint_hline(p, x, y + 5, w, pal);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + FIND_SETUP_X1, y + 6);
+    p.text("File name:");
+    p.goto(x + FIND_SETUP_X2, y + 6);
+    p.text("Content:");
+    let pat = match &st.params.name_pattern {
+        rmc_core::find::NamePattern::Glob(s) => s.as_str(),
+    };
+    paint_setup_field(
+        p,
+        x + FIND_SETUP_X1,
+        y + 7,
+        FIND_SETUP_FIELD_W,
+        pat,
+        matches!(st.focus, F::NamePattern),
+        pal,
+    );
+    let content = st.params.content_substring.as_deref().unwrap_or("");
+    paint_setup_field(
+        p,
+        x + FIND_SETUP_X2,
+        y + 7,
+        FIND_SETUP_FIELD_W.min(w.saturating_sub(FIND_SETUP_X2 + 2)),
+        content,
+        matches!(st.focus, F::Content),
+        pal,
+    );
+    let left = [
+        (
+            F::FindRecursively,
+            st.params.find_recursively,
+            "Find recursively",
+        ),
+        (
+            F::FollowSymlinks,
+            st.params.follow_symlinks,
+            "Follow symlinks",
+        ),
+        (
+            F::UsingShellPatterns,
+            st.params.using_shell_patterns,
+            "Using shell patterns",
+        ),
+        (F::CaseSensitive, st.params.case_sensitive, "Case sensitive"),
+        (
+            F::FileAllCharsets,
+            st.params.file_all_charsets,
+            "All charsets",
+        ),
+        (F::SkipHidden, st.params.skip_hidden, "Skip hidden"),
+    ];
+    let right = [
+        (F::WholeWords, st.params.whole_words, "Whole words"),
+        (
+            F::RegularExpression,
+            st.params.regular_expression,
+            "Regular expression",
+        ),
+        (
+            F::ContentCaseSensitive,
+            st.params.content_case_sensitive,
+            "Case sensitive",
+        ),
+        (
+            F::ContentAllCharsets,
+            st.params.content_all_charsets,
+            "All charsets",
+        ),
+        (F::FirstHit, st.params.first_hit, "First hit"),
+    ];
+    for (i, (f, on, lab)) in left.iter().enumerate() {
+        paint_setup_check(
+            p,
+            x + FIND_SETUP_X1,
+            y + 8 + i as u16,
+            *on,
+            st.focus == *f,
+            lab,
+            pal,
+        );
+    }
+    for (i, (f, on, lab)) in right.iter().enumerate() {
+        paint_setup_check(
+            p,
+            x + FIND_SETUP_X2,
+            y + 8 + i as u16,
+            *on,
+            st.focus == *f,
+            lab,
+            pal,
+        );
+    }
+    paint_hline(p, x, y + 14, w, pal);
+    let (ok, cancel) = setup_ok_cancel(st.focus);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + FIND_SETUP_OK_X, y + 15);
+    p.text(&ok);
+    p.goto(x + FIND_SETUP_CANCEL_X, y + 15);
+    p.text(&cancel);
+    p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+    p.hline(
+        x + 1,
+        y + h,
+        w.saturating_sub(1),
+        ' ',
+        pal.shadow_fg,
+        pal.shadow_bg,
+    );
+    p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+}
+
 pub fn draw_find_dialog(
     p: &mut Painter,
     cols: u16,
@@ -81,6 +430,13 @@ pub fn draw_find_dialog(
     pal: McPalette,
     st: &FindDialogState,
 ) {
+    if st.phase == FindDialogPhase::Setup {
+        draw_find_setup_dialog(p, cols, rows, pal, st);
+        if let Some(picker) = &st.tree_picker {
+            draw_find_tree_picker(p, cols, rows, pal, picker);
+        }
+        return;
+    }
     let w = (cols as usize).min(76) as u16;
     // Flexible height to fit GNU checkboxes plus a results list
     let h = find_dialog_height(rows);
@@ -135,154 +491,9 @@ pub fn draw_find_dialog(
     let tx = x + (w.saturating_sub(ttl.len() as u16)) / 2;
     p.goto(tx, y);
     p.text(ttl);
-    // Labels and inputs
-    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 2);
-    p.text("Start at:");
-    p.goto(x + 2, y + 4);
-    p.text("Filename:");
-    p.goto(x + 2, y + 6);
-    p.text("Content:");
-    // Fields
-    let draw_field =
-        |p: &mut Painter, xx: u16, yy: u16, w: u16, text: &str, focus: bool, pal: McPalette| {
-            p.set_fg_bg(
-                if focus {
-                    pal.dfocus_fg
-                } else {
-                    pal.dialog_default_fg
-                },
-                if focus {
-                    pal.dfocus_bg
-                } else {
-                    pal.dialog_default_bg
-                },
-            );
-            p.goto(xx, yy);
-            let t = truncate(text, (w - 2) as usize);
-            p.text(&format!("{t}{}", " ".repeat((w - 2) as usize - t.len())));
-        };
-    let field_w = w - 4;
-    let tree_txt = if matches!(st.focus, F::Tree) {
-        "< Tree >"
-    } else {
-        "[ Tree ]"
-    };
-    let tree_w = tree_txt.len() as u16;
-    let tree_x = x + w.saturating_sub(2).saturating_sub(tree_w);
-    let start_field_w = tree_x.saturating_sub(x + 12 + 1).max(2);
-    draw_field(
-        p,
-        x + 12,
-        y + 2,
-        start_field_w,
-        &st.start_dir_edit,
-        matches!(st.focus, F::StartDir),
-        pal,
-    );
-    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
-    p.goto(tree_x, y + 2);
-    p.text(tree_txt);
-    // Name pattern
-    let pat = match &st.params.name_pattern {
-        rmc_core::find::NamePattern::Glob(s) => s.as_str(),
-    };
-    draw_field(
-        p,
-        x + 12,
-        y + 4,
-        field_w - 12,
-        pat,
-        matches!(st.focus, F::NamePattern),
-        pal,
-    );
-    // Content
-    let content = st.params.content_substring.as_deref().unwrap_or("");
-    draw_field(
-        p,
-        x + 20,
-        y + 6,
-        field_w - 20,
-        content,
-        matches!(st.focus, F::Content),
-        pal,
-    );
-    // GNU Find File checkboxes (public mc(1) "Find File" labels and order)
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 8,
-        st.params.whole_words,
-        matches!(st.focus, F::WholeWords),
-        "Whole words",
-        pal,
-    );
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 9,
-        st.params.case_sensitive,
-        matches!(st.focus, F::CaseSensitive),
-        "Case sensitive",
-        pal,
-    );
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 10,
-        st.params.regular_expression,
-        matches!(st.focus, F::RegularExpression),
-        "Regular expression",
-        pal,
-    );
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 11,
-        st.params.find_recursively,
-        matches!(st.focus, F::FindRecursively),
-        "Find recursively",
-        pal,
-    );
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 12,
-        st.params.follow_symlinks,
-        matches!(st.focus, F::FollowSymlinks),
-        "Follow symlinks",
-        pal,
-    );
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 13,
-        st.params.skip_hidden,
-        matches!(st.focus, F::SkipHidden),
-        "Skip hidden",
-        pal,
-    );
-    draw_checkbox(
-        p,
-        x + 3,
-        y + 14,
-        st.params.enable_ignore_dirs,
-        matches!(st.focus, F::EnableIgnoreDirs),
-        "Enable ignore directories",
-        pal,
-    );
-    draw_field(
-        p,
-        x + 3,
-        y + 15,
-        field_w.saturating_sub(1),
-        &st.params.ignore_dirs,
-        matches!(st.focus, F::IgnoreDirs),
-        pal,
-    );
     // Status line
     p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
-    p.goto(x + 2, y + 16);
+    p.goto(x + 2, y + 1);
     let n = st.results.paths.len();
     let status = if st.is_paused() {
         format!("Stopped... {n} matches")
@@ -294,7 +505,7 @@ pub fn draw_find_dialog(
     let t = truncate(&status, (w - 4) as usize);
     p.text(&t);
     // Results list area
-    let list_top = y + FIND_DIALOG_LIST_TOP;
+    let list_top = y + FIND_RESULTS_LIST_TOP;
     let list_bottom = y + h - 3;
     let list_h = list_bottom.saturating_sub(list_top).saturating_add(1);
     for i in 0..list_h {
@@ -441,31 +652,6 @@ fn draw_find_tree_picker(
     p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
 }
 
-fn draw_checkbox(
-    p: &mut Painter,
-    x: u16,
-    y: u16,
-    checked: bool,
-    focused: bool,
-    label: &str,
-    pal: McPalette,
-) {
-    p.set_fg_bg(
-        if focused {
-            pal.dfocus_fg
-        } else {
-            pal.dialog_default_fg
-        },
-        if focused {
-            pal.dfocus_bg
-        } else {
-            pal.dialog_default_bg
-        },
-    );
-    p.goto(x, y);
-    p.text(&format!("[{}] {label}", if checked { 'x' } else { ' ' }));
-}
-
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -529,23 +715,71 @@ mod tests {
         grid.join("\n")
     }
 
-    fn draw_state(st: &FindDialogState) -> Vec<String> {
+    fn draw_state_at(st: &FindDialogState, cols: u16, rows: u16) -> Vec<String> {
         let pal = McPalette::default();
         let mut buf = Vec::new();
         {
             let mut p = Painter { out: &mut buf };
-            draw_find_dialog(&mut p, 80, 28, pal, st);
+            draw_find_dialog(&mut p, cols, rows, pal, st);
         }
-        rasterize(&buf, 80, 28)
+        rasterize(&buf, cols, rows)
+    }
+
+    fn draw_state(st: &FindDialogState) -> Vec<String> {
+        draw_state_at(st, 80, 28)
+    }
+
+    fn results_state() -> FindDialogState {
+        let mut st = FindDialogState::new(PathBuf::from("/tmp"));
+        st.phase = FindDialogPhase::Results;
+        st
     }
 
     #[test]
-    fn raster_idle_buttons_are_ok_stop_again_chdir_panelize_quit() {
-        let st = FindDialogState::new(PathBuf::from("/tmp"));
+    fn raster_setup_matches_live_gnu_4_8_30_cells() {
+        let st = FindDialogState::new(PathBuf::from("/tmp/mcr-fixture"));
+        let grid = draw_state_at(&st, 80, 24);
+        let text = screen_text(&grid);
+        let (x, y) = find_setup_origin(80, 24);
+        assert_eq!((x, y), (7, 3), "66×17 WPOS_CENTER on 80×24");
+        let row = |dy: u16| grid[y as usize + dy as usize].as_str();
+        assert!(row(0).contains(" Find File "), "{text}");
+        assert_eq!(&row(1)[9..18], "Start at:");
+        assert!(row(2).contains("[ Tree ]"), "{text}");
+        assert_eq!(row(2).find("[ Tree ]"), Some(63));
+        assert!(row(3).contains("[x] Enable ignore directories:"), "{text}");
+        assert_eq!(row(3).find("[x] Enable ignore directories:"), Some(9));
+        assert_eq!(&row(6)[9..19], "File name:");
+        assert_eq!(&row(6)[41..49], "Content:");
+        assert!(row(8).contains("[x] Find recursively"), "{text}");
+        assert_eq!(row(8).find("[x] Find recursively"), Some(9));
+        assert_eq!(row(8).find("[ ] Whole words"), Some(41));
+        assert!(row(9).contains("[ ] Follow symlinks"), "{text}");
+        assert!(row(9).contains("[ ] Regular expression"), "{text}");
+        assert!(row(10).contains("[x] Using shell patterns"), "{text}");
+        assert!(row(10).contains("[x] Case sensitive"), "{text}");
+        assert!(row(11).contains("[x] Case sensitive"), "{text}");
+        assert!(row(11).contains("[ ] All charsets"), "{text}");
+        assert!(row(12).contains("[ ] All charsets"), "{text}");
+        assert!(row(12).contains("[ ] First hit"), "{text}");
+        assert!(row(13).contains("[ ] Skip hidden"), "{text}");
+        assert!(row(15).contains("[< OK >]"), "{text}");
+        assert!(row(15).contains("[ Cancel ]"), "{text}");
+        assert_eq!(row(15).find("[< OK >]"), Some(30));
+        assert_eq!(row(15).find("[ Cancel ]"), Some(39));
+        assert!(
+            !text.contains("[ Stop ]") && !text.contains("[ Again ]"),
+            "setup must not paint the results action row:\n{text}"
+        );
+    }
+
+    #[test]
+    fn raster_results_buttons_are_ok_stop_again_chdir_panelize_quit() {
+        let st = results_state();
         let grid = draw_state(&st);
         let text = screen_text(&grid);
         assert!(
-            text.contains("[ OK ]"),
+            text.contains("[ OK ]") || text.contains("< OK >"),
             "OK must start a new search, got:\n{text}"
         );
         assert!(
@@ -562,9 +796,12 @@ mod tests {
         );
         let btn_row = grid
             .iter()
-            .find(|r| r.contains("[ OK ]") && r.contains("[ Stop ]"))
+            .find(|r| r.contains("[ Stop ]") && (r.contains("[ OK ]") || r.contains("< OK >")))
             .expect("button row");
-        let ok = btn_row.find("[ OK ]").unwrap();
+        let ok = btn_row
+            .find("[ OK ]")
+            .or_else(|| btn_row.find("< OK >"))
+            .unwrap();
         let stop = btn_row.find("[ Stop ]").unwrap();
         let again = btn_row.find("[ Again ]").unwrap();
         let chdir = btn_row.find("[ Chdir ]").unwrap();
@@ -575,7 +812,7 @@ mod tests {
 
     #[test]
     fn raster_paused_stop_slot_is_start() {
-        let mut st = FindDialogState::new(PathBuf::from("/tmp"));
+        let mut st = results_state();
         let h = rmc_core::find::CancelHandle::new();
         h.pause();
         st.cancel = Some(h);
@@ -598,12 +835,33 @@ mod tests {
 
     #[test]
     fn action_button_hit_ok() {
-        let st = FindDialogState::new(PathBuf::from("/tmp"));
+        let st = results_state();
         let h = find_dialog_height(28);
         let y = (28 - h) / 2;
         let btn_y = y + h - 2;
         let ok =
             (0..80u16).find_map(|mx| find_action_button_at(80, 28, mx, btn_y, st.focus, false));
         assert_eq!(ok, Some(F::ButtonOk));
+    }
+
+    #[test]
+    fn setup_hit_ok_and_tree() {
+        let (x, y) = find_setup_origin(80, 24);
+        assert_eq!(
+            find_setup_widget_at(80, 24, x + FIND_SETUP_OK_X + 1, y + 15),
+            Some(F::ButtonOk)
+        );
+        assert_eq!(
+            find_setup_widget_at(80, 24, x + FIND_SETUP_TREE_X + 1, y + 2),
+            Some(F::Tree)
+        );
+        assert_eq!(
+            find_setup_widget_at(80, 24, x + FIND_SETUP_X1, y + 8),
+            Some(F::FindRecursively)
+        );
+        assert_eq!(
+            find_setup_widget_at(80, 24, x + FIND_SETUP_X2, y + 8),
+            Some(F::WholeWords)
+        );
     }
 }
