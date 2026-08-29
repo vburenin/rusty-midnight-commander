@@ -183,6 +183,20 @@ fn resolves_mc_defaults() {
     );
     assert!(
         matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('?'), KeyModifiers::ALT)),
+            Some(Action::FindFile)
+        ),
+        "Alt-? Find File (GNU Find = alt-question)"
+    );
+    assert!(
+        !matches!(
+            km.resolve(&KeyEvent::new(KeyCode::F(17), KeyModifiers::NONE)),
+            Some(Action::FindFile)
+        ),
+        "F17 is not Find File in GNU 4.8.33"
+    );
+    assert!(
+        matches!(
             km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
             Some(Action::UnselectGroup)
         ),
@@ -206,6 +220,13 @@ fn data_mc_keymap_loads_with_zero_warnings_and_gnu_chords() {
         km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL)),
         Some(Action::OpenHotlist)
     ));
+    assert!(
+        matches!(
+            km.resolve(&KeyEvent::new(KeyCode::Char('?'), KeyModifiers::ALT)),
+            Some(Action::FindFile)
+        ),
+        "data/mc.keymap Alt-question = FindFile"
+    );
     assert!(matches!(
         km.resolve(&KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)),
         Some(Action::UnselectGroup)

@@ -2100,6 +2100,10 @@ impl App {
             Copy | Move | Mkdir | Delete => {
                 // UI layer opens dialogs; core provides helpers
             }
+            FindFile => {
+                let start = self.active_panel().cwd.clone();
+                self.ui_mode = UiMode::FindDialog(FindDialogState::new(start));
+            }
             Chmod => self.open_chmod_dialog(),
             Chown => self.open_chown_dialog(),
             LinkHard => self.open_link_dialog(LinkKind::Hard),
@@ -2162,13 +2166,11 @@ impl App {
         self.sftp_host_key.take()
     }
 
-    /// Open the User menu the same way F2 does (`load_menu` fallbacks). Missing
-    /// menu is a no-op.
+    /// Open the User menu the same way F2 does (`load_menu` fallbacks). GNU
+    /// still opens the dialog when every menu file is missing (empty list).
     fn try_open_user_menu(&mut self) {
         let cwd = self.active_panel().cwd.clone();
-        if let Ok(menu) = crate::user_menu::load_menu(&cwd) {
-            self.open_user_menu(menu);
-        }
+        self.open_user_menu(crate::user_menu::menu_for_f2(&cwd));
     }
 
     /// Auto menus: open User menu only when `cwd/.mc.menu` itself is present

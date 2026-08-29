@@ -102,15 +102,31 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
             .map(|(k, v)| (k.trim(), v.trim()))
             .ok_or_else(|| anyhow!("Invalid line {}: {raw}", lineno + 1))?;
         match section {
-            Section::Core => assign_pair(&mut pal, "core", k, v, lineno + 1)?,
-            Section::Dialog => assign_pair(&mut pal, "dialog", k, v, lineno + 1)?,
-            Section::Error => assign_pair(&mut pal, "error", k, v, lineno + 1)?,
-            Section::Menu => assign_pair(&mut pal, "menu", k, v, lineno + 1)?,
-            Section::ButtonBar => assign_pair(&mut pal, "buttonbar", k, v, lineno + 1)?,
-            Section::StatusBar => assign_pair(&mut pal, "statusbar", k, v, lineno + 1)?,
+            // GNU skins leave some keys blank (`inputhistory =`) or fg-only
+            // (`dhotnormal = white;`). Skip those keys; do not abort the file.
+            Section::Core => {
+                let _ = assign_pair(&mut pal, "core", k, v, lineno + 1);
+            }
+            Section::Dialog => {
+                let _ = assign_pair(&mut pal, "dialog", k, v, lineno + 1);
+            }
+            Section::Error => {
+                let _ = assign_pair(&mut pal, "error", k, v, lineno + 1);
+            }
+            Section::Menu => {
+                let _ = assign_pair(&mut pal, "menu", k, v, lineno + 1);
+            }
+            Section::ButtonBar => {
+                let _ = assign_pair(&mut pal, "buttonbar", k, v, lineno + 1);
+            }
+            Section::StatusBar => {
+                let _ = assign_pair(&mut pal, "statusbar", k, v, lineno + 1);
+            }
             Section::FileHighlight => {
-                let col = parse_color_name(v)
-                    .ok_or_else(|| anyhow!("Unknown color '{}' on line {}", v, lineno + 1))?;
+                let col = parse_color_name(v.trim_end_matches(';').trim());
+                let Some(col) = col else {
+                    continue;
+                };
                 match &k.to_ascii_lowercase()[..] {
                     "dir" | "directory" => pal.dir_color = col,
                     "exec" | "executable" => pal.exec_color = col,
@@ -120,8 +136,12 @@ pub fn parse_skin(text: &str) -> Result<McPalette> {
                     _ => {}
                 }
             }
-            Section::Viewer => assign_pair(&mut pal, "viewer", k, v, lineno + 1)?,
-            Section::Editor => assign_pair(&mut pal, "editor", k, v, lineno + 1)?,
+            Section::Viewer => {
+                let _ = assign_pair(&mut pal, "viewer", k, v, lineno + 1);
+            }
+            Section::Editor => {
+                let _ = assign_pair(&mut pal, "editor", k, v, lineno + 1);
+            }
             Section::None => {
                 // ignore top-level assignments
             }
@@ -533,6 +553,16 @@ pub(crate) fn lock_skin_env() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn gnu_incomplete_pairs_do_not_abort_core_default() {
+        let pal = parse_skin(
+            "[core]\n_default_ = lightgray;black\ninputhistory =\nshadow = gray;black\n[dialog]\ndhotnormal = white;\n",
+        )
+        .expect("GNU-style incomplete pairs must not abort the skin");
+        assert_eq!(pal.core_default_bg, Color::Black);
+        assert_eq!(pal.core_default_fg, Color::Grey);
+    }
 
     #[test]
     fn parse_default_skin_file() {

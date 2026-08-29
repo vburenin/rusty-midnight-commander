@@ -53,6 +53,25 @@ pub fn load_menu(cwd: &Path) -> Result<UserMenu> {
     Err(anyhow!("No user menu file found"))
 }
 
+/// Empty User menu GNU still opens when every candidate file is missing.
+pub fn empty_user_menu() -> UserMenu {
+    UserMenu {
+        title: "User menu".into(),
+        entries: Vec::new(),
+        source_path: PathBuf::new(),
+    }
+}
+
+/// F2 / Command → User menu: load fallbacks, or an empty dialog (never a no-op).
+pub fn menu_for_f2(cwd: &Path) -> UserMenu {
+    user_menu_from_load(load_menu(cwd))
+}
+
+/// Map `load_menu` onto a dialog GNU still shows when the file is missing.
+pub fn user_menu_from_load(loaded: Result<UserMenu>) -> UserMenu {
+    loaded.unwrap_or_else(|_| empty_user_menu())
+}
+
 fn load_menu_file(path: &Path, require_safe: bool) -> Option<UserMenu> {
     if path.exists() && (!require_safe || is_safe_file(path)) {
         parse_menu_file(path).ok()
@@ -244,6 +263,16 @@ mod tests {
         assert_eq!(m.entries[0].title, "Echo file");
         assert!(m.entries[0].command.contains("%f"));
         assert_eq!(m.entries[1].hotkey, None);
+    }
+
+    #[test]
+    fn missing_menu_file_still_yields_user_menu_dialog() {
+        let m = user_menu_from_load(Err(anyhow!("No user menu file found")));
+        assert_eq!(m.title, "User menu");
+        assert!(
+            m.entries.is_empty(),
+            "GNU F2 still opens User menu when the file is missing"
+        );
     }
 
     #[test]
