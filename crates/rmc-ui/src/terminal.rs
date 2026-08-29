@@ -8051,12 +8051,45 @@ impl TerminalApp {
                             }),
                         };
                     }
-                    KeyCode::F(2) | KeyCode::Char('w')
-                        if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
+                    KeyCode::F(2) => {
+                        if let UiMode::Viewer {
+                            hex,
+                            hex_edit,
+                            wrap,
+                            ..
+                        } = &mut app.ui_mode
+                        {
+                            if *hex {
+                                // GNU hex F2 Edit / View (nibble editing is a leftover).
+                                *hex_edit = !*hex_edit;
+                            } else {
+                                *wrap = !*wrap;
+                            }
+                        }
+                    }
+                    KeyCode::Char('w') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         if let UiMode::Viewer { hex, wrap, .. } = &mut app.ui_mode {
                             if !*hex {
                                 *wrap = !*wrap;
+                            }
+                        }
+                    }
+                    KeyCode::F(6) => {
+                        // GNU hex F6 Save. No dirty hex buffer yet — stay in Viewer.
+                        if let UiMode::Viewer {
+                            hex,
+                            search_dialog,
+                            goto_prompt,
+                            viewer_menu,
+                            status_msg,
+                            ..
+                        } = &mut app.ui_mode
+                        {
+                            if *hex {
+                                *search_dialog = None;
+                                *goto_prompt = None;
+                                *viewer_menu = None;
+                                *status_msg = None;
                             }
                         }
                     }
@@ -17507,7 +17540,7 @@ mod viewer_search_tests {
         press(&mut app, KeyCode::Char('w'));
         match &app.ui_mode {
             UiMode::Viewer { wrap, hex, .. } => {
-                assert!(*wrap);
+                assert!(!*wrap, "GNU starts wrap ON; w unwraps");
                 assert!(!*hex);
             }
             _ => panic!("expected Viewer"),
@@ -17690,8 +17723,9 @@ mod viewer_display_options_tests {
 
         press(&mut app, KeyCode::Tab);
         assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::WrapMode);
+        assert!(display_dialog(&app).wrap, "GNU wrap default is on");
         press(&mut app, KeyCode::Char(' '));
-        assert!(display_dialog(&app).wrap);
+        assert!(!display_dialog(&app).wrap);
 
         press(&mut app, KeyCode::Tab);
         assert_eq!(display_dialog(&app).focus, ViewerDisplayFocus::HexMode);
@@ -17749,7 +17783,7 @@ mod viewer_display_options_tests {
                 assert!(display_dialog.is_none());
                 assert!(!*show_line_numbers);
                 assert!(!*show_cr);
-                assert!(!*wrap);
+                assert!(*wrap, "GNU wrap default stays on after cancel");
                 assert!(!*hex);
             }
             UiMode::Normal => panic!("Esc must stay in the viewer"),
@@ -17823,7 +17857,7 @@ mod viewer_display_options_tests {
                 assert!(display_dialog.is_none());
                 assert!(*show_line_numbers);
                 assert!(*show_cr);
-                assert!(*wrap);
+                assert!(!*wrap, "Space on Wrap mode toggles GNU default off");
                 assert!(!*hex);
             }
             _ => panic!("expected Viewer after OK"),
@@ -17905,7 +17939,7 @@ mod viewer_display_options_tests {
                 display_dialog,
                 ..
             } => {
-                assert!(*wrap);
+                assert!(!*wrap, "GNU starts wrap ON; w unwraps");
                 assert!(!*hex);
                 assert!(display_dialog.is_none());
             }
@@ -18169,7 +18203,7 @@ mod viewer_compressed_filter_tests {
         press(&mut app, KeyCode::Char('w'));
         match &app.ui_mode {
             UiMode::Viewer { wrap, hex, .. } => {
-                assert!(*wrap);
+                assert!(!*wrap, "GNU starts wrap ON; w unwraps");
                 assert!(!*hex);
             }
             _ => panic!("expected Viewer wrap"),
@@ -18179,7 +18213,7 @@ mod viewer_compressed_filter_tests {
         match &app.ui_mode {
             UiMode::Viewer { hex, wrap, .. } => {
                 assert!(*hex, "F4 hex on decoded stream");
-                assert!(*wrap);
+                assert!(!*wrap);
             }
             _ => panic!("expected Viewer hex"),
         }
@@ -18848,7 +18882,7 @@ mod viewer_selection_keybindings_tests {
         press(&mut app, KeyCode::F(2));
         match &app.ui_mode {
             UiMode::Viewer { wrap, hex, .. } => {
-                assert!(*wrap);
+                assert!(!*wrap, "GNU starts wrap ON; F2 unwraps");
                 assert!(!*hex);
             }
             _ => panic!("F2 wrap"),
@@ -18883,6 +18917,99 @@ mod viewer_selection_keybindings_tests {
         }
         press(&mut app, KeyCode::F(10));
         assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hex_f2_edit_f6_save_f7_hxsrch_do_not_reuse_text_keys() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "hello from notes\n").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                wrap,
+                hex,
+                hex_edit,
+                ..
+            } => {
+                assert!(*wrap, "GNU wrap default ON");
+                assert!(!*hex);
+                assert!(!*hex_edit);
+            }
+            _ => panic!("expected Viewer"),
+        }
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex,
+                wrap,
+                hex_edit,
+                ..
+            } => {
+                assert!(*hex);
+                assert!(*wrap, "hex must not clear wrap");
+                assert!(!*hex_edit);
+            }
+            _ => panic!("F4 hex"),
+        }
+        press(&mut app, KeyCode::F(2));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex,
+                wrap,
+                hex_edit,
+                ..
+            } => {
+                assert!(*hex);
+                assert!(*wrap, "hex F2 is Edit, not UnWrap");
+                assert!(*hex_edit, "hex F2 enters Edit (F-bar 2View)");
+            }
+            _ => panic!("hex F2 Edit"),
+        }
+        press(&mut app, KeyCode::F(2));
+        match &app.ui_mode {
+            UiMode::Viewer { hex_edit, wrap, .. } => {
+                assert!(!*hex_edit, "hex F2 again is View");
+                assert!(*wrap);
+            }
+            _ => panic!("hex F2 View"),
+        }
+        press(&mut app, KeyCode::F(6));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex,
+                search_dialog,
+                goto_prompt,
+                ..
+            } => {
+                assert!(*hex, "hex F6 Save stays in hex");
+                assert!(search_dialog.is_none());
+                assert!(goto_prompt.is_none());
+            }
+            _ => panic!("hex F6 Save must stay in Viewer"),
+        }
+        press(&mut app, KeyCode::F(7));
+        match &app.ui_mode {
+            UiMode::Viewer {
+                hex,
+                search_dialog: Some(_),
+                ..
+            } => {
+                assert!(*hex, "hex F7 HxSrch is the Search dialog");
+            }
+            _ => panic!("hex F7 must open Search (HxSrch)"),
+        }
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::F(4));
+        match &app.ui_mode {
+            UiMode::Viewer { hex, hex_edit, .. } => {
+                assert!(!*hex);
+                assert!(!*hex_edit, "leaving hex clears Edit");
+            }
+            _ => panic!("F4 back to text"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

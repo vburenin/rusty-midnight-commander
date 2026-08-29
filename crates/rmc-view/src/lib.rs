@@ -395,28 +395,53 @@ pub fn render_window(
     }
 }
 
+/// Live GNU mcview 4.8.30 hex dump on 80 cols: 8-digit address, four 4-byte
+/// groups separated by ` │ `, ASCII (0x20..=0x7E else `.`) starting at column 63.
+const GNU_HEX_ASCII_COL: usize = 63;
+const GNU_HEX_GROUP_SEP: char = '│';
+
+fn gnu_hex_ascii_char(b: u8) -> char {
+    if (0x20..=0x7e).contains(&b) {
+        b as char
+    } else {
+        '.'
+    }
+}
+
+/// One GNU hex-dump row (address + grouped bytes + ASCII). No trailing pad;
+/// the viewer fill supplies the rest of the line.
+fn format_gnu_hex_line(offset: u64, chunk: &[u8]) -> String {
+    let mut hex = String::new();
+    for (i, &b) in chunk.iter().enumerate() {
+        if i > 0 {
+            hex.push(' ');
+        }
+        hex.push_str(&format!("{b:02X}"));
+        if i % 4 == 3 && i != 15 {
+            hex.push(' ');
+            hex.push(GNU_HEX_GROUP_SEP);
+        }
+    }
+    let ascii: String = chunk.iter().copied().map(gnu_hex_ascii_char).collect();
+    let mut line = format!("{offset:08X} {hex}");
+    while line.chars().count() < GNU_HEX_ASCII_COL {
+        line.push(' ');
+    }
+    line.push_str(&ascii);
+    line
+}
+
 fn render_hex(f: &mut File, offset: u64, _cols: u16, rows: u16) -> Result<RenderResult> {
-    // 16 bytes per row hex with ASCII column
+    // GNU mcview: 16 bytes per row, address + `│` 4-byte groups + ASCII.
     let lines_capacity = rows as usize;
     let mut buf = vec![0u8; 16 * lines_capacity];
     f.seek(SeekFrom::Start(offset))?;
     let read = f.read(&mut buf)?;
     buf.truncate(read);
     let mut lines = Vec::with_capacity(lines_capacity);
-    for chunk in buf.chunks(16) {
-        let hexs: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
-        let text: String = chunk
-            .iter()
-            .map(|&b| {
-                if (32..=126).contains(&b) {
-                    b as char
-                } else {
-                    '.'
-                }
-            })
-            .collect();
-        // 16*3 - 1 = 47 chars for hex (including spaces), then two spaces, then ascii 16
-        lines.push(format!("{:47}  {}", hexs.join(" "), text));
+    for (i, chunk) in buf.chunks(16).enumerate() {
+        let row_off = offset.saturating_add((i * 16) as u64);
+        lines.push(format_gnu_hex_line(row_off, chunk));
         if lines.len() >= lines_capacity {
             break;
         }
@@ -1513,8 +1538,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.lines.len(), 4);
-        assert!(r.lines[0].contains("00 01 02 03"));
-        assert!(r.lines[0].ends_with("...............")); // ascii part 16 dots or visible
+        assert_eq!(
+            r.lines[0],
+            "00000000 00 01 02 03 │ 04 05 06 07 │ 08 09 0A 0B │ 0C 0D 0E 0F ................"
+        );
+        assert!(r.lines[0].contains("00 01 02 03 │"));
+        assert!(r.lines[0].ends_with("................"));
+    }
+
+    #[test]
+    fn gnu_hex_line_matches_live_mcview_notes_and_partial() {
+        assert_eq!(
+            format_gnu_hex_line(0, b"hello from notes"),
+            "00000000 68 65 6C 6C │ 6F 20 66 72 │ 6F 6D 20 6E │ 6F 74 65 73 hello from notes"
+        );
+        assert_eq!(
+            format_gnu_hex_line(0x10, &[0x0A]),
+            "00000010 0A                                                    ."
+        );
+        assert_eq!(
+            format_gnu_hex_line(0x10, &[0x10, 0x11, 0x12, 0x13]),
+            "00000010 10 11 12 13 │                                         ...."
+        );
     }
 
     #[test]

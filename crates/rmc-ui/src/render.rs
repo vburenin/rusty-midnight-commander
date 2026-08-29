@@ -102,6 +102,7 @@ impl Renderer {
         if let rmc_core::app::UiMode::Viewer {
             path,
             hex,
+            hex_edit,
             wrap,
             offset,
             show_line_numbers,
@@ -125,6 +126,7 @@ impl Renderer {
                 self.palette,
                 path,
                 *hex,
+                *hex_edit,
                 *wrap,
                 *offset,
                 *show_line_numbers,
@@ -4088,6 +4090,7 @@ fn draw_viewer(
     pal: McPalette,
     display_path: &std::path::Path,
     hex: bool,
+    hex_edit: bool,
     wrap: bool,
     offset: u64,
     show_line_numbers: bool,
@@ -4190,7 +4193,7 @@ fn draw_viewer(
     if st.chars().count() < cols as usize {
         p.text(&" ".repeat(cols as usize - st.chars().count()));
     }
-    // Viewer F-bar (GNU mcview 10-key: Help / Wrap / Quit / Hex / Goto / … / Quit)
+    // Viewer F-bar (text: Help/UnWrap/…; hex: Help/Edit/Save/HxSrch/…)
     draw_viewer_fbar(
         p,
         rows.saturating_sub(1),
@@ -4198,6 +4201,7 @@ fn draw_viewer(
         pal,
         wrap,
         hex,
+        hex_edit,
         parsed,
         format_nroff,
     );
@@ -5253,34 +5257,53 @@ fn draw_viewer_fbar(
     pal: McPalette,
     wrap: bool,
     hex: bool,
+    hex_edit: bool,
     parsed: bool,
     format: bool,
 ) {
-    let labels = viewer_fbar_labels(wrap, hex, parsed, format);
+    let labels = viewer_fbar_labels(wrap, hex, hex_edit, parsed, format);
     paint_mc_fbar(p, y, cols, pal, &labels);
 }
 
-/// GNU mcview 10-key bar. Button text is the mode you *enter* (mc(1): F8 Raw/Parsed,
-/// F9 format/unformat). Public labels: Help, Wrap/UnWrap, Quit, Hex/Ascii, Goto,
-/// Search, Parse/Raw, Format/Unform, Quit.
+/// GNU mcview 4.8.30 10-key bar (live 80-col). Text mode: Help / Wrap|UnWrap /
+/// Quit / Hex / Goto / (empty) / Search / Raw|Parse / Format|Unform / Quit.
+/// Hex mode replaces F2/F6/F7 with Edit|View / Save / HxSrch (F4 still Ascii).
 pub(crate) fn viewer_fbar_labels(
     wrap: bool,
     hex: bool,
+    hex_edit: bool,
     parsed: bool,
     format: bool,
 ) -> [&'static str; 10] {
-    [
-        "Help",
-        if wrap { "UnWrap" } else { "Wrap" },
-        "Quit",
-        if hex { "Ascii" } else { "Hex" },
-        "Goto",
-        "",
-        "Search",
-        if parsed { "Raw" } else { "Parse" },
-        if format { "Unform" } else { "Format" },
-        "Quit",
-    ]
+    let raw = if parsed { "Raw" } else { "Parse" };
+    let form = if format { "Unform" } else { "Format" };
+    if hex {
+        [
+            "Help",
+            if hex_edit { "View" } else { "Edit" },
+            "Quit",
+            "Ascii",
+            "Goto",
+            "Save",
+            "HxSrch",
+            raw,
+            form,
+            "Quit",
+        ]
+    } else {
+        [
+            "Help",
+            if wrap { "UnWrap" } else { "Wrap" },
+            "Quit",
+            "Hex",
+            "Goto",
+            "",
+            "Search",
+            raw,
+            form,
+            "Quit",
+        ]
+    }
 }
 
 /// Viewer pairs from public `[viewer]`: unselected `_default_` (lightgray;blue),
@@ -8079,18 +8102,44 @@ mod viewer_fbar_and_selection_style_tests {
 
     #[test]
     fn gnu_mcview_fbar_labels_default_text_mode() {
+        // GNU starts wrap ON → 2UnWrap. wrap=false is after F2 toggle.
         assert_eq!(
-            viewer_fbar_labels(false, false, true, false),
+            viewer_fbar_labels(true, false, false, true, false),
+            ["Help", "UnWrap", "Quit", "Hex", "Goto", "", "Search", "Raw", "Format", "Quit"]
+        );
+        assert_eq!(
+            viewer_fbar_labels(false, false, false, true, false),
             ["Help", "Wrap", "Quit", "Hex", "Goto", "", "Search", "Raw", "Format", "Quit"]
         );
     }
 
     #[test]
+    fn gnu_mcview_hex_fbar_labels_match_live_4_8_30() {
+        assert_eq!(
+            viewer_fbar_labels(true, true, false, true, false),
+            ["Help", "Edit", "Quit", "Ascii", "Goto", "Save", "HxSrch", "Raw", "Format", "Quit"]
+        );
+        assert_eq!(viewer_fbar_labels(true, true, true, true, false)[1], "View");
+    }
+
+    #[test]
     fn gnu_mcview_fbar_labels_toggle_modes() {
-        assert_eq!(viewer_fbar_labels(true, false, true, false)[1], "UnWrap");
-        assert_eq!(viewer_fbar_labels(false, true, true, false)[3], "Ascii");
-        assert_eq!(viewer_fbar_labels(false, false, false, false)[7], "Parse");
-        assert_eq!(viewer_fbar_labels(false, false, true, true)[8], "Unform");
+        assert_eq!(
+            viewer_fbar_labels(true, false, false, true, false)[1],
+            "UnWrap"
+        );
+        assert_eq!(
+            viewer_fbar_labels(false, true, false, true, false)[3],
+            "Ascii"
+        );
+        assert_eq!(
+            viewer_fbar_labels(false, false, false, false, false)[7],
+            "Parse"
+        );
+        assert_eq!(
+            viewer_fbar_labels(false, false, false, true, true)[8],
+            "Unform"
+        );
     }
 
     #[test]
@@ -8152,6 +8201,7 @@ mod viewer_fbar_and_selection_style_tests {
                 &path,
                 false,
                 false,
+                false,
                 0,
                 false,
                 false,
@@ -8206,6 +8256,7 @@ mod viewer_fbar_and_selection_style_tests {
                 24,
                 McPalette::default(),
                 &path,
+                false,
                 false,
                 false,
                 0,
@@ -9982,6 +10033,10 @@ mod gnu_default_chrome_colors_tests {
     }
 
     fn paint_viewer(path: &Path, cols: u16, rows: u16, hex: bool) -> Vec<u8> {
+        paint_viewer_opts(path, cols, rows, hex, true)
+    }
+
+    fn paint_viewer_opts(path: &Path, cols: u16, rows: u16, hex: bool, wrap: bool) -> Vec<u8> {
         let pal = McPalette::default();
         let goto_prompt: Option<String> = None;
         let mut out = Vec::new();
@@ -9995,6 +10050,7 @@ mod gnu_default_chrome_colors_tests {
                 path,
                 hex,
                 false,
+                wrap,
                 0,
                 false,
                 false,
@@ -10056,6 +10112,74 @@ mod gnu_default_chrome_colors_tests {
             row0,
             "/tmp/mcr-fixture/notes.txt                      0x00000000                    0%"
         );
+    }
+
+    fn row_chars(grid: &[Vec<Cell>], y: usize) -> String {
+        grid[y].iter().map(|c| c.ch).collect()
+    }
+
+    /// Same bytes as live GNU `/tmp/mcr-fixture/notes.txt`, unique path so
+    /// parallel tests cannot empty the shared fixture mid-paint.
+    fn unique_gnu_notes_fixture() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mcr-fixture-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("notes.txt");
+        std::fs::write(&path, "hello from notes\n").expect("write notes");
+        path
+    }
+
+    #[test]
+    fn viewer_text_default_fbar_is_gnu_unwrap() {
+        let path = unique_gnu_notes_fixture();
+        let grid = rasterize(&paint_viewer(&path, 80, 24, false), 80, 24);
+        assert_eq!(
+            row_chars(&grid, 23),
+            " 1Help   2UnWrap 3Quit   4Hex    5Goto   6       7Search 8Raw    9Format10Quit  "
+        );
+        let nowrap = rasterize(&paint_viewer_opts(&path, 80, 24, false, false), 80, 24);
+        assert_eq!(
+            row_chars(&nowrap, 23),
+            " 1Help   2Wrap   3Quit   4Hex    5Goto   6       7Search 8Raw    9Format10Quit  "
+        );
+    }
+
+    #[test]
+    fn viewer_hex_fbar_matches_live_gnu_edit_save_hxsrch() {
+        let path = unique_gnu_notes_fixture();
+        let grid = rasterize(&paint_viewer(&path, 80, 24, true), 80, 24);
+        assert_eq!(
+            row_chars(&grid, 23),
+            " 1Help   2Edit   3Quit   4Ascii  5Goto   6Save   7HxSrch 8Raw    9Format10Quit  "
+        );
+        assert!(!row_chars(&grid, 23).contains("Search"));
+        assert!(!row_chars(&grid, 23).contains("UnWrap"));
+        assert!(!row_chars(&grid, 23).contains("2Wrap"));
+    }
+
+    #[test]
+    fn viewer_hex_dump_body_matches_live_gnu_notes_fixture() {
+        let path = unique_gnu_notes_fixture();
+        let grid = rasterize(&paint_viewer(&path, 80, 24, true), 80, 24);
+        assert_eq!(
+            row_chars(&grid, 1),
+            "00000000 68 65 6C 6C │ 6F 20 66 72 │ 6F 6D 20 6E │ 6F 74 65 73 hello from notes "
+        );
+        assert_eq!(
+            row_chars(&grid, 2),
+            "00000010 0A                                                    .                "
+        );
+        assert_eq!(grid[1][21].ch, '│');
+        assert_eq!(grid[1][35].ch, '│');
+        assert_eq!(grid[1][49].ch, '│');
+        assert_eq!(grid[1][63].ch, 'h');
+        assert_eq!(grid[2][63].ch, '.');
     }
 
     #[test]
