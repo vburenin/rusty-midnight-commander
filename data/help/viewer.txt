@@ -6,6 +6,8 @@ Internal viewer (mcview). F3 from panels opens the highlighted file.
   F2 wrap/unwrap          F3 or q or F10 quit
   F4 hex/text             F5 goto
   F7 or / search          n or F17 next match
+  Search radios: Normal, Regular expression, Hexadecimal, Wildcard search
+  Search options: Case sensitive, Backwards, Whole words, All charsets
   F8 parsed vs raw        F9 format/unformat (nroff)
   | external filter on the viewed bytes
 

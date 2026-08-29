@@ -635,7 +635,8 @@ pub enum UiMode {
         search_case_sensitive: bool,
         search_backwards: bool,
         search_whole_words: bool,
-        search_regexp: bool,
+        search_type: ViewerSearchType,
+        search_all_charsets: bool,
         status_msg: Option<String>,
     },
     Diff(DiffState),
@@ -1017,12 +1018,141 @@ pub struct EditorSearchDialog {
     pub focus: EditorSearchFocus,
 }
 
-/// GNU mcview F7 Search dialog: same chrome, labels, and defaults as mcedit Search
-/// (title ` Search `, prompt `Enter search string:`, four checkboxes all off).
-/// All charsets is omitted, as on editor Search.
-pub type ViewerSearchDialog = EditorSearchDialog;
-/// Focus order matches editor Search: field → four checkboxes → OK → Cancel.
-pub type ViewerSearchFocus = EditorSearchFocus;
+/// GNU mcview 4.8.33 Search type radios (accelerators stripped).
+/// Order matches GNU `Normal` / `Regular expression` / `Hexadecimal` / `Wildcard search`.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ViewerSearchType {
+    #[default]
+    Normal,
+    RegularExpression,
+    Hexadecimal,
+    WildcardSearch,
+}
+
+impl ViewerSearchType {
+    /// GNU 4.8.33 radio labels, left column, top to bottom.
+    pub const LABELS: [&'static str; 4] = [
+        "Normal",
+        "Regular expression",
+        "Hexadecimal",
+        "Wildcard search",
+    ];
+
+    pub const ALL: [Self; 4] = [
+        Self::Normal,
+        Self::RegularExpression,
+        Self::Hexadecimal,
+        Self::WildcardSearch,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        Self::LABELS[self.index()]
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Normal => 0,
+            Self::RegularExpression => 1,
+            Self::Hexadecimal => 2,
+            Self::WildcardSearch => 3,
+        }
+    }
+
+    pub const fn from_index(i: usize) -> Self {
+        Self::ALL[i % 4]
+    }
+
+    pub const fn next(self) -> Self {
+        Self::from_index(self.index() + 1)
+    }
+
+    pub const fn prev(self) -> Self {
+        Self::from_index(self.index() + 3)
+    }
+}
+
+/// Focus within the GNU mcview F7 Search dialog.
+/// Tab order: field → search-type radios (one group) → four checkboxes → OK → Cancel.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ViewerSearchFocus {
+    #[default]
+    Search,
+    SearchType,
+    CaseSensitive,
+    Backwards,
+    WholeWords,
+    AllCharsets,
+    Ok,
+    Cancel,
+}
+
+impl ViewerSearchFocus {
+    /// True when focus is one of the four GNU mcview Search checkboxes.
+    pub fn is_checkbox(self) -> bool {
+        matches!(
+            self,
+            Self::CaseSensitive | Self::Backwards | Self::WholeWords | Self::AllCharsets
+        )
+    }
+
+    /// True when the left-column search-type radio group has focus.
+    pub fn is_radio_group(self) -> bool {
+        matches!(self, Self::SearchType)
+    }
+}
+
+/// GNU mcview 4.8.33 F7 Search dialog.
+///
+/// Title ` Search `, prompt `Enter search string:`, two columns:
+/// radios Normal / Regular expression / Hexadecimal / Wildcard search on the
+/// left; Case sensitive / Backwards / Whole words / All charsets on the right.
+/// Defaults match GNU (Normal selected, all checkboxes off).
+#[derive(Clone)]
+pub struct ViewerSearchDialog {
+    pub search: String,
+    pub search_type: ViewerSearchType,
+    pub case_sensitive: bool,
+    pub backwards: bool,
+    pub whole_words: bool,
+    pub all_charsets: bool,
+    pub focus: ViewerSearchFocus,
+}
+
+impl ViewerSearchDialog {
+    /// GNU dialog title including the spaces GNU paints on the frame.
+    pub const TITLE: &'static str = " Search ";
+    /// Prompt above the needle field.
+    pub const PROMPT: &'static str = "Enter search string:";
+    /// Right-column checkbox labels, top to bottom.
+    pub const CHECK_LABELS: [&'static str; 4] =
+        ["Case sensitive", "Backwards", "Whole words", "All charsets"];
+
+    /// Prefill the search field from the viewer's last Search needle.
+    /// Radios/checkboxes always start at GNU defaults (Normal, unchecked).
+    pub fn from_last_search(last_search: &[u8]) -> Self {
+        Self {
+            search: String::from_utf8_lossy(last_search).into_owned(),
+            search_type: ViewerSearchType::Normal,
+            case_sensitive: false,
+            backwards: false,
+            whole_words: false,
+            all_charsets: false,
+            focus: ViewerSearchFocus::Search,
+        }
+    }
+
+    /// Toggle the focused checkbox. Returns false when focus is not a checkbox.
+    pub fn toggle_focused_checkbox(&mut self) -> bool {
+        match self.focus {
+            ViewerSearchFocus::CaseSensitive => self.case_sensitive = !self.case_sensitive,
+            ViewerSearchFocus::Backwards => self.backwards = !self.backwards,
+            ViewerSearchFocus::WholeWords => self.whole_words = !self.whole_words,
+            ViewerSearchFocus::AllCharsets => self.all_charsets = !self.all_charsets,
+            _ => return false,
+        }
+        true
+    }
+}
 
 /// GNU mcview top-line menus (File / Command / Options). Opened by clicking
 /// the topmost line — the same path mc(1) documents for the menu bar.
@@ -2515,7 +2645,8 @@ impl UiMode {
             search_case_sensitive: false,
             search_backwards: false,
             search_whole_words: false,
-            search_regexp: false,
+            search_type: ViewerSearchType::Normal,
+            search_all_charsets: false,
             status_msg: None,
         }
     }
@@ -3721,5 +3852,48 @@ mod tests {
         assert_eq!(SftpHostKeyFocus::Yes.cycle(false), SftpHostKeyFocus::Ignore);
         assert_eq!(SftpHostKeyFocus::Ignore.cycle(false), SftpHostKeyFocus::No);
         assert_eq!(SftpHostKeyFocus::No.cycle(true), SftpHostKeyFocus::Ignore);
+    }
+
+    #[test]
+    fn viewer_search_dialog_gnu_4_8_33_wording_and_defaults() {
+        assert_eq!(ViewerSearchDialog::TITLE, " Search ");
+        assert_eq!(ViewerSearchDialog::PROMPT, "Enter search string:");
+        assert_eq!(
+            ViewerSearchType::LABELS,
+            [
+                "Normal",
+                "Regular expression",
+                "Hexadecimal",
+                "Wildcard search",
+            ]
+        );
+        assert_eq!(
+            ViewerSearchDialog::CHECK_LABELS,
+            ["Case sensitive", "Backwards", "Whole words", "All charsets",]
+        );
+        let dlg = ViewerSearchDialog::from_last_search(b"abc");
+        assert_eq!(dlg.search, "abc");
+        assert_eq!(dlg.search_type, ViewerSearchType::Normal);
+        assert!(!dlg.case_sensitive);
+        assert!(!dlg.backwards);
+        assert!(!dlg.whole_words);
+        assert!(!dlg.all_charsets);
+        assert_eq!(dlg.focus, ViewerSearchFocus::Search);
+        assert_eq!(
+            ViewerSearchType::Normal.next(),
+            ViewerSearchType::RegularExpression
+        );
+        assert_eq!(
+            ViewerSearchType::RegularExpression.next(),
+            ViewerSearchType::Hexadecimal
+        );
+        assert_eq!(
+            ViewerSearchType::Hexadecimal.next(),
+            ViewerSearchType::WildcardSearch
+        );
+        assert_eq!(
+            ViewerSearchType::WildcardSearch.next(),
+            ViewerSearchType::Normal
+        );
     }
 }

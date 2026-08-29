@@ -23,7 +23,7 @@ use rmc_core::app::{
     EditorSaveAsFocus, EditorSearchDialog, EditorSearchFocus, EditorTabSpacingDialog,
     EditorTabSpacingFocus, FilterDialogFocus, HistoryDialogFocus, LayoutFocus, LinkDialogFocus,
     ScreenListFocus, SelectGroupDialogFocus, SftpHostKeyFocus, UiMode, ViewerDisplayDialog,
-    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus,
+    ViewerDisplayFocus, ViewerMenu, ViewerSearchDialog, ViewerSearchFocus, ViewerSearchType,
 };
 use rmc_core::complete::{
     classify_token, collect_matches, common_replacement_prefix, filter_items, token_before_cursor,
@@ -259,22 +259,34 @@ fn editor_search_run(buf: &mut rmc_edit::EditorBuffer, dlg: &EditorSearchDialog)
     }
 }
 
+fn viewer_search_kind(t: ViewerSearchType) -> rmc_view::SearchKind {
+    match t {
+        ViewerSearchType::Normal => rmc_view::SearchKind::Normal,
+        ViewerSearchType::RegularExpression => rmc_view::SearchKind::RegularExpression,
+        ViewerSearchType::Hexadecimal => rmc_view::SearchKind::Hexadecimal,
+        ViewerSearchType::WildcardSearch => rmc_view::SearchKind::WildcardSearch,
+    }
+}
+
 fn viewer_search_opts(
     case_sensitive: bool,
     backwards: bool,
     whole_words: bool,
-    regexp: bool,
+    search_type: ViewerSearchType,
+    all_charsets: bool,
 ) -> rmc_view::SearchOptions {
     rmc_view::SearchOptions {
         case_sensitive,
         backwards,
         whole_words,
-        regexp,
+        kind: viewer_search_kind(search_type),
+        all_charsets,
     }
 }
 
 /// Run a viewer Search-dialog query. Empty needle is a no-op (no offset change).
-/// On success/failure returns the GNU status line (`Found` / `Not found`).
+/// On success/failure returns the GNU status line (`Found` / `Not found`),
+/// or the GNU hex-pattern error text.
 #[allow(clippy::too_many_arguments)]
 fn viewer_search_run(
     path: &std::path::Path,
@@ -283,7 +295,8 @@ fn viewer_search_run(
     case_sensitive: &mut bool,
     backwards: &mut bool,
     whole_words: &mut bool,
-    regexp: &mut bool,
+    search_type: &mut ViewerSearchType,
+    all_charsets: &mut bool,
     dlg: &ViewerSearchDialog,
 ) -> anyhow::Result<Option<String>> {
     if dlg.search.is_empty() {
@@ -293,20 +306,30 @@ fn viewer_search_run(
     *case_sensitive = dlg.case_sensitive;
     *backwards = dlg.backwards;
     *whole_words = dlg.whole_words;
-    *regexp = dlg.regular_expression;
+    *search_type = dlg.search_type;
+    *all_charsets = dlg.all_charsets;
     let cpath = crate::terminal::viewer_ensure_view_for(path);
     let opts = viewer_search_opts(
         dlg.case_sensitive,
         dlg.backwards,
         dlg.whole_words,
-        dlg.regular_expression,
+        dlg.search_type,
+        dlg.all_charsets,
     );
-    match rmc_view::search_with_options(&cpath, *offset, &dlg.search, opts, true)? {
-        Some(pos) => {
+    match rmc_view::search_with_options(&cpath, *offset, &dlg.search, opts, true) {
+        Ok(Some(pos)) => {
             *offset = pos;
             Ok(Some("Found".into()))
         }
-        None => Ok(Some("Not found".into())),
+        Ok(None) => Ok(Some("Not found".into())),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.starts_with("Hex pattern error") {
+                Ok(Some(msg))
+            } else {
+                Err(e)
+            }
+        }
     }
 }
 
@@ -7674,7 +7697,8 @@ impl TerminalApp {
                     search_case_sensitive,
                     search_backwards,
                     search_whole_words,
-                    search_regexp,
+                    search_type,
+                    search_all_charsets,
                     status_msg,
                     search_dialog,
                     ..
@@ -7684,10 +7708,11 @@ impl TerminalApp {
                         use ViewerSearchFocus as F;
                         let order = [
                             F::Search,
+                            F::SearchType,
                             F::CaseSensitive,
                             F::Backwards,
                             F::WholeWords,
-                            F::RegularExpression,
+                            F::AllCharsets,
                             F::Ok,
                             F::Cancel,
                         ];
@@ -7699,11 +7724,36 @@ impl TerminalApp {
                             KeyCode::F(7) => {
                                 // Already open: do not nest.
                             }
-                            KeyCode::Tab | KeyCode::Down => {
+                            KeyCode::Down | KeyCode::Up
+                                if dlg.focus.is_radio_group()
+                                    && matches!(key.code, KeyCode::Down | KeyCode::Up) =>
+                            {
+                                dlg.search_type = if matches!(key.code, KeyCode::Down) {
+                                    dlg.search_type.next()
+                                } else {
+                                    dlg.search_type.prev()
+                                };
+                            }
+                            KeyCode::Left | KeyCode::Right if dlg.focus.is_radio_group() => {
+                                dlg.search_type = if matches!(key.code, KeyCode::Right) {
+                                    dlg.search_type.next()
+                                } else {
+                                    dlg.search_type.prev()
+                                };
+                            }
+                            KeyCode::Tab => {
                                 idx = (idx + 1) % order.len();
                                 dlg.focus = order[idx];
                             }
-                            KeyCode::BackTab | KeyCode::Up => {
+                            KeyCode::BackTab => {
+                                idx = (idx + order.len() - 1) % order.len();
+                                dlg.focus = order[idx];
+                            }
+                            KeyCode::Down if !dlg.focus.is_radio_group() => {
+                                idx = (idx + 1) % order.len();
+                                dlg.focus = order[idx];
+                            }
+                            KeyCode::Up if !dlg.focus.is_radio_group() => {
                                 idx = (idx + order.len() - 1) % order.len();
                                 dlg.focus = order[idx];
                             }
@@ -7729,15 +7779,18 @@ impl TerminalApp {
                             KeyCode::Enter if dlg.focus.is_checkbox() => {
                                 let _ = dlg.toggle_focused_checkbox();
                             }
+                            KeyCode::Char(' ') if dlg.focus.is_radio_group() => {
+                                // GNU radio Space selects the current type (already selected).
+                            }
                             KeyCode::Enter | KeyCode::Char(' ')
-                                if matches!(dlg.focus, F::Ok | F::Cancel)
+                                if matches!(dlg.focus, F::Ok | F::Cancel | F::SearchType)
                                     || matches!(key.code, KeyCode::Enter) =>
                             {
                                 match dlg.focus {
                                     F::Cancel => {
                                         *search_dialog = None;
                                     }
-                                    F::Search | F::Ok => {
+                                    F::Search | F::Ok | F::SearchType => {
                                         if let Some(msg) = viewer_search_run(
                                             path,
                                             offset,
@@ -7745,7 +7798,8 @@ impl TerminalApp {
                                             search_case_sensitive,
                                             search_backwards,
                                             search_whole_words,
-                                            search_regexp,
+                                            search_type,
+                                            search_all_charsets,
                                             dlg,
                                         )? {
                                             *status_msg = Some(msg);
@@ -7895,7 +7949,8 @@ impl TerminalApp {
                                     search_case_sensitive,
                                     search_backwards,
                                     search_whole_words,
-                                    search_regexp,
+                                    search_type,
+                                    search_all_charsets,
                                     search_dialog,
                                     status_msg,
                                     ..
@@ -7906,7 +7961,8 @@ impl TerminalApp {
                                     *search_case_sensitive = false;
                                     *search_backwards = false;
                                     *search_whole_words = false;
-                                    *search_regexp = false;
+                                    *search_type = ViewerSearchType::Normal;
+                                    *search_all_charsets = false;
                                     *search_dialog = None;
                                     *status_msg = None;
                                 }
@@ -8049,7 +8105,8 @@ impl TerminalApp {
                             search_case_sensitive,
                             search_backwards,
                             search_whole_words,
-                            search_regexp,
+                            search_type,
+                            search_all_charsets,
                             status_msg,
                             ..
                         } = &mut app.ui_mode
@@ -8059,7 +8116,8 @@ impl TerminalApp {
                                     *search_case_sensitive,
                                     *search_backwards,
                                     *search_whole_words,
-                                    *search_regexp,
+                                    *search_type,
+                                    *search_all_charsets,
                                 );
                                 if let Some(msg) = viewer_search_next(path, offset, &q, opts)? {
                                     *status_msg = Some(msg);
@@ -8075,7 +8133,8 @@ impl TerminalApp {
                             search_case_sensitive,
                             search_backwards,
                             search_whole_words,
-                            search_regexp,
+                            search_type,
+                            search_all_charsets,
                             status_msg,
                             ..
                         } = &mut app.ui_mode
@@ -8087,7 +8146,8 @@ impl TerminalApp {
                                     *search_case_sensitive,
                                     !*search_backwards,
                                     *search_whole_words,
-                                    *search_regexp,
+                                    *search_type,
+                                    *search_all_charsets,
                                 );
                                 if let Some(msg) = viewer_search_next(path, offset, &q, opts)? {
                                     *status_msg = Some(msg);
@@ -16447,7 +16507,7 @@ mod find_file_dialog_tests {
 mod viewer_search_tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rmc_core::app::ViewerSearchFocus;
+    use rmc_core::app::{ViewerSearchFocus, ViewerSearchType};
     use rmc_core::config::KeyMap;
     use rmc_core::find::FindDialogState;
     use rmc_edit::EditorBuffer;
@@ -16539,10 +16599,11 @@ mod viewer_search_tests {
                 assert!(search_prompt.is_none(), "F7 must not use the inline prompt");
                 assert!(goto_prompt.is_none());
                 assert!(dlg.search.is_empty());
+                assert_eq!(dlg.search_type, ViewerSearchType::Normal);
                 assert!(!dlg.case_sensitive);
                 assert!(!dlg.backwards);
                 assert!(!dlg.whole_words);
-                assert!(!dlg.regular_expression);
+                assert!(!dlg.all_charsets);
                 assert!(matches!(dlg.focus, ViewerSearchFocus::Search));
             }
             UiMode::InputDialog { title, .. } => {
@@ -16562,17 +16623,20 @@ mod viewer_search_tests {
         open_viewer(&mut app, file);
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "foo");
+        press(&mut app, KeyCode::Tab); // Search type radios
         press(&mut app, KeyCode::Tab); // Case sensitive
         press(&mut app, KeyCode::Char(' '));
         assert!(search_dialog(&app).case_sensitive);
         press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::F(7));
         assert_eq!(search_dialog(&app).search, "foo");
+        assert_eq!(search_dialog(&app).search_type, ViewerSearchType::Normal);
         assert!(!search_dialog(&app).case_sensitive);
         assert!(!search_dialog(&app).backwards);
         assert!(!search_dialog(&app).whole_words);
-        assert!(!search_dialog(&app).regular_expression);
+        assert!(!search_dialog(&app).all_charsets);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -16585,6 +16649,33 @@ mod viewer_search_tests {
         open_viewer(&mut app, file);
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "a b");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::SearchType);
+        assert_eq!(search_dialog(&app).search_type, ViewerSearchType::Normal);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            search_dialog(&app).search_type,
+            ViewerSearchType::RegularExpression
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            search_dialog(&app).search_type,
+            ViewerSearchType::Hexadecimal
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            search_dialog(&app).search_type,
+            ViewerSearchType::WildcardSearch
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            search_dialog(&app).search_type,
+            ViewerSearchType::Hexadecimal
+        );
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(search_dialog(&app).search_type, ViewerSearchType::Normal);
+
         press(&mut app, KeyCode::Tab);
         assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::CaseSensitive);
         assert!(!search_dialog(&app).case_sensitive);
@@ -16604,12 +16695,9 @@ mod viewer_search_tests {
         assert!(search_dialog(&app).whole_words);
 
         press(&mut app, KeyCode::Tab);
-        assert_eq!(
-            search_dialog(&app).focus,
-            ViewerSearchFocus::RegularExpression
-        );
+        assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::AllCharsets);
         press(&mut app, KeyCode::Char(' '));
-        assert!(search_dialog(&app).regular_expression);
+        assert!(search_dialog(&app).all_charsets);
 
         press(&mut app, KeyCode::Tab);
         assert!(matches!(search_dialog(&app).focus, ViewerSearchFocus::Ok));
@@ -16661,10 +16749,11 @@ mod viewer_search_tests {
         open_viewer(&mut app, file);
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "zzz");
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Tab); // case
+        press(&mut app, KeyCode::Tab); // backwards
+        press(&mut app, KeyCode::Tab); // whole words
+        press(&mut app, KeyCode::Tab); // all charsets
         press(&mut app, KeyCode::Tab); // Ok
         assert!(matches!(search_dialog(&app).focus, ViewerSearchFocus::Ok));
         press(&mut app, KeyCode::Enter);
@@ -16718,10 +16807,11 @@ mod viewer_search_tests {
 
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "abc");
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Tab); // case
+        press(&mut app, KeyCode::Tab); // backwards
+        press(&mut app, KeyCode::Tab); // whole words
+        press(&mut app, KeyCode::Tab); // all charsets
         press(&mut app, KeyCode::Tab); // Ok
         press(&mut app, KeyCode::Tab); // Cancel
         assert_eq!(search_dialog(&app).focus, ViewerSearchFocus::Cancel);
@@ -16772,18 +16862,22 @@ mod viewer_search_tests {
         // Case sensitive on: "abc" skips "Abc"
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "abc");
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Tab); // case
         press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab); // back to the field
         press(&mut app, KeyCode::Enter);
         assert_eq!(viewer_offset(&app), 4);
 
         // Backwards + case sensitive from there: inclusive match still at 4
         press(&mut app, KeyCode::F(7));
+        press(&mut app, KeyCode::Tab); // type
         press(&mut app, KeyCode::Tab); // case
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Tab); // backwards
         press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab); // back to the field
         press(&mut app, KeyCode::Enter);
@@ -16799,17 +16893,19 @@ mod viewer_search_tests {
         }
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "cat");
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Tab); // case
+        press(&mut app, KeyCode::Tab); // backwards
         press(&mut app, KeyCode::Tab); // Whole words
         press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab); // back to the field
         press(&mut app, KeyCode::Enter);
         assert_eq!(viewer_offset(&app), 17);
 
-        // Regular expression
+        // Regular expression radio
         match &mut app.ui_mode {
             UiMode::Viewer { offset, search, .. } => {
                 *offset = 0;
@@ -16819,14 +16915,8 @@ mod viewer_search_tests {
         }
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "A.c");
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab); // regexp
-        press(&mut app, KeyCode::Char(' '));
-        press(&mut app, KeyCode::BackTab);
-        press(&mut app, KeyCode::BackTab);
-        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Down); // Regular expression
         press(&mut app, KeyCode::BackTab); // back to the field
         press(&mut app, KeyCode::Enter);
         assert_eq!(viewer_offset(&app), 0);
@@ -16842,11 +16932,13 @@ mod viewer_search_tests {
         open_viewer(&mut app, file);
         press(&mut app, KeyCode::F(7));
         type_text(&mut app, "cat");
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Tab); // case
         press(&mut app, KeyCode::Char(' ')); // case sensitive
-        press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab); // backwards
+        press(&mut app, KeyCode::Tab); // whole words
         press(&mut app, KeyCode::Char(' ')); // whole words
+        press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::BackTab); // back to the field
@@ -16870,6 +16962,123 @@ mod viewer_search_tests {
         type_text(&mut app, "ab");
         press(&mut app, KeyCode::F(7));
         assert_eq!(search_dialog(&app).search, "ab");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hexadecimal_radio_finds_quoted_and_byte_pairs() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "xxAByy").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "41 42");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down); // Hexadecimal
+        assert_eq!(
+            search_dialog(&app).search_type,
+            ViewerSearchType::Hexadecimal
+        );
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 2);
+        match &app.ui_mode {
+            UiMode::Viewer { status_msg, .. } => {
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hexadecimal_invalid_pattern_uses_gnu_status() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "AB").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "gg");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down); // Hexadecimal
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Viewer {
+                offset,
+                status_msg,
+                search_dialog,
+                ..
+            } => {
+                assert!(search_dialog.is_none());
+                assert_eq!(*offset, 0);
+                let msg = status_msg.as_deref().unwrap_or("");
+                assert!(msg.starts_with("Hex pattern error at position "), "{msg:?}");
+            }
+            _ => panic!("expected Viewer"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wildcard_radio_question_mark() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, "cat cot").unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "c?t");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down); // Wildcard search
+        assert_eq!(
+            search_dialog(&app).search_type,
+            ViewerSearchType::WildcardSearch
+        );
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 0);
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(viewer_offset(&app), 4);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn all_charsets_finds_latin1_bytes() {
+        let root = temp_workspace();
+        let file = root.join("notes.txt");
+        std::fs::write(&file, [b'c', b'a', b'f', 0xE9]).unwrap();
+        let mut app = make_app();
+        open_viewer(&mut app, file);
+        press(&mut app, KeyCode::F(7));
+        type_text(&mut app, "café");
+        press(&mut app, KeyCode::Tab); // type
+        press(&mut app, KeyCode::Tab); // case
+        press(&mut app, KeyCode::Char(' ')); // case on so UTF-8 vs Latin-1 is exact
+        press(&mut app, KeyCode::Tab); // backwards
+        press(&mut app, KeyCode::Tab); // whole words
+        press(&mut app, KeyCode::Tab); // All charsets
+        press(&mut app, KeyCode::Char(' '));
+        assert!(search_dialog(&app).all_charsets);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(viewer_offset(&app), 0);
+        match &app.ui_mode {
+            UiMode::Viewer { status_msg, .. } => {
+                assert_eq!(status_msg.as_deref(), Some("Found"));
+            }
+            _ => panic!("expected Viewer"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

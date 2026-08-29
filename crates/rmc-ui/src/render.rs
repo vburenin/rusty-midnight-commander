@@ -2733,6 +2733,172 @@ fn draw_editor_search_dialog(
     }
 }
 
+fn draw_viewer_search_dialog(
+    p: &mut Painter,
+    cols: u16,
+    rows: u16,
+    pal: McPalette,
+    dlg: &rmc_core::app::ViewerSearchDialog,
+    show_shadow: bool,
+) {
+    use rmc_core::app::ViewerSearchFocus as F;
+    use rmc_core::app::ViewerSearchType;
+    // GNU mcview quick dialog is 58 columns; two-column radios + checks.
+    let w = (cols as usize).min(58) as u16;
+    let h = 10u16;
+    if cols < w || rows < h {
+        return;
+    }
+    let x = (cols - w) / 2;
+    let y = (rows - h) / 2;
+    p.fill_rect(x, y, w, h, pal.dialog_default_fg, pal.dialog_default_bg);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x, y);
+    p.text("┌");
+    p.hline(
+        x + 1,
+        y,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y);
+    p.text("┐");
+    p.vline(
+        x,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.vline(
+        x + w - 1,
+        y + 1,
+        h - 2,
+        '│',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x, y + h - 1);
+    p.text("└");
+    p.hline(
+        x + 1,
+        y + h - 1,
+        w - 2,
+        '─',
+        pal.dialog_default_fg,
+        pal.dialog_default_bg,
+    );
+    p.goto(x + w - 1, y + h - 1);
+    p.text("┘");
+    p.set_fg_bg(pal.dtitle_fg, pal.dtitle_bg);
+    let title = rmc_core::app::ViewerSearchDialog::TITLE;
+    let tx = x + (w.saturating_sub(title.len() as u16)) / 2;
+    p.goto(tx, y);
+    p.text(title);
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    for i in 1..h - 1 {
+        p.goto(x + 1, y + i);
+        p.text(&" ".repeat((w - 2) as usize));
+    }
+    let inner_w = (w - 4) as usize;
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 2, y + 1);
+    p.text(&truncate(
+        rmc_core::app::ViewerSearchDialog::PROMPT,
+        inner_w,
+    ));
+    if matches!(dlg.focus, F::Search) {
+        p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+    } else {
+        p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    }
+    p.goto(x + 2, y + 2);
+    let st = truncate(&dlg.search, inner_w);
+    p.text(&format!(
+        "{st}{}",
+        " ".repeat(inner_w.saturating_sub(st.len()))
+    ));
+    // GNU QUICK_SEPARATOR between the field and the two columns.
+    p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+    p.goto(x + 1, y + 3);
+    p.text(&"─".repeat((w - 2) as usize));
+    let radios = ViewerSearchType::ALL;
+    for (i, kind) in radios.iter().enumerate() {
+        let selected = dlg.search_type == *kind;
+        let mark = if selected { '*' } else { ' ' };
+        let focused = matches!(dlg.focus, F::SearchType) && selected;
+        if focused {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 2, y + 4 + i as u16);
+        p.text(&truncate(&format!("({mark}) {}", kind.label()), 24));
+    }
+    let checks: [(F, &str, bool); 4] = [
+        (
+            F::CaseSensitive,
+            rmc_core::app::ViewerSearchDialog::CHECK_LABELS[0],
+            dlg.case_sensitive,
+        ),
+        (
+            F::Backwards,
+            rmc_core::app::ViewerSearchDialog::CHECK_LABELS[1],
+            dlg.backwards,
+        ),
+        (
+            F::WholeWords,
+            rmc_core::app::ViewerSearchDialog::CHECK_LABELS[2],
+            dlg.whole_words,
+        ),
+        (
+            F::AllCharsets,
+            rmc_core::app::ViewerSearchDialog::CHECK_LABELS[3],
+            dlg.all_charsets,
+        ),
+    ];
+    for (i, (focus, label, on)) in checks.iter().enumerate() {
+        if dlg.focus == *focus {
+            p.set_fg_bg(pal.dfocus_fg, pal.dfocus_bg);
+        } else {
+            p.set_fg_bg(pal.dialog_default_fg, pal.dialog_default_bg);
+        }
+        p.goto(x + 28, y + 4 + i as u16);
+        p.text(&truncate(
+            &format!("[{}] {}", if *on { 'x' } else { ' ' }, label),
+            (w as usize).saturating_sub(30),
+        ));
+    }
+    let focus = dlg.focus;
+    let sel_btn = |want, txt: &str| {
+        if focus == want {
+            format!("< {txt} >")
+        } else {
+            format!("[ {txt} ]")
+        }
+    };
+    p.set_fg_bg(pal.buttonbar_button_fg, pal.buttonbar_button_bg);
+    let btns = format!("{}  {}", sel_btn(F::Ok, "OK"), sel_btn(F::Cancel, "Cancel"));
+    let bx = x + (w.saturating_sub(btns.len() as u16)) / 2;
+    p.goto(bx, y + h - 2);
+    p.text(&btns);
+    if show_shadow {
+        p.set_fg_bg(pal.shadow_fg, pal.shadow_bg);
+        p.hline(
+            x + 1,
+            y + h,
+            w.saturating_sub(1),
+            ' ',
+            pal.shadow_fg,
+            pal.shadow_bg,
+        );
+        p.vline(x + w, y + 1, h, ' ', pal.shadow_fg, pal.shadow_bg);
+    }
+}
+
 fn draw_viewer_display_dialog(
     p: &mut Painter,
     cols: u16,
@@ -4040,9 +4206,9 @@ fn draw_viewer(
         parsed,
         format_nroff,
     );
-    // GNU mcview F7 Search dialog (same chrome as mcedit Search)
+    // GNU mcview 4.8.33 F7 Search dialog (radios + All charsets)
     if let Some(dlg) = search_dialog {
-        draw_editor_search_dialog(p, cols, rows, pal, dlg, show_shadow);
+        draw_viewer_search_dialog(p, cols, rows, pal, dlg, show_shadow);
     }
     // mcview display-options dialog (Options → Display options; same chrome as Search)
     if let Some(dlg) = display_dialog {
@@ -7606,6 +7772,79 @@ mod viewer_fbar_and_selection_style_tests {
         assert!(
             !s.contains("\x1b[97;101m"),
             "viewer fill must not use [core] white;red: {s:?}"
+        );
+    }
+
+    #[test]
+    fn viewer_search_dialog_paints_gnu_4_8_33_radios_and_checks() {
+        let path = std::env::temp_dir().join(format!(
+            "rmc-viewer-search-dlg-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "hello\n").expect("write sample");
+        let dlg = rmc_core::app::ViewerSearchDialog::from_last_search(b"");
+        let goto_prompt: Option<String> = None;
+        let mut buf = Vec::new();
+        {
+            let mut p = crate::widgets::Painter { out: &mut buf };
+            super::draw_viewer(
+                &mut p,
+                80,
+                24,
+                McPalette::default(),
+                &path,
+                false,
+                false,
+                0,
+                false,
+                false,
+                false,
+                true,
+                None,
+                0,
+                None,
+                Some(&dlg),
+                None,
+                None,
+                &goto_prompt,
+                false,
+            )
+            .expect("draw viewer search");
+        }
+        let _ = std::fs::remove_file(&path);
+        let s = String::from_utf8_lossy(&buf);
+        for needle in [
+            " Search ",
+            "Enter search string:",
+            "(*) Normal",
+            "( ) Regular expression",
+            "( ) Hexadecimal",
+            "( ) Wildcard search",
+            "[ ] Case sensitive",
+            "[ ] Backwards",
+            "[ ] Whole words",
+            "[ ] All charsets",
+        ] {
+            assert!(
+                s.contains(needle),
+                "missing GNU wording {needle:?} in {s:?}"
+            );
+        }
+        assert!(
+            !s.contains("In selection"),
+            "viewer Search must not invent editor-only In selection: {s:?}"
+        );
+        assert!(
+            !s.contains("Across lines"),
+            "viewer Search must not invent Across lines (not in GNU 4.8.33): {s:?}"
+        );
+        assert!(
+            !s.contains("Find all"),
+            "viewer Search must not invent editor Find all: {s:?}"
         );
     }
 }
