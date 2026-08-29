@@ -12,9 +12,12 @@ hidden) and content options on the right (Whole words, Regular
 expression, Case sensitive, All charsets, First hit).
 
 Tree opens a directory-tree picker for the start path. OK starts a new
-search. During the search, Stop pauses and Start continues. Again asks
-for new parameters. Chdir jumps to a hit. Panelize loads hits into the
-current panel. Quit closes the dialog.
+search. The results dialog lists hits grouped by directory. Found and
+Finished (or the current path, or Stopped) sit under the list.
+Chdir jumps to a hit. Again asks for new parameters. Suspend pauses a
+running or finished find; Continue resumes. Panelize loads hits into the
+current panel. View (F3) and Edit (F4) open the selected hit. Quit
+closes the dialog.
 
 F1 from Find File opens this node. Leaving help restores Find File.
 

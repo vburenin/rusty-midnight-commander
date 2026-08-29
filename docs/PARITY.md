@@ -184,7 +184,7 @@ From README and mc(1):
 Per mc(1) “Find File”, “External panelize”, and “Directory Tree”:
 - [x] Find File dialog: GNU 4.8 two-column setup (Alt-?): Start at / Tree / ignore dirs, File name vs Content columns, OK/Cancel; results list after OK
 - [x] Exclude/ignore directories list (colon-separated), follow symlinks options
-- [x] Buttons: OK, Stop/Start, Again, Chdir, Panelize, Quit
+- [x] Buttons: setup OK/Cancel; results Chdir / Again / Suspend (Continue) / Quit / Panelize / View - F3 / Edit - F4
 - [x] Panelize results into panel; return to normal listing with “..” or switching mode
 - [x] External Panelize: Ctrl-x !; run arbitrary shell command producing path list; save named commands; re-panelize results
 - [x] Directory tree (Command menu figure): dedicated dialog (not panel Tree / not Find File); Enter chdirs current panel; Esc/F10 quit; C-r/F2 rescan; F3 Forget; F4 Static/Dynamic

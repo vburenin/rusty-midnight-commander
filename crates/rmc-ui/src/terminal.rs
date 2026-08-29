@@ -35,7 +35,7 @@ use rmc_core::complete::{
 };
 use rmc_core::dirtree::{DirectoryTreeState, DIRECTORY_TREE_MAX_ENTRIES};
 use rmc_core::find::{
-    find_dialog_height, find_results_list_rows, find_tree_picker_list_rows, FindDialogFocus as FF,
+    find_results_height, find_results_list_rows, find_tree_picker_list_rows, FindDialogFocus as FF,
     FindDialogPhase, FindDialogState, FindTreePicker,
 };
 use rmc_core::hotlist::HotlistDialogFocus as HDF;
@@ -461,6 +461,22 @@ fn leave_editor(app: &mut App) {
             if matches!(app.ui_mode, UiMode::Diff(_)) {
                 reload_diff_from_disk(app, false);
             }
+        }
+        None => close_current_screen_ui(app),
+    }
+}
+
+fn leave_viewer(app: &mut App) {
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        viewer_forget(path);
+    }
+    let prev = match &mut app.ui_mode {
+        UiMode::Viewer { return_to, .. } => return_to.take(),
+        _ => None,
+    };
+    match prev {
+        Some(boxed) => {
+            app.ui_mode = *boxed;
         }
         None => close_current_screen_ui(app),
     }
@@ -2084,29 +2100,8 @@ impl TerminalApp {
             // Background find results update the dialog even without keypresses.
             let mut find_dirty = false;
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
-                if state.running {
-                    if let Some(rx) = &state.results_rx {
-                        loop {
-                            match rx.try_recv() {
-                                Ok(p) => {
-                                    find_dirty = true;
-                                    state.results.paths.push(p);
-                                    if state.selected_index >= state.results.paths.len() {
-                                        state.selected_index =
-                                            state.results.paths.len().saturating_sub(1);
-                                    }
-                                }
-                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                    find_dirty = true;
-                                    state.running = false;
-                                    state.cancel = None;
-                                    state.results_rx = None;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                if state.running || state.results_rx.is_some() {
+                    find_dirty = state.drain_search();
                 }
             }
             // Apply pending skin change by reloading palette (unknown names
@@ -4785,22 +4780,7 @@ impl TerminalApp {
             }
             UiMode::FindDialog(state) => {
                 // Update from background search if completed
-                if state.running {
-                    if let Some(rx) = &state.results_rx {
-                        loop {
-                            match rx.try_recv() {
-                                Ok(p) => state.results.paths.push(p),
-                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                    state.running = false;
-                                    state.cancel = None;
-                                    state.results_rx = None;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                let _ = state.drain_search();
                 if state.tree_picker.is_some() {
                     handle_find_tree_picker_key(state, key, page_rows);
                     return Ok(());
@@ -4808,6 +4788,14 @@ impl TerminalApp {
                 match key.code {
                     KeyCode::F(1) => {
                         app.handle_action(Action::ShowHelp)?;
+                        return Ok(());
+                    }
+                    KeyCode::F(3) if state.phase == FindDialogPhase::Results => {
+                        view_find_selection(app)?;
+                        return Ok(());
+                    }
+                    KeyCode::F(4) if state.phase == FindDialogPhase::Results => {
+                        edit_find_selection(app)?;
                         return Ok(());
                     }
                     KeyCode::Esc | KeyCode::F(10) => {
@@ -4834,15 +4822,8 @@ impl TerminalApp {
                         } else if state.selected_index > 0 {
                             state.selected_index -= 1;
                             let r = find_dialog_term_rows(page_rows);
-                            let h = find_dialog_height(r);
-                            let list_rows = find_results_list_rows(h);
-                            if state.selected_index < state.scroll_top {
-                                state.scroll_top = state.selected_index;
-                            } else if state.selected_index >= state.scroll_top + list_rows {
-                                state.scroll_top = state
-                                    .selected_index
-                                    .saturating_sub(list_rows.saturating_sub(1));
-                            }
+                            let h = find_results_height(r);
+                            state.ensure_hit_visible(find_results_list_rows(h));
                         }
                     }
                     KeyCode::Down => {
@@ -4853,15 +4834,8 @@ impl TerminalApp {
                         } else if state.selected_index + 1 < state.results.paths.len() {
                             state.selected_index += 1;
                             let r = find_dialog_term_rows(page_rows);
-                            let h = find_dialog_height(r);
-                            let list_rows = find_results_list_rows(h);
-                            if state.selected_index < state.scroll_top {
-                                state.scroll_top = state.selected_index;
-                            } else if state.selected_index >= state.scroll_top + list_rows {
-                                state.scroll_top = state
-                                    .selected_index
-                                    .saturating_sub(list_rows.saturating_sub(1));
-                            }
+                            let h = find_results_height(r);
+                            state.ensure_hit_visible(find_results_list_rows(h));
                         }
                     }
                     KeyCode::Home => {
@@ -4872,11 +4846,8 @@ impl TerminalApp {
                         if !state.results.paths.is_empty() {
                             state.selected_index = state.results.paths.len() - 1;
                             let r = find_dialog_term_rows(page_rows);
-                            let h = find_dialog_height(r);
-                            let list_rows = find_results_list_rows(h);
-                            state.scroll_top = state
-                                .selected_index
-                                .saturating_sub(list_rows.saturating_sub(1));
+                            let h = find_results_height(r);
+                            state.ensure_hit_visible(find_results_list_rows(h));
                         }
                     }
                     KeyCode::Backspace => match state.focus {
@@ -4914,6 +4885,26 @@ impl TerminalApp {
                             let _ = state.toggle_focused_checkbox();
                         } else if state.focus.is_action_button() {
                             let focus = state.focus;
+                            activate_find_file_button(app, focus, &active_cwd)?;
+                        }
+                    }
+                    KeyCode::Char(c)
+                        if state.phase == FindDialogPhase::Results
+                            && key.modifiers.is_empty()
+                            && !c.is_control() =>
+                    {
+                        let hit = match c {
+                            'c' => Some(FF::ButtonChdir),
+                            'a' => Some(FF::ButtonAgain),
+                            'u' => Some(FF::ButtonSuspend),
+                            'o' if state.is_stopped() => Some(FF::ButtonSuspend),
+                            'q' => Some(FF::ButtonQuit),
+                            'l' => Some(FF::ButtonPanelize),
+                            'v' => Some(FF::ButtonView),
+                            'e' => Some(FF::ButtonEdit),
+                            _ => None,
+                        };
+                        if let Some(focus) = hit {
                             activate_find_file_button(app, focus, &active_cwd)?;
                         }
                     }
@@ -4962,6 +4953,9 @@ impl TerminalApp {
                         match state.focus {
                             FF::Tree => {
                                 open_find_tree_picker(&*app.vfs, state);
+                            }
+                            FF::ResultsList => {
+                                activate_find_file_button(app, FF::ButtonChdir, &active_cwd)?;
                             }
                             focus if focus.is_action_button() => {
                                 activate_find_file_button(app, focus, &active_cwd)?;
@@ -7672,7 +7666,7 @@ impl TerminalApp {
                         KeyCode::Enter | KeyCode::Char(' ') => {
                             match menu {
                                 ViewerMenu::File { .. } => {
-                                    close_current_screen_ui(app);
+                                    leave_viewer(app);
                                 }
                                 ViewerMenu::Command { .. } => {
                                     viewer_open_search_dialog(app, false);
@@ -7983,7 +7977,7 @@ impl TerminalApp {
                 }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc => {
-                        close_current_screen_ui(app)
+                        leave_viewer(app)
                     }
                     KeyCode::F(1) => {
                         app.handle_action(Action::ShowHelp)?;
@@ -10632,8 +10626,8 @@ fn find_dialog_term_rows(page_rows: usize) -> u16 {
         .unwrap_or(page_rows.max(1) as u16 + 3)
 }
 
-/// GNU mc(1) Find File action buttons. OK starts a new search; Stop/Start
-/// pauses or continues; Again returns to parameters.
+/// GNU mc(1) Find File action buttons. Setup OK starts a search; results
+/// Chdir/Again/Suspend/Quit/Panelize/View/Edit match live GNU 4.8.30.
 fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> Result<()> {
     match focus {
         FF::ButtonOk => {
@@ -10641,12 +10635,12 @@ fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> R
                 state.start_new_search(fallback_cwd.to_path_buf());
             }
         }
-        FF::ButtonStop => {
+        FF::ButtonSuspend => {
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
-                if state.is_paused() {
-                    state.resume_search();
+                if state.is_stopped() {
+                    state.continue_search();
                 } else {
-                    state.pause_search();
+                    state.suspend_search();
                 }
             }
         }
@@ -10683,7 +10677,7 @@ fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> R
                 (
                     state.results.paths.clone(),
                     state.params.start_dir.clone(),
-                    state.running && !state.is_paused(),
+                    state.running && !state.is_stopped(),
                 )
             } else {
                 return Ok(());
@@ -10696,6 +10690,12 @@ fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> R
                 app.ui_mode = UiMode::Normal;
             }
         }
+        FF::ButtonView => {
+            view_find_selection(app)?;
+        }
+        FF::ButtonEdit => {
+            edit_find_selection(app)?;
+        }
         FF::ButtonQuit | FF::ButtonCancel => {
             if let UiMode::FindDialog(state) = &mut app.ui_mode {
                 state.abort_search();
@@ -10707,16 +10707,77 @@ fn activate_find_file_button(app: &mut App, focus: FF, fallback_cwd: &Path) -> R
     Ok(())
 }
 
+fn view_find_selection(app: &mut App) -> Result<()> {
+    let Some(path) = find_selected_regular_file(app, "view") else {
+        return Ok(());
+    };
+    let prev = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
+    let mut viewer = UiMode::new_viewer(path);
+    if let UiMode::Viewer { return_to, .. } = &mut viewer {
+        *return_to = Some(Box::new(prev));
+    }
+    app.ui_mode = viewer;
+    if let UiMode::Viewer { path, .. } = &app.ui_mode {
+        let p = path.clone();
+        let _ = viewer_ensure_view_for(&p);
+    }
+    Ok(())
+}
+
+fn edit_find_selection(app: &mut App) -> Result<()> {
+    let Some(path) = find_selected_regular_file(app, "edit") else {
+        return Ok(());
+    };
+    if app.config_opts.use_internal_edit {
+        let data = read_vfs_bytes(app, &path);
+        let buf = rmc_edit::EditorBuffer::from_bytes(&data, Some(path));
+        let prev = std::mem::replace(&mut app.ui_mode, UiMode::Normal);
+        app.ui_mode = editor_ui_mode(buf, Some(Box::new(prev)));
+    }
+    Ok(())
+}
+
+fn find_selected_regular_file(app: &mut App, verb: &str) -> Option<PathBuf> {
+    let path = match &app.ui_mode {
+        UiMode::FindDialog(state) => state.selected_path().map(|p| p.to_path_buf()),
+        _ => None,
+    }?;
+    match app.vfs.stat(&path) {
+        Ok(md) if !md.is_dir => Some(path),
+        Ok(_) => {
+            app.show_error_dialog(format!("\"{}\" is not a regular file", path.display()));
+            None
+        }
+        Err(_) => {
+            app.show_error_dialog(format!("Cannot {verb} \"{}\"", path.display()));
+            None
+        }
+    }
+}
+
 fn handle_find_dialog_mouse(app: &mut App, mev: MouseEvent, cols: u16, rows: u16) -> Result<()> {
     let cwd = app.active_panel().cwd.clone();
-    let (focus, paused, phase) = match &app.ui_mode {
-        UiMode::FindDialog(st) => (st.focus, st.is_paused(), st.phase),
+    let (focus, stopped, phase) = match &app.ui_mode {
+        UiMode::FindDialog(st) => (st.focus, st.is_stopped(), st.phase),
         _ => return Ok(()),
     };
+    if phase == FindDialogPhase::Results {
+        if let UiMode::FindDialog(st) = &app.ui_mode {
+            if let Some(hit_idx) =
+                crate::find::find_results_hit_at(cols, rows, mev.column, mev.row, st)
+            {
+                if let UiMode::FindDialog(st) = &mut app.ui_mode {
+                    st.selected_index = hit_idx;
+                    st.focus = FF::ResultsList;
+                }
+                return Ok(());
+            }
+        }
+    }
     let hit = if phase == FindDialogPhase::Setup {
         crate::find::find_setup_widget_at(cols, rows, mev.column, mev.row)
     } else {
-        crate::find::find_action_button_at(cols, rows, mev.column, mev.row, focus, paused)
+        crate::find::find_action_button_at(cols, rows, mev.column, mev.row, focus, stopped)
     };
     let Some(hit) = hit else {
         return Ok(());
@@ -16647,15 +16708,19 @@ mod find_file_dialog_tests {
         let handle = CancelHandle::new();
         find_state_mut(&mut app).cancel = Some(handle);
         find_state_mut(&mut app).running = true;
-        find_state_mut(&mut app).focus = FF::ButtonStop;
-        assert!(!find_state(&app).is_paused());
+        find_state_mut(&mut app).focus = FF::ButtonSuspend;
+        find_state_mut(&mut app).phase = rmc_core::find::FindDialogPhase::Results;
+        assert!(!find_state(&app).is_stopped());
         press(&mut app, KeyCode::Enter);
-        assert!(find_state(&app).is_paused(), "Stop pauses a running search");
+        assert!(
+            find_state(&app).is_stopped(),
+            "Suspend pauses a running search"
+        );
         assert!(find_state(&app).running, "paused search stays in-flight");
         press(&mut app, KeyCode::Enter);
         assert!(
-            !find_state(&app).is_paused(),
-            "Start continues a stopped search"
+            !find_state(&app).is_stopped(),
+            "Continue continues a stopped search"
         );
         assert!(find_state(&app).running);
         let _ = std::fs::remove_dir_all(&root);
@@ -16667,10 +16732,18 @@ mod find_file_dialog_tests {
         std::fs::write(root.join("hit.txt"), "x").unwrap();
         let mut app = make_app(&root);
         app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
-        find_state_mut(&mut app).focus = FF::ButtonStop;
+        find_state_mut(&mut app).phase = rmc_core::find::FindDialogPhase::Results;
+        find_state_mut(&mut app).focus = FF::ButtonSuspend;
         press(&mut app, KeyCode::Enter);
-        assert!(!find_state(&app).running, "Start is not a synonym for OK");
+        assert!(
+            !find_state(&app).running,
+            "Continue is not a synonym for OK"
+        );
         assert!(find_state(&app).results.paths.is_empty());
+        assert!(
+            find_state(&app).is_stopped(),
+            "Suspend on a finished find still marks it Stopped"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -16752,6 +16825,82 @@ mod find_file_dialog_tests {
             .collect();
         assert!(names.contains(&"hit.txt"), "{names:?}");
         assert!(app.active_panel().panelized.is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn results_f3_views_selected_hit_and_f10_restores_find() {
+        let root = temp_workspace();
+        let hit = root.join("hit.txt");
+        std::fs::write(&hit, "hello from find\n").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        {
+            let st = find_state_mut(&mut app);
+            st.phase = rmc_core::find::FindDialogPhase::Results;
+            st.results.paths.push(hit.clone());
+            st.selected_index = 0;
+            st.focus = FF::ResultsList;
+        }
+        press(&mut app, KeyCode::F(3));
+        match &app.ui_mode {
+            UiMode::Viewer { path, .. } => assert_eq!(path, &hit),
+            _ => panic!("F3 must view the selected hit"),
+        }
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "leaving the viewer must restore Find File"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn results_f4_edits_selected_hit_and_f10_restores_find() {
+        let root = temp_workspace();
+        let hit = root.join("hit.txt");
+        std::fs::write(&hit, "edit me\n").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        {
+            let st = find_state_mut(&mut app);
+            st.phase = rmc_core::find::FindDialogPhase::Results;
+            st.results.paths.push(hit.clone());
+            st.selected_index = 0;
+            st.focus = FF::ButtonEdit;
+        }
+        press(&mut app, KeyCode::Enter);
+        match &app.ui_mode {
+            UiMode::Editor { buf, .. } => assert_eq!(buf.path.as_deref(), Some(hit.as_path())),
+            _ => panic!("Edit must open the selected hit"),
+        }
+        press(&mut app, KeyCode::F(10));
+        assert!(
+            matches!(app.ui_mode, UiMode::FindDialog(_)),
+            "leaving the editor must restore Find File"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn results_enter_on_list_chdirs() {
+        let root = temp_workspace();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let hit = sub.join("hit.txt");
+        std::fs::write(&hit, "x").unwrap();
+        let mut app = make_app(&root);
+        app.ui_mode = UiMode::FindDialog(FindDialogState::new(root.clone()));
+        {
+            let st = find_state_mut(&mut app);
+            st.phase = rmc_core::find::FindDialogPhase::Results;
+            st.results.paths.push(hit);
+            st.selected_index = 0;
+            st.focus = FF::ResultsList;
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert_eq!(app.active_panel().cwd, sub);
         let _ = std::fs::remove_dir_all(&root);
     }
 
