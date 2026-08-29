@@ -164,9 +164,10 @@ mod tests {
     fn rotation_wraps_the_catalog() {
         let t0 = Instant::now();
         let mut hint = HintBarState::at(t0);
-        for i in 0..HINTS.len() {
-            assert_eq!(hint.text(), HINTS[i]);
-            assert!(hint.maybe_rotate(t0 + HINT_ROTATION * (i as u32 + 1)));
+        for (i, expected) in HINTS.iter().enumerate() {
+            assert_eq!(hint.text(), *expected);
+            let elapsed = HINT_ROTATION * (i as u32 + 1);
+            assert!(hint.maybe_rotate(t0 + elapsed));
         }
         assert_eq!(hint.text(), GNU_REST_HINT);
         assert_eq!(hint.index(), 0);
