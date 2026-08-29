@@ -2832,6 +2832,7 @@ impl TerminalApp {
         modifiers: KeyModifiers,
         page_rows: usize,
     ) -> Result<()> {
+        app.remember_menu_path();
         app.ui_mode = UiMode::Normal;
         Self::handle_key(app, KeyEvent::new(KeyCode::F(n), modifiers), page_rows)
     }
@@ -6064,7 +6065,7 @@ impl TerminalApp {
             }
             UiMode::DeleteDialog {
                 name: _,
-                path,
+                paths,
                 focus_ok,
             } => {
                 match key.code {
@@ -6072,7 +6073,8 @@ impl TerminalApp {
                     KeyCode::Tab | KeyCode::Left | KeyCode::Right => *focus_ok = !*focus_ok,
                     KeyCode::Char('y') | KeyCode::Char('Y') if key.modifiers.is_empty() => {
                         *focus_ok = true;
-                        if let Err(e) = app.vfs.remove(path, true) {
+                        let to_remove = paths.clone();
+                        if let Err(e) = remove_delete_paths(app, &to_remove) {
                             app.show_error_dialog(format!("{e}"));
                             return Ok(());
                         }
@@ -6084,7 +6086,8 @@ impl TerminalApp {
                     }
                     KeyCode::Enter | KeyCode::Char(' ') if key.modifiers.is_empty() => {
                         if *focus_ok {
-                            if let Err(e) = app.vfs.remove(path, true) {
+                            let to_remove = paths.clone();
+                            if let Err(e) = remove_delete_paths(app, &to_remove) {
                                 app.show_error_dialog(format!("{e}"));
                                 return Ok(());
                             }
@@ -6733,7 +6736,15 @@ impl TerminalApp {
                         return Ok(());
                     }
                     KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => {
+                        let rec = if *dropped {
+                            Some((*top_index, *selected_index))
+                        } else {
+                            None
+                        };
                         app.ui_mode = UiMode::Normal;
+                        if let Some(p) = rec {
+                            app.last_menu_path = Some(p);
+                        }
                     }
                     KeyCode::Left => {
                         if *top_index > 0 {
@@ -6769,7 +6780,9 @@ impl TerminalApp {
                             *selected_index = 0;
                             return Ok(());
                         }
-                        let item = menus[*selected_index];
+                        let rec = (*top_index, *selected_index);
+                        let item = menus[rec.1];
+                        app.last_menu_path = Some(rec);
                         match item {
                             "Help" => {
                                 app.handle_action(Action::ShowHelp)?;
@@ -8389,6 +8402,8 @@ impl TerminalApp {
                     14 => open_panel_editor(app, true),
                     15 => open_copy_move_dialog(app, false, true, true),
                     16 => open_copy_move_dialog(app, true, true, true),
+                    18 => open_delete_dialog(app, true),
+                    19 => app.open_last_selected_menu(),
                     _ => {}
                 },
                 Action::MoveUp
@@ -8459,22 +8474,7 @@ impl TerminalApp {
                     };
                 }
                 Action::Delete => {
-                    if let Some(ent) = app.active_panel().current_entry().cloned() {
-                        let path = ent.path.clone();
-                        if app.confirm.delete {
-                            app.ui_mode = UiMode::DeleteDialog {
-                                name: ent.name,
-                                path,
-                                focus_ok: app.config_opts.delete_confirm_focus_ok(),
-                            };
-                        } else {
-                            if let Err(e) = app.vfs.remove(&path, true) {
-                                app.show_error_dialog(format!("{e}"));
-                                return Ok(());
-                            }
-                            app.reload_panels()?;
-                        }
-                    }
+                    open_delete_dialog(app, false);
                 }
                 Action::Copy => {
                     open_copy_move_dialog(app, false, false, false);
@@ -9352,6 +9352,45 @@ fn copy_source_is_parent_only(app: &App, ignore_tags: bool) -> bool {
             .all(|e| e.is_parent_marker());
     }
     panel.current_entry().is_some_and(|e| e.is_parent_marker())
+}
+
+fn remove_delete_paths(app: &mut App, paths: &[std::path::PathBuf]) -> Result<()> {
+    for path in paths {
+        app.vfs
+            .remove(path, true)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    Ok(())
+}
+
+/// F8: tagged files when any are marked (GNU Delete). F18 / S-F8: cursor
+/// file only (GNU DeleteSingle), even when marks exist.
+fn open_delete_dialog(app: &mut App, ignore_tags: bool) {
+    if copy_source_is_parent_only(app, ignore_tags) {
+        app.show_error_dialog(r#"Cannot operate on ".."!"#.into());
+        return;
+    }
+    let Some((name, paths)) = copy_move_source(app, ignore_tags) else {
+        return;
+    };
+    let name = if paths.len() > 1 {
+        format!("{} files", paths.len())
+    } else {
+        name
+    };
+    if app.confirm.delete {
+        app.ui_mode = UiMode::DeleteDialog {
+            name,
+            paths,
+            focus_ok: app.config_opts.delete_confirm_focus_ok(),
+        };
+    } else {
+        if let Err(e) = remove_delete_paths(app, &paths) {
+            app.show_error_dialog(format!("{e}"));
+            return;
+        }
+        let _ = app.reload_panels();
+    }
 }
 
 /// F5/F6: dest = other panel, use tags when present.
@@ -10247,7 +10286,7 @@ fn directory_tree_delete(app: &mut App) {
         .to_string();
     app.ui_mode = UiMode::DeleteDialog {
         name,
-        path,
+        paths: vec![path],
         focus_ok: app.config_opts.delete_confirm_focus_ok(),
     };
 }
@@ -28083,6 +28122,151 @@ mod panel_function_keys_tests {
         assert_eq!(title, "Move");
         assert_eq!(src, "notes.txt", "S-F6 == F16");
         assert!(dest_in_dir(to, &left));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn delete_name(app: &App) -> &str {
+        match &app.ui_mode {
+            UiMode::DeleteDialog { name, .. } => name.as_str(),
+            _ => panic!("expected DeleteDialog, got {}", mode_name(app)),
+        }
+    }
+
+    #[test]
+    fn f18_delete_single_ignores_tags_f8_uses_marks() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.panel_opts.mark_moves_down = false;
+        tag_name(&mut app, "other.txt");
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(8));
+        assert_eq!(
+            delete_name(&app),
+            "other.txt",
+            "F8 Delete uses tagged files, not the unmarked cursor"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(root.join("other.txt").exists());
+        assert!(root.join("notes.txt").exists());
+
+        press(&mut app, KeyCode::F(18));
+        assert_eq!(
+            delete_name(&app),
+            "notes.txt",
+            "F18 DeleteSingle is the cursor file even when marks exist"
+        );
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        assert!(
+            !root.join("notes.txt").exists(),
+            "F18 must delete the cursor file"
+        );
+        assert!(
+            root.join("other.txt").exists(),
+            "F18 must not delete tagged-but-not-cursor files"
+        );
+
+        std::fs::write(root.join("notes.txt"), b"hello\n").unwrap();
+        app.reload_panels().unwrap();
+        app.active_panel_mut().selection.clear();
+        tag_name(&mut app, "other.txt");
+        goto_name(&mut app, "notes.txt");
+        press_rows(&mut app, KeyCode::F(8), KeyModifiers::SHIFT, 10);
+        assert_eq!(delete_name(&app), "notes.txt", "S-F8 == F18");
+        press(&mut app, KeyCode::Esc);
+
+        app.active_panel_mut().selection.clear();
+        tag_name(&mut app, "other.txt");
+        tag_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(8));
+        assert_eq!(
+            delete_name(&app),
+            "2 files",
+            "F8 with two marks is the GNU multi-select Delete dialog"
+        );
+        press(&mut app, KeyCode::Char('y'));
+        assert!(!root.join("notes.txt").exists());
+        assert!(!root.join("other.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f19_reopens_last_selected_pulldown_path() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        app.config_opts.drop_menus = false;
+        goto_name(&mut app, "notes.txt");
+
+        press(&mut app, KeyCode::F(19));
+        match &app.ui_mode {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped,
+            } => {
+                assert_eq!(*top_index, 0, "F19 with no history is F9 Left");
+                assert_eq!(*selected_index, 0);
+                assert!(!*dropped, "drop_menus off: bar only");
+            }
+            _ => panic!(
+                "F19 with no history must open the menu, got {}",
+                mode_name(&app)
+            ),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        match &app.ui_mode {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped,
+            } => {
+                assert_eq!(*top_index, 1, "File menu");
+                assert_eq!(*selected_index, 3, "Copy");
+                assert!(*dropped);
+            }
+            _ => panic!("expected File→Copy, got {}", mode_name(&app)),
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+
+        press(&mut app, KeyCode::F(19));
+        match &app.ui_mode {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped,
+            } => {
+                assert_eq!(*top_index, 1, "F19 reopens File");
+                assert_eq!(*selected_index, 3, "F19 reopens Copy");
+                assert!(*dropped, "F19 drops the last item path");
+            }
+            _ => panic!("F19 must reopen the pull-down, got {}", mode_name(&app)),
+        }
+        press(&mut app, KeyCode::Esc);
+
+        press_rows(&mut app, KeyCode::F(9), KeyModifiers::SHIFT, 10);
+        match &app.ui_mode {
+            UiMode::Menu {
+                top_index,
+                selected_index,
+                dropped,
+            } => {
+                assert_eq!(*top_index, 1, "S-F9 == F19");
+                assert_eq!(*selected_index, 3);
+                assert!(*dropped);
+            }
+            _ => panic!("S-F9 must be MenuLastSelected, got {}", mode_name(&app)),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

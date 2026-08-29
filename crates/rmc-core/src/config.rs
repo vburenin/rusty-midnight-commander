@@ -225,6 +225,17 @@ impl KeyMap {
             KeyEvent::new(KeyCode::F(6), KeyModifiers::SHIFT),
             Action::FunctionKey(16),
         );
+        // GNU mc.keymap: DeleteSingle=f18 (S-F8), MenuLastSelected=f19 (S-F9).
+        m.bind(new_event(KeyCode::F(18)), Action::FunctionKey(18));
+        m.bind(
+            KeyEvent::new(KeyCode::F(8), KeyModifiers::SHIFT),
+            Action::FunctionKey(18),
+        );
+        m.bind(new_event(KeyCode::F(19)), Action::FunctionKey(19));
+        m.bind(
+            KeyEvent::new(KeyCode::F(9), KeyModifiers::SHIFT),
+            Action::FunctionKey(19),
+        );
         m.bind(new_event(KeyCode::F(20)), Quit);
         m.bind(KeyEvent::new(KeyCode::F(10), KeyModifiers::SHIFT), Quit);
         // Selection group keys
@@ -522,6 +533,9 @@ fn parse_action(s: &str) -> Option<Action> {
         "Move" => Some(Move),
         "Mkdir" => Some(Mkdir),
         "Delete" => Some(Delete),
+        // GNU mc.keymap [panel] DeleteSingle=f18 / [filemanager] MenuLastSelected=f19
+        "DeleteSingle" => Some(Action::FunctionKey(18)),
+        "MenuLastSelected" => Some(Action::FunctionKey(19)),
         "SelectGroup" => Some(Action::SelectGroup),
         "UnselectGroup" => Some(Action::UnselectGroup),
         "InvertSelection" => Some(Action::InvertSelection),
@@ -1468,6 +1482,22 @@ mod tests {
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(3), KeyModifiers::SHIFT)),
             Some(Action::FunctionKey(13))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(18), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(18))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(8), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(18))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(19), KeyModifiers::NONE)),
+            Some(Action::FunctionKey(19))
+        ));
+        assert!(matches!(
+            lm.resolve(&KeyEvent::new(KeyCode::F(9), KeyModifiers::SHIFT)),
+            Some(Action::FunctionKey(19))
         ));
         assert!(matches!(
             lm.resolve(&KeyEvent::new(KeyCode::F(20), KeyModifiers::NONE)),

@@ -61,6 +61,11 @@ F15   = FunctionKey15
 S-F5  = FunctionKey15
 F16   = FunctionKey16
 S-F6  = FunctionKey16
+# GNU mc.keymap: DeleteSingle=f18 (cursor file only); MenuLastSelected=f19
+F18   = DeleteSingle
+S-F8  = DeleteSingle
+F19   = MenuLastSelected
+S-F9  = MenuLastSelected
 F20   = Quit
 S-F10 = Quit
 

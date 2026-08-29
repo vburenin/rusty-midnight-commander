@@ -74,7 +74,7 @@ From mc(1) “Listing Format…”, “Panel modes”, “Sort Order…”, “F
 
 Function keys (File menu shortcuts; Esc-1..0 emulates F1..F10):
 - [x] F1 Help; F2 User Menu; F3 View; F4 Edit; F5 Copy; F6 RenMov; F7 Mkdir; F8 Delete; F9 PullDn (menu bar); F10 Quit
-- [x] Shift-F variants (F13..F20) where relevant (e.g., F13 view-raw, F16 move to selected panel)
+- [x] Shift-F variants (F13..F20) where relevant (e.g., F13 view-raw, F16 move to selected panel, F18 DeleteSingle, F19 MenuLastSelected)
 
 Directory panels (selection, navigation, layout):
 - [x] Tab / C-i / Left/Right: switch active panel

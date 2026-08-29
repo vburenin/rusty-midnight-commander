@@ -547,19 +547,20 @@ fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalett
         rmc_core::app::UiMode::MkdirDialog { value, focus_ok } => {
             draw_mkdir_dialog(p, cols, rows, pal, value, *focus_ok, app.shadows);
         }
-        rmc_core::app::UiMode::DeleteDialog { name, focus_ok, .. } => {
+        rmc_core::app::UiMode::DeleteDialog {
+            name,
+            paths,
+            focus_ok,
+            ..
+        } => {
             let yes = if *focus_ok { "< Yes >" } else { "  Yes  " };
             let no = if *focus_ok { "  No  " } else { "< No >" };
-            draw_dialog_box(
-                p,
-                cols,
-                rows,
-                pal,
-                "Delete",
-                &format!("Delete file \"{name}\"?"),
-                &[yes, no],
-                app.shadows,
-            );
+            let msg = if paths.len() > 1 {
+                format!("Delete {} files?", paths.len())
+            } else {
+                format!("Delete file \"{name}\"?")
+            };
+            draw_dialog_box(p, cols, rows, pal, "Delete", &msg, &[yes, no], app.shadows);
         }
         rmc_core::app::UiMode::CopyDialog {
             title,
