@@ -2610,6 +2610,19 @@ impl TerminalApp {
         )
     }
 
+    /// File / Left / Right / Command menu items that reuse F-keys must leave
+    /// `Menu` first. `handle_key` matches `ui_mode` before the keymap, so
+    /// `handle_key(F5)` while still `Menu` is a no-op (or re-enters Menu).
+    fn leave_menu_function_key(
+        app: &mut App,
+        n: u8,
+        modifiers: KeyModifiers,
+        page_rows: usize,
+    ) -> Result<()> {
+        app.ui_mode = UiMode::Normal;
+        Self::handle_key(app, KeyEvent::new(KeyCode::F(n), modifiers), page_rows)
+    }
+
     fn handle_key(app: &mut App, mut key: KeyEvent, page_rows: usize) -> Result<()> {
         let capturing_learn = matches!(
             app.ui_mode,
@@ -6780,31 +6793,51 @@ impl TerminalApp {
                                 let set_left = *top_index == 0;
                                 enter_panel_tree_mode(app, set_left);
                             }
-                            "Copy" => {
-                                return Self::handle_key(
+                            "View" => {
+                                return Self::leave_menu_function_key(
                                     app,
-                                    KeyEvent::new(KeyCode::F(5), key.modifiers),
+                                    3,
+                                    key.modifiers,
+                                    page_rows,
+                                );
+                            }
+                            "Edit" => {
+                                return Self::leave_menu_function_key(
+                                    app,
+                                    4,
+                                    key.modifiers,
+                                    page_rows,
+                                );
+                            }
+                            "Copy" => {
+                                return Self::leave_menu_function_key(
+                                    app,
+                                    5,
+                                    key.modifiers,
                                     page_rows,
                                 );
                             }
                             "Move" => {
-                                return Self::handle_key(
+                                return Self::leave_menu_function_key(
                                     app,
-                                    KeyEvent::new(KeyCode::F(6), key.modifiers),
+                                    6,
+                                    key.modifiers,
                                     page_rows,
                                 );
                             }
                             "Mkdir" => {
-                                return Self::handle_key(
+                                return Self::leave_menu_function_key(
                                     app,
-                                    KeyEvent::new(KeyCode::F(7), key.modifiers),
+                                    7,
+                                    key.modifiers,
                                     page_rows,
                                 );
                             }
                             "Delete" => {
-                                return Self::handle_key(
+                                return Self::leave_menu_function_key(
                                     app,
-                                    KeyEvent::new(KeyCode::F(8), key.modifiers),
+                                    8,
+                                    key.modifiers,
                                     page_rows,
                                 );
                             }
@@ -6837,9 +6870,10 @@ impl TerminalApp {
                                 app.handle_action(Action::SymlinkRel)?;
                             }
                             "User menu" => {
-                                return Self::handle_key(
+                                return Self::leave_menu_function_key(
                                     app,
-                                    KeyEvent::new(KeyCode::F(2), key.modifiers),
+                                    2,
+                                    key.modifiers,
                                     page_rows,
                                 );
                             }
@@ -9052,26 +9086,49 @@ fn copy_move_source(app: &App, ignore_tags: bool) -> Option<(String, Vec<PathBuf
     Some((ent.name.clone(), vec![ent.path.clone()]))
 }
 
+fn dest_dir_with_slash(dir: &Path) -> String {
+    let mut s = dir.display().to_string();
+    if !s.ends_with('/') {
+        s.push('/');
+    }
+    s
+}
+
+/// GNU mc(1): F5/F6 on `..` (UP--DIR) is a red Error, not a panic and not a
+/// silent no-op: `Cannot operate on ".."!`
+fn copy_source_is_parent_only(app: &App, ignore_tags: bool) -> bool {
+    let panel = app.active_panel();
+    if !ignore_tags && !panel.selection.is_empty() {
+        return panel
+            .selection
+            .iter()
+            .filter_map(|i| panel.entries.get(i))
+            .all(|e| e.is_parent_marker());
+    }
+    panel.current_entry().is_some_and(|e| e.is_parent_marker())
+}
+
 /// F5/F6: dest = other panel, use tags when present.
 /// F15/F16: dest = current panel, always the selected file.
 fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_tags: bool) {
+    if copy_source_is_parent_only(app, ignore_tags) {
+        app.show_error_dialog(r#"Cannot operate on ".."!"#.into());
+        return;
+    }
     let Some((src_name, src_paths)) = copy_move_source(app, ignore_tags) else {
         return;
     };
-    let src_path = src_paths[0].clone();
+    let Some(src_path) = src_paths.first().cloned() else {
+        return;
+    };
     let dst_dir = if to_current {
         app.active_panel().cwd.clone()
     } else {
         app.inactive_panel().cwd.clone()
     };
-    let default_to = if src_paths.len() > 1 {
-        dst_dir.display().to_string()
-    } else {
-        match src_path.file_name() {
-            Some(name) => dst_dir.join(name).display().to_string(),
-            None => dst_dir.join(&src_name).display().to_string(),
-        }
-    };
+    // GNU mc(1) F5: dest is the other panel directory with a trailing slash
+    // (live 4.8.33: `to: /workspace/`), not the source file path.
+    let default_to = dest_dir_with_slash(&dst_dir);
     app.ui_mode = UiMode::CopyDialog {
         title: if is_move {
             "Move".into()
@@ -26669,6 +26726,174 @@ mod panel_function_keys_tests {
     }
 
     #[test]
+    fn file_menu_copy_opens_copy_dialog() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        let idx = FILE_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Copy")
+            .expect("File → Copy");
+        for _ in 0..idx {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(copy_title(&app), "Copy", "File → Copy must open Copy");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn left_menu_copy_opens_copy_dialog() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        // Left menu item 0 is Copy (same F5 dispatch as File → Copy).
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(copy_title(&app), "Copy", "Left → Copy must open Copy");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f5_on_regular_file_with_empty_marks_opens_copy() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        assert!(
+            app.active_panel().selection.is_empty(),
+            "empty marked set uses the current file"
+        );
+        press(&mut app, KeyCode::F(5));
+        let (title, src, to) = copy_fields(&app);
+        assert_eq!(title, "Copy");
+        assert_eq!(src, "notes.txt");
+        assert!(
+            to.ends_with('/'),
+            "GNU dest is the other panel directory with a trailing slash, got {to}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f5_then_paint_long_dest_does_not_abort() {
+        let root = std::env::temp_dir().join(format!(
+            "rmc-f5-paint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let left = root.join("left");
+        let right = root
+            .join("a")
+            .join("b")
+            .join("c")
+            .join("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("notes.txt"), b"hello\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(5));
+        assert_eq!(copy_title(&app), "Copy");
+        let to = copy_fields(&app).2.to_string();
+        assert!(
+            to.chars().count() > 66 || to.len() > 66,
+            "dest must be long enough to hit the old pad panic, got {to}"
+        );
+        let buf = crate::render::paint_overlays_for_test(&app, 80, 24).unwrap();
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Copy"));
+        assert!(s.contains("with source mask:"));
+        assert!(s.contains("to:"));
+        assert!(s.contains("OK") && s.contains("Cancel"));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f5_on_parent_marker_shows_gnu_error_and_does_not_abort() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.is_parent_marker())
+            .expect("..");
+        app.active_panel_mut().cursor = idx;
+        press(&mut app, KeyCode::F(5));
+        match &app.ui_mode {
+            UiMode::DialogConfirm { title, message, .. } => {
+                assert_eq!(title, "Error");
+                assert_eq!(message, r#"Cannot operate on ".."!"#);
+            }
+            _ => panic!(
+                "F5 on .. must be GNU Error, not abort, got {}",
+                mode_name(&app)
+            ),
+        }
+        assert!(!app.quit);
+        let buf = crate::render::paint_overlays_for_test(&app, 80, 24).unwrap();
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Error"));
+        assert!(s.contains("Cannot operate") || s.contains(".."));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_menu_view_and_edit_leave_menu() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        goto_name(&mut app, "notes.txt");
+        app.config_opts.drop_menus = true;
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        let idx = FILE_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "View")
+            .expect("File → View");
+        for _ in 0..idx {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Viewer { .. }),
+            "File → View must open Viewer, got {}",
+            mode_name(&app)
+        );
+        press(&mut app, KeyCode::F(10));
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(9));
+        press(&mut app, KeyCode::Right);
+        let idx = FILE_MENU_ITEMS
+            .iter()
+            .position(|s| *s == "Edit")
+            .expect("File → Edit");
+        for _ in 0..idx {
+            press(&mut app, KeyCode::Down);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(app.ui_mode, UiMode::Editor { .. }),
+            "File → Edit must open Editor, got {}",
+            mode_name(&app)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn esc_number_emulates_f1_f5_f10() {
         let root = temp_workspace();
         seed_listing(&root);
@@ -28296,6 +28521,49 @@ mod mouse_shift_passthrough_tests {
     }
 
     #[test]
+    fn fbar_copy_label_opens_copy_dialog() {
+        let root = temp_workspace();
+        seed_listing(&root);
+        let mut app = make_app(&root);
+        let idx = app
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.name == "aaa.txt")
+            .expect("aaa.txt");
+        app.active_panel_mut().cursor = idx;
+
+        let geom = compute_chrome_geom(COLS, ROWS, &app.layout);
+        let fbar_y = geom.fbar_row.expect("F-bar");
+        let mut copy_x = None;
+        for x in 0..COLS {
+            if fbar_function_from_xy(&app, x, fbar_y, COLS, ROWS) == Some(5) {
+                // Prefer the 'C' of `5Copy`, not only the leading `5`.
+                copy_x = Some(x.saturating_add(1));
+                break;
+            }
+        }
+        let x = copy_x.expect("F-bar 5Copy hit");
+        assert_eq!(
+            fbar_function_from_xy(&app, x, fbar_y, COLS, ROWS),
+            Some(5),
+            "click target must stay on the Copy segment"
+        );
+        send(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            x,
+            fbar_y,
+            KeyModifiers::NONE,
+        );
+        assert!(
+            matches!(app.ui_mode, UiMode::CopyDialog { ref title, .. } if title == "Copy"),
+            "F-bar 5Copy must open Copy"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn nomouse_shift_and_plain_clicks_are_noops() {
         let root = temp_workspace();
         seed_listing(&root);
@@ -28440,7 +28708,11 @@ mod copy_mask_dialog_tests {
     }
 
     fn dest_filename(to: &str, name: &str) -> String {
-        match Path::new(to).parent() {
+        let p = Path::new(to);
+        if to.ends_with('/') {
+            return p.join(name).display().to_string();
+        }
+        match p.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => {
                 parent.join(name).display().to_string()
             }
