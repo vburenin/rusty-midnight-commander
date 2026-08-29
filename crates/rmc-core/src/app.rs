@@ -2399,6 +2399,13 @@ impl App {
     pub fn open_chmod_dialog(&mut self) {
         let targets = self.tagged_or_current_entries();
         if targets.is_empty() {
+            if self
+                .active_panel()
+                .current_entry()
+                .is_some_and(|e| e.is_parent_marker())
+            {
+                self.show_error_dialog(r#"Cannot operate on ".."!"#.into());
+            }
             return;
         }
         let paths: Vec<PathBuf> = targets.iter().map(|e| e.path.clone()).collect();
@@ -2440,6 +2447,13 @@ impl App {
     pub fn open_chown_dialog(&mut self) {
         let targets = self.tagged_or_current_entries();
         if targets.is_empty() {
+            if self
+                .active_panel()
+                .current_entry()
+                .is_some_and(|e| e.is_parent_marker())
+            {
+                self.show_error_dialog(r#"Cannot operate on ".."!"#.into());
+            }
             return;
         }
         let paths: Vec<PathBuf> = targets.iter().map(|e| e.path.clone()).collect();
@@ -2464,6 +2478,7 @@ impl App {
             return;
         };
         if ent.is_parent_marker() {
+            self.show_error_dialog(r#"Cannot operate on ".."!"#.into());
             return;
         }
         if kind == LinkKind::Hard && ent.is_dir {
