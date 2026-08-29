@@ -17,6 +17,7 @@ pub mod panelize;
 pub mod paths;
 pub mod quicksearch;
 pub mod selection;
+pub mod shell_prompt;
 pub mod sorting;
 pub mod subshell;
 pub mod user_menu;
