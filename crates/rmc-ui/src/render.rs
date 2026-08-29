@@ -276,6 +276,18 @@ fn draw_pause_after_run_prompt(p: &mut Painter, cols: u16, rows: u16, pal: McPal
     p.text(&truncate(msg, cols as usize));
 }
 
+/// Test-only: paint dialog overlays (Copy / Error / …) into a byte buffer.
+/// Used to prove F5 cannot abort on the next frame.
+#[cfg(test)]
+pub(crate) fn paint_overlays_for_test(app: &App, cols: u16, rows: u16) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    {
+        let mut p = Painter { out: &mut buf };
+        draw_overlays(&mut p, app, cols, rows, McPalette::default())?;
+    }
+    Ok(buf)
+}
+
 fn draw_overlays(p: &mut Painter, app: &App, cols: u16, rows: u16, pal: McPalette) -> Result<()> {
     match &app.ui_mode {
         rmc_core::app::UiMode::DialogConfirm { title, message, .. } => {
@@ -9012,6 +9024,31 @@ mod copy_dialog_paint_tests {
     use rmc_core::app::{App, CopyDialogFocus, UiMode};
     use rmc_core::config::KeyMap;
     use rmc_fs::local::LocalFs;
+
+    #[test]
+    fn gnu_mc_433_copy_dialog_fields_are_present() {
+        // Live GNU mc 4.8.33 F5: title Copy; header with quoted name and
+        // source mask; `*`; Using shell patterns; `to:`; Follow links /
+        // Dive / Preserve attributes / Stable symlinks; OK / Background / Cancel.
+        let buf = paint_copy("*", "/workspace/", 80, 24);
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Copy"), "{s:?}");
+        assert!(
+            s.contains("Copy file \"notes.txt\" with source mask:"),
+            "GNU header, got {s:?}"
+        );
+        assert!(s.contains("Using shell patterns"), "{s:?}");
+        assert!(s.contains("to:"), "{s:?}");
+        assert!(s.contains("/workspace/"), "{s:?}");
+        assert!(s.contains("Follow links"), "{s:?}");
+        assert!(s.contains("Dive into subdir if exists"), "{s:?}");
+        assert!(s.contains("Preserve attributes"), "{s:?}");
+        assert!(s.contains("Stable symlinks"), "{s:?}");
+        assert!(
+            s.contains("OK") && s.contains("Background") && s.contains("Cancel"),
+            "{s:?}"
+        );
+    }
 
     fn paint_copy(mask: &str, to: &str, cols: u16, rows: u16) -> Vec<u8> {
         let mut buf = Vec::new();

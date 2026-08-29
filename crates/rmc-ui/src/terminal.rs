@@ -9086,6 +9086,14 @@ fn copy_move_source(app: &App, ignore_tags: bool) -> Option<(String, Vec<PathBuf
     Some((ent.name.clone(), vec![ent.path.clone()]))
 }
 
+fn dest_dir_with_slash(dir: &Path) -> String {
+    let mut s = dir.display().to_string();
+    if !s.ends_with('/') {
+        s.push('/');
+    }
+    s
+}
+
 /// GNU mc(1): F5/F6 on `..` (UP--DIR) is a red Error, not a panic and not a
 /// silent no-op: `Cannot operate on ".."!`
 fn copy_source_is_parent_only(app: &App, ignore_tags: bool) -> bool {
@@ -9118,14 +9126,9 @@ fn open_copy_move_dialog(app: &mut App, is_move: bool, to_current: bool, ignore_
     } else {
         app.inactive_panel().cwd.clone()
     };
-    let default_to = if src_paths.len() > 1 {
-        dst_dir.display().to_string()
-    } else {
-        match src_path.file_name() {
-            Some(name) => dst_dir.join(name).display().to_string(),
-            None => dst_dir.join(&src_name).display().to_string(),
-        }
-    };
+    // GNU mc(1) F5: dest is the other panel directory with a trailing slash
+    // (live 4.8.33: `to: /workspace/`), not the source file path.
+    let default_to = dest_dir_with_slash(&dst_dir);
     app.ui_mode = UiMode::CopyDialog {
         title: if is_move {
             "Move".into()
@@ -26768,9 +26771,52 @@ mod panel_function_keys_tests {
             "empty marked set uses the current file"
         );
         press(&mut app, KeyCode::F(5));
-        let (title, src, _) = copy_fields(&app);
+        let (title, src, to) = copy_fields(&app);
         assert_eq!(title, "Copy");
         assert_eq!(src, "notes.txt");
+        assert!(
+            to.ends_with('/'),
+            "GNU dest is the other panel directory with a trailing slash, got {to}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn f5_then_paint_long_dest_does_not_abort() {
+        let root = std::env::temp_dir().join(format!(
+            "rmc-f5-paint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let left = root.join("left");
+        let right = root
+            .join("a")
+            .join("b")
+            .join("c")
+            .join("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("notes.txt"), b"hello\n").unwrap();
+        let mut app = make_split_app(&left, &right);
+        goto_name(&mut app, "notes.txt");
+        press(&mut app, KeyCode::F(5));
+        assert_eq!(copy_title(&app), "Copy");
+        let to = copy_fields(&app).2.to_string();
+        assert!(
+            to.chars().count() > 66 || to.len() > 66,
+            "dest must be long enough to hit the old pad panic, got {to}"
+        );
+        let buf = crate::render::paint_overlays_for_test(&app, 80, 24).unwrap();
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Copy"));
+        assert!(s.contains("with source mask:"));
+        assert!(s.contains("to:"));
+        assert!(s.contains("OK") && s.contains("Cancel"));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.ui_mode, UiMode::Normal));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -26798,6 +26844,10 @@ mod panel_function_keys_tests {
             ),
         }
         assert!(!app.quit);
+        let buf = crate::render::paint_overlays_for_test(&app, 80, 24).unwrap();
+        let s = String::from_utf8_lossy(&buf);
+        assert!(s.contains("Error"));
+        assert!(s.contains("Cannot operate") || s.contains(".."));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -28658,7 +28708,11 @@ mod copy_mask_dialog_tests {
     }
 
     fn dest_filename(to: &str, name: &str) -> String {
-        match Path::new(to).parent() {
+        let p = Path::new(to);
+        if to.ends_with('/') {
+            return p.join(name).display().to_string();
+        }
+        match p.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => {
                 parent.join(name).display().to_string()
             }
